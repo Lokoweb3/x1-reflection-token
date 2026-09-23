@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>99 + Tax · Launch</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4;
+  --surface-1: #fcfcfb;
+  --border: #e4e3de;
+  --grid: #ecebe7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --accent: #2a78d6;
+  --good: #008300;
+  --warning: #9a6700;
+  --critical: #c62828;
+  --link: #1f63b8;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111110; --surface-1: #1a1a19; --border: #2e2e2c; --grid: #262624;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+    --accent: #3987e5; --good: #4cb84c; --warning: #e0a526; --critical: #ef6b6b; --link: #7fb2f0;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111110; --surface-1: #1a1a19; --border: #2e2e2c; --grid: #262624;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+  --accent: #3987e5; --good: #4cb84c; --warning: #e0a526; --critical: #ef6b6b; --link: #7fb2f0;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; font-weight: 600; }
+h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+.badge { border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; font-size: 12px; color: var(--text-secondary); }
+.sub { color: var(--text-secondary); font-size: 13px; }
+.muted { color: var(--text-muted); font-size: 12px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; margin-bottom: 16px; }
+.grid > * { min-width: 0; }
+form .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin-bottom: 12px; }
+form .row.one { grid-template-columns: 1fr; }
+label { display: grid; gap: 4px; font-size: 13px; color: var(--text-secondary); }
+input, select, textarea { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-primary); width: 100%; }
+textarea { resize: vertical; min-height: 56px; }
+.hint { color: var(--text-muted); font-size: 12px; }
+fieldset { border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px 2px; margin: 0 0 12px; }
+legend { font-size: 12px; color: var(--text-secondary); padding: 0 4px; }
+.split { font-size: 12px; color: var(--text-secondary); margin: -4px 0 10px; }
+.costs { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 12px; }
+.costs td { padding: 4px 0; border-bottom: 1px solid var(--grid); }
+.costs td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.btn { font: inherit; font-size: 13px; border-radius: 8px; padding: 7px 14px; cursor: pointer; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); }
+.btn:hover:not(:disabled) { border-color: var(--text-muted); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.small { padding: 3px 10px; font-size: 12px; }
+.btn.big { width: 100%; padding: 10px; font-size: 15px; font-weight: 600; }
+.wallet { position: relative; margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.wallet-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 6px; min-width: 200px; box-shadow: 0 6px 20px rgb(0 0 0 / .15); }
+.wallet-menu button { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 8px; border-radius: 6px; font: inherit; color: var(--text-primary); cursor: pointer; text-align: left; }
+.wallet-menu button:hover { background: var(--grid); }
+.wallet-menu img { width: 20px; height: 20px; border-radius: 4px; }
+.steps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
+.steps li { display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: start; }
+.dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); display: grid; place-items: center; font-size: 12px; color: var(--text-muted); }
+.steps li.done .dot { background: var(--good); border-color: var(--good); color: #fff; }
+.steps li.active .dot { border-color: var(--accent); color: var(--accent); }
+.steps li.error .dot { border-color: var(--critical); color: var(--critical); }
+.steps .t { font-weight: 500; }
+.table-wrap { overflow-x: auto; }
+table.list { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.list th, table.list td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+table.list th { color: var(--text-secondary); font-weight: 500; }
+table.list img { width: 22px; height: 22px; border-radius: 50%; vertical-align: middle; margin-right: 6px; object-fit: cover; background: var(--grid); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.empty { color: var(--text-muted); padding: 18px 0; text-align: center; }
+.guarantees { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 13px; display: grid; gap: 4px; }
+.toast { position: fixed; right: 16px; bottom: 16px; z-index: 10; max-width: min(440px, calc(100vw - 32px)); background: var(--surface-1); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 20px rgb(0 0 0 / .18); overflow-wrap: anywhere; font-size: 13px; }
+.toast.error { border-left-color: var(--critical); }
+.toast.success { border-left-color: var(--good); }
+.toast[hidden] { display: none; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } form .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><a href="/" style="color:inherit">99 + Tax</a></h1>
+    <span class="badge" id="network">…</span>
+    <span class="sub">Tax tokens that pay holders in XNT, with the launch liquidity locked in an NFT</span>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Launch a token</h2>
+      <form id="launchForm" autocomplete="off">
+        <div class="row">
+          <label>Name <input name="name" maxlength="32" required placeholder="My Token"></label>
+          <label>Symbol <input name="symbol" maxlength="10" required placeholder="MYT" pattern="[A-Za-z0-9$._\-]+"></label>
+        </div>
+        <div class="row one">
+          <label>Logo URL <input name="image" placeholder="https://… or ipfs://…"><span class="hint">A square image. Wallets and explorers show it next to your token.</span></label>
+          <label>Description <textarea name="description" maxlength="500" placeholder="What is this token?"></textarea></label>
+        </div>
+        <fieldset>
+          <legend>Supply and tax</legend>
+          <div class="row">
+            <label>Total supply <input name="supply" inputmode="numeric" value="1000000000" required></label>
+            <label>Tax on every transfer (%) <input name="tax" type="number" min="1" max="10" step="0.5" value="5" required></label>
+          </div>
+          <div class="row">
+            <label>Share of the tax added to liquidity (%) <input name="autoLp" type="number" min="0" max="50" step="5" value="40" required></label>
+            <label>Share of the tax burned (%) <input name="burn" type="number" min="0" max="50" step="5" value="0" required></label>
+          </div>
+          <div class="split" id="taxSplit"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Launch liquidity (XDEX pool)</legend>
+          <div class="row">
+            <label>Tokens into the pool (% of supply) <input name="poolPct" type="number" min="1" max="100" value="100" required></label>
+            <label>XNT into the pool <input name="poolXnt" inputmode="decimal" value="10" required></label>
+          </div>
+          <div class="row">
+            <label>Lock the LP
+              <select name="lock">
+                <option value="forever" selected>Forever</option>
+                <option value="7">7 days</option>
+                <option value="30">30 days</option>
+                <option value="90">90 days</option>
+                <option value="365">1 year</option>
+              </select>
+            </label>
+            <span class="split" id="priceNote"></span>
+          </div>
+        </fieldset>
+        <table class="costs" id="costs"></table>
+        <button class="btn primary big" id="launchBtn" type="submit" disabled>Connect a wallet to launch</button>
+        <p class="muted">Your wallet asks you to approve 3 transactions: create the token, create the pool, lock the LP.</p>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Launch progress</h2>
+      <ol class="steps" id="steps">
+        <li data-step="token"><span class="dot">1</span><div><div class="t">Create the token</div><div class="muted">Tax fixed forever, supply fixed, launch fee paid</div></div></li>
+        <li data-step="pool"><span class="dot">2</span><div><div class="t">Create the XDEX pool</div><div class="muted">Your tokens + XNT become the starting liquidity</div></div></li>
+        <li data-step="lock"><span class="dot">3</span><div><div class="t">Lock the LP in an NFT</div><div class="muted">You get the NFT, which collects the pool's trading fees</div></div></li>
+        <li data-step="registered"><span class="dot">4</span><div><div class="t">Start distributions</div><div class="muted">The tax is collected and paid to holders in XNT</div></div></li>
+      </ol>
+      <div id="launchResult"></div>
+      <h2 style="margin-top:18px">What buyers can check on-chain</h2>
+      <ul class="guarantees">
+        <li>The tax can never be changed (no fee authority).</li>
+        <li>The supply is fixed (mint authority revoked).</li>
+        <li>The launch liquidity is locked in an NFT, forever or until the date shown.</li>
+        <li>Collected tax can only be withdrawn by the token's own distributor wallet.</li>
+      </ul>
+      <h2 style="margin-top:18px">Your launches</h2>
+      <div id="myLaunches" class="muted">Connect a wallet to see your launches.</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Launched tokens</h2>
+    <div class="table-wrap"><table class="list" id="tokens"></table></div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="/wallet.js"></script>
+<script>
+const W = window.X1Wallet;
+let info = null;
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopener", text, ...(cls ? { class: cls } : {}) });
+const short = (a) => a.length > 12 ? a.slice(0, 4) + "…" + a.slice(-4) : a;
+const fmt = (n, d = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+const safeImg = (u) => typeof u === "string" && /^https:\/\//.test(u) ? u : null;
+
+let toastTimer;
+function toast(kind, ...parts) {
+  const t = document.getElementById("toast");
+  clearTimeout(toastTimer);
+  t.className = "toast" + (kind === "info" ? "" : " " + kind);
+  t.replaceChildren(...parts);
+  t.hidden = false;
+  if (kind === "success") toastTimer = setTimeout(() => { t.hidden = true; }, 15000);
+}
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+// ---------- Wallet ----------
+function renderWallet() {
+  const area = document.getElementById("walletArea");
+  if (W.state.address) {
+    const b = el("button", { class: "btn small", type: "button", text: "Disconnect" });
+    b.onclick = () => W.disconnect();
+    area.replaceChildren(el("span", { class: "sub mono", text: short(W.state.address) }), b);
+  } else {
+    const b = el("button", { class: "btn primary", type: "button", text: "Connect wallet" });
+    b.onclick = openWalletMenu;
+    area.replaceChildren(b);
+  }
+  const btn = document.getElementById("launchBtn");
+  btn.disabled = !W.state.address || running;
+  btn.textContent = W.state.address ? (running ? "Launching…" : "Launch token") : "Connect a wallet to launch";
+}
+function openWalletMenu(ev) {
+  ev.stopPropagation();
+  document.getElementById("walletMenu")?.remove();
+  const choices = W.choices();
+  const go = (c) => W.connect(c).catch((e) => toast("error", "Wallet connection failed: " + (e.message || e)));
+  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  if (choices.length === 1) { go(choices[0]); return; }
+  const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
+  for (const c of choices) {
+    const b = el("button", { type: "button" });
+    if (typeof c.icon === "string" && c.icon.startsWith("data:image/")) b.append(el("img", { src: c.icon, alt: "" }));
+    b.append(c.name);
+    b.onclick = () => { menu.remove(); go(c); };
+    menu.append(b);
+  }
+  document.getElementById("walletArea").append(menu);
+  setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }));
+}
+W.onChange(() => { renderWallet(); loadMine(); });
+
+// ---------- Form ----------
+const form = document.getElementById("launchForm");
+function readForm() {
+  const v = Object.fromEntries(new FormData(form));
+  const supply = String(v.supply).replace(/[,_\s]/g, "");
+  const poolPct = Number(v.poolPct);
+  const poolTokens = /^\d+$/.test(supply) ? (BigInt(supply) * BigInt(Math.round(poolPct * 100)) / 10000n).toString() : "";
+  return {
+    name: String(v.name).trim(), symbol: String(v.symbol).trim(), image: String(v.image).trim(), description: String(v.description).trim(),
+    supply, taxBps: Math.round(Number(v.tax) * 100), autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
+    poolTokens, poolXnt: String(v.poolXnt).trim(), lockDays: v.lock === "forever" ? null : Number(v.lock),
+  };
+}
+function renderForm() {
+  const p = readForm();
+  const tax = p.taxBps / 100, lp = tax * p.autoLpBps / 10000, burn = tax * p.burnBps / 10000;
+  const over = p.autoLpBps + p.burnBps > 9000;
+  document.getElementById("taxSplit").textContent = over
+    ? "Liquidity + burn can't be more than 90% of the tax; holders always keep at least 10%."
+    : `Every transfer pays ${fmt(tax, 2)}%: about ${fmt(tax - lp - burn, 2)}% goes to holders in XNT, ${fmt(lp, 2)}% is added to the pool's liquidity (LP burned)` +
+      (burn > 0 ? `, and ${fmt(burn, 2)}% of the tokens are burned.` : ".");
+  const price = Number(p.poolXnt) / Number(p.poolTokens || 0);
+  document.getElementById("priceNote").textContent = isFinite(price) && price > 0
+    ? `Starting price ≈ ${price.toLocaleString(undefined, { maximumSignificantDigits: 3 })} XNT per token` : "";
+  const costs = document.getElementById("costs");
+  const rows = [
+    ["Launch fee", info ? `${info.feeUsdc} USDC` : "…"],
+    ["XNT into the pool", `${fmt(p.poolXnt || 0)} XNT`],
+    ["XDEX pool creation fee", info?.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "…"],
+    ["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"],
+    ["Account rent and network fees", "≈ 0.03 XNT"],
+  ];
+  costs.replaceChildren(...rows.map(([a, b]) => el("tr", {}, el("td", { text: a }), el("td", { text: b }))));
+}
+form.addEventListener("input", renderForm);
+
+// ---------- Launch flow ----------
+let running = false;
+function setSteps(status, active, errorStep) {
+  for (const li of document.querySelectorAll("#steps li")) {
+    const s = li.dataset.step;
+    li.className = status?.[s] ? "done" : s === errorStep ? "error" : s === active ? "active" : "";
+  }
+}
+async function signAndSend(label, build) {
+  toast("info", `${label}: preparing and simulating…`);
+  const { tx, ...rest } = await build();
+  toast("info", `${label}: approve it in your wallet…`);
+  const signed = await W.sign(W.b64ToBytes(tx));
+  toast("info", `${label}: sending…`);
+  const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
+  toast("success", `${label} confirmed. `, link(`${info.explorer}/tx/${signature}`, "View transaction ↗"));
+  return { signature, ...rest };
+}
+async function statusOf(mint) {
+  const mine = await api(`/api/launches?creator=${W.state.address}`);
+  return mine.find((l) => l.mint === mint)?.status ?? {};
+}
+async function continueLaunch(mint) {
+  const creator = W.state.address;
+  let status = await statusOf(mint);
+  let step = "pool";
+  try {
+    if (!status.pool) { step = "pool"; setSteps(status, "pool"); await signAndSend("Create pool", () => api("/api/launch/pool", { mint, creator })); status = { ...status, pool: true }; }
+    if (!status.lock) { step = "lock"; setSteps(status, "lock"); await signAndSend("Lock LP", () => api("/api/launch/lock", { mint, creator })); status = { ...status, lock: true }; }
+    step = "registered"; setSteps(status, "registered");
+    await api("/api/launch/register", { mint, creator });
+    status = { ...status, registered: true };
+    setSteps(status);
+    showResult(mint);
+    toast("success", "Your token is live. ", link(`${info.explorer}/address/${mint}`, "View token ↗"));
+  } catch (e) {
+    setSteps(status, null, step);
+    toast("error", `Launch paused at "${step}": ${e.message || e}. You can continue it from “Your launches”.`);
+  }
+  loadMine(); loadTokens();
+}
+function showResult(mint) {
+  document.getElementById("launchResult").replaceChildren(el("p", { class: "sub" }, "Token: ", link(`${info.explorer}/address/${mint}`, mint, "mono")));
+}
+form.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (running || !W.state.address) return;
+  const p = readForm();
+  const lock = p.lockDays === null ? "locked FOREVER" : `locked for ${p.lockDays} days`;
+  if (p.autoLpBps + p.burnBps > 9000) { toast("error", "Liquidity + burn can't be more than 90% of the tax."); return; }
+  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${p.poolXnt} XNT, LP ${lock}\n• Launch fee ${info.feeUsdc} USDC\n\nYour wallet will ask you to approve 3 transactions.`);
+  if (!ok) return;
+  running = true; renderWallet();
+  document.getElementById("launchResult").replaceChildren();
+  setSteps({}, "token");
+  try {
+    const { mint } = await signAndSend("Create token", () => api("/api/launch/token", { ...p, creator: W.state.address }));
+    await continueLaunch(mint);
+  } catch (e) {
+    setSteps({}, null, "token");
+    toast("error", `Create token failed: ${e.message || e}`);
+  } finally {
+    running = false; renderWallet();
+  }
+});
+
+// ---------- Lists ----------
+function lockText(days) { return days === null ? "Forever" : `${days} days`; }
+async function loadMine() {
+  const host = document.getElementById("myLaunches");
+  if (!W.state.address) { host.replaceChildren("Connect a wallet to see your launches."); return; }
+  try {
+    const mine = await api(`/api/launches?creator=${W.state.address}`);
+    if (!mine.length) { host.replaceChildren("No launches from this wallet yet."); return; }
+    const t = el("table", { class: "list" }, el("tr", {}, el("th", { text: "Token" }), el("th", { text: "Progress" }), el("th", {})));
+    for (const l of mine) {
+      const s = l.status;
+      const done = [s.token, s.pool, s.lock, s.registered].filter(Boolean).length;
+      let action = null;
+      if (s.token && !s.registered) {
+        action = el("button", { class: "btn small primary", type: "button", text: "Continue" });
+        action.onclick = () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } };
+      }
+      t.append(el("tr", {},
+        el("td", {}, link(`${info.explorer}/address/${l.mint}`, `${l.symbol}`), " ", el("span", { class: "muted", text: short(l.mint) })),
+        el("td", { text: s.registered ? "Live" : !s.token ? "Not started (step 1 was not sent)" : `${done} of 4 steps` }),
+        el("td", {}, action)));
+    }
+    host.replaceChildren(el("div", { class: "table-wrap" }, t));
+  } catch (e) { host.replaceChildren("Couldn't load your launches: " + e.message); }
+}
+async function loadTokens() {
+  const t = document.getElementById("tokens");
+  const tokens = await api("/api/tokens").catch(() => []);
+  t.replaceChildren(el("tr", {}, el("th", { text: "Token" }), el("th", { text: "Tax" }), el("th", { text: "To liquidity" }), el("th", { text: "Burned" }), el("th", { text: "LP lock" }),
+    el("th", { text: "Launched" }), el("th", { text: "Pool" }), el("th", { text: "Creator" })));
+  if (!tokens.length) { t.append(el("tr", {}, el("td", { colspan: 8, class: "empty", text: "No tokens launched yet." }))); return; }
+  for (const k of tokens) {
+    const img = safeImg(k.image);
+    t.append(el("tr", {},
+      el("td", {}, img ? el("img", { src: img, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : null, link(`${info.explorer}/address/${k.mint}`, `${k.name} (${k.symbol})`)),
+      el("td", { text: `${k.taxBps / 100}%` }),
+      el("td", { text: `${k.autoLpBps / 100}% of tax` }),
+      el("td", { text: k.burnBps ? `${k.burnBps / 100}% of tax` : "–" }),
+      el("td", { text: lockText(k.lockDays) }),
+      el("td", { class: "muted", text: new Date(k.registeredAt).toLocaleDateString() }),
+      el("td", {}, link(`${info.explorer}/address/${k.pool}`, short(k.pool), "mono")),
+      el("td", {}, link(`${info.explorer}/address/${k.creator}`, short(k.creator), "mono"))));
+  }
+}
+
+(async () => {
+  try {
+    info = await api("/api/info");
+    document.getElementById("network").textContent = info.network;
+  } catch (e) { toast("error", "Couldn't reach the factory server: " + e.message); }
+  renderWallet(); renderForm(); loadTokens();
+})();
+</script>
+</body>
+</html>

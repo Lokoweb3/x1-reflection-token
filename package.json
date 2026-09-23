@@ -14,6 +14,12 @@
     "distributor:stop": "scripts/distributor.sh stop",
     "distributor:status": "scripts/distributor.sh status",
     "distributor:logs": "scripts/distributor.sh logs",
+    "factory": "tsx src/factory-server.ts",
+    "factory:distribute": "tsx src/factory-distributor.ts",
+    "factory:start": "scripts/factory.sh start",
+    "factory:stop": "scripts/factory.sh stop",
+    "factory:status": "scripts/factory.sh status",
+    "factory:logs": "scripts/factory.sh logs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts"
   },

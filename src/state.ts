@@ -21,13 +21,14 @@ export interface Batch {
 }
 
 export interface Inflight {
-  kind: "withdraw" | "sell" | "lp";
+  kind: "withdraw" | "sell" | "lp" | "burn";
   signature: string;
   lastValidBlockHeight: number;
   amount?: string;        // withdraw: tokens withdrawn
   lp?: string;            // lp: LP tokens minted and burned
   lpTokens?: string;      // withdraw: tokens to keep for the LP token side
   lpSellTokens?: string;  // withdraw: tokens to sell for the LP XNT side; sell: LP's part of amountIn
+  burnTokens?: string;    // withdraw: tokens set aside to burn; burn: tokens burned
   amountIn?: string;      // sell
 }
 
@@ -37,6 +38,8 @@ export interface State {
   owed: Record<string, string>;
   pending: null | { createdAt: string; batches: Batch[] };
   lp: { tokens: string; sellTokens: string; xnt: string };
+  /** Collected tax set aside to burn, and the running total burned. */
+  burn: { pending: string; burned: string };
   inflight: Inflight | null;
   history: { at: string; kind: string; detail: string; signature?: string }[];
 }
@@ -47,12 +50,14 @@ const LOCK = path.join(STATE_DIR, "distributor.lock");
 
 export function loadState(mint: string): State {
   const empty: State = {
-    version: 1, mint, owed: {}, pending: null, lp: { tokens: "0", sellTokens: "0", xnt: "0" }, inflight: null, history: [],
+    version: 1, mint, owed: {}, pending: null, lp: { tokens: "0", sellTokens: "0", xnt: "0" },
+    burn: { pending: "0", burned: "0" }, inflight: null, history: [],
   };
   if (!fs.existsSync(FILE)) return empty;
   const s = JSON.parse(fs.readFileSync(FILE, "utf8")) as State;
   if (s.mint !== mint) throw new Error(`State file belongs to mint ${s.mint}, config has ${mint}`);
   s.lp ??= empty.lp;
+  s.burn ??= empty.burn;
   s.inflight ??= null;
   return s;
 }
@@ -98,7 +103,7 @@ export function addOwed(s: State, owner: string, lamports: bigint) {
  */
 export interface Event {
   at: string;
-  kind: "withdraw" | "sell" | "auto-lp" | "allocate" | "payout";
+  kind: "withdraw" | "sell" | "auto-lp" | "burn" | "allocate" | "payout";
   signature?: string;
   [field: string]: unknown;
 }

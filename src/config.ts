@@ -6,6 +6,8 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 export const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 export const CONFIG_PATH = process.env.REFLECT_CONFIG ?? path.join(ROOT, "config.json");
 export const STATE_DIR = process.env.REFLECT_STATE_DIR ?? path.join(ROOT, "state");
+/** Factory launches: records, per-token distributor keys and state. Secret; gitignored. */
+export const FACTORY_DIR = process.env.REFLECT_FACTORY_DIR ?? path.join(ROOT, "factory");
 
 export const XDEX_PROGRAM_IDS: Record<string, string> = {
   mainnet: "sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN",
@@ -24,6 +26,16 @@ export interface Config {
   xdex: { programId: string; pool: string };
   /** lp_locker program (LP locked forever behind a fee-claiming NFT). */
   locker?: { programId: string; nftUri?: string };
+  /** Token factory (public launchpad). */
+  factory?: {
+    feeReceiver: string;     // wallet that receives the launch fee
+    feeUsdc: string;         // launch fee in USDC, e.g. "1"
+    gasXnt?: string;         // XNT the creator pre-funds each token's distributor with
+    publicUrl?: string;      // base URL the page is served from (used in metadata URIs)
+    port?: number;
+    bind?: string;           // listen address; 127.0.0.1 unless you put it behind a proxy
+    hosts?: string[];        // extra Host headers to accept, e.g. ["launch.example.com"]
+  };
   distribution: {
     minHoldingTokens: string;
     excludeOwners: string[];
@@ -36,6 +48,7 @@ export interface Config {
     maxPriceImpactBps: number;
     slippageBps: number;
     autoLpBps?: number;
+    burnBps?: number;
     transfersPerTx: number;
     priorityMicroLamports: number;
   };
@@ -54,6 +67,9 @@ export function loadConfig(): Config {
   if (!Number.isInteger(bps) || bps < 0 || bps > 10_000) throw new Error("token.feeBps must be 0..10000");
   const lp = cfg.distribution.autoLpBps ?? 0;
   if (!Number.isInteger(lp) || lp < 0 || lp > 10_000) throw new Error("distribution.autoLpBps must be 0..10000");
+  const burn = cfg.distribution.burnBps ?? 0;
+  if (!Number.isInteger(burn) || burn < 0 || burn > 10_000) throw new Error("distribution.burnBps must be 0..10000");
+  if (lp + burn > 10_000) throw new Error("distribution.autoLpBps + burnBps can't exceed 10000 (100% of the tax)");
   return cfg;
 }
 

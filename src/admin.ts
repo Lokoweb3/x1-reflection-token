@@ -45,6 +45,7 @@ async function main() {
     console.log(`Owed to holders:      ${xnt(totalOwed(s))} across ${Object.keys(s.owed).length} wallets`);
     console.log(`Auto-LP (${(cfg.distribution.autoLpBps ?? 0) / 100}% of fees): ${fromBaseUnits(BigInt(s.lp.tokens), d)} tokens kept, `
       + `${fromBaseUnits(BigInt(s.lp.sellTokens), d)} to sell, ${xnt(BigInt(s.lp.xnt))} raised`);
+    console.log(`Burn (${(cfg.distribution.burnBps ?? 0) / 100}% of fees):   ${fromBaseUnits(BigInt(s.burn.burned), d)} burned so far, ${fromBaseUnits(BigInt(s.burn.pending), d)} waiting`);
     if (s.inflight) console.log(`Unreconciled tx:      ${s.inflight.kind} ${s.inflight.signature}`);
     console.log(`Pending payout plan:  ${s.pending ? `${s.pending.batches.filter((b) => b.status !== "confirmed").length} batch(es) outstanding` : "none"}`);
     return;

@@ -52,13 +52,15 @@ export function eligibleBalances(rows: TokenAccountRow[], rules: EligibilityRule
 }
 
 /**
- * Split freshly collected fee tokens: `lpBps` of them go to auto-LP, half kept as
- * the token side and half sold for the XNT side. The rest is sold for holders.
+ * Split freshly collected fee tokens: `burnBps` of them are burned, `lpBps` go to
+ * auto-LP (half kept as the token side, half sold for the XNT side), and the rest is
+ * sold for holders.
  */
-export function splitForLp(amount: bigint, lpBps: number) {
+export function splitTax(amount: bigint, lpBps: number, burnBps = 0) {
+  const burn = (amount * BigInt(burnBps)) / 10_000n;
   const lp = (amount * BigInt(lpBps)) / 10_000n;
   const keep = lp / 2n;
-  return { keep, sell: lp - keep };
+  return { burn, keep, sell: lp - keep };
 }
 
 /** Pro-rata split of `pot`, rounded down; the remainder stays unallocated. */

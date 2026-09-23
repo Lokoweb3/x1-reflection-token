@@ -24,6 +24,15 @@
     "nftUri": ""
   },
 
+  "factory": {
+    "feeReceiver": "",
+    "feeUsdc": "1",
+    "gasXnt": "0.05",
+    "port": 8124,
+    "publicUrl": "http://127.0.0.1:8124",
+    "hosts": []
+  },
+
   "xdex": {
     "programId": "7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf",
     "pool": ""

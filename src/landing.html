@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>99 + Tax</title>
+<meta name="description" content="Launch a tax token on X1 that pays its holders in XNT, deepens its own liquidity, and locks the launch liquidity in an NFT.">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f7f6f2;
+  --surface-1: #fdfdfb;
+  --surface-2: #f0efe9;
+  --border: #e3e1d9;
+  --text-primary: #0d0d0c;
+  --text-secondary: #4f4e4a;
+  --text-muted: #77756f;
+  --brand: #15803d;
+  --brand-ink: #ffffff;
+  --brand-soft: #e3f3e8;
+  --holders: #2a78d6;
+  --liquidity: #eb6834;
+  --burn: #4a3aa7;
+  --link: #1f63b8;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0f0f0e; --surface-1: #181817; --surface-2: #20201e; --border: #2d2d2a;
+    --text-primary: #ffffff; --text-secondary: #c6c4ba; --text-muted: #8f8d85;
+    --brand: #16803c; --brand-ink: #ffffff; --brand-soft: #16301f;
+    --holders: #3987e5; --liquidity: #d95926; --burn: #9085e9; --link: #7fb2f0;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f0f0e; --surface-1: #181817; --surface-2: #20201e; --border: #2d2d2a;
+  --text-primary: #ffffff; --text-secondary: #c6c4ba; --text-muted: #8f8d85;
+  --brand: #16803c; --brand-ink: #ffffff; --brand-soft: #16301f;
+  --holders: #3987e5; --liquidity: #d95926; --burn: #9085e9; --link: #7fb2f0;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text-primary); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+nav { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+nav .wrap { display: flex; align-items: center; gap: 18px; height: 60px; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text-primary); }
+.logo:hover { text-decoration: none; }
+.mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--brand); color: var(--brand-ink); font-size: 13px; font-weight: 800; letter-spacing: -.5px; }
+nav .links { display: flex; align-items: center; gap: 18px; margin-left: auto; font-size: 14px; }
+nav .links a { color: var(--text-secondary); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: inherit; font-weight: 600; border-radius: 10px; padding: 11px 20px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
+.btn:hover { text-decoration: none; border-color: var(--text-muted); }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.sm { padding: 7px 14px; font-size: 14px; }
+
+.hero { padding: 72px 0 40px; display: grid; grid-template-columns: 1.15fr .85fr; gap: 40px; align-items: center; }
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; background: var(--surface-1); }
+.eyebrow .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
+h1 { font-size: clamp(34px, 5.2vw, 56px); line-height: 1.05; letter-spacing: -1.5px; margin: 18px 0 16px; }
+h1 em { font-style: normal; color: var(--brand); }
+.lede { font-size: 19px; color: var(--text-secondary); max-width: 560px; margin: 0 0 28px; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.fine { color: var(--text-muted); font-size: 13px; margin-top: 14px; }
+
+.coin { background: var(--surface-1); border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: 0 20px 50px -30px rgb(0 0 0 / .35); }
+.coin h3 { margin: 0 0 4px; font-size: 15px; }
+.coin .sub { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; }
+.slider { display: grid; gap: 6px; margin-bottom: 14px; font-size: 14px; color: var(--text-secondary); }
+.slider .row { display: flex; justify-content: space-between; }
+.slider b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--brand); }
+.bar { display: flex; gap: 2px; height: 14px; border-radius: 999px; overflow: hidden; background: var(--surface-2); margin: 6px 0 10px; }
+.bar > div { height: 100%; transition: width .2s; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--text-secondary); }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.calc { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 14px; color: var(--text-secondary); }
+.calc b { color: var(--text-primary); }
+.calc input { width: 110px; font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-primary); }
+
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 8px 0 72px; }
+.stat { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+.stat .v { font-size: 28px; font-weight: 700; letter-spacing: -.5px; }
+.stat .l { color: var(--text-muted); font-size: 13px; }
+
+section { margin-bottom: 80px; }
+h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -.8px; margin: 0 0 10px; }
+.section-lede { color: var(--text-secondary); max-width: 640px; margin: 0 0 28px; font-size: 17px; }
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; counter-reset: s; }
+.step { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; padding: 22px; position: relative; }
+.step::before { counter-increment: s; content: counter(s); display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-weight: 700; margin-bottom: 12px; }
+.step h3 { margin: 0 0 6px; font-size: 17px; }
+.step p { margin: 0; color: var(--text-secondary); font-size: 15px; }
+.loop { margin-top: 14px; background: var(--brand-soft); border-radius: 16px; padding: 18px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; font-size: 15px; }
+.loop b { color: var(--brand); }
+.chip { background: var(--surface-1); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 14px; }
+.arrow { color: var(--text-muted); }
+
+.guarantees { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.g { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; display: grid; grid-template-columns: 34px 1fr; gap: 12px; }
+.g .ic { width: 34px; height: 34px; border-radius: 10px; background: var(--brand-soft); color: var(--brand); display: grid; place-items: center; }
+.g h3 { margin: 0 0 4px; font-size: 16px; }
+.g p { margin: 0; color: var(--text-secondary); font-size: 14px; }
+
+.costs { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+.costs table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.costs td { padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.costs tr:last-child td { border-bottom: 0; }
+.costs td:last-child { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.costs .note { color: var(--text-muted); font-size: 13px; font-weight: 400; display: block; }
+
+.tokens { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; overflow-x: auto; }
+.tokens table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tokens th, .tokens td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.tokens th { color: var(--text-muted); font-weight: 500; font-size: 13px; }
+.tokens img { width: 26px; height: 26px; border-radius: 50%; vertical-align: middle; margin-right: 8px; object-fit: cover; background: var(--surface-2); }
+.tokens .empty { text-align: center; color: var(--text-muted); padding: 36px 16px; }
+.num { text-align: right !important; font-variant-numeric: tabular-nums; }
+
+details { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 4px 20px; margin-bottom: 10px; }
+summary { cursor: pointer; font-weight: 600; padding: 14px 0; list-style: none; display: flex; justify-content: space-between; gap: 12px; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; color: var(--text-muted); font-weight: 400; font-size: 20px; line-height: 1; }
+details[open] summary::after { content: "–"; }
+details p { margin: 0 0 16px; color: var(--text-secondary); font-size: 15px; }
+
+.final { text-align: center; background: var(--surface-1); border: 1px solid var(--border); border-radius: 22px; padding: 48px 20px; }
+.final p { color: var(--text-secondary); margin: 0 0 22px; }
+footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--text-muted); font-size: 13px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; }
+
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; padding-top: 44px; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .steps, .guarantees { grid-template-columns: 1fr; }
+  nav .links a:not(.btn) { display: none; }
+}
+</style>
+</head>
+<body>
+<nav>
+  <div class="wrap">
+    <a class="logo" href="/"><span class="mark">99+</span>99 + Tax</a>
+    <div class="links">
+      <a href="#how">How it works</a>
+      <a href="#guarantees">Guarantees</a>
+      <a href="#tokens">Tokens</a>
+      <a href="#faq">FAQ</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </div>
+  </div>
+</nav>
+
+<main class="wrap">
+  <header class="hero">
+    <div>
+      <span class="eyebrow"><span class="pulse"></span><span id="netLabel">Live on X1</span></span>
+      <h1>Launch a tax token that <em>pays its holders</em> in XNT.</h1>
+      <p class="lede">Every trade pays a small tax. That tax is sold for XNT and sent straight to holders' wallets, part of it deepens the pool, part can be burned for good, and the launch liquidity is locked in an NFT. Set it up in three clicks, <span id="feeLede">for about a dollar</span>.</p>
+      <div class="cta">
+        <a class="btn primary" href="/launch">Launch a token →</a>
+        <a class="btn" href="#how">See how it works</a>
+      </div>
+      <p class="fine">No code. Your wallet signs everything. Tokens run on XDEX, X1's DEX.</p>
+    </div>
+
+    <div class="coin" aria-label="Tax split calculator">
+      <h3>Where each trade's tax goes</h3>
+      <div class="sub">Drag to see how a token splits its tax.</div>
+      <label class="slider"><span class="row"><span>Tax on every transfer</span><b id="taxV">5%</b></span>
+        <input id="tax" type="range" min="1" max="10" step="0.5" value="5"></label>
+      <label class="slider"><span class="row"><span>Share added to liquidity</span><b id="lpV">40%</b></span>
+        <input id="lp" type="range" min="0" max="50" step="5" value="40"></label>
+      <label class="slider"><span class="row"><span>Share burned</span><b id="burnV">20%</b></span>
+        <input id="burn" type="range" min="0" max="50" step="5" value="20"></label>
+      <div class="bar" role="img" id="bar" aria-label="Tax split"><div id="barH" style="background:var(--holders)"></div><div id="barL" style="background:var(--liquidity)"></div><div id="barB" style="background:var(--burn)"></div></div>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--holders)"></span><span id="legH"></span></span>
+        <span><span class="sw" style="background:var(--liquidity)"></span><span id="legL"></span></span>
+        <span id="legBWrap"><span class="sw" style="background:var(--burn)"></span><span id="legB"></span></span>
+      </div>
+      <div class="calc">With <input id="vol" inputmode="decimal" value="1000" aria-label="Daily volume in XNT"> XNT of daily trading, holders share about <b id="calcOut">30 XNT a day</b>.</div>
+    </div>
+  </header>
+
+  <div class="stats" aria-label="Live totals">
+    <div class="stat"><div class="v" id="sTokens">–</div><div class="l">tokens launched</div></div>
+    <div class="stat"><div class="v" id="sPaid">–</div><div class="l">XNT paid to holders</div></div>
+    <div class="stat"><div class="v" id="sWallets">–</div><div class="l">holder payouts sent</div></div>
+    <div class="stat"><div class="v" id="sLiq">–</div><div class="l">XNT of launch liquidity locked</div></div>
+  </div>
+
+  <section id="how">
+    <h2>Three approvals, and your token is live</h2>
+    <p class="section-lede">Fill in one form. Your wallet approves three transactions, and 99 + Tax does the rest, on-chain and in the open.</p>
+    <div class="steps">
+      <div class="step"><h3>Create the token</h3><p>Name, logo, supply and tax. The tax is fixed forever and the supply can never grow.</p></div>
+      <div class="step"><h3>Open the pool</h3><p>Your tokens and XNT become the starting liquidity on XDEX, so people can trade right away.</p></div>
+      <div class="step"><h3>Lock the liquidity</h3><p>The LP is locked in an NFT, forever or until a date you pick. The NFT keeps earning the pool's trading fees.</p></div>
+    </div>
+    <div class="loop">
+      <b>Then every 30 minutes:</b>
+      <span class="chip">collect the tax</span><span class="arrow">→</span>
+      <span class="chip">sell it for XNT</span><span class="arrow">→</span>
+      <span class="chip">burn a share</span><span class="arrow">→</span>
+      <span class="chip">add liquidity, burn the LP</span><span class="arrow">→</span>
+      <span class="chip">pay every holder</span>
+    </div>
+  </section>
+
+  <section id="guarantees">
+    <h2>Built so nobody can pull the rug</h2>
+    <p class="section-lede">These aren't promises. Every one of them is a setting anyone can check on-chain.</p>
+    <div class="guarantees">
+      <div class="g"><span class="ic" aria-hidden="true">%</span><div><h3>The tax can never change</h3><p>The token has no fee authority, so no one can raise the tax later. Not the creator, not us.</p></div></div>
+      <div class="g"><span class="ic" aria-hidden="true">∑</span><div><h3>The supply is fixed</h3><p>The mint authority is revoked at launch. No one can ever print more tokens.</p></div></div>
+      <div class="g"><span class="ic" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span><div><h3>Liquidity is locked in an NFT</h3><p>Forever, or until the date shown. The lock program has no way to release it early.</p></div></div>
+      <div class="g"><span class="ic" aria-hidden="true">↻</span><div><h3>Only holders get the tax</h3><p>Each token has its own distributor wallet, the only one that can collect its tax, and it pays holders automatically.</p></div></div>
+    </div>
+  </section>
+
+  <section id="costs">
+    <h2>What it costs</h2>
+    <p class="section-lede">One flat launch fee. Everything else goes into your own token or to the network.</p>
+    <div class="costs"><table id="costTable"></table></div>
+  </section>
+
+  <section id="tokens">
+    <h2>Launched with 99 + Tax</h2>
+    <p class="section-lede">Every token here was created, pooled and locked through the launchpad.</p>
+    <div class="tokens"><table id="tokenTable"></table></div>
+  </section>
+
+  <section id="faq">
+    <h2>Questions</h2>
+    <details><summary>What is a tax (reflection) token?</summary><p>A token that takes a small percentage of every transfer, including every buy and sell. Here that tax isn't kept by the team. It's sold for XNT and paid to everyone who holds the token, in proportion to how much they hold.</p></details>
+    <details><summary>How do holders get paid?</summary><p>About every 30 minutes, the token's distributor collects the tax, sells it on XDEX and sends XNT directly to holders' wallets. There's nothing to claim. Very small shares build up until they reach 0.001 XNT, then they're sent.</p></details>
+    <details><summary>Who gets the tax that goes to liquidity?</summary><p>Nobody. It's added to the pool, and the LP tokens it creates are burned, so that liquidity stays in the pool for good and the price gets steadier over time.</p></details>
+    <details><summary>What does the burn do?</summary><p>If the creator turns it on, that share of each cycle's collected tax is burned outright, before anything is sold. The token supply goes down every cycle, and because those tokens are never sold, there's less selling pressure too. The creator picks the share at launch (up to 50%), and it can't be changed later.</p></details>
+    <details><summary>What does the LP NFT do?</summary><p>It holds the launch liquidity. Whoever owns the NFT can collect the trading fees that liquidity earns and can sell or transfer that right, but can't withdraw the liquidity itself. With a timed lock, the NFT holder can take the LP back after the date.</p></details>
+    <details><summary>Can the creator rug?</summary><p>They can't change the tax, print tokens or pull locked liquidity. They can still sell tokens they hold, like anyone else, so check how much of the supply went into the pool and whether the lock is forever.</p></details>
+    <details><summary>Is it audited?</summary><p>Not yet. The code is open source and has been tested on X1 testnet and against attack cases, but the lock program hasn't had an independent audit. Only use what you can afford to lose.</p></details>
+  </section>
+
+  <div class="final">
+    <h2>Your token, paying its holders, in three clicks.</h2>
+    <p>Connect a wallet, fill in the form, approve three transactions.</p>
+    <a class="btn primary" href="/launch">Launch a token →</a>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>99 + Tax · tax tokens on X1 that pay holders in XNT · <span id="footNet"></span></span>
+    <span><a href="https://github.com/Lokoweb3/x1-reflection-token" target="_blank" rel="noopener">Open source on GitHub</a> · Not financial advice. Tokens can lose all their value.</span>
+  </div>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) { if (k === "text") n.textContent = v; else if (k === "class") n.className = v; else n.setAttribute(k, v); }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const fmt = (n, d = 2) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+const xnt = (lamports) => Number(lamports) / 1e9;
+const compact = (n) => n >= 1e6 ? fmt(n / 1e6, 2) + "M" : n >= 1e4 ? fmt(n / 1e3, 1) + "K" : fmt(n, n < 10 ? 3 : 1);
+
+// Tax split calculator
+function renderSplit() {
+  const tax = Number($("tax").value);
+  let lp = Number($("lp").value), burn = Number($("burn").value);
+  // Liquidity + burn is capped at 90% so holders always keep at least 10%.
+  if (lp + burn > 90) { burn = 90 - lp; $("burn").value = burn; }
+  const toLp = tax * lp / 100, toBurn = tax * burn / 100, toHolders = tax - toLp - toBurn;
+  $("taxV").textContent = `${fmt(tax, 1)}%`;
+  $("lpV").textContent = `${lp}%`;
+  $("burnV").textContent = `${burn}%`;
+  $("barH").style.width = `${(toHolders / tax) * 100}%`;
+  $("barL").style.width = `${(toLp / tax) * 100}%`;
+  $("barB").style.width = `${(toBurn / tax) * 100}%`;
+  $("barL").style.display = toLp > 0 ? "" : "none";
+  $("barB").style.display = toBurn > 0 ? "" : "none";
+  $("legH").textContent = `${fmt(toHolders, 2)}% to holders in XNT`;
+  $("legL").textContent = `${fmt(toLp, 2)}% to liquidity (LP burned)`;
+  $("legB").textContent = `${fmt(toBurn, 2)}% of tokens burned`;
+  $("legBWrap").style.display = toBurn > 0 ? "" : "none";
+  $("bar").setAttribute("aria-label", `Of a ${fmt(tax, 1)}% tax: ${fmt(toHolders, 2)}% to holders, ${fmt(toLp, 2)}% to liquidity, ${fmt(toBurn, 2)}% burned`);
+  const vol = Number(String($("vol").value).replace(/[, ]/g, ""));
+  $("calcOut").textContent = isFinite(vol) && vol >= 0 ? `${fmt(vol * toHolders / 100, 2)} XNT a day` : "–";
+}
+for (const id of ["tax", "lp", "burn", "vol"]) $(id).addEventListener("input", renderSplit);
+renderSplit();
+
+async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); return r.json(); }
+
+(async () => {
+  try {
+    const info = await getJson("/api/info");
+    const net = info.network === "mainnet" ? "X1 mainnet" : "X1 testnet";
+    $("netLabel").textContent = `Live on ${net}`;
+    $("footNet").textContent = net;
+    const fee = Number(info.feeUsdc);
+    $("feeLede").textContent = fee === 0.99 ? "for 99 cents" : `for ${fmt(fee)} USDC`;
+    const rows = [
+      ["Launch fee", "Flat, paid once in USDC", `${fmt(fee)} USDC`],
+      ["Starting liquidity", "Your XNT, paired with your tokens in the pool. It stays in your token.", "You choose"],
+      ["XDEX pool creation", "Charged by XDEX, not by us", info.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "–"],
+      ["Distributor gas", "Pays for your token's first payouts, then refills itself from the tax", `${info.gasXnt} XNT`],
+      ["Rent and network fees", "Standard X1 account rent", "≈ 0.03 XNT"],
+    ];
+    $("costTable").replaceChildren(...rows.map(([a, n, b]) => el("tr", {}, el("td", {}, a, el("span", { class: "note", text: n })), el("td", { text: b }))));
+    loadTokens(info);
+  } catch {
+    $("netLabel").textContent = "Launchpad offline";
+  }
+  try {
+    const s = await getJson("/api/stats");
+    $("sTokens").textContent = fmt(s.tokens, 0);
+    $("sPaid").textContent = compact(xnt(s.xntPaid));
+    $("sWallets").textContent = fmt(s.walletsPaid, 0);
+    $("sLiq").textContent = compact(s.launchLiquidityXnt);
+  } catch { /* stats stay as dashes */ }
+})();
+
+async function loadTokens(info) {
+  const t = $("tokenTable");
+  const tokens = await getJson("/api/tokens").catch(() => []);
+  t.replaceChildren(el("tr", {}, el("th", { text: "Token" }), el("th", { text: "Tax" }), el("th", { text: "To liquidity" }),
+    el("th", { text: "Burned" }), el("th", { text: "LP lock" }), el("th", { class: "num", text: "XNT paid to holders" }), el("th", { text: "Launched" })));
+  if (!tokens.length) {
+    t.append(el("tr", {}, el("td", { class: "empty", colspan: 7 }, "No tokens yet. ", el("a", { href: "/launch", text: "Be the first to launch →" }))));
+    return;
+  }
+  for (const k of tokens.slice(0, 12)) {
+    const img = typeof k.image === "string" && /^https:\/\//.test(k.image) ? el("img", { src: k.image, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : null;
+    t.append(el("tr", {},
+      el("td", {}, img, el("a", { href: `${info.explorer}/address/${k.mint}`, target: "_blank", rel: "noopener", text: `${k.name} (${k.symbol})` })),
+      el("td", { text: `${k.taxBps / 100}%` }),
+      el("td", { text: `${k.autoLpBps / 100}% of tax` }),
+      el("td", { text: k.burnBps ? `${k.burnBps / 100}% of tax` : "–" }),
+      el("td", { text: k.lockDays === null ? "Forever" : `${k.lockDays} days` }),
+      el("td", { class: "num", text: fmt(xnt(k.paid?.xntPaid ?? 0), 4) }),
+      el("td", { text: new Date(k.registeredAt).toLocaleDateString() })));
+  }
+}
+</script>
+</body>
+</html>

@@ -16,7 +16,8 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { ComputeBudgetProgram, PublicKey, Transaction, TransactionInstruction, Keypair } from "@solana/web3.js";
+import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import { sendSigned, unsignedTx as walletUnsignedTx } from "./web/wallet-tx.js";
 import {
   TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, getEpochFee, getTransferFeeConfig, unpackMint,
 } from "@solana/spl-token";
@@ -130,7 +131,7 @@ async function data() {
     config: {
       network: cfg.network, symbol: cfg.token.symbol, name: cfg.token.name, mint: mint.toBase58(),
       pool: cfg.xdex.pool, distributor: distributor.toBase58(), explorer,
-      autoLpBps: cfg.distribution.autoLpBps ?? 0, minPayoutXnt: cfg.distribution.minPayoutXnt,
+      autoLpBps: cfg.distribution.autoLpBps ?? 0, burnBps: cfg.distribution.burnBps ?? 0, minPayoutXnt: cfg.distribution.minPayoutXnt,
     },
     state: {
       owed: s.owed, owedTotal: totalOwed(s).toString(), lp: s.lp, inflight: s.inflight,
@@ -153,23 +154,8 @@ function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-/** An unsigned transaction for `payer`'s wallet, pre-signed only by `extra` (the new NFT mint). */
-async function unsignedTx(payer: PublicKey, ixs: TransactionInstruction[], extra: Keypair[] = []) {
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-  const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cfg.distribution.priorityMicroLamports }),
-    ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-    ...ixs,
-  );
-  if (extra.length) tx.partialSign(...extra);
-  // Catch problems before asking the wallet to approve anything.
-  const sim = await conn.simulateTransaction(tx);
-  if (sim.value.err) {
-    const logs = (sim.value.logs ?? []).filter((l) => /Error|failed|insufficient/i.test(l)).slice(-3).join(" | ");
-    throw new Error(`Simulation failed: ${JSON.stringify(sim.value.err)}${logs ? ` — ${logs}` : ""}`);
-  }
-  return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
-}
+const unsignedTx = (payer: PublicKey, ixs: TransactionInstruction[], extra: Keypair[] = []) =>
+  walletUnsignedTx(conn, payer, ixs, extra, { microLamports: cfg.distribution.priorityMicroLamports });
 
 async function action(url: string, body: Record<string, unknown>) {
   if (url === "/api/wallet") {
@@ -198,14 +184,7 @@ async function action(url: string, body: Record<string, unknown>) {
     return { tx: await unsignedTx(holder, ixs), lp: summary.lp.toString() };
   }
   if (url === "/api/send") {
-    const raw = Buffer.from(String(body.tx), "base64");
-    const tx = Transaction.from(raw);
-    if (!tx.verifySignatures()) throw new Error("Transaction is not fully signed");
-    const signature = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 5 });
-    const res = await conn.confirmTransaction(
-      { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: tx.lastValidBlockHeight ?? (await conn.getBlockHeight()) + 150 },
-      "confirmed");
-    if (res.value.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(res.value.err)}`);
+    const signature = await sendSigned(conn, String(body.tx));
     chainCache = null; // show the result on the next refresh
     return { signature };
   }

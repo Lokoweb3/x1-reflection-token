@@ -6,12 +6,12 @@
  */
 import crypto from "node:crypto";
 import {
-  AccountInfo, Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction,
+  AccountInfo, Connection, Keypair, PublicKey, SYSVAR_RENT_PUBKEY, SystemProgram, TransactionInstruction,
 } from "@solana/web3.js";
 import {
-  NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee,
+  ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee,
   createAssociatedTokenAccountIdempotentInstruction, createBurnCheckedInstruction,
-  createCloseAccountInstruction, createInitializeAccount3Instruction, getAssociatedTokenAddressSync,
+  createCloseAccountInstruction, createInitializeAccount3Instruction, createSyncNativeInstruction, getAssociatedTokenAddressSync,
   getEpochFee, getTransferFeeConfig, unpackAccount, unpackMint,
 } from "@solana/spl-token";
 
@@ -345,4 +345,73 @@ export async function buildDepositAndBurn(
     createBurnCheckedInstruction(lpAccount, pool.lpMint, owner.publicKey, q.lp, pool.lpDecimals, [], lpProgram),
     createCloseAccountInstruction(temp, owner.publicKey, owner.publicKey, [], wxntProgram),
   ];
+}
+
+/** Per-network constants for creating XDEX pools (verified against real pool-creation transactions). */
+export const XDEX_CREATE: Record<"mainnet" | "testnet", { ammConfig: string; createPoolFee: string }> = {
+  // 0.28% trade fee tier used by most mainnet pools; fee receiver seen in every mainnet Initialize.
+  mainnet: { ammConfig: "2eFPWosizV6nSAGeSvi5tRgXLoqhjnSesra23ALA248c", createPoolFee: "SKc6b6zAv2kkB9EtitjppbzPVR48bCMfRtE5B8KDuF1" },
+  // 0.3% tier and fee receiver from the RFLT testnet pool's Initialize.
+  testnet: { ammConfig: "3FzzbxwpdJKxRW1yNT7UPYmna17SwC9PRmskMa8A2BuY", createPoolFee: "DwhWUT38Dwth5e1NYAJ2SSacYSaLEvct3kMndM7VSbcS" },
+};
+const INITIALIZE = disc("global:initialize");
+
+/** Addresses of the TOKEN/XNT pool XDEX creates for `mint` under `ammConfig` (PDAs verified on testnet). */
+export function poolAddresses(programId: PublicKey, ammConfig: PublicKey, mint: PublicKey) {
+  const [mint0, mint1] = Buffer.compare(NATIVE_MINT.toBuffer(), mint.toBuffer()) < 0 ? [NATIVE_MINT, mint] : [mint, NATIVE_MINT];
+  const pda = (...seeds: Buffer[]) => PublicKey.findProgramAddressSync(seeds, programId)[0];
+  const pool = pda(Buffer.from("pool"), ammConfig.toBuffer(), mint0.toBuffer(), mint1.toBuffer());
+  return {
+    pool, mint0, mint1,
+    lpMint: pda(Buffer.from("pool_lp_mint"), pool.toBuffer()),
+    vault0: pda(Buffer.from("pool_vault"), pool.toBuffer(), mint0.toBuffer()),
+    vault1: pda(Buffer.from("pool_vault"), pool.toBuffer(), mint1.toBuffer()),
+    observation: pda(Buffer.from("observation"), pool.toBuffer()),
+  };
+}
+
+/**
+ * Create a TOKEN/XNT pool seeded with `tokenAmount` of a Token-2022 `mint` and
+ * `xntAmount` lamports, both from `creator`. The XNT is wrapped into the creator's
+ * wrapped-XNT account first. XDEX mints the LP tokens to the creator.
+ */
+export function buildCreatePool(
+  programId: PublicKey, network: "mainnet" | "testnet", creator: PublicKey, mint: PublicKey,
+  tokenAmount: bigint, xntAmount: bigint,
+): { ixs: TransactionInstruction[]; pool: PublicKey; lpMint: PublicKey } {
+  const net = XDEX_CREATE[network];
+  const ammConfig = new PublicKey(net.ammConfig);
+  const a = poolAddresses(programId, ammConfig, mint);
+  const wxnt = getAssociatedTokenAddressSync(NATIVE_MINT, creator, false, TOKEN_PROGRAM_ID);
+  const tokenAcc = getAssociatedTokenAddressSync(mint, creator, false, TOKEN_2022_PROGRAM_ID);
+  const tokenIs0 = a.mint0.equals(mint);
+  const lpAcc = getAssociatedTokenAddressSync(a.lpMint, creator, false, TOKEN_PROGRAM_ID);
+
+  const data = Buffer.alloc(32);
+  INITIALIZE.copy(data, 0);
+  data.writeBigUInt64LE(tokenIs0 ? tokenAmount : xntAmount, 8);
+  data.writeBigUInt64LE(tokenIs0 ? xntAmount : tokenAmount, 16);
+  data.writeBigUInt64LE(0n, 24); // open immediately
+  const m = (pubkey: PublicKey, isSigner: boolean, isWritable: boolean) => ({ pubkey, isSigner, isWritable });
+  const prog0 = tokenIs0 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const prog1 = tokenIs0 ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
+  return {
+    pool: a.pool, lpMint: a.lpMint,
+    ixs: [
+      createAssociatedTokenAccountIdempotentInstruction(creator, wxnt, creator, NATIVE_MINT, TOKEN_PROGRAM_ID),
+      SystemProgram.transfer({ fromPubkey: creator, toPubkey: wxnt, lamports: xntAmount }),
+      createSyncNativeInstruction(wxnt, TOKEN_PROGRAM_ID),
+      new TransactionInstruction({
+        programId, data,
+        keys: [
+          m(creator, true, true), m(ammConfig, false, false), m(poolAuthority(programId), false, false),
+          m(a.pool, false, true), m(a.mint0, false, false), m(a.mint1, false, false), m(a.lpMint, false, true),
+          m(tokenIs0 ? tokenAcc : wxnt, false, true), m(tokenIs0 ? wxnt : tokenAcc, false, true), m(lpAcc, false, true),
+          m(a.vault0, false, true), m(a.vault1, false, true), m(new PublicKey(net.createPoolFee), false, true),
+          m(a.observation, false, true), m(TOKEN_PROGRAM_ID, false, false), m(prog0, false, false), m(prog1, false, false),
+          m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false), m(SystemProgram.programId, false, false), m(SYSVAR_RENT_PUBKEY, false, false),
+        ],
+      }),
+    ],
+  };
 }

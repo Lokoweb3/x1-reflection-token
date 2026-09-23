@@ -25,12 +25,15 @@ export const DUST_LAMPORTS = 10_000n;
 
 const meta = (pubkey: PublicKey, isSigner: boolean, isWritable: boolean) => ({ pubkey, isSigner, isWritable });
 
-export function lockerIds(cfg: Config) {
+/** Which pool/token to act on; defaults to the ones in config.json. */
+export interface Target { pool: PublicKey; mint: PublicKey; symbol: string }
+
+export function lockerIds(cfg: Config, target?: Target) {
   if (!cfg.locker?.programId) throw new Error("Set locker.programId in config.json to the deployed lp_locker program.");
   if (!cfg.xdex.pool) throw new Error("xdex.pool is not set");
   return {
     programId: new PublicKey(cfg.locker.programId), xdex: new PublicKey(cfg.xdex.programId),
-    pool: new PublicKey(cfg.xdex.pool), mint: requireMint(cfg),
+    pool: target?.pool ?? new PublicKey(cfg.xdex.pool), mint: target?.mint ?? requireMint(cfg),
   };
 }
 
@@ -48,8 +51,10 @@ export async function walletLp(conn: Connection, cfg: Config, owner: PublicKey) 
  * (unix seconds) the NFT holder can take the LP back after that time; without it the
  * lock is forever.
  */
-export async function buildLock(conn: Connection, cfg: Config, owner: PublicKey, amount: bigint | "all", unlockAt?: number) {
-  const ids = lockerIds(cfg);
+export async function buildLock(
+  conn: Connection, cfg: Config, owner: PublicKey, amount: bigint | "all", unlockAt?: number, target?: Target,
+) {
+  const ids = lockerIds(cfg, target);
   const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint);
   const pool = snap.pool;
   const ownerLp = getAssociatedTokenAddressSync(pool.lpMint, owner, false, TOKEN_PROGRAM_ID);
@@ -62,7 +67,7 @@ export async function buildLock(conn: Connection, cfg: Config, owner: PublicKey,
   const lock = lockPda(ids.programId, nft.publicKey);
   const vault = vaultPda(ids.programId, lock);
   const ownerNft = getAssociatedTokenAddressSync(nft.publicKey, owner, false, TOKEN_2022_PROGRAM_ID);
-  const name = `${cfg.token.symbol} LP Lock`.slice(0, 32);
+  const name = `${target?.symbol ?? cfg.token.symbol} LP Lock`.slice(0, 32);
   const symbol = "LPLOCK";
   const uri = cfg.locker?.nftUri ?? "";
   const metadata: TokenMetadata = { mint: nft.publicKey, name, symbol, uri, updateAuthority: owner, additionalMetadata: [] };

@@ -284,7 +284,7 @@ function render(d) {
     `Updated ${new Date(d.now).toLocaleTimeString()}` + (lastCycle ? ` · last activity ${ago(lastCycle.at)}` : " · no activity yet");
 
   // Totals from the activity log
-  const t = { paid: 0n, payouts: 0, lpXnt: 0n, lpTokens: 0n, collected: 0n, sold: 0n, sales: 0, raised: 0n, allocated: 0n };
+  const t = { paid: 0n, payouts: 0, lpXnt: 0n, lpTokens: 0n, collected: 0n, sold: 0n, sales: 0, raised: 0n, allocated: 0n, burned: 0n };
   const paidBy = new Map(), lastPaid = new Map();
   for (const e of d.events) {
     if (e.kind === "payout") {
@@ -294,6 +294,7 @@ function render(d) {
     else if (e.kind === "withdraw") t.collected += big(e.tokens);
     else if (e.kind === "sell") { t.sold += big(e.tokens); t.raised += big(e.xnt); t.sales++; }
     else if (e.kind === "allocate") t.allocated += big(e.xnt);
+    else if (e.kind === "burn") t.burned += big(e.tokens);
   }
   document.getElementById("heroPaid").replaceChildren(compact(units(t.paid, 9)), el("span", { class: "unit", text: "XNT" }));
   document.getElementById("heroSub").textContent =
@@ -319,8 +320,8 @@ function render(d) {
   tiles.replaceChildren(
     tile("Owed, not yet paid", xnt(s.owedTotal), `Paid once a wallet reaches ${c.minPayoutXnt} XNT`),
     tile("Added to liquidity", xnt(t.lpXnt), `${compact(units(t.lpTokens, dec))} ${sym} with it · LP burned`),
-    tile("Fees collected", `${compact(units(t.collected, dec))} ${sym}`, `${compact(units(t.sold, dec))} sold for ${xnt(t.raised)} in ${t.sales} sale${t.sales === 1 ? "" : "s"}`),
-    tile("Waiting to collect", live ? `${compact(units(live.withheld, dec))} ${sym}` : "–", live ? `Fee ${live.feeBps / 100}% · ${lpPct}% of fees to auto-LP` : ""),
+    tile("Fees collected", `${compact(units(t.collected, dec))} ${sym}`, `${compact(units(t.sold, dec))} sold for ${xnt(t.raised)}` + (t.burned > 0n || c.burnBps ? ` · ${compact(units(t.burned, dec))} burned` : "")),
+    tile("Waiting to collect", live ? `${compact(units(live.withheld, dec))} ${sym}` : "–", live ? `Fee ${live.feeBps / 100}% · ${lpPct}% to auto-LP` + (c.burnBps ? ` · ${c.burnBps / 100}% burned` : "") : ""),
     tile("Eligible holders", live ? String(live.eligible.length) : "–", live ? `${live.tokenAccounts} token accounts` : ""),
     tile("Pool", price != null ? `${compact(units(live.pool.xnt, 9))} XNT` : "–", price != null ? `1 ${sym} = ${price.toLocaleString(undefined, { maximumSignificantDigits: 3 })} XNT` : (c.pool ? "" : "No pool configured")),
   );
@@ -527,6 +528,7 @@ function renderActivity(d, dec, sym) {
       case "withdraw": return `Collected ${tok(e.tokens)} in fees (${tok(e.lpTokens)} set aside for liquidity)`;
       case "sell": return `Sold ${tok(e.tokens)} for ${xnt(e.xnt)}` + (big(e.lpXnt) ? ` (${xnt(e.lpXnt)} for liquidity)` : "");
       case "auto-lp": return `Added ${tok(e.tokens)} + ${xnt(e.xnt)} to the pool, LP burned`;
+      case "burn": return `Burned ${tok(e.tokens)} of collected tax (supply reduced)`;
       case "allocate": return `Allocated ${xnt(e.xnt)} across ${e.holders} holder${e.holders === 1 ? "" : "s"}`;
       case "payout": return `Paid ${xnt(e.total)} to ${e.payments?.length ?? 0} wallet${e.payments?.length === 1 ? "" : "s"}`;
       default: return e.kind;

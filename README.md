@@ -82,8 +82,13 @@ fee changes by two epochs, so holders can't be surprised by a sudden fee increas
    either marked paid, re-sent (only once its blockhash has expired, so the old
    transaction can never land), or left alone until it resolves.
 2. **Harvest** the withheld fees from every token account into the mint. Anyone can do
-   this. Then **withdraw** them to the distributor's token account. `autoLpBps` of them
-   are set aside for auto-LP: half kept as tokens, half to be sold for the XNT side.
+   this. Then **withdraw** them to the distributor's token account. `burnBps` of them
+   are set aside to burn, and `autoLpBps` for auto-LP: half kept as tokens, half to be
+   sold for the XNT side.
+   **Burn:** the tokens set aside to burn are burned right away (Token-2022 burn), so
+   the supply shrinks. They are never sold, so there's no swap fee and no sell
+   pressure for that share. `burnBps` is 0 (off) unless you set it; `autoLpBps +
+   burnBps` can't exceed 10000.
 3. **Sell** the collected tokens for XNT through XDEX `swap_base_input`. The sale size is
    capped by `maxPriceImpactBps` and optionally by `maxSellTokensPerCycle`. The quote
    accounts for the 5% transfer fee on the way into the pool and the pool's trade fee.
@@ -159,6 +164,49 @@ Deploy with `solana program deploy`, then set `locker.programId` in `config.json
 `solana program set-upgrade-authority <program id> --final`. Until then, whoever holds
 the upgrade key could change the program. The program has not had a third-party audit.
 
+## Token factory (launchpad): "99 + Tax"
+
+The launchpad is branded **99 + Tax**: `/` is the landing page (live totals, how it works,
+guarantees, costs, launched tokens, FAQ) and `/launch` is the launch app.
+
+A public launch page where anyone connects a wallet and launches a tax token that works
+like RFLT: every transfer pays a tax, the tax is sold for XNT and paid to holders, and a
+share of it is added to the pool's liquidity (LP burned). The launch liquidity is locked
+in an `lp_locker` NFT, forever or until a date.
+
+```bash
+npm run factory:start -- 15     # launch page + distributor for every launched token
+npm run factory:status
+npm run factory:logs
+npm run factory:stop
+```
+
+The site runs at `http://127.0.0.1:8124` (launch app at `/launch`). The creator picks the name, symbol, logo,
+supply, tax (1–10%), the share of the tax that goes to liquidity (0–50%), the share that
+is burned (0–50%; liquidity + burn at most 90%, so holders keep at least 10%), the starting
+liquidity, and the lock (forever, 7, 30, 90 days or 1 year). Their wallet approves three
+transactions:
+
+1. **Token:** Token-2022 mint with the tax and **no fee authority** (the tax can never
+   change), supply minted to the creator, **mint authority revoked**, the launch fee
+   (`factory.feeUsdc` USDC to `factory.feeReceiver`) and the token distributor's gas.
+2. **Pool:** a TOKEN/XNT pool on XDEX with the creator's tokens and XNT.
+3. **Lock:** all of the creator's LP locked in an NFT, which collects the trading fees.
+
+Then the launch is verified on-chain and registered. `factory:distribute` runs the same
+cycle as RFLT for every registered token, each with its **own distributor wallet**
+(the only key that can withdraw that token's tax), settings and state, under
+`factory/launches/<mint>/`. **That folder holds those wallets' keys: back it up and never
+commit it** (it is gitignored).
+
+- Launch fee: USDC.X on mainnet (`B69ch…m9Tq`); on testnet, the USDC that has an XDEX
+  testnet pool (`4dr9…2KsU`). Launchers need it in their wallet.
+- The tax starts with the first transfer, so seeding the pool pays it once. That
+  tax is collected and goes back to holders and liquidity like any other.
+- Token metadata (`/meta/<mint>.json`) is served by the factory. To make the page public,
+  put it behind an HTTPS reverse proxy, set `factory.publicUrl` and list the host name in
+  `factory.hosts`. It only listens on 127.0.0.1 by default.
+
 ## Dashboard
 
 ```bash
@@ -200,8 +248,17 @@ the vault, a fake XDEX program, a freezable NFT mint, unlocking early, and unloc
 forever lock. The dashboard's wallet buttons were driven in real Chromium with a mock
 Wallet Standard wallet.
 
-**Not yet verified:** anything on mainnet; the dashboard with a real wallet extension;
-long-running operation. The `lp_locker` program has **not** had an independent audit.
+**Burn:** verified on a local validator (the supply dropped by exactly the amount
+burned) and running live on testnet for RFLT (50% holders / 25% liquidity / 25% burn).
+
+**Token factory:** a full launch through the page (token, pool, LP lock, registration)
+and a factory distribution cycle ran on a local validator with a copy of the real
+testnet XDEX program. The pool-creation instruction matches a real testnet XDEX
+`Initialize` account for account. No launch has been done on testnet itself yet.
+
+**Not yet verified:** anything on mainnet; the dashboard and launchpad with a real wallet
+extension; a factory launch on testnet; long-running operation. The `lp_locker` program
+has **not** had an independent audit.
 
 ## Things to know before launching
 

@@ -2,8 +2,10 @@
  * One reflection cycle:
  *   1. finish any payout batches or journaled transactions left over from an interrupted run
  *   2. harvest withheld transfer fees from all holder accounts into the mint,
- *      then withdraw them to the distributor's token account; autoLpBps of them
- *      are set aside for auto-LP (half kept as tokens, half to be sold for XNT)
+ *      then withdraw them to the distributor's token account; burnBps of them are
+ *      set aside to burn and autoLpBps for auto-LP (half kept as tokens, half to be
+ *      sold for XNT)
+ *   2b. burn the tokens set aside to burn (the supply shrinks)
  *   3. sell the collected tokens for XNT on XDEX (price-impact capped)
  *   4. auto-LP: deposit the set-aside tokens + XNT into the pool and burn the LP tokens
  *   5. allocate new XNT pro-rata to eligible holders
@@ -16,13 +18,13 @@
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import {
   TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction,
-  createHarvestWithheldTokensToMintInstruction, createWithdrawWithheldTokensFromMintInstruction,
+  createBurnCheckedInstruction, createHarvestWithheldTokensToMintInstruction, createWithdrawWithheldTokensFromMintInstruction,
   getAssociatedTokenAddressSync, getEpochFee, getTransferFeeConfig, unpackAccount, unpackMint,
 } from "@solana/spl-token";
 import {
   Config, connection, fromBaseUnits, loadConfig, loadKeypair, requireMint, toBaseUnits, xnt, XNT_DECIMALS,
 } from "./config.js";
-import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, splitForLp } from "./holders.js";
+import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, splitTax } from "./holders.js";
 import {
   Inflight, State, acquireLock, addLp, addOwed, loadState, logEvent, record, reservedXnt, saveState, totalOwed,
 } from "./state.js";
@@ -148,9 +150,17 @@ async function reconcile(ctx: Ctx, s: State): Promise<"done" | "dropped" | "wait
   if (f.kind === "withdraw") {
     addLp(s, "tokens", BigInt(f.lpTokens ?? "0"));
     addLp(s, "sellTokens", BigInt(f.lpSellTokens ?? "0"));
+    s.burn.pending = (BigInt(s.burn.pending) + BigInt(f.burnTokens ?? "0")).toString();
     logEvent({ kind: "withdraw", signature: f.signature, tokens: f.amount ?? "0",
       lpTokens: (BigInt(f.lpTokens ?? "0") + BigInt(f.lpSellTokens ?? "0")).toString() });
     record(s, "withdraw", `set aside ${fromBaseUnits(BigInt(f.lpTokens ?? "0") + BigInt(f.lpSellTokens ?? "0"), d)} tokens for auto-LP`, f.signature);
+  } else if (f.kind === "burn") {
+    const burned = BigInt(f.burnTokens ?? "0");
+    const left = BigInt(s.burn.pending) - burned;
+    s.burn.pending = (left > 0n ? left : 0n).toString();
+    s.burn.burned = (BigInt(s.burn.burned) + burned).toString();
+    logEvent({ kind: "burn", signature: f.signature, tokens: burned.toString() });
+    record(s, "burn", `burned ${fromBaseUnits(burned, d)} tokens`, f.signature);
   } else if (f.kind === "sell") {
     const amountIn = BigInt(f.amountIn ?? "0");
     const lpPart = BigInt(f.lpSellTokens ?? "0");
@@ -182,13 +192,15 @@ async function harvest(ctx: Ctx, s: State) {
   const heldTotal = withheld.reduce((a, r) => a + r.withheld, 0n);
   console.log(`Holder accounts: ${rows.length}; ${withheld.length} with withheld fees totalling ${fromBaseUnits(heldTotal, ctx.decimals)}`);
   const lpBps = cfg.distribution.autoLpBps ?? 0;
+  const burnBps = cfg.distribution.burnBps ?? 0;
 
   if (!ctx.execute) {
     // Dry run: act on in-memory state as if the fees had been collected. Never saved.
     const mintState = unpackMint(mint, await conn.getAccountInfo(mint), TOKEN_2022_PROGRAM_ID);
     const total = heldTotal + (getTransferFeeConfig(mintState)?.withheldAmount ?? 0n);
-    const { keep, sell } = splitForLp(total, lpBps);
+    const { burn, keep, sell } = splitTax(total, lpBps, burnBps);
     addLp(s, "tokens", keep); addLp(s, "sellTokens", sell);
+    s.burn.pending = (BigInt(s.burn.pending) + burn).toString();
     ctx.projected.tokens += total;
     return;
   }
@@ -205,11 +217,13 @@ async function harvest(ctx: Ctx, s: State) {
   const inMint = getTransferFeeConfig(mintState)?.withheldAmount ?? 0n;
   if (inMint === 0n) return;
   const ata = getAssociatedTokenAddressSync(mint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID);
-  const { keep, sell } = splitForLp(inMint, lpBps);
+  const { burn, keep, sell } = splitTax(inMint, lpBps, burnBps);
   await sendJournaled(ctx, s, [
     createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, ata, distributor.publicKey, mint, TOKEN_2022_PROGRAM_ID),
     createWithdrawWithheldTokensFromMintInstruction(mint, ata, distributor.publicKey, [], TOKEN_2022_PROGRAM_ID),
-  ], 100_000, { kind: "withdraw", amount: inMint.toString(), lpTokens: keep.toString(), lpSellTokens: sell.toString() });
+  ], 100_000, {
+    kind: "withdraw", amount: inMint.toString(), lpTokens: keep.toString(), lpSellTokens: sell.toString(), burnTokens: burn.toString(),
+  });
   console.log(`  withdrew ${fromBaseUnits(inMint, ctx.decimals)} tokens to ${ata.toBase58()}`);
 }
 
@@ -234,6 +248,26 @@ async function balanceLp(ctx: Ctx, s: State) {
   if (ctx.execute) saveState(s);
 }
 
+/** Burn the collected tax set aside for burning, so the supply shrinks. */
+async function burnTax(ctx: Ctx, s: State) {
+  const pending = BigInt(s.burn.pending);
+  if (pending === 0n) return;
+  const held = await heldTokens(ctx);
+  const amount = pending < held ? pending : held;
+  if (amount === 0n) return;
+  console.log(`Burn ${fromBaseUnits(amount, ctx.decimals)} tokens of collected tax`);
+  if (!ctx.execute) {
+    s.burn.pending = (pending - amount).toString();
+    ctx.projected.tokens -= amount;
+    return;
+  }
+  const { mint, distributor } = ctx;
+  const ata = getAssociatedTokenAddressSync(mint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID);
+  await sendJournaled(ctx, s, [
+    createBurnCheckedInstruction(ata, mint, distributor.publicKey, amount, ctx.decimals, [], TOKEN_2022_PROGRAM_ID),
+  ], 60_000, { kind: "burn", burnTokens: amount.toString() });
+}
+
 /** Tokens in the distributor's account (plus, in a dry run, those it would have collected). */
 async function heldTokens(ctx: Ctx) {
   const ata = getAssociatedTokenAddressSync(ctx.mint, ctx.distributor.publicKey, false, TOKEN_2022_PROGRAM_ID);
@@ -244,9 +278,9 @@ async function heldTokens(ctx: Ctx) {
 async function sell(ctx: Ctx, s: State) {
   const { conn, mint, distributor, cfg } = ctx;
   if (!cfg.xdex.pool) { console.log("xdex.pool not set; skipping sale."); return; }
-  // Tokens kept for the auto-LP token side are not for sale.
+  // Tokens kept for the auto-LP token side or waiting to be burned are not for sale.
   const held = await heldTokens(ctx);
-  const kept = BigInt(s.lp.tokens);
+  const kept = BigInt(s.lp.tokens) + BigInt(s.burn.pending);
   const sellable = held > kept ? held - kept : 0n;
   let balance = sellable;
   const cap = cfg.distribution.maxSellTokensPerCycle;
@@ -410,6 +444,7 @@ async function cycle(ctx: Ctx) {
     if (ctx.execute) return;
   }
   await harvest(ctx, s);
+  await burnTax(ctx, s);
   await balanceLp(ctx, s);
   await sell(ctx, s);
   try {

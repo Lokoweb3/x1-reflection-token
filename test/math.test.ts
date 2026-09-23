@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { allocate, eligibleBalances, splitForLp, type TokenAccountRow } from "../src/holders.js";
-import { cpmmOut, depositAmounts, inverseTransferFee, lpKeepForBalance, maxInputForImpact, maxLpFor } from "../src/xdex.js";
+import { allocate, eligibleBalances, splitTax, type TokenAccountRow } from "../src/holders.js";
+import { XDEX_CREATE, cpmmOut, depositAmounts, inverseTransferFee, lpKeepForBalance, maxInputForImpact, maxLpFor, poolAddresses } from "../src/xdex.js";
+import { validateParams } from "../src/factory/launch.js";
 import { fromBaseUnits, toBaseUnits } from "../src/config.js";
 
 const row = (owner: string, amount: bigint, extra: Partial<TokenAccountRow> = {}): TokenAccountRow =>
@@ -47,11 +48,14 @@ test("decimal conversions are exact", () => {
   assert.throws(() => toBaseUnits("0.0000000001", 9));
 });
 
-test("splitForLp sets aside lpBps, half kept and half to sell", () => {
-  assert.deepEqual(splitForLp(1_000n, 4_000), { keep: 200n, sell: 200n });
-  assert.deepEqual(splitForLp(1_001n, 4_000), { keep: 200n, sell: 200n });
-  assert.deepEqual(splitForLp(999n, 4_000), { keep: 199n, sell: 200n });
-  assert.deepEqual(splitForLp(1_000n, 0), { keep: 0n, sell: 0n });
+test("splitTax sets aside burnBps to burn and lpBps for LP (half kept, half sold)", () => {
+  assert.deepEqual(splitTax(1_000n, 4_000), { burn: 0n, keep: 200n, sell: 200n });
+  assert.deepEqual(splitTax(1_001n, 4_000), { burn: 0n, keep: 200n, sell: 200n });
+  assert.deepEqual(splitTax(999n, 4_000), { burn: 0n, keep: 199n, sell: 200n });
+  assert.deepEqual(splitTax(1_000n, 0), { burn: 0n, keep: 0n, sell: 0n });
+  assert.deepEqual(splitTax(1_000n, 4_000, 2_000), { burn: 200n, keep: 200n, sell: 200n });
+  const s = splitTax(123_456_789n, 3_000, 2_500);
+  assert.ok(s.burn + s.keep + s.sell <= 123_456_789n);
 });
 
 test("inverseTransferFee delivers at least the net amount after Token-2022's fee", () => {
@@ -104,4 +108,28 @@ test("lpKeepForBalance leaves both deposit sides worth the same", () => {
   // More XNT than all tokens are worth: keep everything, sell nothing.
   assert.equal(lpKeepForBalance(1_000n * 10n ** 9n, 10n ** 9n, rt, rx, bps, tfr), 1_000n * 10n ** 9n);
   assert.equal(lpKeepForBalance(0n, 10n ** 9n, rt, rx, bps, tfr), 0n);
+});
+
+test("factory pool addresses match the real RFLT testnet pool", () => {
+  const a = poolAddresses(new PublicKey("7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf"),
+    new PublicKey(XDEX_CREATE.testnet.ammConfig), new PublicKey("Hi2E1kU3ZoMHQeve5WgWARnmJCky3h1jdTsdU9rw2eqA"));
+  assert.equal(a.pool.toBase58(), "F21d72QPdKZiCb2yeYjnRU2KzRCoQ7GdgE82UohfwSfU");
+  assert.equal(a.lpMint.toBase58(), "25VUPqXPs36WDxTvUYf6gXGtNb5DRUmHMgBmML9ASEx1");
+  assert.equal(a.vault1.toBase58(), "E5sevgo9jxVsfqe8qW2bt7faJTZFsZFFP98ivfkY15PX");
+});
+
+test("factory launch input is validated", () => {
+  const ok = {
+    creator: "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy", name: "My Token", symbol: "MYT", description: "", image: "https://x.io/a.png",
+    supply: "1000000000", taxBps: 500, autoLpBps: 4000, poolTokens: "900000000", poolXnt: "5", lockDays: null,
+  };
+  assert.equal(validateParams(ok).symbol, "MYT");
+  assert.equal(validateParams({ ...ok, lockDays: 7 }).lockDays, 7);
+  assert.equal(validateParams({ ...ok, burnBps: 2000 }).burnBps, 2000);
+  assert.equal(validateParams(ok).burnBps, 0);
+  for (const bad of [
+    { taxBps: 50 }, { taxBps: 1500 }, { autoLpBps: 6000 }, { symbol: "BAD SYMBOL" }, { name: "" }, { poolTokens: "2000000000" },
+    { poolXnt: "0.001" }, { image: "javascript:alert(1)" }, { image: "http://insecure.io/x.png" }, { supply: "12.5" }, { lockDays: 0 },
+    { creator: "not-a-key" }, { burnBps: 6000 }, { autoLpBps: 5000, burnBps: 4500 },
+  ]) assert.throws(() => validateParams({ ...ok, ...bad }), `should reject ${JSON.stringify(bad)}`);
 });
