@@ -1,0 +1,7 @@
+{
+  "name": "Reflect Test",
+  "symbol": "RFLT",
+  "description": "Reflection token on X1 (testnet). Every transfer pays a 5% tax: 50% is sold for XNT and paid to holders, 25% is added to liquidity (LP burned) and 25% is burned.",
+  "image": "https://raw.githubusercontent.com/Lokoweb3/x1-reflection-token/main/assets/rflt-logo.png",
+  "external_url": "https://github.com/Lokoweb3/x1-reflection-token"
+}
