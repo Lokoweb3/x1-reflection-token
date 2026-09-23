@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reflection Dashboard</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4;
+  --surface-1: #fcfcfb;
+  --border: #e4e3de;
+  --grid: #ecebe7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --good: #008300;
+  --warning: #9a6700;
+  --critical: #c62828;
+  --link: #1f63b8;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111110;
+    --surface-1: #1a1a19;
+    --border: #2e2e2c;
+    --grid: #262624;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --good: #4cb84c;
+    --warning: #e0a526;
+    --critical: #ef6b6b;
+    --link: #7fb2f0;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111110;
+  --surface-1: #1a1a19;
+  --border: #2e2e2c;
+  --grid: #262624;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #8f8e86;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --good: #4cb84c;
+  --warning: #e0a526;
+  --critical: #ef6b6b;
+  --link: #7fb2f0;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text-primary);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; font-weight: 600; }
+h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+.meta { color: var(--text-secondary); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+.badge { border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; font-size: 12px; color: var(--text-secondary); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--text-muted); }
+.dot.on { background: var(--good); }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.alerts:empty { display: none; }
+.alerts { display: grid; gap: 8px; margin-bottom: 16px; }
+.alert { overflow-wrap: anywhere; border: 1px solid var(--border); border-left: 4px solid var(--warning); border-radius: 8px; padding: 10px 12px; background: var(--surface-1); }
+.alert.critical { border-left-color: var(--critical); }
+.alert b { margin-right: 6px; }
+.top { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: 16px; margin-bottom: 16px; }
+.hero .label, .tile .label { color: var(--text-secondary); font-size: 13px; }
+.hero .value { font-size: 48px; font-weight: 600; line-height: 1.1; margin: 6px 0 4px; white-space: nowrap; }
+.hero .unit { font-size: 22px; font-weight: 500; color: var(--text-secondary); margin-left: 6px; }
+.hero .sub { color: var(--text-muted); font-size: 13px; }
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.tile .value { font-size: 20px; font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+.tile .sub { color: var(--text-muted); font-size: 12px; }
+.chart-card { margin-bottom: 16px; }
+.chart-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline; }
+.legend { display: flex; gap: 14px; font-size: 13px; color: var(--text-secondary); }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: 240px; }
+.chart text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .bar:hover, .chart .bar:focus { filter: brightness(1.15); outline: none; }
+.tooltip {
+  position: absolute; pointer-events: none; background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / .12); white-space: nowrap; display: none; z-index: 2;
+}
+.tooltip .row { display: flex; justify-content: space-between; gap: 14px; }
+.empty { color: var(--text-muted); padding: 36px 0; text-align: center; }
+.burn { margin-bottom: 16px; }
+.burn-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.burn-stats .label { color: var(--text-secondary); font-size: 13px; }
+.burn-stats .value { font-size: 20px; font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+.burn-stats .sub { color: var(--text-muted); font-size: 12px; }
+.meter { display: flex; gap: 2px; height: 10px; border-radius: 999px; background: var(--grid); overflow: hidden; }
+.meter > div { height: 100%; }
+.meter > div:first-child { border-radius: 999px 0 0 999px; }
+.meter-caption { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; color: var(--text-secondary); font-size: 12px; margin-top: 8px; }
+.meter-caption .legend { font-size: 12px; }
+.locks-title { font-size: 13px; font-weight: 600; margin: 18px 0 6px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; }
+.top > *, .grid2 > * { min-width: 0; }
+.table-wrap { overflow-x: auto; }
+.scroll { max-height: 560px; overflow-y: auto; }
+td.wrap { white-space: normal; min-width: 180px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--text-secondary); font-weight: 500; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.kind { font-size: 12px; color: var(--text-secondary); }
+.toggle { background: none; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 6px; padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+.btn { font: inherit; font-size: 13px; border-radius: 8px; padding: 6px 12px; cursor: pointer; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); }
+.btn:hover:not(:disabled) { border-color: var(--text-muted); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+.btn.danger { background: var(--critical); border-color: var(--critical); color: #fff; }
+.btn.small { padding: 3px 10px; font-size: 12px; }
+td .btn + .btn { margin-left: 6px; }
+.wallet { position: relative; margin-left: auto; }
+.wallet-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 6px; min-width: 200px; box-shadow: 0 6px 20px rgb(0 0 0 / .15); }
+.wallet-menu button { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 8px; border-radius: 6px; font: inherit; color: var(--text-primary); cursor: pointer; text-align: left; }
+.wallet-menu button:hover { background: var(--grid); }
+.wallet-menu img { width: 20px; height: 20px; border-radius: 4px; }
+.lock-panel { margin-top: 16px; padding: 14px; border: 1px dashed var(--border); border-radius: 10px; }
+.lock-panel .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.lock-panel select { font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-primary); }
+.lock-panel input { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-primary); width: 160px; }
+.lock-panel .note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
+.toast { position: fixed; right: 16px; bottom: 16px; z-index: 10; max-width: min(420px, calc(100vw - 32px)); background: var(--surface-1); border: 1px solid var(--border); border-left: 4px solid var(--series-1); border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 20px rgb(0 0 0 / .18); overflow-wrap: anywhere; font-size: 13px; }
+.toast.error { border-left-color: var(--critical); }
+.toast.success { border-left-color: var(--good); }
+.toast[hidden] { display: none; }
+@media (max-width: 860px) {
+  .top, .grid2 { grid-template-columns: 1fr; }
+  .tiles, .burn-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hero .value { font-size: 40px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Reflection dashboard</h1>
+    <div class="meta">
+      <span class="badge" id="network">…</span>
+      <span id="bot"><span class="dot"></span>…</span>
+      <span id="updated">Loading…</span>
+      <button class="toggle" id="tableToggle" type="button">Show chart data</button>
+    </div>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+
+  <div class="alerts" id="alerts"></div>
+
+  <section class="top">
+    <div class="card hero">
+      <div class="label">XNT paid to holders</div>
+      <div class="value" id="heroPaid">–</div>
+      <div class="sub" id="heroSub"></div>
+    </div>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section class="card chart-card">
+    <div class="chart-head">
+      <h2 id="chartTitle">Where the collected fees went (XNT)</h2>
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--series-1)"></span>Allocated to holders</span>
+        <span><span class="swatch" style="background:var(--series-2)"></span>Added to liquidity</span>
+      </div>
+    </div>
+    <div class="chart" id="chart"></div>
+    <div class="table-wrap" id="chartTable" hidden></div>
+  </section>
+
+  <section class="card burn">
+    <h2>Locked liquidity</h2>
+    <div id="burn"></div>
+    <div class="lock-panel" id="lockPanel" hidden>
+      <b>Lock your LP in an NFT</b>
+      <div class="note" id="lockNote"></div>
+      <div class="row">
+        <span id="lpBalance" class="kind">Connect a wallet to lock LP.</span>
+      </div>
+      <div class="row">
+        <input id="lockAmount" inputmode="decimal" placeholder="LP amount" aria-label="LP amount to lock" disabled>
+        <button class="btn" id="lockMax" type="button" disabled>Max</button>
+        <select id="lockDuration" aria-label="Lock duration">
+          <option value="7" selected>7 days</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">1 year</option>
+          <option value="forever">Forever</option>
+        </select>
+        <button class="btn danger" id="lockBtn" type="button" disabled>Lock for 7 days</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Holders</h2>
+      <div class="table-wrap scroll"><table id="holders"></table></div>
+    </div>
+    <div class="card">
+      <h2>Activity</h2>
+      <div class="table-wrap scroll"><table id="activity"></table></div>
+    </div>
+  </section>
+</main>
+<div class="tooltip" id="tooltip"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script>
+const REFRESH_MS = 30_000;
+let last = null;
+
+const big = (v) => { try { return BigInt(v ?? 0); } catch { return 0n; } };
+const units = (v, d) => Number(big(v)) / 10 ** d;
+function compact(n, maxFrac = 4) {
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, "") + "B";
+  if (a >= 1e6) return (n / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M";
+  if (a >= 1e4) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return n.toLocaleString(undefined, { maximumFractionDigits: a > 0 && a < 0.01 ? 6 : maxFrac });
+}
+const xnt = (lamports) => compact(units(lamports, 9)) + " XNT";
+const short = (a) => a.length > 12 ? a.slice(0, 4) + "…" + a.slice(-4) : a;
+function until(unix) {
+  const s = unix - Date.now() / 1000;
+  if (s <= 0) return "now";
+  if (s < 3600) return `in ${Math.ceil(s / 60)}m`;
+  if (s < 86400) return `in ${Math.round(s / 3600)}h`;
+  const hours = Math.round(s / 3600), d = Math.floor(hours / 24), h = hours % 24;
+  return `in ${d}d${h ? ` ${h}h` : ""}`;
+}
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopener", text, ...(cls ? { class: cls } : {}) });
+
+function render(d) {
+  last = d;
+  const c = d.config, s = d.state, live = d.live, dec = live?.decimals ?? 9;
+  const sym = c.symbol;
+  document.getElementById("title").textContent = `${c.name} (${sym})`;
+  document.title = `${sym} Reflections`;
+  document.getElementById("network").textContent = c.network;
+  const bot = document.getElementById("bot");
+  bot.replaceChildren(el("span", { class: "dot" + (s.running ? " on" : "") }), s.running ? "Distributor running" : "Distributor idle");
+  const lastCycle = [...d.events].reverse().find((e) => e.kind === "withdraw" || e.kind === "sell" || e.kind === "payout");
+  document.getElementById("updated").textContent =
+    `Updated ${new Date(d.now).toLocaleTimeString()}` + (lastCycle ? ` · last activity ${ago(lastCycle.at)}` : " · no activity yet");
+
+  // Totals from the activity log
+  const t = { paid: 0n, payouts: 0, lpXnt: 0n, lpTokens: 0n, collected: 0n, sold: 0n, sales: 0, raised: 0n, allocated: 0n };
+  const paidBy = new Map(), lastPaid = new Map();
+  for (const e of d.events) {
+    if (e.kind === "payout") {
+      t.paid += big(e.total); t.payouts++;
+      for (const [o, v] of e.payments ?? []) { paidBy.set(o, (paidBy.get(o) ?? 0n) + big(v)); lastPaid.set(o, e.at); }
+    } else if (e.kind === "auto-lp") { t.lpXnt += big(e.xnt); t.lpTokens += big(e.tokens); }
+    else if (e.kind === "withdraw") t.collected += big(e.tokens);
+    else if (e.kind === "sell") { t.sold += big(e.tokens); t.raised += big(e.xnt); t.sales++; }
+    else if (e.kind === "allocate") t.allocated += big(e.xnt);
+  }
+  document.getElementById("heroPaid").replaceChildren(compact(units(t.paid, 9)), el("span", { class: "unit", text: "XNT" }));
+  document.getElementById("heroSub").textContent =
+    `${t.payouts} payout transaction${t.payouts === 1 ? "" : "s"} to ${paidBy.size} wallet${paidBy.size === 1 ? "" : "s"}`;
+
+  // Alerts
+  const alerts = document.getElementById("alerts");
+  alerts.replaceChildren();
+  const alert = (title, body, critical) => alerts.append(el("div", { class: "alert" + (critical ? " critical" : "") }, el("b", { text: title }), body));
+  if (d.liveError) alert("Chain data unavailable:", d.liveError, true);
+  if (s.inflight) alert("Unreconciled transaction:", el("span", {}, `${s.inflight.kind} `, link(`${c.explorer}/tx/${s.inflight.signature}`, short(s.inflight.signature), "mono"), " — the next --execute run resolves it."));
+  if (s.pendingBatches) alert("Payouts in progress:", `${s.pendingBatches} batch(es) not yet confirmed.`);
+  if (live?.pool?.error) alert("Pool:", live.pool.error, true);
+  if (live && big(live.distributorXnt) - big(s.owedTotal) - big(s.lp.xnt) < 5_000_000n) {
+    alert("Low gas:", `the distributor has under 0.005 XNT free. Send a little XNT to ${c.distributor}.`, true);
+  }
+
+  // Tiles
+  const tiles = document.getElementById("tiles");
+  const tile = (label, value, sub) => el("div", { class: "card tile" }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }), sub ? el("div", { class: "sub", text: sub }) : null);
+  const price = live?.pool?.tokens ? units(live.pool.xnt, 9) / units(live.pool.tokens, dec) : null;
+  const lpPct = c.autoLpBps / 100;
+  tiles.replaceChildren(
+    tile("Owed, not yet paid", xnt(s.owedTotal), `Paid once a wallet reaches ${c.minPayoutXnt} XNT`),
+    tile("Added to liquidity", xnt(t.lpXnt), `${compact(units(t.lpTokens, dec))} ${sym} with it · LP burned`),
+    tile("Fees collected", `${compact(units(t.collected, dec))} ${sym}`, `${compact(units(t.sold, dec))} sold for ${xnt(t.raised)} in ${t.sales} sale${t.sales === 1 ? "" : "s"}`),
+    tile("Waiting to collect", live ? `${compact(units(live.withheld, dec))} ${sym}` : "–", live ? `Fee ${live.feeBps / 100}% · ${lpPct}% of fees to auto-LP` : ""),
+    tile("Eligible holders", live ? String(live.eligible.length) : "–", live ? `${live.tokenAccounts} token accounts` : ""),
+    tile("Pool", price != null ? `${compact(units(live.pool.xnt, 9))} XNT` : "–", price != null ? `1 ${sym} = ${price.toLocaleString(undefined, { maximumSignificantDigits: 3 })} XNT` : (c.pool ? "" : "No pool configured")),
+  );
+
+  renderBurn(d, dec, sym);
+  renderLockPanel();
+  renderChart(d.events);
+  renderHolders(d, paidBy, lastPaid, dec, sym);
+  renderActivity(d, dec, sym);
+}
+
+function renderBurn(d, dec, sym) {
+  const host = document.getElementById("burn");
+  const c = d.config, pool = d.live?.pool;
+  const burns = d.events.filter((e) => e.kind === "auto-lp");
+  const lpDec = pool?.lpDecimals ?? 9;
+  const stat = (label, value, sub) => el("div", {}, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }), sub ? el("div", { class: "sub", text: sub }) : null);
+  if (!pool?.lpSupply) {
+    host.replaceChildren(el("div", { class: "empty", text: pool?.error ? "Pool data unavailable." : "No pool configured." }));
+    return;
+  }
+  const supply = big(pool.lpSupply);
+  const pct = (lp) => supply > 0n ? Number(lp * 1_000_000n / supply) / 10_000 : 0;
+  const fmtPct = (p) => p > 0 && p < 0.01 ? "<0.01%" : p.toFixed(2) + "%";
+  const worth = (lp) => supply > 0n ? `${xnt(big(pool.xnt) * lp / supply)} + ${compact(units(big(pool.tokens) * lp / supply, dec))} ${sym}` : "–";
+  // Burned = the pool's LP count minus LP that still exists (chain data, not the bot's log).
+  const burned = big(pool.lpLocked);
+  const locks = pool.nftLocks?.locks ?? [];
+  const now = Date.now() / 1000;
+  const foreverLp = locks.filter((l) => l.unlockAt === null).reduce((a, l) => a + big(l.lp), 0n);
+  const timed = locks.filter((l) => l.unlockAt !== null && l.unlockAt > now);
+  const timedLp = timed.reduce((a, l) => a + big(l.lp), 0n);
+  const nextUnlock = timed.map((l) => l.unlockAt).sort((a, b) => a - b)[0];
+  const permanent = burned + foreverLp;
+  const total = permanent + timedLp;
+  const lastBurn = burns.at(-1);
+  host.replaceChildren(
+    el("div", { class: "burn-stats" },
+      stat("Locked forever", fmtPct(pct(permanent)), `can never be withdrawn · worth ${worth(permanent).split(" + ")[0]}`),
+      stat("Time-locked", fmtPct(pct(timedLp)), timed.length ? `${timed.length} lock${timed.length === 1 ? "" : "s"} · next unlocks ${until(nextUnlock)}` : "no timed locks"),
+      stat("Burned by auto-LP", `${compact(units(burned, lpDec))} LP`, `${fmtPct(pct(burned))} · ${burns.length} burn${burns.length === 1 ? "" : "s"}` + (lastBurn ? `, last ${ago(lastBurn.at)}` : "")),
+      stat("Locked in NFTs", `${compact(units(foreverLp + timedLp, lpDec))} LP`, pool.nftLocks ? `${fmtPct(pct(foreverLp))} forever + ${fmtPct(pct(timedLp))} timed` : "Locker not configured")),
+    el("div", { class: "meter", role: "img", "aria-label": `Pool liquidity: ${fmtPct(pct(burned))} burned, ${fmtPct(pct(foreverLp))} NFT-locked forever, ${fmtPct(pct(timedLp))} time-locked` },
+      burned > 0n ? el("div", { style: `width:max(2px, ${Math.min(100, pct(burned))}%); background:var(--series-2)`, title: `Burned: ${fmtPct(pct(burned))}` }) : null,
+      foreverLp > 0n ? el("div", { style: `width:max(2px, ${Math.min(100, pct(foreverLp))}%); background:var(--series-3)`, title: `NFT-locked forever: ${fmtPct(pct(foreverLp))}` }) : null,
+      timedLp > 0n ? el("div", { style: `width:max(2px, ${Math.min(100, pct(timedLp))}%); background:var(--series-4)`, title: `Time-locked: ${fmtPct(pct(timedLp))}` }) : null),
+    el("div", { class: "meter-caption" },
+      el("span", { class: "legend" },
+        el("span", {}, el("span", { class: "swatch", style: "background:var(--series-2)" }), `Burned ${fmtPct(pct(burned))}`),
+        el("span", {}, el("span", { class: "swatch", style: "background:var(--series-3)" }), `NFT forever ${fmtPct(pct(foreverLp))}`),
+        el("span", {}, el("span", { class: "swatch", style: "background:var(--series-4)" }), `Time-locked ${fmtPct(pct(timedLp))}`),
+        el("span", {}, el("span", { class: "swatch", style: "background:var(--grid)" }), `Withdrawable ${fmtPct(Math.max(0, 100 - pct(total)))}`)),
+      link(`${c.explorer}/address/${pool.lpMint}`, "LP mint ↗")),
+  );
+  if (!pool.nftLocks) return;
+  host.append(el("div", { class: "locks-title", text: "NFT locks: whoever holds the NFT collects that liquidity's trading fees" }));
+  if (!locks.length) {
+    host.append(el("div", { class: "kind", text: "No NFT locks yet. Lock LP with: npm run lp-lock -- lock <amount|all>" }));
+    return;
+  }
+  const t = el("table", {}, el("tr", {}, el("th", { text: "NFT" }), el("th", { text: "Holder" }), el("th", { class: "num", text: "Locked LP" }),
+    el("th", { class: "num", text: "Share" }), el("th", { class: "num", text: "Fees ready" }), el("th", { class: "num", text: "Fees collected" }), el("th", { text: "Locked" }), el("th", { text: "Unlocks" }), el("th", {})));
+  for (const l of locks) {
+    const fee = big(l.feeXnt) + (big(pool.tokens) > 0n ? big(l.feeTokens) * big(pool.xnt) / big(pool.tokens) : 0n);
+    t.append(el("tr", {},
+      el("td", {}, link(`${c.explorer}/address/${l.nftMint}`, short(l.nftMint), "mono")),
+      el("td", {}, l.holder ? link(`${c.explorer}/address/${l.holder}`, short(l.holder), "mono") : el("span", { class: "kind", text: "burned" })),
+      el("td", { class: "num", text: compact(units(l.lp, lpDec)) }),
+      el("td", { class: "num", text: fmtPct(pct(big(l.lp))) }),
+      el("td", { class: "num", text: `≈ ${xnt(fee)}`, title: `${xnt(l.feeXnt)} + ${compact(units(l.feeTokens, dec))} ${sym}` }),
+      el("td", { class: "num", text: `${compact(units(l.feeLpCollected, lpDec))} LP` }),
+      el("td", { class: "kind", text: ago(new Date(l.lockedAt * 1000).toISOString()), title: new Date(l.lockedAt * 1000).toLocaleString() }),
+      el("td", { class: "kind", text: l.unlockAt === null ? "never" : l.unlockAt <= now ? "unlocked" : until(l.unlockAt), title: l.unlockAt === null ? "Locked forever" : new Date(l.unlockAt * 1000).toLocaleString() }),
+      el("td", {}, collectButton(l, fee), unlockButton(l))));
+  }
+  host.append(el("div", { class: "table-wrap" }, t));
+}
+
+function buckets(events) {
+  const rel = events.filter((e) => e.kind === "allocate" || e.kind === "auto-lp");
+  if (!rel.length) return [];
+  const span = new Date(rel.at(-1).at) - new Date(rel[0].at);
+  const hourly = span < 3 * 86400_000;
+  const keyOf = (iso) => { const t = new Date(iso); if (!hourly) t.setHours(0); t.setMinutes(0, 0, 0); return t.getTime(); };
+  const map = new Map();
+  for (const e of rel) {
+    const k = keyOf(e.at);
+    const b = map.get(k) ?? { t: k, holders: 0, lp: 0 };
+    if (e.kind === "allocate") b.holders += units(e.xnt, 9); else b.lp += units(e.xnt, 9);
+    map.set(k, b);
+  }
+  return { hourly, rows: [...map.values()].sort((a, b) => a.t - b.t).slice(-48) };
+}
+
+function renderChart(events) {
+  const host = document.getElementById("chart");
+  const table = document.getElementById("chartTable");
+  const b = buckets(events);
+  if (!b.rows?.length) {
+    host.replaceChildren(el("div", { class: "empty", text: "Nothing allocated yet. Bars appear after the first `npm run distribute -- --execute` cycle." }));
+    table.replaceChildren();
+    return;
+  }
+  const { hourly, rows } = b;
+  const fmtT = (t) => hourly
+    ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" })
+    : new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  document.getElementById("chartTitle").textContent = `Where the collected fees went (XNT per ${hourly ? "hour" : "day"})`;
+
+  const W = Math.max(320, host.clientWidth || 800), H = 240, m = { l: 48, r: 8, t: 8, b: 26 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const max = Math.max(...rows.map((r) => r.holders + r.lp)) || 1;
+  const step = niceStep(max / 4);
+  const top = Math.ceil(max / step) * step;
+  const y = (v) => m.t + ih - (v / top) * ih;
+  const slot = iw / rows.length, bw = Math.max(4, Math.min(40, slot * 0.6));
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "XNT allocated to holders and added to liquidity over time");
+  const add = (tag, attrs, text) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); if (text != null) n.textContent = text; svg.append(n); return n; };
+  for (let v = 0; v <= top + 1e-12; v += step) {
+    add("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), stroke: v === 0 ? "var(--border)" : "var(--grid)", "stroke-width": 1 });
+    add("text", { x: m.l - 6, y: y(v) + 4, "text-anchor": "end" }, compact(v, 3));
+  }
+  const labelEvery = Math.ceil(rows.length / Math.max(1, Math.floor(iw / 90)));
+  const tip = document.getElementById("tooltip");
+  rows.forEach((r, i) => {
+    const cx = m.l + slot * i + slot / 2, x = cx - bw / 2;
+    const hH = y(0) - y(r.holders), lH = y(0) - y(r.lp);
+    const gap = r.holders > 0 && r.lp > 0 ? 2 : 0;
+    const seg = (yTop, h, color, roundTop) => {
+      if (h <= 0) return;
+      const rad = roundTop ? Math.min(4, h) : 0;
+      add("path", { d: roundedTop(x, yTop, bw, h, rad), fill: color, class: "bar" });
+    };
+    seg(y(r.holders), hH, "var(--series-1)", r.lp <= 0);
+    seg(y(r.holders) - lH - gap, lH, "var(--series-2)", true);
+    const hit = add("rect", { x: cx - slot / 2, y: m.t, width: slot, height: ih, fill: "transparent", tabindex: 0, class: "bar" });
+    const show = (ev) => {
+      tip.replaceChildren(el("div", { text: fmtT(r.t) }),
+        el("div", { class: "row" }, el("span", {}, el("span", { class: "swatch", style: "background:var(--series-1)" }), "Holders"), el("b", { text: compact(r.holders, 6) })),
+        el("div", { class: "row" }, el("span", {}, el("span", { class: "swatch", style: "background:var(--series-2)" }), "Liquidity"), el("b", { text: compact(r.lp, 6) })));
+      tip.style.display = "block";
+      const box = host.getBoundingClientRect();
+      const px = ev?.clientX ?? box.left + (cx / W) * box.width;
+      tip.style.left = Math.min(window.innerWidth - tip.offsetWidth - 8, px + 12 + window.scrollX) + "px";
+      tip.style.top = (box.top + window.scrollY + 8) + "px";
+    };
+    hit.addEventListener("pointermove", show);
+    hit.addEventListener("focus", () => show());
+    hit.addEventListener("pointerleave", () => tip.style.display = "none");
+    hit.addEventListener("blur", () => tip.style.display = "none");
+    if (i % labelEvery === 0) add("text", { x: cx, y: H - 8, "text-anchor": "middle" }, fmtT(r.t));
+  });
+  host.replaceChildren(svg);
+
+  const tbl = el("table", {}, el("tr", {}, el("th", { text: hourly ? "Hour" : "Day" }), el("th", { class: "num", text: "Holders (XNT)" }), el("th", { class: "num", text: "Liquidity (XNT)" })));
+  for (const r of rows) tbl.append(el("tr", {}, el("td", { text: fmtT(r.t) }), el("td", { class: "num", text: compact(r.holders, 6) }), el("td", { class: "num", text: compact(r.lp, 6) })));
+  table.replaceChildren(tbl);
+}
+function niceStep(raw) {
+  if (raw <= 0) return 1;
+  const p = 10 ** Math.floor(Math.log10(raw)), f = raw / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+}
+function roundedTop(x, yTop, w, h, r) {
+  return `M${x},${yTop + h}V${yTop + r}Q${x},${yTop} ${x + r},${yTop}H${x + w - r}Q${x + w},${yTop} ${x + w},${yTop + r}V${yTop + h}Z`;
+}
+
+function renderHolders(d, paidBy, lastPaid, dec, sym) {
+  const c = d.config, live = d.live;
+  const eligible = new Map((live?.eligible ?? []).map(([o, b]) => [o, big(b)]));
+  const total = [...eligible.values()].reduce((a, b) => a + b, 0n);
+  const owners = new Set([...eligible.keys(), ...paidBy.keys(), ...Object.keys(d.state.owed)]);
+  const rows = [...owners].map((o) => ({
+    o, bal: big(live?.balances?.[o]), eligible: eligible.has(o),
+    share: total > 0n && eligible.has(o) ? Number(eligible.get(o) * 1_000_000n / total) / 10_000 : 0,
+    owed: big(d.state.owed[o]), paid: paidBy.get(o) ?? 0n, lastPaid: lastPaid.get(o),
+  })).sort((a, b) => (b.paid + b.owed > a.paid + a.owed ? 1 : b.paid + b.owed < a.paid + a.owed ? -1 : b.share - a.share));
+  const t = document.getElementById("holders");
+  t.replaceChildren(el("tr", {}, el("th", { text: "Wallet" }), el("th", { class: "num", text: sym }), el("th", { class: "num", text: "Share" }),
+    el("th", { class: "num", text: "Owed" }), el("th", { class: "num", text: "Paid" }), el("th", { text: "Last paid" })));
+  if (!rows.length) { t.append(el("tr", {}, el("td", { colspan: 6, class: "empty", text: "No eligible holders yet." }))); return; }
+  for (const r of rows.slice(0, 200)) {
+    t.append(el("tr", {},
+      el("td", {}, link(`${c.explorer}/address/${r.o}`, short(r.o), "mono")),
+      el("td", { class: "num", text: compact(units(r.bal, dec)) }),
+      el("td", { class: "num", text: r.eligible ? r.share.toFixed(2) + "%" : "not eligible" }),
+      el("td", { class: "num", text: r.owed ? compact(units(r.owed, 9), 6) : "–" }),
+      el("td", { class: "num", text: r.paid ? compact(units(r.paid, 9), 6) : "–" }),
+      el("td", { class: "kind", text: r.lastPaid ? ago(r.lastPaid) : "–" })));
+  }
+}
+
+function renderActivity(d, dec, sym) {
+  const c = d.config;
+  const t = document.getElementById("activity");
+  t.replaceChildren(el("tr", {}, el("th", { text: "When" }), el("th", { text: "What" }), el("th", { text: "Tx" })));
+  const describe = (e) => {
+    const tok = (v) => `${compact(units(v, dec))} ${sym}`;
+    switch (e.kind) {
+      case "withdraw": return `Collected ${tok(e.tokens)} in fees (${tok(e.lpTokens)} set aside for liquidity)`;
+      case "sell": return `Sold ${tok(e.tokens)} for ${xnt(e.xnt)}` + (big(e.lpXnt) ? ` (${xnt(e.lpXnt)} for liquidity)` : "");
+      case "auto-lp": return `Added ${tok(e.tokens)} + ${xnt(e.xnt)} to the pool, LP burned`;
+      case "allocate": return `Allocated ${xnt(e.xnt)} across ${e.holders} holder${e.holders === 1 ? "" : "s"}`;
+      case "payout": return `Paid ${xnt(e.total)} to ${e.payments?.length ?? 0} wallet${e.payments?.length === 1 ? "" : "s"}`;
+      default: return e.kind;
+    }
+  };
+  const recent = [...d.events].reverse().slice(0, 100);
+  if (!recent.length) { t.append(el("tr", {}, el("td", { colspan: 3, class: "empty", text: "No activity yet." }))); return; }
+  for (const e of recent) {
+    t.append(el("tr", {},
+      el("td", { class: "kind", text: ago(e.at), title: new Date(e.at).toLocaleString() }),
+      el("td", { class: "wrap", text: describe(e) }),
+      el("td", {}, e.signature ? link(`${c.explorer}/tx/${e.signature}`, short(e.signature), "mono") : "–")));
+  }
+}
+
+// ---------- Wallet: lock and collect ----------
+const DUST_LAMPORTS = 10_000n;
+const wallet = { standard: [], active: null, account: null, legacy: null, address: null, info: null };
+
+function registerWallets(...ws) {
+  for (const w of ws) {
+    if (w?.features?.["standard:connect"] && w.features["solana:signTransaction"] && !wallet.standard.includes(w)) wallet.standard.push(w);
+  }
+  return () => {};
+}
+window.addEventListener("wallet-standard:register-wallet", (e) => { try { e.detail({ register: registerWallets }); } catch {} });
+try { window.dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: { register: registerWallets } })); } catch {}
+
+function legacyProviders() {
+  const seen = new Set();
+  return [["Backpack", window.backpack], ["Phantom", window.phantom?.solana], ["Solflare", window.solflare], ["Browser wallet", window.solana]]
+    .filter(([, p]) => p && typeof p.connect === "function" && typeof p.signTransaction === "function" && !seen.has(p) && seen.add(p))
+    .filter(([name]) => !wallet.standard.some((w) => w.name === name));
+}
+
+let toastTimer;
+function toast(kind, ...parts) {
+  const t = document.getElementById("toast");
+  clearTimeout(toastTimer);
+  t.className = "toast" + (kind === "info" ? "" : " " + kind);
+  t.replaceChildren(...parts);
+  t.hidden = false;
+  if (kind === "success") toastTimer = setTimeout(() => { t.hidden = true; }, 15_000);
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const b64ToBytes = (b) => Uint8Array.from(atob(b), (ch) => ch.charCodeAt(0));
+function bytesToB64(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function loadWeb3() {
+  if (window.solanaWeb3) return Promise.resolve();
+  return new Promise((ok, fail) => { const sc = document.createElement("script"); sc.src = "/vendor/web3.js"; sc.onload = ok; sc.onerror = () => fail(new Error("Could not load web3.js")); document.head.append(sc); });
+}
+
+async function signBytes(bytes) {
+  if (wallet.active) {
+    const input = { account: wallet.account, transaction: bytes };
+    if (wallet.account.chains?.length) input.chain = wallet.account.chains[0];
+    const [out] = await wallet.active.features["solana:signTransaction"].signTransaction(input);
+    return out.signedTransaction;
+  }
+  await loadWeb3();
+  const signed = await wallet.legacy.signTransaction(window.solanaWeb3.Transaction.from(bytes));
+  return signed.serialize({ requireAllSignatures: true });
+}
+
+async function connectWith(choice) {
+  document.getElementById("walletMenu")?.remove();
+  try {
+    if (choice.standard) {
+      const r = await choice.standard.features["standard:connect"].connect();
+      const account = r?.accounts?.[0] ?? choice.standard.accounts?.[0];
+      if (!account) throw new Error("The wallet didn't share an account.");
+      Object.assign(wallet, { active: choice.standard, account, legacy: null, address: account.address });
+    } else {
+      const r = await choice.legacy.connect();
+      const pk = r?.publicKey ?? choice.legacy.publicKey;
+      Object.assign(wallet, { active: null, account: null, legacy: choice.legacy, address: pk.toString() });
+    }
+    await refreshWallet();
+    if (last) render(last);
+  } catch (e) {
+    toast("error", "Wallet connection failed: " + (e.message || e));
+  }
+}
+
+async function disconnect() {
+  try { await wallet.active?.features["standard:disconnect"]?.disconnect(); await wallet.legacy?.disconnect?.(); } catch {}
+  Object.assign(wallet, { active: null, account: null, legacy: null, address: null, info: null });
+  renderWallet();
+  if (last) render(last);
+}
+
+function renderWallet() {
+  const area = document.getElementById("walletArea");
+  if (wallet.address) {
+    area.replaceChildren(el("span", { class: "kind", text: short(wallet.address) + " " }), Object.assign(el("button", { class: "btn small", type: "button", text: "Disconnect" }), { onclick: disconnect }));
+  } else {
+    area.replaceChildren(Object.assign(el("button", { class: "btn primary", type: "button", text: "Connect wallet" }), { onclick: openWalletMenu }));
+  }
+  renderLockPanel();
+}
+
+function openWalletMenu(ev) {
+  ev.stopPropagation();
+  document.getElementById("walletMenu")?.remove();
+  const choices = [...wallet.standard.map((w) => ({ name: w.name, icon: w.icon, standard: w })), ...legacyProviders().map(([name, p]) => ({ name, legacy: p }))];
+  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  if (choices.length === 1) { connectWith(choices[0]); return; }
+  const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
+  for (const c of choices) {
+    const b = el("button", { type: "button" });
+    if (typeof c.icon === "string" && c.icon.startsWith("data:image/")) b.append(el("img", { src: c.icon, alt: "" }));
+    b.append(c.name);
+    b.onclick = () => connectWith(c);
+    menu.append(b);
+  }
+  document.getElementById("walletArea").append(menu);
+  setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }));
+}
+
+async function refreshWallet() {
+  if (!wallet.address) { renderWallet(); return; }
+  try { wallet.info = await post("/api/wallet", { owner: wallet.address }); } catch (e) { wallet.info = null; toast("error", "Couldn't read your wallet: " + e.message); }
+  renderWallet();
+}
+
+function parseUnits(text, decimals) {
+  const m = /^\s*(\d*)(?:\.(\d*))?\s*$/.exec(text);
+  if (!m || (!m[1] && !m[2])) return null;
+  const frac = (m[2] ?? "").slice(0, decimals).padEnd(decimals, "0");
+  return BigInt(m[1] || "0") * 10n ** BigInt(decimals) + BigInt(frac || "0");
+}
+
+function lockDays() {
+  const v = document.getElementById("lockDuration").value;
+  return v === "forever" ? null : Number(v);
+}
+function durationText(days) {
+  return days === null ? "forever" : days === 365 ? "1 year" : `${days} days`;
+}
+function renderLockCopy() {
+  const days = lockDays();
+  document.getElementById("lockBtn").textContent = days === null ? "Lock forever" : `Lock for ${durationText(days)}`;
+  document.getElementById("lockNote").textContent = days === null
+    ? "Permanent: the liquidity can never be withdrawn, by you or anyone. You get a 1-of-1 NFT that collects this liquidity's trading fees, and you can sell or transfer it."
+    : `Locked for ${durationText(days)}: nobody can withdraw it before then. You get a 1-of-1 NFT that collects this liquidity's trading fees meanwhile; after ${durationText(days)}, whoever holds the NFT can unlock the LP (the NFT is burned).`;
+}
+document.getElementById("lockDuration").addEventListener("change", renderLockCopy);
+
+function renderLockPanel() {
+  renderLockCopy();
+  const panel = document.getElementById("lockPanel");
+  const lockerOn = !!last?.live?.pool?.nftLocks;
+  panel.hidden = !lockerOn;
+  if (!lockerOn) return;
+  const bal = document.getElementById("lpBalance"), input = document.getElementById("lockAmount");
+  const max = document.getElementById("lockMax"), btn = document.getElementById("lockBtn");
+  const info = wallet.info;
+  const enabled = !!(wallet.address && info && big(info.lp) > 0n);
+  input.disabled = max.disabled = btn.disabled = !enabled;
+  if (!wallet.address) bal.textContent = "Connect a wallet to lock LP.";
+  else if (!info) bal.textContent = "Reading your wallet…";
+  else if (big(info.lp) === 0n) bal.textContent = "This wallet holds no withdrawable LP for this pool.";
+  else bal.textContent = `Your wallet holds ${compact(units(info.lp, info.lpDecimals))} LP (${(Number(big(info.lp) * 1_000_000n / big(info.lpSupply)) / 10_000).toFixed(2)}% of the pool), still withdrawable.`;
+}
+
+async function runTx(label, build) {
+  try {
+    toast("info", `${label}: preparing and simulating…`);
+    const built = await build();
+    toast("info", `${label}: approve it in your wallet…`);
+    const signed = await signBytes(b64ToBytes(built.tx));
+    toast("info", `${label}: sending…`);
+    const { signature } = await post("/api/send", { tx: bytesToB64(signed) });
+    toast("success", `${label} confirmed. `, link(`${last.config.explorer}/tx/${signature}`, "View transaction ↗"));
+    await refresh();
+    await refreshWallet();
+    return true;
+  } catch (e) {
+    toast("error", `${label} failed: ${e.message || e}`);
+    return false;
+  }
+}
+
+document.getElementById("lockMax").addEventListener("click", () => {
+  const info = wallet.info;
+  if (info) document.getElementById("lockAmount").value = String(units(info.lp, info.lpDecimals));
+});
+document.getElementById("lockBtn").addEventListener("click", () => {
+  const info = wallet.info;
+  const input = document.getElementById("lockAmount").value;
+  const all = info && String(units(info.lp, info.lpDecimals)) === input.trim();
+  const amount = all ? big(info.lp) : parseUnits(input, info.lpDecimals);
+  if (!amount || amount <= 0n || amount > big(info.lp)) { toast("error", "Enter an LP amount up to your balance."); return; }
+  const pct = (Number(amount * 1_000_000n / big(info.lpSupply)) / 10_000).toFixed(2);
+  const days = lockDays();
+  const what = `Lock ${compact(units(amount, info.lpDecimals))} LP (${pct}% of the pool)`;
+  const ok = confirm(days === null
+    ? `${what} FOREVER?\n\nThis can never be undone. The liquidity can never be withdrawn by you or anyone. You'll receive an NFT that collects this liquidity's trading fees.`
+    : `${what} for ${durationText(days)}?\n\nNobody can withdraw it before ${new Date(Date.now() + days * 86_400_000).toLocaleString()}. You'll receive an NFT that collects its trading fees; after that date, whoever holds the NFT can unlock the LP.`);
+  if (!ok) return;
+  runTx("Lock", () => post("/api/tx/lock", { owner: wallet.address, amount: all ? "all" : amount.toString(), days }))
+    .then((ok) => { if (ok) document.getElementById("lockAmount").value = ""; });
+});
+
+function collectButton(l, feeLamports) {
+  if (!wallet.address || l.holder !== wallet.address) return null;
+  const b = el("button", { class: "btn small primary", type: "button", text: "Collect" });
+  if (feeLamports < DUST_LAMPORTS) { b.disabled = true; b.title = "Nothing worth collecting yet; fees grow as people trade."; }
+  b.onclick = () => runTx("Collect fees", () => post("/api/tx/collect", { holder: wallet.address, nftMint: l.nftMint }));
+  return b;
+}
+
+function unlockButton(l) {
+  if (!wallet.address || l.holder !== wallet.address || l.unlockAt === null || l.unlockAt > Date.now() / 1000) return null;
+  const b = el("button", { class: "btn small", type: "button", text: "Unlock" });
+  b.title = "Return this lock's LP to your wallet and burn the NFT";
+  b.onclick = () => {
+    if (confirm(`Unlock ${compact(units(l.lp, 9))} LP back to your wallet? The lock NFT will be burned.`)) {
+      runTx("Unlock", () => post("/api/tx/unlock", { holder: wallet.address, nftMint: l.nftMint }));
+    }
+  };
+  return b;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/data", { cache: "no-store" });
+    if (!r.ok) throw new Error(await r.text());
+    render(await r.json());
+  } catch (e) {
+    document.getElementById("updated").textContent = "Couldn't reach the dashboard server: " + (e.message || e);
+  }
+}
+document.getElementById("tableToggle").addEventListener("click", (ev) => {
+  const t = document.getElementById("chartTable");
+  t.hidden = !t.hidden;
+  ev.target.textContent = t.hidden ? "Show chart data" : "Hide chart data";
+});
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => last && renderChart(last.events), 150); });
+renderWallet();
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

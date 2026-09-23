@@ -1,0 +1,47 @@
+{
+  "network": "testnet",
+  "rpcUrl": "https://rpc.testnet.x1.xyz",
+
+  "keypairs": {
+    "creator": "~/.config/solana/id.json",
+    "distributor": "./distributor.keypair.json"
+  },
+
+  "token": {
+    "name": "Reflect Test",
+    "symbol": "RFLT",
+    "uri": "",
+    "decimals": 9,
+    "supply": "1000000000",
+    "feeBps": 500,
+    "launchGrace": true
+  },
+
+  "mint": "",
+
+  "locker": {
+    "programId": "",
+    "nftUri": ""
+  },
+
+  "xdex": {
+    "programId": "7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf",
+    "pool": ""
+  },
+
+  "distribution": {
+    "minHoldingTokens": "1000",
+    "excludeOwners": [],
+    "excludeOffCurveOwners": true,
+    "operatingReserveXnt": "0.05",
+    "minGasXnt": "0.005",
+    "minPayoutXnt": "0.001",
+    "minCycleXnt": "0.01",
+    "maxSellTokensPerCycle": "",
+    "maxPriceImpactBps": 300,
+    "slippageBps": 100,
+    "autoLpBps": 4000,
+    "transfersPerTx": 18,
+    "priorityMicroLamports": 10000
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+config.json
+state/
+*.keypair.json
+*-keypair.json
+
+# Rust build output (contains absolute local paths) and local validator ledgers
+lp-locker/target/
+test-ledger/

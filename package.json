@@ -1,0 +1,31 @@
+{
+  "name": "x1-reflection-token",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Token-2022 transfer-fee reflection token for X1 that pays holders in XNT via XDEX",
+  "scripts": {
+    "create-token": "tsx src/create-token.ts",
+    "admin": "tsx src/admin.ts",
+    "distribute": "tsx src/distribute.ts",
+    "dashboard": "tsx src/dashboard.ts",
+    "lp-lock": "tsx src/lp-lock.ts",
+    "distributor:start": "scripts/distributor.sh start",
+    "distributor:stop": "scripts/distributor.sh stop",
+    "distributor:status": "scripts/distributor.sh status",
+    "distributor:logs": "scripts/distributor.sh logs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.15",
+    "@solana/spl-token-metadata": "^0.1.6",
+    "@solana/web3.js": "^1.99.0",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
