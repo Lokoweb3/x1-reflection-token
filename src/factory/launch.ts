@@ -25,6 +25,7 @@ import {
 import { createInitializeInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
 import { Config, FACTORY_DIR, ROOT, fromBaseUnits, toBaseUnits } from "../config.js";
 import { buildCreatePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
+import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 
@@ -57,6 +58,22 @@ export function launchFee(cfg: Config) {
   return { mint: FEE_USDC[cfg.network], symbol: "USDC", amount: f.feeUsdc };
 }
 
+/**
+ * A token's metadata JSON, in the shape X1's own tokens use: name, symbol, description,
+ * image, showName, createdOn (this site) and any social links the creator gave.
+ */
+export function tokenMetadataJson(p: Pick<LaunchParams, "name" | "symbol" | "description" | "image" | "website" | "twitter" | "telegram">, publicUrl: string) {
+  const out: Record<string, string | boolean> = { name: p.name, symbol: p.symbol };
+  if (p.description) out.description = p.description;
+  if (p.image) out.image = p.image;
+  out.showName = true;
+  out.createdOn = publicUrl.replace(/\/$/, "");
+  if (p.twitter) out.twitter = p.twitter;
+  if (p.telegram) out.telegram = p.telegram;
+  if (p.website) out.website = p.website;
+  return out;
+}
+
 /** Smallest balance that earns payouts: one millionth of the supply (RFLT: 1,000 of 1B). */
 export const minHoldingFor = (supply: string) => fromBaseUnits(toBaseUnits(supply, DECIMALS) / 1_000_000n, DECIMALS);
 
@@ -66,6 +83,10 @@ export interface LaunchParams {
   symbol: string;
   description: string;
   image: string;
+  /** Optional links shown by wallets and screeners (X1 metadata fields). */
+  website?: string;
+  twitter?: string;
+  telegram?: string;
   supply: string;        // whole tokens
   taxBps: number;        // 100..1000 (1–10%)
   autoLpBps: number;     // 0..5000 share of the tax that goes to auto-LP
@@ -104,6 +125,21 @@ export function validateParams(raw: Record<string, unknown>): LaunchParams {
   const description = String(raw.description ?? "").trim().slice(0, 500);
   const image = String(raw.image ?? "").trim();
   if (image && !/^(https:\/\/|ipfs:\/\/)[^\s"'<>]{3,300}$/.test(image)) throw new Error("Image must be an https:// or ipfs:// URL");
+  // Token logos must be PNG, JPG, WebP or GIF: many wallets won't show SVG (it can carry scripts).
+  if (image && /\.svgz?(?:[?#].*)?$/i.test(image)) throw new Error("The logo can't be an SVG; use a PNG, JPG, WebP or GIF.");
+  // Optional social links, same fields X1's own token metadata uses.
+  const link = (k: string, host: RegExp | null, label: string) => {
+    const v = String(raw[k] ?? "").trim();
+    if (!v) return undefined;
+    let u: URL;
+    try { u = new URL(v); } catch { throw new Error(`${label} must be a full https:// link`); }
+    if (u.protocol !== "https:" || v.length > 200 || /["'<>\s]/.test(v)) throw new Error(`${label} must be a full https:// link`);
+    if (host && !host.test(u.hostname)) throw new Error(`${label} must be a ${label === "X" ? "x.com or twitter.com" : "t.me"} link`);
+    return u.toString();
+  };
+  const website = link("website", null, "Website");
+  const twitter = link("twitter", /^(www\.)?(x|twitter)\.com$/i, "X");
+  const telegram = link("telegram", /^(www\.)?(t\.me|telegram\.me)$/i, "Telegram");
   const whole = (k: string, min: bigint, max: bigint) => {
     const v = String(raw[k] ?? "").trim();
     if (!/^\d+$/.test(v) || BigInt(v) < min || BigInt(v) > max) {
@@ -130,7 +166,7 @@ export function validateParams(raw: Record<string, unknown>): LaunchParams {
     throw new Error("Liquidity + burn can't exceed 55% of the tax (10% goes to the creator; holders keep at least 35%)");
   }
   const lockDays = raw.lockDays === null || raw.lockDays === "forever" ? null : int("lockDays", 1, 3650);
-  return { creator, name, symbol, description, image, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays };
+  return { creator, name, symbol, description, image, website, twitter, telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays };
 }
 
 const launchDir = (mint: string) => path.join(FACTORY_DIR, "launches", mint);
@@ -159,7 +195,11 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
   const distributor = Keypair.generate();
   const mint = mintKp.publicKey;
 
-  const uri = `${publicUrl.replace(/\/$/, "")}/meta/${mint.toBase58()}.json`;
+  // Metadata on IPFS when uploads are set up (the token then doesn't depend on this
+  // server); otherwise served by the site from the launch record.
+  const uri = ipfsEnabled(cfg)
+    ? await pinMetadata(cfg, tokenMetadataJson(p, publicUrl), `${p.symbol} ${mint.toBase58()}`)
+    : `${publicUrl.replace(/\/$/, "")}/meta/${mint.toBase58()}.json`;
   const metadata: TokenMetadata = { mint, name: p.name, symbol: p.symbol, uri, updateAuthority: creator, additionalMetadata: [] };
   const mintLen = getMintLen([ExtensionType.TransferFeeConfig, ExtensionType.MetadataPointer]);
   const lamports = await conn.getMinimumBalanceForRentExemption(mintLen + TYPE_SIZE + LENGTH_SIZE + pack(metadata).length);

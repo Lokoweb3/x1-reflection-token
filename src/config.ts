@@ -39,6 +39,10 @@ export interface Config {
      * Testnet only: a faucet that gives out the fee token so anyone can try a launch.
      * `keypair` is a dedicated wallet you fund with the fee token and a little XNT.
      */
+    /** Pinata API key (JWT): logo uploads and token metadata go to IPFS. Or set PINATA_JWT. */
+    pinataJwt?: string;
+    /** Gateway for IPFS links wallets fetch (default https://gateway.pinata.cloud/ipfs/). */
+    ipfsGateway?: string;
     faucet?: { keypair: string; amount: string; xntAmount?: string; cooldownHours?: number; dailyCap?: number };
     /** Testnet only: pay the launch fee in another token (e.g. XNM). Ignored on mainnet, which always charges USDC. */
     feeToken?: { mint: string; symbol: string; amount: string };

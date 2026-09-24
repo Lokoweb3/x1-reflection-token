@@ -151,3 +151,28 @@ test("clicker reward is 1% of the holder pot, capped", () => {
   assert.equal(clickerReward(0n, 100, cap), 0n);
   assert.equal(clickerReward(1_000_000_000n, 0, cap), 0n);
 });
+
+test("token logos can't be SVG links", () => {
+  const base = { creator: "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy", name: "Cup", symbol: "CUP", supply: "1000000000", taxBps: 500, autoLpBps: 2500, burnBps: 2500, poolTokens: "1000000000", poolXnt: "10", lockDays: null };
+  for (const image of ["https://example.com/logo.svg", "https://example.com/logo.SVG?x=1", "ipfs://Qm/logo.svgz"]) {
+    assert.throws(() => validateParams({ ...base, image }), /can't be an SVG/);
+  }
+  assert.doesNotThrow(() => validateParams({ ...base, image: "https://gateway.pinata.cloud/ipfs/bafkrei123" }));
+  assert.doesNotThrow(() => validateParams({ ...base, image: "https://example.com/logo.png" }));
+});
+
+test("social links: optional, https only, right hosts; metadata follows X1's shape", async () => {
+  const { tokenMetadataJson } = await import("../src/factory/launch.js");
+  const base = { creator: "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy", name: "Cup", symbol: "CUP", supply: "1000000000", taxBps: 500, autoLpBps: 2500, burnBps: 2500, poolTokens: "1000000000", poolXnt: "10", lockDays: null };
+  const ok = validateParams({ ...base, website: "https://cup.fun", twitter: "https://x.com/cup", telegram: "https://t.me/cup" });
+  assert.equal(ok.twitter, "https://x.com/cup");
+  assert.equal(validateParams(base).website, undefined);
+  assert.throws(() => validateParams({ ...base, website: "http://cup.fun" }), /https/);
+  assert.throws(() => validateParams({ ...base, website: "javascript:alert(1)" }), /https/);
+  assert.throws(() => validateParams({ ...base, twitter: "https://evil.com/cup" }), /x\.com/);
+  assert.throws(() => validateParams({ ...base, telegram: "https://t.me.evil.com/x" }), /t\.me/);
+  assert.deepEqual(tokenMetadataJson({ ...ok, description: "d", image: "https://gateway.pinata.cloud/ipfs/bafy" }, "https://99tax.vercel.app/"), {
+    name: "Cup", symbol: "CUP", description: "d", image: "https://gateway.pinata.cloud/ipfs/bafy", showName: true,
+    createdOn: "https://99tax.vercel.app", twitter: "https://x.com/cup", telegram: "https://t.me/cup", website: "https://cup.fun/",
+  });
+});

@@ -146,6 +146,7 @@ function card(t) {
       el("a", { href: "/wallet", text: "Mint / claim in My earnings →" })) : null,
     el("div", { class: "sub", text: t.lastRun ? `Last distribution ${new Date(t.lastRun).toLocaleString()}` : "No distributions yet" }),
     el("div", { class: "links" },
+      ...[["website", "Website"], ["twitter", "X"], ["telegram", "Telegram"]].filter(([k]) => t.links?.[k]).map(([k, l]) => link(t.links[k], `${l} ↗`, "btn sm")),
       t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}`, text: "LP lock NFT" }) : null,
       el("a", { class: "btn sm", href: "/launch#distribute", text: "Distribute now" }),
       link(`${explorer}/address/${t.pool}`, "Pool ↗", "btn sm")));

@@ -22,7 +22,7 @@ import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
 import { networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
-  CREATOR_BPS, CREATOR_REWARD, buildLockStep, launchFee, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
+  CREATOR_BPS, CREATOR_REWARD, buildLockStep, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch,
   registeredLaunches, validateParams,
 } from "./factory/launch.js";
@@ -33,6 +33,7 @@ import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
 import { snapshot } from "./xdex.js";
 import { faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
+import { MAX_LOGO_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
 import { TOKEN_2022_PROGRAM_ID, getTokenMetadata } from "@solana/spl-token";
 import { findTarget, readiness, runCycle, targets, tipInstruction, verifyTip } from "./factory/trigger.js";
@@ -94,6 +95,15 @@ async function creatorRewards(lockNft: string | null | undefined) {
     nextAmount: s.nextAmount.toString(), symbol: rewardSymbol, decimals: rewardDecimals };
 }
 
+const uploads = new Map<string, number[]>();
+function uploadLimit(ip: string, max = 20, windowMs = 3_600_000) {
+  const now = Date.now();
+  const hits = (uploads.get(ip) ?? []).filter((t) => now - t < windowMs);
+  if (hits.length >= max) throw new Error("Too many logo uploads from this address; try again later.");
+  hits.push(now);
+  uploads.set(ip, hits);
+}
+
 // Starting a launch generates keys and files, so cap it per client address.
 const recent = new Map<string, number[]>();
 function rateLimit(ip: string, max = 10, windowMs = 3_600_000) {
@@ -104,10 +114,10 @@ function rateLimit(ip: string, max = 10, windowMs = 3_600_000) {
   recent.set(ip, hits);
 }
 
-function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+function readJson(req: http.IncomingMessage, max = 64_000): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", (c) => { body += c; if (body.length > 64_000) { reject(new Error("Body too large")); req.destroy(); } });
+    req.on("data", (c) => { body += c; if (body.length > max) { reject(new Error("Body too large")); req.destroy(); } });
     req.on("end", () => { try { resolve(JSON.parse(body || "{}")); } catch { reject(new Error("Invalid JSON")); } });
   });
 }
@@ -153,6 +163,12 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   }
   // Withdraw from a lock NFT (any lock, RFLT or a launch): the NFT holder's wallet signs.
   if (url === "/api/faucet") return faucetClaim(conn, cfg, String(body.wallet), ip);
+  if (url === "/api/upload-logo") {
+    // Straight through to IPFS; nothing is kept here. Limited per IP to protect the Pinata quota.
+    uploadLimit(ip);
+    const bytes = Buffer.from(String(body.data ?? ""), "base64");
+    return pinLogo(cfg, bytes, String(body.name ?? "logo"));
+  }
   if (url === "/api/faucet/fund") {
     const from = new PublicKey(String(body.wallet));
     const ixs = await faucetFundIxs(conn, cfg, from.toBase58(), String(body.tokens ?? ""), String(body.xnt ?? ""));
@@ -351,7 +367,7 @@ async function get(url: URL) {
   if (url.pathname === "/api/info") {
     const ammInfo = await conn.getAccountInfo(new PublicKey(XDEX_CREATE[cfg.network].ammConfig));
     return {
-      network: cfg.network, explorer, feeAmount: launchFee(cfg).amount, feeSymbol: launchFee(cfg).symbol, feeMint: launchFee(cfg).mint, feeReceiver: f!.feeReceiver,
+      logoUpload: ipfsEnabled(cfg), maxLogoBytes: MAX_LOGO_BYTES, network: cfg.network, explorer, feeAmount: launchFee(cfg).amount, feeSymbol: launchFee(cfg).symbol, feeMint: launchFee(cfg).mint, feeReceiver: f!.feeReceiver,
       creatorBps: CREATOR_BPS, creatorRewardSymbol: rewardSymbol,
       gasXnt: f!.gasXnt ?? "0.05", poolCreateFeeXnt: ammInfo ? Number(ammInfo.data.readBigUInt64LE(36)) / 1e9 : null,
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
@@ -492,12 +508,14 @@ function targetInfo(t: ReturnType<typeof targets>[number]) {
   if (r) {
     const liquidity = r.autoLpBps / 100, burn = (r.burnBps ?? 0) / 100, creator = CREATOR_BPS / 100;
     return { taxPct: r.taxBps / 100, split: { holders: 100 - liquidity - burn - creator, liquidity, burn, creator }, supply: r.supply,
-      image: r.image || null, description: r.description || "", lockNft: r.lockNft ?? null, createdAt: r.registeredAt ?? r.createdAt, launched: true };
+      image: r.image || null, description: r.description || "", lockNft: r.lockNft ?? null, createdAt: r.registeredAt ?? r.createdAt, launched: true,
+      links: { website: r.website ?? null, twitter: r.twitter ?? null, telegram: r.telegram ?? null } };
   }
   const d = cfg.distribution;
   const liquidity = (d.autoLpBps ?? 0) / 100, burn = (d.burnBps ?? 0) / 100, creator = (d.creatorBps ?? 0) / 100;
   return { taxPct: cfg.token.feeBps / 100, split: { holders: 100 - liquidity - burn - creator, liquidity, burn, creator }, supply: cfg.token.supply,
-    image: null, description: "", lockNft: cfg.creatorReward?.nftMint ?? null, createdAt: null, launched: false };
+    image: null, description: "", lockNft: cfg.creatorReward?.nftMint ?? null, createdAt: null, launched: false,
+    links: { website: null, twitter: null, telegram: null } };
 }
 
 /** Totals from one token's event log, in base units. */
@@ -739,7 +757,7 @@ function stats() {
 function publicView(r: ReturnType<typeof listLaunches>[number]) {
   const { mint, name, symbol, description, image, supply, taxBps, autoLpBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor } = r;
   const burnBps = r.burnBps ?? 0;
-  return { mint, name, symbol, description, image, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor,
+  return { mint, name, symbol, description, image, website: r.website, twitter: r.twitter, telegram: r.telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor,
     lockNft: r.lockNft ?? null, creatorExcluded: creatorExcluded(r) };
 }
 
@@ -754,7 +772,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST") {
       const origin = req.headers.origin ?? "";
       if (![...allowedHosts].some((h) => origin === `http://${h}` || origin === `https://${h}`)) { res.writeHead(403).end("Forbidden origin"); return; }
-      const out = await post(url.pathname, await readJson(req), ip);
+      const out = await post(url.pathname, await readJson(req, url.pathname === "/api/upload-logo" ? Math.ceil(MAX_LOGO_BYTES * 1.4) + 2_000 : 64_000), ip);
       if (!out) { res.writeHead(404).end("Not found"); return; }
       send(res, 200, out);
       return;
@@ -788,7 +806,7 @@ const server = http.createServer(async (req, res) => {
       const r = readLaunch(meta[1]);
       if (!r) { res.writeHead(404).end("Not found"); return; }
       res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "max-age=300" })
-        .end(JSON.stringify({ name: r.name, symbol: r.symbol, description: r.description, image: r.image }));
+        .end(JSON.stringify(tokenMetadataJson(r, publicUrl)));
       return;
     }
     const out = await get(url);

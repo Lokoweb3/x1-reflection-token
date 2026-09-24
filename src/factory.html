@@ -192,6 +192,17 @@ table.list img { border: 1px solid var(--line); }
 .faucet-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .faucet-row input { flex: 1; min-width: 110px; padding: 6px 8px; }
 .faucet[hidden] { display: none; }
+.logo-field { display: grid; gap: 6px; }
+.logo-title { font-weight: 600; }
+.logo-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.logo-preview { width: 84px; height: 84px; flex: none; display: grid; place-items: center; border: 1.5px dashed var(--line); font-size: 11px; color: var(--text-muted); text-align: center; overflow: hidden; }
+.logo-preview img { width: 100%; height: 100%; object-fit: cover; }
+.logo-controls { flex: 1; min-width: 200px; display: grid; gap: 6px; }
+#logoUploadBtn { justify-self: start; }
+#logoUploadBtn[hidden] { display: none !important; }
+#logoUploadBtn.busy { opacity: .6; pointer-events: none; }
+.socials { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 760px) { .socials { grid-template-columns: minmax(0, 1fr); } }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -231,8 +242,23 @@ table.list img { border: 1px solid var(--line); }
           <label>Symbol <input name="symbol" maxlength="10" required placeholder="MYT" pattern="[A-Za-z0-9$._\-]+"></label>
         </div>
         <div class="row one">
-          <label>Logo URL <input name="image" placeholder="https://… or ipfs://…"><span class="hint">A square image. Wallets and explorers show it next to your token.</span></label>
+          <div class="logo-field">
+            <span class="logo-title">Logo</span>
+            <div class="logo-row">
+              <div class="logo-preview" id="logoPreview" aria-live="polite">No logo</div>
+              <div class="logo-controls">
+                <label class="btn small" id="logoUploadBtn" hidden>Upload image<input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif" hidden></label>
+                <label>…or paste a link <input name="image" placeholder="https://… or ipfs://…"></label>
+                <span class="hint" id="logoHint">Square PNG, 512×512 recommended (JPG, WebP or GIF also work; no SVG). Wallets and explorers show it next to your token.</span>
+              </div>
+            </div>
+          </div>
           <label>Description <textarea name="description" maxlength="500" placeholder="What is this token?"></textarea></label>
+          <div class="socials">
+            <label>Website <span class="muted">(optional)</span><input name="website" type="url" inputmode="url" placeholder="https://…" maxlength="200"></label>
+            <label>X (Twitter) <span class="muted">(optional)</span><input name="twitter" type="url" inputmode="url" placeholder="https://x.com/…" maxlength="200" pattern="https://(www\.)?(x|twitter)\.com/.+"></label>
+            <label>Telegram <span class="muted">(optional)</span><input name="telegram" type="url" inputmode="url" placeholder="https://t.me/…" maxlength="200" pattern="https://(www\.)?(t|telegram)\.me/.+"></label>
+          </div>
         </div>
         <fieldset>
           <legend>Supply and tax</legend>
@@ -401,6 +427,7 @@ function readForm() {
   const poolTokens = /^\d+$/.test(supply) ? supply : ""; // always 100% of the supply
   return {
     name: String(v.name).trim(), symbol: String(v.symbol).trim(), image: String(v.image).trim(), description: String(v.description).trim(),
+    website: String(v.website ?? "").trim(), twitter: String(v.twitter ?? "").trim(), telegram: String(v.telegram ?? "").trim(),
     supply, taxBps: Math.round(Number(v.tax) * 100), autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
     poolTokens, poolXnt: String(v.poolXnt).trim(), lockDays: v.lock === "forever" ? null : Number(v.lock),
   };
@@ -572,6 +599,55 @@ async function loadFaucet() {
 }
 W.onChange(() => loadFaucet());
 
+// ---------- Logo: upload straight to IPFS (nothing kept on this site), or paste a link ----------
+function showLogoPreview(url, note) {
+  const box = document.getElementById("logoPreview");
+  if (!url) { box.replaceChildren("No logo"); return; }
+  const img = el("img", { src: url, alt: "Token logo preview" });
+  img.onload = () => {
+    const hint = document.getElementById("logoHint");
+    hint.textContent = img.naturalWidth && Math.abs(img.naturalWidth - img.naturalHeight) > 2
+      ? `This image is ${img.naturalWidth}×${img.naturalHeight}; a square one looks best in wallets.` : (note || "Looks good. Wallets and explorers show it next to your token.");
+  };
+  img.onerror = () => { box.replaceChildren("Can't load that image"); document.getElementById("logoHint").textContent = "Check the link: it must open the image itself."; };
+  box.replaceChildren(img);
+}
+function setupLogo() {
+  const input = document.querySelector('input[name="image"]');
+  const file = document.getElementById("logoFile");
+  const btn = document.getElementById("logoUploadBtn");
+  btn.hidden = !info?.logoUpload;
+  if (!info?.logoUpload) document.getElementById("logoHint").textContent = "A square image (PNG, JPG, WebP or GIF) hosted anywhere public, e.g. uploaded to IPFS.";
+  input.addEventListener("change", () => {
+    const v = input.value.trim();
+    // Wallets often won't show SVG logos (they can carry scripts), so refuse them here too.
+    if (/\.svgz?(?:[?#].*)?$/i.test(v)) {
+      document.getElementById("logoPreview").replaceChildren("SVG not allowed");
+      document.getElementById("logoHint").textContent = "SVG logos aren't shown by many wallets. Use a PNG, JPG, WebP or GIF.";
+      input.setCustomValidity("Use a PNG, JPG, WebP or GIF, not an SVG.");
+      return;
+    }
+    input.setCustomValidity("");
+    showLogoPreview(v);
+  });
+  file.addEventListener("change", async () => {
+    const f = file.files?.[0];
+    file.value = "";
+    if (!f) return;
+    const max = info?.maxLogoBytes ?? 500000;
+    if (f.size > max) { toast("error", `That image is ${Math.round(f.size / 1000)} KB; the limit is ${max / 1000} KB.`); return; }
+    const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = fail; r.readAsDataURL(f); });
+    btn.classList.add("busy"); btn.firstChild.textContent = "Uploading…";
+    try {
+      const r = await api("/api/upload-logo", { name: f.name.replace(/\.[^.]+$/, ""), data });
+      input.value = r.url;
+      showLogoPreview(r.url, "Uploaded to IPFS. It stays there even if this site goes away.");
+      toast("success", "Logo uploaded to IPFS.");
+    } catch (e) { toast("error", `Upload failed: ${e.message || e}`); }
+    btn.classList.remove("busy"); btn.firstChild.textContent = "Upload image";
+  });
+}
+
 async function loadMine() {
   const host = document.getElementById("myLaunches");
   if (!W.state.address) { host.replaceChildren("Connect a wallet to see your launches."); return; }
@@ -737,7 +813,7 @@ async function loadTokens() {
     document.getElementById("creatorHint").textContent =
       `Fixed. Paid in ${info.creatorRewardSymbol}, vests 7 days, claimed with your LP-lock NFT (whoever holds it can claim).`;
   } catch (e) { toast("error", "Couldn't reach the factory server: " + e.message); }
-  renderWallet(); renderForm(); loadTokens(); loadDistribute(); loadFaucet();
+  renderWallet(); renderForm(); loadTokens(); loadDistribute(); loadFaucet(); setupLogo();
 })();
 
 // Entry disclaimer: shown before the site until the visitor accepts it. Bump the key

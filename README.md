@@ -264,6 +264,16 @@ commit it** (it is gitignored).
   put it behind an HTTPS reverse proxy, set `factory.publicUrl` and list the host name in
   `factory.hosts`. It only listens on 127.0.0.1 by default.
 
+## Token logos and metadata on IPFS
+
+With a Pinata API key with Files: Write (`factory.pinataJwt` in config.json, or `PINATA_JWT`), the launch
+form gets an **Upload image** button: the logo goes straight through to IPFS (PNG, JPG,
+WebP or GIF, checked by its bytes, ≤ 500 KB, 20 uploads per IP per hour) and nothing is
+kept on the server. The token's metadata JSON (name, symbol, description, image) is
+pinned too, so the on-chain link points to IPFS (`factory.ipfsGateway`, default
+`https://gateway.pinata.cloud/ipfs/`) and keeps working even if the site goes away. Without a key,
+creators paste a logo link and the site serves the metadata as before.
+
 ## Holder passes (pull-based holder rewards)
 
 Paying every holder a transfer each cycle costs gas per holder, and X1 fees are
