@@ -61,6 +61,14 @@ const NFT_PAGE = path.join(ROOT, "src", "nft.html");
 const TOKENS_PAGE = path.join(ROOT, "src", "tokens.html");
 const ANALYTICS_PAGE = path.join(ROOT, "src", "analytics.html");
 const WALLET_PAGE = path.join(ROOT, "src", "wallet.html");
+const FAUCET_PAGE = path.join(ROOT, "src", "faucet.html");
+/** Serve a page; without a faucet (e.g. mainnet), leave its "Faucet" tab out. */
+function page(file: string) {
+  const html = fs.readFileSync(file, "utf8");
+  return faucetOn() ? html : html.replace(/\s*<a href="\/faucet"[^>]*>Faucet<\/a>/g, "");
+}
+const faucetOn = () => cfg.network === "testnet" && !!cfg.factory?.faucet && !!cfg.factory?.feeToken
+  && fs.existsSync(path.isAbsolute(cfg.factory.faucet.keypair) ? cfg.factory.faucet.keypair : path.join(ROOT, cfg.factory.faucet.keypair));
 /** Site themes: each file holds its fonts and colour tokens, then (after the AFTER BASE marker) extras. */
 const THEMES = ["receipt", "arcade", "lunchbag", "notebook"] as const;
 function themeCss(name: string) {
@@ -726,16 +734,17 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, out);
       return;
     }
-    if (url.pathname === "/" || url.pathname === "/index.html") { send(res, 200, fs.readFileSync(LANDING, "utf8"), "text/html; charset=utf-8"); return; }
-    if (url.pathname === "/tokens") { send(res, 200, fs.readFileSync(TOKENS_PAGE, "utf8"), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/" || url.pathname === "/index.html") { send(res, 200, page(LANDING), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/tokens") { send(res, 200, page(TOKENS_PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/wallet" || /^\/wallet\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname)) {
-      send(res, 200, fs.readFileSync(WALLET_PAGE, "utf8"), "text/html; charset=utf-8"); return;
+      send(res, 200, page(WALLET_PAGE), "text/html; charset=utf-8"); return;
     }
-    if (url.pathname === "/analytics") { send(res, 200, fs.readFileSync(ANALYTICS_PAGE, "utf8"), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/analytics") { send(res, 200, page(ANALYTICS_PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/nft" || /^\/nft\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname)) {
-      send(res, 200, fs.readFileSync(NFT_PAGE, "utf8"), "text/html; charset=utf-8"); return;
+      send(res, 200, page(NFT_PAGE), "text/html; charset=utf-8"); return;
     }
-    if (url.pathname === "/launch") { send(res, 200, fs.readFileSync(PAGE, "utf8"), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/faucet") { send(res, 200, page(FAUCET_PAGE), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/launch") { send(res, 200, page(PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/theme.js") {
       send(res, 200, `const SITE_THEME = ${JSON.stringify(f!.theme ?? "receipt")};\n` + fs.readFileSync(path.join(ROOT, "src", "web", "theme.js"), "utf8"), "text/javascript; charset=utf-8");
       return;

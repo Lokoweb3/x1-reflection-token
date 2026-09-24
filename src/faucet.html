@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faucet · 99 + Tax</title>
+<style>
+:root { --bg: #fbf8ef; --surface-1: #fbf8ef; --line: rgb(29 27 22 / .18); --text-primary: #1d1b16; --text-secondary: #45413a; --text-muted: #6b665a; --link: #1d1b16; --critical: #c8102e; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary); font: 15px/1.5 system-ui, sans-serif; }
+.topbar { font-size: 13px; text-align: center; padding: 7px 16px; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 60px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-size: 24px; text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.wallet { display: flex; align-items: center; gap: 8px; position: relative; }
+.wallet-menu { position: absolute; right: 0; top: calc(100% + 6px); padding: 6px; z-index: 5; display: grid; min-width: 180px; }
+.wallet-menu button { background: none; border: 0; padding: 8px 12px; text-align: left; cursor: pointer; display: flex; gap: 8px; align-items: center; color: inherit; font: inherit; }
+.wallet-menu img { width: 18px; height: 18px; }
+h1 { margin: 0 0 6px; font-size: 34px; }
+h2 { margin: 0 0 8px; font-size: 20px; }
+.lede { color: var(--text-secondary); margin: 0 0 22px; }
+.card { border: 1px solid var(--line); padding: 20px; margin-bottom: 18px; }
+.big { font-size: 30px; font-weight: 700; margin: 4px 0 2px; }
+.muted { color: var(--text-muted); font-size: 13px; }
+.btn { font: 700 14px system-ui, sans-serif; padding: 10px 16px; cursor: pointer; border: 2px solid; background: none; color: inherit; }
+.btn.primary { color: #fff; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.row input { flex: 1; min-width: 140px; padding: 9px 10px; font: inherit; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0 4px; }
+.stat { border: 1px dashed var(--line); padding: 10px 12px; }
+.stat .v { font-size: 20px; font-weight: 700; }
+.addr { font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 520px; margin: 0 auto; padding: 10px 14px; z-index: 10; }
+.toast[hidden] { display: none; }
+.error { color: var(--critical); }
+@media (max-width: 560px) { .stats { grid-template-columns: 1fr 1fr; } header nav { margin-left: 0; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note"><b>Heads up:</b> testnet tokens only; they have no value.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens">Tokens</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/wallet">My earnings</a>
+      <a href="/faucet" aria-current="page">Faucet</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+  <h1>Testnet faucet</h1>
+  <p class="lede">Free testnet tokens so you can try a launch: the launch fee is paid in XNM, and XNT covers network fees and your pool.</p>
+  <div id="out"><p class="muted">Loading…</p></div>
+</main>
+<div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+<script src="/wallet.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const W = window.X1Wallet;
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text) => el("a", { href, target: "_blank", rel: "noopener", text });
+const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
+let explorer = "", busy = false;
+
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+let toastTimer;
+function toast(kind, ...parts) {
+  const t = $("toast"); t.className = `toast ${kind}`; t.replaceChildren(...parts); t.hidden = false;
+  clearTimeout(toastTimer); if (kind !== "info") toastTimer = setTimeout(() => { t.hidden = true; }, 9000);
+}
+
+async function render() {
+  const out = $("out");
+  let f;
+  try { f = await api(`/api/faucet${W.state.address ? `?wallet=${W.state.address}` : ""}`); }
+  catch (e) { out.replaceChildren(el("p", { class: "error", text: `Couldn't reach the faucet: ${e.message || e}` })); return; }
+  if (!f.enabled) { out.replaceChildren(el("div", { class: "card" }, el("h2", { text: "The faucet is off" }), el("p", { class: "muted", text: "It only runs on testnet." }))); return; }
+  const gives = `${f.amount} ${f.symbol}` + (Number(f.xntAmount) > 0 ? ` + ${f.xntAmount} XNT` : "");
+
+  // Claim
+  const claim = el("button", { class: "btn primary", type: "button", text: `Get ${gives} free` });
+  let note = "One claim per wallet every 24 hours.";
+  if (!W.state.address) { claim.disabled = true; note = "Connect a wallet to claim."; }
+  else if (f.nextClaimAt) { claim.disabled = true; note = `You've claimed today. Next claim: ${new Date(f.nextClaimAt).toLocaleString()}.`; }
+  else if (f.empty) { claim.disabled = true; note = f.balance < Number(f.amount) ? `The faucet is out of ${f.symbol} right now.` : "The faucet is out of XNT right now."; }
+  else if (!f.remainingToday) { claim.disabled = true; note = "Today's faucet limit is reached; try again tomorrow."; }
+  if (busy) claim.disabled = true;
+  claim.onclick = async () => {
+    busy = true; render();
+    toast("info", `Sending ${gives}…`);
+    try {
+      const r = await api("/api/faucet", { wallet: W.state.address });
+      toast("success", `Sent ${gives} to your wallet. `, link(`${explorer}/tx/${r.signature}`, "View transaction ↗"));
+    } catch (e) { toast("error", `Faucet: ${e.message || e}`); }
+    busy = false; render();
+  };
+
+  // Top up (anyone; their wallet signs)
+  const tokIn = el("input", { type: "number", min: "0", step: "any", placeholder: `${f.symbol} amount`, "aria-label": `${f.symbol} to add` });
+  const xntIn = el("input", { type: "number", min: "0", step: "any", placeholder: "XNT amount", "aria-label": "XNT to add" });
+  const fund = el("button", { class: "btn", type: "button", text: "Top up" });
+  fund.disabled = !W.state.address || busy;
+  if (!W.state.address) fund.title = "Connect a wallet first";
+  fund.onclick = async () => {
+    busy = true; render();
+    try {
+      toast("info", "Top up: preparing…");
+      const { tx } = await api("/api/faucet/fund", { wallet: W.state.address, tokens: tokIn.value, xnt: xntIn.value });
+      toast("info", "Top up: approve it in your wallet…");
+      const signed = await W.sign(W.b64ToBytes(tx));
+      toast("info", "Top up: sending…");
+      const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
+      toast("success", "Faucet topped up. ", link(`${explorer}/tx/${signature}`, "View transaction ↗"));
+    } catch (e) { toast("error", `Top up failed: ${e.message || e}`); }
+    busy = false; render();
+  };
+
+  const claimsLeft = Math.min(Math.floor(f.balance / Number(f.amount)), Number(f.xntAmount) > 0 ? Math.floor(f.xnt / (Number(f.xntAmount) + 0.005)) : Infinity, f.remainingToday);
+  out.replaceChildren(
+    el("div", { class: "card" },
+      el("h2", { text: "Claim" }),
+      el("div", { class: "big", text: gives }),
+      el("div", { class: "muted", text: note }),
+      el("div", { class: "row" }, claim)),
+    el("div", { class: "card" },
+      el("h2", { text: "Faucet balance" }),
+      el("div", { class: "stats" },
+        el("div", { class: "stat" }, el("div", { class: "muted", text: f.symbol }), el("div", { class: "v", text: fmt(f.balance) })),
+        el("div", { class: "stat" }, el("div", { class: "muted", text: "XNT" }), el("div", { class: "v", text: fmt(f.xnt) })),
+        el("div", { class: "stat" }, el("div", { class: "muted", text: "Claims left" }), el("div", { class: "v", text: String(Math.max(0, claimsLeft)) }))),
+      el("div", { class: "muted" }, "Faucet address: ", el("span", { class: "addr", text: f.address }))),
+    el("div", { class: "card" },
+      el("h2", { text: "Top up the faucet" }),
+      el("div", { class: "muted", text: `Send ${f.symbol} and/or XNT from your wallet to keep it running. Each claim gives ${gives} and costs about 0.004 XNT in fees.` }),
+      el("div", { class: "row" }, tokIn, xntIn, fund)));
+}
+
+// ---------- wallet ----------
+function renderWallet() {
+  const area = $("walletArea");
+  if (W.state.address) {
+    const b = el("button", { class: "btn", type: "button", text: "Disconnect" });
+    b.onclick = () => W.disconnect();
+    area.replaceChildren(el("span", { class: "addr", text: short(W.state.address) }), b);
+  } else {
+    const b = el("button", { class: "btn primary", type: "button", text: "Connect wallet" });
+    b.onclick = openWalletMenu;
+    area.replaceChildren(b);
+  }
+}
+function openWalletMenu(ev) {
+  ev.stopPropagation();
+  $("walletMenu")?.remove();
+  const choices = W.choices();
+  const go = (c) => W.connect(c).catch((e) => toast("error", "Wallet connection failed: " + (e.message || e)));
+  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  if (choices.length === 1) { go(choices[0]); return; }
+  const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
+  for (const c of choices) {
+    const b = el("button", { type: "button" });
+    if (typeof c.icon === "string" && c.icon.startsWith("data:image/")) b.append(el("img", { src: c.icon, alt: "" }));
+    b.append(c.name);
+    b.onclick = () => { menu.remove(); go(c); };
+    menu.append(b);
+  }
+  $("walletArea").append(menu);
+}
+document.addEventListener("click", () => $("walletMenu")?.remove());
+W.onChange(() => { renderWallet(); render(); });
+renderWallet();
+(async () => { try { explorer = (await api("/api/info")).explorer; } catch {} render(); })();
+</script>
+</body>
+</html>
