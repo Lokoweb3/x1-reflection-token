@@ -1,0 +1,22 @@
+# Backend for the Vercel front door (deploy/vercel-deploy.sh). Vercel serves HTTPS on
+# __PUBLIC_HOST__ and forwards every request to http://<this server>/__SECRET__/...
+# Anything without the secret prefix gets a 404, so the app isn't reachable directly.
+{
+	servers {
+		# Requests come from Vercel: trust its X-Forwarded-For so the app sees each
+		# visitor's real IP (the faucet limits per IP). Only secret-path traffic gets through.
+		trusted_proxies static 0.0.0.0/0 ::/0
+	}
+}
+:80 {
+	encode gzip
+	handle_path /__SECRET__/* {
+		reverse_proxy 127.0.0.1:8124 {
+			header_up Host __PUBLIC_HOST__
+		}
+	}
+	handle {
+		respond 404
+	}
+	header -Server
+}

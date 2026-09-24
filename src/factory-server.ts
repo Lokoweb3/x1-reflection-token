@@ -263,43 +263,68 @@ async function nftView(mintStr: string) {
  * prices: trading fees already collected, trading fees ready now, and creator rewards
  * (claimed, ready and still vesting). One LP unit is worth 2 x reserveXnt / lpSupply.
  */
-let nftsCache: { at: number; data: Promise<unknown> } | null = null;
+let nftsCache: { at: number; data: unknown } | null = null;
+let nftsBuilding: Promise<unknown> | null = null;
+/**
+ * The list is served from the latest copy and refreshed in the background (every minute,
+ * and warmed at start-up), so a visitor never waits for the chain reads. Only the very
+ * first request after a restart, before the warm-up finishes, waits for it.
+ */
 function allNfts() {
-  if (nftsCache && Date.now() - nftsCache.at < 60_000) return nftsCache.data;
-  const data = (async () => {
-    const programId = new PublicKey(cfg.locker!.programId);
-    const out = [];
-    for (const t of targets(cfg)) {
-      const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint));
-      const supply = snap.pool.lpSupply;
-      const lpXnt = (lp: bigint) => (supply > 0n ? (lp * 2n * snap.reserveXnt) / supply : 0n);
-      const sqrtK = isqrt(snap.reserveToken * snap.reserveXnt);
-      for (const l of await listLocks(conn, programId, new PublicKey(t.pool))) {
-        const [lp, holder, meta, rw] = await Promise.all([
-          lockedLp(conn, programId, l.address), nftHolder(conn, l.nftMint),
-          getTokenMetadata(conn, l.nftMint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null), creatorRewards(l.nftMint.toBase58()),
-        ]);
-        const ready = pendingFeeLp(lp, l.principal, sqrtK, supply);
-        const q = holder ? await collectQuote(holder.owner, l.nftMint, { pool: new PublicKey(t.pool), mint: new PublicKey(t.mint), symbol: t.symbol }).catch(() => null) : null;
-        const rewards = rw ? { claimed: rw.claimed, ready: rw.claimable, vesting: rw.vesting, nextUnlock: rw.nextUnlock, nextAmount: rw.nextAmount, symbol: rw.symbol, decimals: rw.decimals } : null;
-        const feesCollected = lpXnt(l.feeLpCollected), feesReady = lpXnt(ready);
-        // Rewards are XNT on testnet; on mainnet (USDC) they're listed separately, not added in.
-        const rewardXnt = rw && rw.symbol === "XNT" ? BigInt(rw.claimed) + BigInt(rw.claimable) + BigInt(rw.vesting) : 0n;
-        out.push({
-          nftMint: l.nftMint.toBase58(), symbol: t.symbol, tokenName: t.name, tokenMint: t.mint,
-          name: meta?.name ?? `${t.symbol} LP Lock`, receipt: meta ? receiptImage(meta.uri) : null,
-          holder: holder?.owner.toBase58() ?? null, lockedAt: l.lockedAt, unlockAt: l.unlockAt,
-          lp: lp.toString(), lpSharePct: supply > 0n ? Number((lp * 1_000_000n) / supply) / 10_000 : 0, valueXnt: lpXnt(lp).toString(),
-          earned: { feesCollectedXnt: feesCollected.toString(), feesReadyXnt: feesReady.toString(), rewards, totalXnt: (feesCollected + feesReady + rewardXnt).toString(),
-            collectFeeXnt: q?.networkFee ?? null, collectable: q?.collectable ?? false },
-        });
-      }
-    }
-    return out.sort((a, b) => Number(BigInt(b.earned.totalXnt) - BigInt(a.earned.totalXnt)));
-  })();
-  data.catch(() => { nftsCache = null; });
-  nftsCache = { at: Date.now(), data };
-  return data;
+  const fresh = nftsCache && Date.now() - nftsCache.at < 60_000;
+  if (!fresh && !nftsBuilding) {
+    nftsBuilding = buildNfts()
+      .then((data) => { nftsCache = { at: Date.now(), data }; return data; })
+      .catch((e) => { console.error(`NFT list refresh failed: ${e instanceof Error ? e.message : e}`); if (!nftsCache) throw e; return nftsCache.data; })
+      .finally(() => { nftsBuilding = null; });
+  }
+  return nftsCache ? Promise.resolve(nftsCache.data) : nftsBuilding!;
+}
+
+/** What X1 charges to collect LP fees. Every collect has the same shape, so quote once per 10 minutes. */
+let collectFeeCache: { at: number; fee: bigint | null } | null = null;
+async function collectFeeEstimate(sample: { holder: PublicKey; nft: PublicKey; where: { pool: PublicKey; mint: PublicKey; symbol: string } }) {
+  if (collectFeeCache && Date.now() - collectFeeCache.at < 600_000) return collectFeeCache.fee;
+  const q = await collectQuote(sample.holder, sample.nft, sample.where).catch(() => null);
+  collectFeeCache = { at: Date.now(), fee: q?.networkFee ? BigInt(q.networkFee) : null };
+  return collectFeeCache.fee;
+}
+
+async function buildNfts() {
+  const programId = new PublicKey(cfg.locker!.programId);
+  // Every token, and every lock within it, is read in parallel.
+  const perToken = await Promise.all(targets(cfg).map(async (t) => {
+    const [snap, locks] = await Promise.all([
+      snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint)),
+      listLocks(conn, programId, new PublicKey(t.pool)),
+    ]);
+    const supply = snap.pool.lpSupply;
+    const lpXnt = (lp: bigint) => (supply > 0n ? (lp * 2n * snap.reserveXnt) / supply : 0n);
+    const sqrtK = isqrt(snap.reserveToken * snap.reserveXnt);
+    const where = { pool: new PublicKey(t.pool), mint: new PublicKey(t.mint), symbol: t.symbol };
+    return Promise.all(locks.map(async (l) => {
+      const [lp, holder, meta, rw] = await Promise.all([
+        lockedLp(conn, programId, l.address), nftHolder(conn, l.nftMint),
+        getTokenMetadata(conn, l.nftMint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null), creatorRewards(l.nftMint.toBase58()),
+      ]);
+      const ready = pendingFeeLp(lp, l.principal, sqrtK, supply);
+      const feesCollected = lpXnt(l.feeLpCollected), feesReady = lpXnt(ready);
+      const fee = holder ? await collectFeeEstimate({ holder: holder.owner, nft: l.nftMint, where }) : null;
+      const rewards = rw ? { claimed: rw.claimed, ready: rw.claimable, vesting: rw.vesting, nextUnlock: rw.nextUnlock, nextAmount: rw.nextAmount, symbol: rw.symbol, decimals: rw.decimals } : null;
+      // Rewards are XNT on testnet; on mainnet (USDC) they're listed separately, not added in.
+      const rewardXnt = rw && rw.symbol === "XNT" ? BigInt(rw.claimed) + BigInt(rw.claimable) + BigInt(rw.vesting) : 0n;
+      return {
+        nftMint: l.nftMint.toBase58(), symbol: t.symbol, tokenName: t.name, tokenMint: t.mint,
+        name: meta?.name ?? `${t.symbol} LP Lock`, receipt: meta ? receiptImage(meta.uri) : null,
+        holder: holder?.owner.toBase58() ?? null, lockedAt: l.lockedAt, unlockAt: l.unlockAt,
+        lp: lp.toString(), lpSharePct: supply > 0n ? Number((lp * 1_000_000n) / supply) / 10_000 : 0, valueXnt: lpXnt(lp).toString(),
+        earned: { feesCollectedXnt: feesCollected.toString(), feesReadyXnt: feesReady.toString(), rewards, totalXnt: (feesCollected + feesReady + rewardXnt).toString(),
+          collectFeeXnt: fee === null ? null : fee.toString(),
+          collectable: ready > 0n && feesReady >= DUST_LAMPORTS && (fee === null || feesReady > fee) },
+      };
+    }));
+  }));
+  return perToken.flat().sort((a, b) => Number(BigInt(b.earned.totalXnt) - BigInt(a.earned.totalXnt)));
 }
 
 /**
@@ -778,4 +803,7 @@ server.on("error", (e: NodeJS.ErrnoException) => {
   console.error(e.code === "EADDRINUSE" ? `Port ${port} is already in use; set factory.port in config.json.` : e.message);
   process.exit(1);
 });
+// Keep the Locked NFTs list warm so visitors never wait for its chain reads.
+setTimeout(() => allNfts().catch(() => undefined), 2_000);
+setInterval(() => allNfts().catch(() => undefined), 60_000).unref();
 server.listen(port, bind, () => console.log(`Token factory (${cfg.network}): http://${bind}:${port}  (metadata URIs use ${publicUrl})`));

@@ -34,6 +34,24 @@ systemd restarts them if they crash and starts them on boot. Logs: `journalctl -
    (`setup.sh` opens them on the server itself; Oracle images block them by default.)
 5. SSH in as `ubuntu` (`ssh ubuntu@<public IP>`), run `sudo -i`, and continue below.
 
+### Option: Vercel as the front door (free HTTPS address)
+
+Vercel serves `https://<project>.vercel.app` and forwards every request to your server;
+the app, distributors and keys stay on the server (Vercel can't run them).
+
+1. On the server: `VERCEL_HOST=<project>.vercel.app bash deploy/setup.sh` (instead of
+   `DOMAIN=`). Caddy then serves plain HTTP on port 80, only under a random secret path
+   saved in `/root/.reflect-vercel-secret`; everything else gets a 404. Keep port 80 open
+   in the firewall (DigitalOcean: Networking → Firewalls, or the droplet's own ufw).
+2. On your machine: `npx vercel login`, then
+   `BACKEND=http://<server IP> SECRET=<that secret> PROJECT=<project> bash deploy/vercel-deploy.sh`.
+   The generated config (with the secret) stays in `.vercel-site/`, which git ignores.
+3. In the server's `config.json`: `factory.publicUrl` = `https://<project>.vercel.app`,
+   `factory.hosts` = `["<project>.vercel.app"]`, then `systemctl restart reflect-factory`.
+
+Note: Vercel's free Hobby plan is for non-commercial use; a launchpad that charges fees
+may need the Pro plan under their terms.
+
 ## 2. Install
 
 ```bash

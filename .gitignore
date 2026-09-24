@@ -12,3 +12,7 @@ test-ledger/
 
 # Scratch logo candidates
 logo-options/
+
+# Vercel front door: generated config holds the backend secret
+.vercel-site/
+.vercel/
