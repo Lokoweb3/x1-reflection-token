@@ -18,17 +18,36 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { PublicKey } from "@solana/web3.js";
+import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
-import { sendSigned, unsignedTx } from "./web/wallet-tx.js";
+import { networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
-  FEE_USDC, buildLockStep, buildPoolStep, buildTokenStep, launchStatus, listLaunches, readLaunch, registerLaunch,
+  CREATOR_BPS, CREATOR_REWARD, buildLockStep, launchFee, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
+  readLaunch, registerLaunch,
   registeredLaunches, validateParams,
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
+import { readRewardVault, rewardSummary } from "./locker.js";
+import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, receiptImage } from "./locker-tx.js";
+import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
+import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
+import { snapshot } from "./xdex.js";
+import { faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
+import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
+import { TOKEN_2022_PROGRAM_ID, getTokenMetadata } from "@solana/spl-token";
+import { findTarget, readiness, runCycle, targets, tipInstruction, verifyTip } from "./factory/trigger.js";
+import { Config, toBaseUnits } from "./config.js";
+import { BURN_OWNERS, eligibleBalances, scanTokenAccounts } from "./holders.js";
+import { poolAuthority } from "./xdex.js";
+import { unpackMint } from "@solana/spl-token";
+
 
 const cfg = loadConfig();
 const conn = connection(cfg);
 const f = cfg.factory;
+if (cfg.network === "mainnet" && f?.feeToken) {
+  console.warn(`factory.feeToken (${f.feeToken.symbol}) is testnet-only and is ignored on mainnet; the launch fee is ${f.feeUsdc} USDC.`);
+}
 if (!f?.feeReceiver) throw new Error("Set factory.feeReceiver (and factory.feeUsdc) in config.json.");
 if (!cfg.locker?.programId) throw new Error("Set locker.programId in config.json.");
 const port = f.port ?? 8124;
@@ -38,9 +57,34 @@ const explorer = `https://explorer.${cfg.network}.x1.xyz`;
 const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, ...(f.hosts ?? [])]);
 const LANDING = path.join(ROOT, "src", "landing.html");
 const PAGE = path.join(ROOT, "src", "factory.html");
+const NFT_PAGE = path.join(ROOT, "src", "nft.html");
+const TOKENS_PAGE = path.join(ROOT, "src", "tokens.html");
+const ANALYTICS_PAGE = path.join(ROOT, "src", "analytics.html");
+const WALLET_PAGE = path.join(ROOT, "src", "wallet.html");
+/** Site themes: each file holds its fonts and colour tokens, then (after the AFTER BASE marker) extras. */
+const THEMES = ["receipt", "arcade", "lunchbag", "notebook"] as const;
+function themeCss(name: string) {
+  const [head, extra = ""] = fs.readFileSync(path.join(ROOT, "src", "web", `theme-${name}.css`), "utf8").split("/* AFTER BASE */");
+  return head + fs.readFileSync(path.join(ROOT, "src", "web", "theme-base.css"), "utf8") + extra;
+}
 const WALLET_JS = path.join(ROOT, "src", "web", "wallet.js");
+const COUNTDOWN_JS = path.join(ROOT, "src", "web", "countdown.js");
 const WEB3_BUNDLE = path.join(ROOT, "node_modules", "@solana", "web3.js", "lib", "index.iife.min.js");
 const opts = { microLamports: cfg.distribution.priorityMicroLamports };
+
+const rewardMint = new PublicKey(CREATOR_REWARD[cfg.network].rewardMint ?? NATIVE_MINT);
+const rewardSymbol = CREATOR_REWARD[cfg.network].rewardMint ? "USDC" : "XNT";
+const rewardDecimals = CREATOR_REWARD[cfg.network].rewardMint ? 6 : 9;
+
+/** Creator rewards for a launch's lock NFT, in whole reward-token units. */
+async function creatorRewards(lockNft: string | null | undefined) {
+  if (!lockNft) return null;
+  const v = await readRewardVault(conn, new PublicKey(cfg.locker!.programId), new PublicKey(lockNft), rewardMint);
+  if (!v) return { claimable: "0", vesting: "0", claimed: "0", nextUnlock: null, nextAmount: "0", symbol: rewardSymbol, decimals: rewardDecimals };
+  const s = rewardSummary(v);
+  return { claimable: s.claimable.toString(), vesting: s.vesting.toString(), claimed: s.totalClaimed.toString(), nextUnlock: s.nextUnlock,
+    nextAmount: s.nextAmount.toString(), symbol: rewardSymbol, decimals: rewardDecimals };
+}
 
 // Starting a launch generates keys and files, so cap it per client address.
 const recent = new Map<string, number[]>();
@@ -91,19 +135,191 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const { ixs, signers } = await buildLockStep(conn, cfg, r);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, signers, opts) };
   }
+  if (url === "/api/launch/receipt") {
+    // Write the lock receipt (JSON + SVG) into the NFT's on-chain metadata.
+    const r = ownLaunch(body);
+    const nft = r.lockNft ?? (await launchStatus(conn, cfg, r)).lockNft;
+    if (!nft) throw new Error("The LP isn't locked yet.");
+    const { ixs } = await buildReceipt(conn, cfg, new PublicKey(r.creator), new PublicKey(nft));
+    return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, noBudget: true }) };
+  }
+  // Withdraw from a lock NFT (any lock, RFLT or a launch): the NFT holder's wallet signs.
+  if (url === "/api/faucet") return faucetClaim(conn, cfg, String(body.wallet), ip);
+  if (url === "/api/faucet/fund") {
+    const from = new PublicKey(String(body.wallet));
+    const ixs = await faucetFundIxs(conn, cfg, from.toBase58(), String(body.tokens ?? ""), String(body.xnt ?? ""));
+    return { tx: await unsignedTx(conn, from, ixs, [], opts) };
+  }
+  if (url === "/api/pass/mint") {
+    const owner = new PublicKey(String(body.owner));
+    const t = findTarget(cfg, String(body.tokenMint));
+    if (!claimsOn(t)) throw new Error("This token pays holders directly; it doesn't use holder passes.");
+    const programId = new PublicKey(cfg.locker!.programId);
+    if (!(await readHolderPool(conn, programId, new PublicKey(t.mint)))) throw new Error("This token's pass pool isn't set up yet; it's created on the next distribution cycle.");
+    const { ixs, signers, passMint } = await buildMintPass(conn, programId, owner, new PublicKey(t.mint), t.symbol);
+    return { tx: await unsignedTx(conn, owner, ixs, signers, opts), passMint: passMint.toBase58() };
+  }
+  if (url === "/api/pass/claim") {
+    const holder = new PublicKey(String(body.holder));
+    const passMint = new PublicKey(String(body.passMint));
+    const programId = new PublicKey(cfg.locker!.programId);
+    const info = await conn.getAccountInfo(passPda(programId, passMint), "confirmed");
+    if (!info) throw new Error("That isn't a holder pass.");
+    const pass = decodePass(passPda(programId, passMint), info.data);
+    const t = findTarget(cfg, pass.tokenMint.toBase58());
+    const cumulative: Record<string, string> = tokenState(t.stateDir).claims?.cumulative ?? {};
+    const earned = BigInt(cumulative[passMint.toBase58()] ?? "0");
+    if (earned <= pass.claimed) throw new Error("Nothing to claim yet: new rewards are added at the next distribution cycle.");
+    const { root, proofs } = buildTree(cumulative);
+    const pool = await readHolderPool(conn, programId, pass.tokenMint);
+    if (!pool || !pool.root.equals(root)) throw new Error("The rewards list is being updated right now; try again in a minute.");
+    const ix = claimPassIx(programId, holder, pass.tokenMint, passMint, earned, proofs[passMint.toBase58()]);
+    return { tx: await unsignedTx(conn, holder, [ix], [], opts), amount: (earned - pass.claimed).toString() };
+  }
+  if (url === "/api/nft/receipt") {
+    // Print or refresh the receipt in any lock NFT; only its update authority can sign.
+    const authority = new PublicKey(String(body.authority));
+    const { ixs } = await buildReceipt(conn, cfg, authority, new PublicKey(String(body.nftMint)));
+    return { tx: await unsignedTx(conn, authority, ixs, [], { ...opts, noBudget: true }) };
+  }
+  if (url === "/api/nft/collect" || url === "/api/nft/claim") {
+    const nft = new PublicKey(String(body.nftMint));
+    const holder = new PublicKey(String(body.holder));
+    if (url === "/api/nft/claim") {
+      const { ixs } = await buildClaimReward(conn, cfg, holder, nft, rewardMint);
+      return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
+    }
+    const d = await receiptData(conn, cfg, nft);
+    if (!d) throw new Error("That isn't an LP-lock NFT from this locker.");
+    const { ixs, summary } = await buildCollect(conn, cfg, holder, nft, false, nftTarget(d));
+    if (!ixs) throw new Error(summary.feeLp > 0n ? "Fees ready are still dust; wait for more trading." : "No trading fees to collect yet.");
+    return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
+  }
   if (url === "/api/launch/register") {
     const r = await registerLaunch(conn, cfg, ownLaunch(body));
     return { registered: !!r.registeredAt };
+  }
+  if (url === "/api/launch/claim-reward") {
+    const r = readLaunch(String(body.mint));
+    if (!r) throw new Error("Unknown launch");
+    const holder = new PublicKey(String(body.holder));
+    const nft = r.lockNft ?? (await launchStatus(conn, cfg, r)).lockNft;
+    if (!nft) throw new Error("This launch has no lock NFT yet.");
+    const { ixs } = await buildClaimReward(conn, cfg, holder, new PublicKey(nft), rewardMint);
+    return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
+  }
+  if (url === "/api/distribute/tip") {
+    const t = findTarget(cfg, String(body.mint));
+    const r = await readiness(conn, cfg, t);
+    if (!r.ready) throw new Error(r.reason ?? "Not ready");
+    const payer = new PublicKey(String(body.payer));
+    return { tx: await unsignedTx(conn, payer, [tipInstruction(payer, t, tipLamports)], [], opts), tipXnt };
+  }
+  if (url === "/api/distribute/run") {
+    const t = findTarget(cfg, String(body.mint));
+    const clicker = await verifyTip(conn, t, String(body.signature), tipLamports);
+    const r = await readiness(conn, cfg, t);
+    if (r.reason && !/Not enough tax/.test(r.reason)) throw new Error(`${r.reason} Your tip was added to this token's gas.`);
+    runCycle(t, clicker);
+    readinessCache.delete(t.mint);
+    return { started: true };
   }
   if (url === "/api/send") return { signature: await sendSigned(conn, String(body.tx)) };
   return null;
 }
 
+/** One lock NFT for the viewer page: its on-chain receipt image (or a preview) and live lock details. */
+async function nftView(mintStr: string) {
+  const nft = new PublicKey(mintStr);
+  const d = await receiptData(conn, cfg, nft);
+  if (!d) throw new Error("That address isn't an LP-lock NFT from this locker.");
+  const [meta, holder] = await Promise.all([
+    getTokenMetadata(conn, nft, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null), nftHolder(conn, nft),
+  ]);
+  const onChain = meta ? receiptImage(meta.uri) : null;
+  // Trading fees this NFT's liquidity has earned, as its current holder would collect them.
+  const fees = holder ? await collectQuote(holder.owner, nft, nftTarget(d)).catch(() => null) : null;
+  return {
+    fees, rewards: await creatorRewards(mintStr),
+    ...d, explorer, name: meta?.name ?? `${d.symbol} LP Lock`,
+    image: onChain ?? `data:image/svg+xml,${encodeURIComponent(receiptSvg(d))}`, printed: !!onChain,
+    // False once the design or the numbers (e.g. pool share) have moved on since it was printed.
+    upToDate: !!onChain && onChain === receiptImage(receiptUri(d)),
+    holder: holder?.owner.toBase58() ?? null, authority: meta?.updateAuthority?.toBase58() ?? null,
+    lock: lockPda(new PublicKey(cfg.locker!.programId), nft).toBase58(),
+  };
+}
+
+/**
+ * Every lock NFT (RFLT and all launches) with what it has earned, in XNT at current pool
+ * prices: trading fees already collected, trading fees ready now, and creator rewards
+ * (claimed, ready and still vesting). One LP unit is worth 2 x reserveXnt / lpSupply.
+ */
+let nftsCache: { at: number; data: Promise<unknown> } | null = null;
+function allNfts() {
+  if (nftsCache && Date.now() - nftsCache.at < 60_000) return nftsCache.data;
+  const data = (async () => {
+    const programId = new PublicKey(cfg.locker!.programId);
+    const out = [];
+    for (const t of targets(cfg)) {
+      const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint));
+      const supply = snap.pool.lpSupply;
+      const lpXnt = (lp: bigint) => (supply > 0n ? (lp * 2n * snap.reserveXnt) / supply : 0n);
+      const sqrtK = isqrt(snap.reserveToken * snap.reserveXnt);
+      for (const l of await listLocks(conn, programId, new PublicKey(t.pool))) {
+        const [lp, holder, meta, rw] = await Promise.all([
+          lockedLp(conn, programId, l.address), nftHolder(conn, l.nftMint),
+          getTokenMetadata(conn, l.nftMint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null), creatorRewards(l.nftMint.toBase58()),
+        ]);
+        const ready = pendingFeeLp(lp, l.principal, sqrtK, supply);
+        const q = holder ? await collectQuote(holder.owner, l.nftMint, { pool: new PublicKey(t.pool), mint: new PublicKey(t.mint), symbol: t.symbol }).catch(() => null) : null;
+        const rewards = rw ? { claimed: rw.claimed, ready: rw.claimable, vesting: rw.vesting, nextUnlock: rw.nextUnlock, nextAmount: rw.nextAmount, symbol: rw.symbol, decimals: rw.decimals } : null;
+        const feesCollected = lpXnt(l.feeLpCollected), feesReady = lpXnt(ready);
+        // Rewards are XNT on testnet; on mainnet (USDC) they're listed separately, not added in.
+        const rewardXnt = rw && rw.symbol === "XNT" ? BigInt(rw.claimed) + BigInt(rw.claimable) + BigInt(rw.vesting) : 0n;
+        out.push({
+          nftMint: l.nftMint.toBase58(), symbol: t.symbol, tokenName: t.name, tokenMint: t.mint,
+          name: meta?.name ?? `${t.symbol} LP Lock`, receipt: meta ? receiptImage(meta.uri) : null,
+          holder: holder?.owner.toBase58() ?? null, lockedAt: l.lockedAt, unlockAt: l.unlockAt,
+          lp: lp.toString(), lpSharePct: supply > 0n ? Number((lp * 1_000_000n) / supply) / 10_000 : 0, valueXnt: lpXnt(lp).toString(),
+          earned: { feesCollectedXnt: feesCollected.toString(), feesReadyXnt: feesReady.toString(), rewards, totalXnt: (feesCollected + feesReady + rewardXnt).toString(),
+            collectFeeXnt: q?.networkFee ?? null, collectable: q?.collectable ?? false },
+        });
+      }
+    }
+    return out.sort((a, b) => Number(BigInt(b.earned.totalXnt) - BigInt(a.earned.totalXnt)));
+  })();
+  data.catch(() => { nftsCache = null; });
+  nftsCache = { at: Date.now(), data };
+  return data;
+}
+
+/**
+ * Trading fees an NFT's holder could collect now, the network fee to collect them, and
+ * whether collecting is worth it (fees ready > network fee).
+ */
+async function collectQuote(holder: PublicKey, nft: PublicKey, where: { pool: PublicKey; mint: PublicKey; symbol: string }) {
+  const { ixs, summary: s } = await buildCollect(conn, cfg, holder, nft, true, where);
+  const fee = ixs ? await networkFee(conn, holder, ixs, opts).catch(() => null) : null;
+  return {
+    xnt: s.xntOut.toString(), tokens: s.tokenOut.toString(), worth: s.worth.toString(),
+    networkFee: fee === null ? null : fee.toString(),
+    collectable: s.feeLp > 0n && s.worth >= DUST_LAMPORTS && (fee === null || s.worth > fee),
+  };
+}
+
+const nftTarget = (d: { pool: string; tokenMint: string; symbol: string }) =>
+  ({ pool: new PublicKey(d.pool), mint: new PublicKey(d.tokenMint), symbol: d.symbol });
+
 async function get(url: URL) {
+  if (url.pathname === "/api/nfts") return allNfts();
+  const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
+  if (nftApi) return nftView(nftApi[1]);
   if (url.pathname === "/api/info") {
     const ammInfo = await conn.getAccountInfo(new PublicKey(XDEX_CREATE[cfg.network].ammConfig));
     return {
-      network: cfg.network, explorer, feeUsdc: f!.feeUsdc, feeMint: FEE_USDC[cfg.network], feeReceiver: f!.feeReceiver,
+      network: cfg.network, explorer, feeAmount: launchFee(cfg).amount, feeSymbol: launchFee(cfg).symbol, feeMint: launchFee(cfg).mint, feeReceiver: f!.feeReceiver,
+      creatorBps: CREATOR_BPS, creatorRewardSymbol: rewardSymbol,
       gasXnt: f!.gasXnt ?? "0.05", poolCreateFeeXnt: ammInfo ? Number(ammInfo.data.readBigUInt64LE(36)) / 1e9 : null,
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
     };
@@ -111,11 +327,57 @@ async function get(url: URL) {
   if (url.pathname === "/api/launches") {
     const creator = new PublicKey(url.searchParams.get("creator") ?? "").toBase58();
     const mine = listLaunches().filter((r) => r.creator === creator).slice(0, 20);
-    return Promise.all(mine.map(async (r) => ({ ...publicView(r), status: await launchStatus(conn, cfg, r) })));
+    return Promise.all(mine.map(async (r) => {
+      const status = await launchStatus(conn, cfg, r);
+      const nft = r.lockNft ?? status.lockNft;
+      const nftMeta = nft ? await getTokenMetadata(conn, new PublicKey(nft), "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null) : null;
+      // Trading fees the lock NFT can collect now, and who holds it (only they can collect).
+      let fees = null;
+      if (nft) {
+        const holder = await nftHolder(conn, new PublicKey(nft));
+        if (holder) {
+          const q = await collectQuote(holder.owner, new PublicKey(nft), { pool: new PublicKey(r.pool), mint: new PublicKey(r.mint), symbol: r.symbol }).catch(() => null);
+          if (q) fees = { ...q, holder: holder.owner.toBase58() };
+        }
+      }
+      return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? receiptImage(nftMeta.uri) : null, rewards: await creatorRewards(nft), fees };
+    }));
   }
   if (url.pathname === "/api/tokens") return registeredLaunches().map((r) => ({ ...publicView(r), paid: tokenPayouts(r.mint) }));
   if (url.pathname === "/api/stats") return stats();
+  if (url.pathname === "/api/token-list") return tokenList();
+  if (url.pathname === "/api/faucet") return faucetStatus(conn, cfg, url.searchParams.get("wallet") ?? undefined);
+  const wp = /^\/api\/passes\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
+  if (wp) return walletPasses(new PublicKey(wp[1]).toBase58());
+  const wv = /^\/api\/wallet\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
+  if (wv) return walletView(wv[1]);
+  const ts = /^\/api\/token\/([1-9A-HJ-NP-Za-km-z]{32,44})\/stats$/.exec(url.pathname);
+  if (ts) return tokenStats(ts[1]);
+  if (url.pathname === "/api/analytics") return analytics();
+  if (url.pathname === "/api/distribute/list") {
+    const list = await Promise.all(targets(cfg).map((t) => cachedReadiness(t.mint)));
+    return { tipXnt, rewardPct: (cfg.distribution.clickerRewardBps ?? 100) / 100, rewardCapXnt: cfg.distribution.clickerRewardCapXnt ?? "0.05", cooldownMinutes: 10, tokens: list };
+  }
+  if (url.pathname === "/api/distribute/status") {
+    const t = findTarget(cfg, url.searchParams.get("mint") ?? "");
+    return readiness(conn, cfg, t);
+  }
   return null;
+}
+
+const tipXnt = f.tipXnt ?? "0.005";
+const tipLamports = toBaseUnits(tipXnt, 9);
+// Readiness scans every holder account, so cache it briefly per token.
+const readinessCache = new Map<string, { at: number; data: Promise<Awaited<ReturnType<typeof readiness>>> }>();
+function cachedReadiness(mint: string) {
+  const hit = readinessCache.get(mint);
+  if (hit && Date.now() - hit.at < 20_000) return hit.data;
+  const data = readiness(conn, cfg, findTarget(cfg, mint)).catch((e) => {
+    readinessCache.delete(mint);
+    return { mint, symbol: "?", name: "?", decimals: 9, waiting: "0", worthLamports: "0", thresholdLamports: "0", holders: 0, ready: false, reason: String(e instanceof Error ? e.message : e), lastRun: null };
+  });
+  readinessCache.set(mint, { at: Date.now(), data });
+  return data;
 }
 
 /** Totals from one launched token's distributor activity log. */
@@ -134,6 +396,290 @@ function tokenPayouts(mint: string) {
     }
   }
   return { xntPaid: out.xntPaid.toString(), xntToLiquidity: out.xntToLiquidity.toString(), burned: out.burned.toString(), wallets: out.wallets.size, payouts: out.payouts };
+}
+
+// ---------- Holder passes ----------
+
+/** A token's distributor state file (published pass totals live here). */
+function tokenState(stateDir: string): any {
+  const f = path.join(stateDir, "distributor-state.json");
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : {};
+}
+const tokenConfig = (t: ReturnType<typeof targets>[number]) => JSON.parse(fs.readFileSync(t.configPath, "utf8")) as Config;
+const claimsOn = (t: ReturnType<typeof targets>[number]) => tokenConfig(t).distribution.holderRewards === "claims";
+
+/**
+ * A wallet's holder passes across every claims-mode token: what each has earned in the
+ * latest published root, claimed so far, claimable now, and credited but not yet published.
+ * Also lists claims-mode tokens the wallet could mint a pass for.
+ */
+async function walletPasses(owner: string) {
+  const programId = new PublicKey(cfg.locker!.programId);
+  const out = { passes: [] as any[], mintable: [] as any[] };
+  for (const t of targets(cfg)) {
+    if (!claimsOn(t)) continue;
+    const mint = new PublicKey(t.mint);
+    const pool = await readHolderPool(conn, programId, mint).catch(() => null);
+    const st = tokenState(t.stateDir);
+    const published: Record<string, string> = st.claims?.cumulative ?? {};
+    const owed: Record<string, string> = st.owed ?? {};
+    const mine = [];
+    for (const p of await listPasses(conn, programId, mint)) {
+      const h = await nftHolder(conn, p.passMint);
+      if (h?.owner.toBase58() !== owner) continue;
+      const key = p.passMint.toBase58();
+      const earned = BigInt(published[key] ?? "0");
+      mine.push({
+        tokenMint: t.mint, symbol: t.symbol, name: t.name, passMint: key,
+        earned: earned.toString(), claimed: p.claimed.toString(), claimable: (earned > p.claimed ? earned - p.claimed : 0n).toString(),
+        pending: owed["pass:" + key] ?? "0", mintedAt: p.createdAt,
+      });
+    }
+    out.passes.push(...mine);
+    if (!mine.length) out.mintable.push({ tokenMint: t.mint, symbol: t.symbol, name: t.name, poolReady: !!pool });
+  }
+  return out;
+}
+
+/** Every event a token's distributor logged (payouts, auto-LP, burns, rewards…). */
+function tokenEvents(stateDir: string): Record<string, any>[] {
+  const file = path.join(stateDir, "events.jsonl");
+  if (!fs.existsSync(file)) return [];
+  const out = [];
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    if (!line) continue;
+    try { out.push(JSON.parse(line)); } catch { /* skip a torn line */ }
+  }
+  return out;
+}
+
+/** Tax split for any target: a launch's own record, or config.json for the main token. */
+function targetInfo(t: ReturnType<typeof targets>[number]) {
+  const r = readLaunch(t.mint);
+  if (r) {
+    const liquidity = r.autoLpBps / 100, burn = (r.burnBps ?? 0) / 100, creator = CREATOR_BPS / 100;
+    return { taxPct: r.taxBps / 100, split: { holders: 100 - liquidity - burn - creator, liquidity, burn, creator }, supply: r.supply,
+      image: r.image || null, description: r.description || "", lockNft: r.lockNft ?? null, createdAt: r.registeredAt ?? r.createdAt, launched: true };
+  }
+  const d = cfg.distribution;
+  const liquidity = (d.autoLpBps ?? 0) / 100, burn = (d.burnBps ?? 0) / 100, creator = (d.creatorBps ?? 0) / 100;
+  return { taxPct: cfg.token.feeBps / 100, split: { holders: 100 - liquidity - burn - creator, liquidity, burn, creator }, supply: cfg.token.supply,
+    image: null, description: "", lockNft: cfg.creatorReward?.nftMint ?? null, createdAt: null, launched: false };
+}
+
+/** Totals from one token's event log, in base units. */
+function eventTotals(events: Record<string, any>[]) {
+  const t = { holdersXnt: 0n, liquidityXnt: 0n, creatorXnt: 0n, clickerXnt: 0n, burned: 0n, payouts: 0, wallets: new Set<string>(), lastRun: null as string | null };
+  for (const e of events) {
+    if (e.kind === "payout") { t.holdersXnt += BigInt(e.total ?? 0); t.payouts++; for (const [w] of e.payments ?? []) t.wallets.add(w); }
+    else if (e.kind === "auto-lp") t.liquidityXnt += BigInt(e.xnt ?? 0);
+    else if (e.kind === "creator-reward") t.creatorXnt += BigInt(e.amount ?? 0);
+    else if (e.kind === "clicker-reward") t.clickerXnt += BigInt(e.xnt ?? 0);
+    else if (e.kind === "burn") t.burned += BigInt(e.tokens ?? 0);
+    if (e.at && (!t.lastRun || e.at > t.lastRun)) t.lastRun = e.at;
+  }
+  return t;
+}
+
+/** The Tokens page: every token with live price and liquidity plus what it has paid out. */
+let tokenListCache: { at: number; data: Promise<unknown> } | null = null;
+function tokenList() {
+  if (tokenListCache && Date.now() - tokenListCache.at < 30_000) return tokenListCache.data;
+  const data = Promise.all(targets(cfg).map(async (t) => {
+    const info = targetInfo(t);
+    const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint)).catch(() => null);
+    const e = eventTotals(tokenEvents(t.stateDir));
+    const st = await (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null);
+    return {
+      mint: t.mint, symbol: t.symbol, name: t.name, pool: t.pool, ...info, yield: st?.yield ?? null, holderPass: claimsOn(t),
+      priceXnt: snap && snap.reserveToken > 0n ? Number(snap.reserveXnt) / Number(snap.reserveToken) : null,
+      liquidityXnt: snap ? (2n * snap.reserveXnt).toString() : null,
+      holdersXnt: e.holdersXnt.toString(), liquidityAddedXnt: e.liquidityXnt.toString(), creatorXnt: e.creatorXnt.toString(),
+      burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun,
+    };
+  }));
+  data.catch(() => { tokenListCache = null; });
+  tokenListCache = { at: Date.now(), data };
+  return data;
+}
+
+/** The Analytics page: platform totals, activity per day, per-token breakdown, recent events. */
+let analyticsCache: { at: number; data: unknown } | null = null;
+function analytics() {
+  if (analyticsCache && Date.now() - analyticsCache.at < 30_000) return analyticsCache.data;
+  const days = new Map<string, { holders: bigint; liquidity: bigint; creator: bigint }>();
+  const wallets = new Set<string>();
+  const perToken = [];
+  const recent: Record<string, unknown>[] = [];
+  const total = { holdersXnt: 0n, liquidityXnt: 0n, creatorXnt: 0n, clickerXnt: 0n, payouts: 0, burns: 0 };
+  for (const t of targets(cfg)) {
+    const events = tokenEvents(t.stateDir);
+    const e = eventTotals(events);
+    for (const w of e.wallets) wallets.add(w);
+    total.holdersXnt += e.holdersXnt; total.liquidityXnt += e.liquidityXnt; total.creatorXnt += e.creatorXnt; total.clickerXnt += e.clickerXnt;
+    total.payouts += e.payouts; total.burns += events.filter((x) => x.kind === "burn").length;
+    perToken.push({ symbol: t.symbol, mint: t.mint, holdersXnt: e.holdersXnt.toString(), liquidityXnt: e.liquidityXnt.toString(),
+      creatorXnt: e.creatorXnt.toString(), burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun });
+    for (const x of events) {
+      if (!x.at) continue;
+      const hour = String(x.at).slice(0, 13); // YYYY-MM-DDTHH; the page groups by day for long spans
+      const b = days.get(hour) ?? { holders: 0n, liquidity: 0n, creator: 0n };
+      if (x.kind === "payout") b.holders += BigInt(x.total ?? 0);
+      else if (x.kind === "auto-lp") b.liquidity += BigInt(x.xnt ?? 0);
+      else if (x.kind === "creator-reward") b.creator += BigInt(x.amount ?? 0);
+      days.set(hour, b);
+      if (["payout", "auto-lp", "burn", "creator-reward", "clicker-reward"].includes(x.kind)) {
+        recent.push({ at: x.at, kind: x.kind, symbol: t.symbol, signature: x.signature ?? null,
+          xnt: x.kind === "payout" ? String(x.total ?? 0) : x.kind === "creator-reward" ? String(x.amount ?? 0) : x.xnt ?? null,
+          tokens: x.kind === "burn" ? String(x.tokens ?? 0) : null, wallets: x.kind === "payout" ? (x.payments ?? []).length : null });
+      }
+    }
+  }
+  const data = {
+    tokens: perToken.length, launches: registeredLaunches().length, walletsPaid: wallets.size,
+    holdersXnt: total.holdersXnt.toString(), liquidityXnt: total.liquidityXnt.toString(), creatorXnt: total.creatorXnt.toString(),
+    clickerXnt: total.clickerXnt.toString(), payouts: total.payouts, burns: total.burns,
+    hourly: [...days.entries()].sort(([a], [b]) => a.localeCompare(b))
+      .map(([hour, v]) => ({ hour, holders: v.holders.toString(), liquidity: v.liquidity.toString(), creator: v.creator.toString() })),
+    perToken: perToken.sort((a, b) => Number(BigInt(b.holdersXnt) - BigInt(a.holdersXnt))),
+    recent: recent.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20),
+  };
+  analyticsCache = { at: Date.now(), data };
+  return data;
+}
+
+/**
+ * Holder yield: XNT paid to holders over the last 7 days (or since the first activity,
+ * if newer; never less than one day), spread over the tokens that earn payouts now.
+ * Gives XNT per 1,000 tokens per day and a simple (non-compounding) yearly % at today's
+ * price. It is a trailing estimate, not a promise: payouts follow trading volume.
+ */
+const YIELD_WINDOW_DAYS = 7;
+function holderYield(events: Record<string, any>[], eligible: bigint, decimals: number, priceXnt: number | null, since: string | null) {
+  const now = Date.now();
+  const first = [since, ...events.map((e) => e.at)].filter(Boolean).map((a) => Date.parse(a as string)).filter(Number.isFinite);
+  const start = Math.max(now - YIELD_WINDOW_DAYS * 86_400_000, first.length ? Math.min(...first) : now);
+  const days = Math.max(1, (now - start) / 86_400_000);
+  let paid = 0n;
+  for (const e of events) if (e.kind === "payout" && e.at && Date.parse(e.at) >= start) paid += BigInt(e.total ?? 0);
+  const xntPerDay = Number(paid) / 1e9 / days;
+  const eligibleTokens = Number(eligible) / 10 ** decimals;
+  const perTokenPerDay = eligibleTokens > 0 ? xntPerDay / eligibleTokens : 0;
+  return {
+    windowDays: Math.round(days * 10) / 10, paidXnt: paid.toString(), xntPerDay,
+    per1000PerDay: perTokenPerDay * 1000,
+    aprPct: priceXnt && priceXnt > 0 && perTokenPerDay > 0 ? (perTokenPerDay * 365 / priceXnt) * 100 : null,
+  };
+}
+
+/**
+ * One token's stats for the NFT page: supply burned, liquidity added, payouts, and every
+ * holder with balance, share, XNT received and whether they currently earn payouts.
+ */
+const tokenStatsCache = new Map<string, { at: number; data: Promise<unknown> }>();
+function tokenStats(mintStr: string) {
+  const hit = tokenStatsCache.get(mintStr);
+  if (hit && Date.now() - hit.at < 30_000) return hit.data;
+  const data = (async () => {
+    const t = findTarget(cfg, mintStr);
+    const mint = new PublicKey(t.mint);
+    const info = targetInfo(t);
+    const dc = (JSON.parse(fs.readFileSync(t.configPath, "utf8")) as Config).distribution;
+    const [rows, mintInfo, snap] = await Promise.all([scanTokenAccounts(conn, mint), conn.getAccountInfo(mint, "confirmed"),
+      snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), mint).catch(() => null)]);
+    const m = unpackMint(mint, mintInfo, TOKEN_2022_PROGRAM_ID);
+    const events = tokenEvents(t.stateDir);
+    const e = eventTotals(events);
+    // XNT each wallet has received from payouts.
+    const paid = new Map<string, bigint>();
+    for (const x of events) if (x.kind === "payout") for (const [w, amt] of x.payments ?? []) paid.set(w, (paid.get(w) ?? 0n) + BigInt(amt));
+
+    // "Distribute now" rewards each wallet has earned.
+    const clicker = new Map<string, bigint>();
+    for (const x of events) if (x.kind === "clicker-reward" && x.wallet) clicker.set(x.wallet, (clicker.get(x.wallet) ?? 0n) + BigInt(x.xnt ?? 0));
+    const pool = poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58();
+    const launch = readLaunch(t.mint);
+    const labels = new Map<string, string>([[pool, "XDEX pool"], [t.distributor, "Distributor"], ...BURN_OWNERS.map((b) => [b, "Burn address"] as [string, string])]);
+    if (launch) labels.set(launch.creator, "Creator");
+    const excluded = new Set([...dc.excludeOwners, ...BURN_OWNERS, t.distributor, pool]);
+    const minHolding = toBaseUnits(dc.minHoldingTokens, m.decimals);
+    const earning = eligibleBalances(rows, { excluded, excludeOffCurve: dc.excludeOffCurveOwners, minHolding });
+
+    const perOwner = new Map<string, bigint>();
+    for (const r of rows) if (r.amount > 0n) perOwner.set(r.owner, (perOwner.get(r.owner) ?? 0n) + r.amount);
+    for (const w of paid.keys()) if (!perOwner.has(w)) perOwner.set(w, 0n); // sold out, but was paid
+    let earningTotal = 0n;
+    for (const b of earning.values()) earningTotal += b;
+    const valueOf = (bal: bigint) => (snap && snap.reserveToken > 0n ? (bal * snap.reserveXnt) / snap.reserveToken : 0n);
+    const holders = [...perOwner.entries()].map(([owner, bal]) => {
+      const offCurve = !PublicKey.isOnCurve(new PublicKey(owner).toBytes());
+      const status = earning.has(owner) ? "earning"
+        : excluded.has(owner) ? "excluded"
+        : bal === 0n ? "sold"
+        : offCurve && dc.excludeOffCurveOwners ? "program"
+        : "below-minimum";
+      return { owner, label: labels.get(owner) ?? null, balance: bal.toString(), pct: m.supply > 0n ? Number((bal * 1_000_000n) / m.supply) / 10_000 : 0,
+        paidXnt: (paid.get(owner) ?? 0n).toString(), status, valueXnt: valueOf(bal).toString(),
+        // Share of the next payout: payouts split by eligible balance.
+        payoutSharePct: earning.has(owner) && earningTotal > 0n ? Number((earning.get(owner)! * 1_000_000n) / earningTotal) / 10_000 : 0,
+        clickerXnt: (clicker.get(owner) ?? 0n).toString() };
+    }).sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : BigInt(b.balance) < BigInt(a.balance) ? -1 : 0));
+
+    const original = toBaseUnits(info.supply, m.decimals);
+    const priceXnt = snap && snap.reserveToken > 0n ? Number(snap.reserveXnt) / Number(snap.reserveToken) : null;
+    const yieldInfo = holderYield(events, earningTotal, m.decimals, priceXnt, info.createdAt);
+    const poolTokens = perOwner.get(pool) ?? 0n;
+    const payoutSeries = events.filter((x) => x.kind === "payout" && x.at).map((x) => ({ at: x.at, xnt: String(x.total ?? 0) }))
+      .sort((a, b) => a.at.localeCompare(b.at));
+    const burnedTotal = original > m.supply ? original - m.supply : 0n; // every burn, tax or otherwise
+    return {
+      mint: t.mint, symbol: t.symbol, name: t.name, decimals: m.decimals, taxPct: info.taxPct, split: info.split,
+      supply: m.supply.toString(), originalSupply: original.toString(),
+      // Spot price from the pool reserves (XNT per whole token), market cap and pool depth.
+      priceXnt, yield: yieldInfo,
+      marketCapXnt: snap && snap.reserveToken > 0n ? ((m.supply * snap.reserveXnt) / snap.reserveToken).toString() : null,
+      poolXnt: snap ? (2n * snap.reserveXnt).toString() : null,
+      launchPriceXnt: launch && Number(launch.poolTokens) > 0 ? Number(launch.poolXnt) / Number(launch.poolTokens) : null,
+      // Where the original supply sits now.
+      breakdown: {
+        pool: poolTokens.toString(), earning: earningTotal.toString(),
+        other: (m.supply > poolTokens + earningTotal ? m.supply - poolTokens - earningTotal : 0n).toString(),
+      },
+      payoutSeries,
+      burned: burnedTotal.toString(), burnedPct: original > 0n ? Number((burnedTotal * 1_000_000n) / original) / 10_000 : 0, taxBurned: e.burned.toString(),
+      liquidityXnt: e.liquidityXnt.toString(), holdersXnt: e.holdersXnt.toString(), creatorXnt: e.creatorXnt.toString(),
+      payouts: e.payouts, walletsPaid: e.wallets.size, earning: earning.size, minHolding: dc.minHoldingTokens, lastRun: e.lastRun,
+      holders,
+    };
+  })();
+  data.catch(() => tokenStatsCache.delete(mintStr));
+  tokenStatsCache.set(mintStr, { at: Date.now(), data });
+  return data;
+}
+
+/**
+ * Everything one wallet has earned across every token: holdings, XNT received, clicker
+ * rewards, estimated earnings per day at the current yield, and lock NFTs it holds with
+ * fees and creator rewards waiting.
+ */
+async function walletView(addr: string) {
+  const owner = new PublicKey(addr).toBase58();
+  const tokens = [];
+  for (const t of targets(cfg)) {
+    const s = await (tokenStats(t.mint) as Promise<any>).catch(() => null);
+    if (!s) continue;
+    const h = s.holders.find((x: any) => x.owner === owner);
+    if (!h) continue;
+    const bal = Number(BigInt(h.balance)) / 10 ** s.decimals;
+    tokens.push({
+      mint: t.mint, symbol: t.symbol, name: t.name, lockNft: targetInfo(t).lockNft, decimals: s.decimals,
+      balance: h.balance, pct: h.pct, valueXnt: h.valueXnt, paidXnt: h.paidXnt, clickerXnt: h.clickerXnt, status: h.status,
+      payoutSharePct: h.payoutSharePct, priceXnt: s.priceXnt, yield: s.yield, minHolding: s.minHolding,
+      estPerDayXnt: h.status === "earning" && s.yield ? (s.yield.per1000PerDay / 1000) * bal : 0,
+    });
+  }
+  const nfts = ((await allNfts()) as any[]).filter((n) => n.holder === owner);
+  return { wallet: owner, explorer, tokens, nfts };
 }
 
 /** Headline numbers for the landing page, across every launched token. */
@@ -160,7 +706,8 @@ function stats() {
 function publicView(r: ReturnType<typeof listLaunches>[number]) {
   const { mint, name, symbol, description, image, supply, taxBps, autoLpBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor } = r;
   const burnBps = r.burnBps ?? 0;
-  return { mint, name, symbol, description, image, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor };
+  return { mint, name, symbol, description, image, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor,
+    lockNft: r.lockNft ?? null, creatorExcluded: creatorExcluded(r) };
 }
 
 const send = (res: http.ServerResponse, code: number, body: unknown, type = "application/json") =>
@@ -180,7 +727,26 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") { send(res, 200, fs.readFileSync(LANDING, "utf8"), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/tokens") { send(res, 200, fs.readFileSync(TOKENS_PAGE, "utf8"), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/wallet" || /^\/wallet\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname)) {
+      send(res, 200, fs.readFileSync(WALLET_PAGE, "utf8"), "text/html; charset=utf-8"); return;
+    }
+    if (url.pathname === "/analytics") { send(res, 200, fs.readFileSync(ANALYTICS_PAGE, "utf8"), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/nft" || /^\/nft\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname)) {
+      send(res, 200, fs.readFileSync(NFT_PAGE, "utf8"), "text/html; charset=utf-8"); return;
+    }
     if (url.pathname === "/launch") { send(res, 200, fs.readFileSync(PAGE, "utf8"), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/theme.js") {
+      send(res, 200, `const SITE_THEME = ${JSON.stringify(f!.theme ?? "receipt")};\n` + fs.readFileSync(path.join(ROOT, "src", "web", "theme.js"), "utf8"), "text/javascript; charset=utf-8");
+      return;
+    }
+    const themeReq = /^\/theme(?:-(\w+))?\.css$/.exec(url.pathname);
+    if (themeReq) {
+      const name = themeReq[1] ?? f!.theme ?? "receipt";
+      if (!(THEMES as readonly string[]).includes(name)) { res.writeHead(404).end("Not found"); return; }
+      send(res, 200, themeCss(name), "text/css; charset=utf-8"); return;
+    }
+    if (url.pathname === "/countdown.js") { send(res, 200, fs.readFileSync(COUNTDOWN_JS, "utf8"), "text/javascript"); return; }
     if (url.pathname === "/wallet.js") { send(res, 200, fs.readFileSync(WALLET_JS, "utf8"), "text/javascript"); return; }
     if (url.pathname === "/vendor/web3.js") { res.writeHead(200, { "content-type": "text/javascript", "cache-control": "max-age=3600" }).end(fs.readFileSync(WEB3_BUNDLE)); return; }
     const meta = /^\/meta\/([1-9A-HJ-NP-Za-km-z]{32,44})\.json$/.exec(url.pathname);

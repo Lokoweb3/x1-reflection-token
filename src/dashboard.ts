@@ -25,8 +25,9 @@ import { ROOT, connection, loadConfig, loadKeypair, requireMint, toBaseUnits } f
 import { BURN_OWNERS, eligibleBalances, scanTokenAccounts } from "./holders.js";
 import { loadState, lockHolder, readEvents, totalOwed } from "./state.js";
 import { poolAuthority, snapshot } from "./xdex.js";
-import { isqrt, listLocks, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
-import { buildCollect, buildLock, buildUnlock, walletLp } from "./locker-tx.js";
+import { isqrt, listLocks, lockedLp, nftHolder, pendingFeeLp, readRewardVault, rewardSummary } from "./locker.js";
+import { buildClaimReward, buildCollect, buildLock, buildReceipt, buildUnlock, receiptImage, walletLp } from "./locker-tx.js";
+import { NATIVE_MINT, getTokenMetadata } from "@solana/spl-token";
 
 const cfg = loadConfig();
 const conn = connection(cfg);
@@ -110,12 +111,26 @@ async function nftLocks(reserveToken: bigint, reserveXnt: bigint, supply: bigint
   return {
     programId: programId.toBase58(),
     locks: await Promise.all(locks.map(async (l) => {
-      const [lp, holder] = await Promise.all([lockedLp(conn, programId, l.address), nftHolder(conn, l.nftMint)]);
+      const [lp, holder, nftMeta] = await Promise.all([lockedLp(conn, programId, l.address), nftHolder(conn, l.nftMint),
+        getTokenMetadata(conn, l.nftMint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null)]);
       const fee = pendingFeeLp(lp, l.principal, sqrtK, supply);
+      const cr = cfg.creatorReward;
+      let rewards = null;
+      if (cr?.nftMint === l.nftMint.toBase58()) {
+        const rewardMint = new PublicKey(cr.rewardMint ?? NATIVE_MINT);
+        const v = await readRewardVault(conn, programId, l.nftMint, rewardMint);
+        const sum = v ? rewardSummary(v) : null;
+        rewards = {
+          symbol: cr.rewardMint ? "USDC" : "XNT", decimals: cr.rewardMint ? 6 : 9,
+          claimable: (sum?.claimable ?? 0n).toString(), vesting: (sum?.vesting ?? 0n).toString(),
+          claimed: (sum?.totalClaimed ?? 0n).toString(), nextUnlock: sum?.nextUnlock ?? null,
+        };
+      }
       return {
         address: l.address.toBase58(), nftMint: l.nftMint.toBase58(), holder: holder?.owner.toBase58() ?? null,
         lp: lp.toString(), lockedAt: l.lockedAt, unlockAt: l.unlockAt, feeLpCollected: l.feeLpCollected.toString(),
         feeLp: fee.toString(), feeXnt: ((reserveXnt * fee) / supply).toString(), feeTokens: ((reserveToken * fee) / supply).toString(),
+        rewards, receipt: nftMeta ? receiptImage(nftMeta.uri) : null, nftAuthority: nftMeta?.updateAuthority?.toBase58() ?? null,
       };
     })),
   };
@@ -131,7 +146,9 @@ async function data() {
     config: {
       network: cfg.network, symbol: cfg.token.symbol, name: cfg.token.name, mint: mint.toBase58(),
       pool: cfg.xdex.pool, distributor: distributor.toBase58(), explorer,
-      autoLpBps: cfg.distribution.autoLpBps ?? 0, burnBps: cfg.distribution.burnBps ?? 0, minPayoutXnt: cfg.distribution.minPayoutXnt,
+      // The public NFT viewer lives on the launch site (npm run factory:start).
+      nftViewer: cfg.factory ? `${(cfg.factory.publicUrl ?? `http://127.0.0.1:${cfg.factory.port ?? 8124}`).replace(/\/$/, "")}/nft/` : null,
+      autoLpBps: cfg.distribution.autoLpBps ?? 0, burnBps: cfg.distribution.burnBps ?? 0, creatorBps: cfg.distribution.creatorBps ?? 0, minPayoutXnt: cfg.distribution.minPayoutXnt,
     },
     state: {
       owed: s.owed, owedTotal: totalOwed(s).toString(), lp: s.lp, inflight: s.inflight,
@@ -172,11 +189,24 @@ async function action(url: string, body: Record<string, unknown>) {
     const { ixs, signers, summary } = await buildLock(conn, cfg, owner, amount, unlockAt);
     return { tx: await unsignedTx(owner, ixs, signers), nftMint: summary.nftMint.toBase58(), lp: summary.lp.toString() };
   }
+  if (url === "/api/tx/receipt") {
+    const authority = new PublicKey(String(body.authority));
+    const { ixs } = await buildReceipt(conn, cfg, authority, new PublicKey(String(body.nftMint)));
+    // No priority-fee instructions: the receipt needs the room.
+    return { tx: await walletUnsignedTx(conn, authority, ixs, [], { microLamports: 0, noBudget: true }) };
+  }
   if (url === "/api/tx/collect") {
     const holder = new PublicKey(String(body.holder));
     const { ixs, summary } = await buildCollect(conn, cfg, holder, new PublicKey(String(body.nftMint)));
     if (!ixs) throw new Error(summary.feeLp > 0n ? "Fees ready are still dust; wait for more trading." : "No trading fees to collect yet.");
     return { tx: await unsignedTx(holder, ixs), xnt: summary.xntOut.toString(), tokens: summary.tokenOut.toString() };
+  }
+  if (url === "/api/tx/claim-reward") {
+    const holder = new PublicKey(String(body.holder));
+    const cr = cfg.creatorReward;
+    if (!cr?.nftMint) throw new Error("Creator rewards aren't configured for this token.");
+    const { ixs } = await buildClaimReward(conn, cfg, holder, new PublicKey(cr.nftMint), new PublicKey(cr.rewardMint ?? NATIVE_MINT));
+    return { tx: await unsignedTx(holder, ixs) };
   }
   if (url === "/api/tx/unlock") {
     const holder = new PublicKey(String(body.holder));

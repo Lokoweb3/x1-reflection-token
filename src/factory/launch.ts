@@ -23,19 +23,42 @@ import {
   getTransferFeeConfig, unpackMint,
 } from "@solana/spl-token";
 import { createInitializeInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
-import { Config, FACTORY_DIR, ROOT, toBaseUnits } from "../config.js";
+import { Config, FACTORY_DIR, ROOT, fromBaseUnits, toBaseUnits } from "../config.js";
 import { buildCreatePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 
 const U64_MAX = 2n ** 64n - 1n;
 export const DECIMALS = 9;
+/** Every factory token pays its creator this share of the tax (vests 7 days, claimed with the lock NFT). */
+export const CREATOR_BPS = 1000;
+/** Liquidity + burn cap: with the creator's share, holders always get at least 35% of the tax. */
+export const MAX_LP_PLUS_BURN_BPS = 6500 - CREATOR_BPS;
+/** Creator rewards are paid in USDC.X on mainnet (swapped on this XNT/USDC.X pool) and in XNT on testnet. */
+export const CREATOR_REWARD: Record<"mainnet" | "testnet", { rewardMint?: string; swapPool?: string }> = {
+  mainnet: { rewardMint: "B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq", swapPool: "CAJeVEoSm1QQZccnCqYu9cnNF7TTD2fcUA3E5HQoxRvR" },
+  testnet: {},
+};
 
 /** USDC used for the launch fee (mainnet: USDC.X; testnet: the USDC with an XDEX testnet pool). */
 export const FEE_USDC: Record<"mainnet" | "testnet", string> = {
   mainnet: "B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq",
   testnet: "4dr9zMDzp4TY3ikZmsqF2ikSkmtWiCwWYJ9xJx1h2KsU",
 };
+
+/**
+ * The launch fee. Mainnet always charges factory.feeUsdc in USDC (USDC.X). factory.feeToken
+ * (e.g. XNM) is a testnet-only override and is ignored on mainnet, so switching the
+ * network can't leave the site charging a testnet token.
+ */
+export function launchFee(cfg: Config) {
+  const f = cfg.factory!;
+  if (cfg.network === "testnet" && f.feeToken) return f.feeToken;
+  return { mint: FEE_USDC[cfg.network], symbol: "USDC", amount: f.feeUsdc };
+}
+
+/** Smallest balance that earns payouts: one millionth of the supply (RFLT: 1,000 of 1B). */
+export const minHoldingFor = (supply: string) => fromBaseUnits(toBaseUnits(supply, DECIMALS) / 1_000_000n, DECIMALS);
 
 export interface LaunchParams {
   creator: string;
@@ -46,8 +69,8 @@ export interface LaunchParams {
   supply: string;        // whole tokens
   taxBps: number;        // 100..1000 (1–10%)
   autoLpBps: number;     // 0..5000 share of the tax that goes to auto-LP
-  burnBps: number;       // 0..5000 share of the tax that is burned (auto-LP + burn <= 90%)
-  poolTokens: string;    // whole tokens seeded into the pool
+  burnBps: number;       // 0..5000 share of the tax that is burned (auto-LP + burn <= 65%)
+  poolTokens: string;    // whole tokens seeded into the pool; always the whole supply
   poolXnt: string;       // XNT seeded into the pool
   lockDays: number | null; // null = forever
 }
@@ -56,9 +79,17 @@ export interface LaunchRecord extends LaunchParams {
   mint: string;
   distributor: string;
   pool: string;
+  /** The creator's launch lock NFT: the key for claiming creator rewards. */
+  lockNft?: string;
   createdAt: string;
   registeredAt?: string;
 }
+
+/**
+ * A creator who keeps part of the supply (puts less than 100% into the pool) doesn't
+ * also earn holder rewards: their wallet is excluded from that token's payouts.
+ */
+export const creatorExcluded = (r: Pick<LaunchParams, "poolTokens" | "supply">) => BigInt(r.poolTokens) < BigInt(r.supply);
 
 /** Validate and normalise untrusted launch input. */
 export function validateParams(raw: Record<string, unknown>): LaunchParams {
@@ -75,11 +106,15 @@ export function validateParams(raw: Record<string, unknown>): LaunchParams {
   if (image && !/^(https:\/\/|ipfs:\/\/)[^\s"'<>]{3,300}$/.test(image)) throw new Error("Image must be an https:// or ipfs:// URL");
   const whole = (k: string, min: bigint, max: bigint) => {
     const v = String(raw[k] ?? "").trim();
-    if (!/^\d+$/.test(v) || BigInt(v) < min || BigInt(v) > max) throw new Error(`Invalid ${k}`);
+    if (!/^\d+$/.test(v) || BigInt(v) < min || BigInt(v) > max) {
+      throw new Error(`${k === "supply" ? "Supply" : `Invalid ${k}:`} must be a whole number from ${min.toLocaleString("en-US")} to ${max.toLocaleString("en-US")}`);
+    }
     return v;
   };
   const supply = whole("supply", 1_000n, 1_000_000_000_000n);
+  // The whole supply always goes into the pool: creators start with no tokens.
   const poolTokens = whole("poolTokens", 1n, BigInt(supply));
+  if (poolTokens !== supply) throw new Error("The whole supply must go into the pool (100%)");
   const poolXnt = String(raw.poolXnt ?? "").trim();
   if (!/^\d+(\.\d{1,9})?$/.test(poolXnt) || !(Number(poolXnt) >= 0.01)) throw new Error("Pool XNT must be at least 0.01");
   const int = (k: string, min: number, max: number) => {
@@ -90,7 +125,10 @@ export function validateParams(raw: Record<string, unknown>): LaunchParams {
   const taxBps = int("taxBps", 100, 1000);
   const autoLpBps = int("autoLpBps", 0, 5000);
   const burnBps = raw.burnBps === undefined ? 0 : int("burnBps", 0, 5000);
-  if (autoLpBps + burnBps > 9000) throw new Error("Liquidity + burn can't exceed 90% of the tax (holders keep at least 10%)");
+  // Holders always keep at least 35% of the tax.
+  if (autoLpBps + burnBps > MAX_LP_PLUS_BURN_BPS) {
+    throw new Error("Liquidity + burn can't exceed 55% of the tax (10% goes to the creator; holders keep at least 35%)");
+  }
   const lockDays = raw.lockDays === null || raw.lockDays === "forever" ? null : int("lockDays", 1, 3650);
   return { creator, name, symbol, description, image, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays };
 }
@@ -128,19 +166,20 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
   const supply = toBaseUnits(p.supply, DECIMALS);
   const creatorAta = getAssociatedTokenAddressSync(mint, creator, false, TOKEN_2022_PROGRAM_ID);
 
-  // Launch fee in USDC.
-  const usdc = new PublicKey(FEE_USDC[cfg.network]);
+  // Launch fee (USDC, or factory.feeToken such as XNM).
+  const lf = launchFee(cfg);
+  const usdc = new PublicKey(lf.mint);
   const usdcInfo = await conn.getAccountInfo(usdc);
-  if (!usdcInfo) throw new Error("Fee USDC mint not found on this network");
+  if (!usdcInfo) throw new Error(`Fee token ${lf.symbol} not found on this network`);
   const usdcProgram = usdcInfo.owner;
   const usdcMint = unpackMint(usdc, usdcInfo, usdcProgram);
-  const fee = toBaseUnits(f.feeUsdc, usdcMint.decimals);
+  const fee = toBaseUnits(lf.amount, usdcMint.decimals);
   const receiver = new PublicKey(f.feeReceiver);
   const fromUsdc = getAssociatedTokenAddressSync(usdc, creator, false, usdcProgram);
   const toUsdc = getAssociatedTokenAddressSync(usdc, receiver, false, usdcProgram);
   const fromInfo = await conn.getAccountInfo(fromUsdc);
   const balance = fromInfo ? (await conn.getTokenAccountBalance(fromUsdc)).value.amount : "0";
-  if (BigInt(balance) < fee) throw new Error(`The launch fee is ${f.feeUsdc} USDC; this wallet has ${Number(balance) / 10 ** usdcMint.decimals}.`);
+  if (BigInt(balance) < fee) throw new Error(`The launch fee is ${lf.amount} ${lf.symbol}; this wallet has ${Number(balance) / 10 ** usdcMint.decimals}.`);
 
   const ixs: TransactionInstruction[] = [
     SystemProgram.createAccount({ fromPubkey: creator, newAccountPubkey: mint, space: mintLen, lamports, programId: TOKEN_2022_PROGRAM_ID }),
@@ -186,12 +225,14 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
   const [mintInfo, poolInfo] = await conn.getMultipleAccountsInfo([new PublicKey(r.mint), new PublicKey(r.pool)], "confirmed");
   const token = !!mintInfo;
   const pool = !!poolInfo && poolInfo.owner.equals(new PublicKey(cfg.xdex.programId));
-  let lock = false;
+  let lock = false, lockNft: string | null = null;
   if (pool && cfg.locker?.programId) {
     const locks = await listLocks(conn, new PublicKey(cfg.locker.programId), new PublicKey(r.pool));
-    lock = locks.some((l) => l.locker.toBase58() === r.creator);
+    const mine = locks.find((l) => l.locker.toBase58() === r.creator);
+    lock = !!mine;
+    lockNft = mine?.nftMint.toBase58() ?? null;
   }
-  return { token, pool, lock, registered: !!r.registeredAt };
+  return { token, pool, lock, lockNft, registered: !!r.registeredAt };
 }
 
 /**
@@ -215,12 +256,18 @@ export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRec
     mint: r.mint,
     keypairs: { ...cfg.keypairs, distributor: path.relative(ROOT, path.join(dir, "distributor.json")) },
     xdex: { ...cfg.xdex, pool: r.pool },
-    distribution: { ...cfg.distribution, autoLpBps: r.autoLpBps, burnBps: r.burnBps ?? 0, excludeOwners: [] },
+    distribution: {
+      ...cfg.distribution, autoLpBps: r.autoLpBps, burnBps: r.burnBps ?? 0, creatorBps: CREATOR_BPS,
+      minHoldingTokens: minHoldingFor(r.supply),
+      excludeOwners: creatorExcluded(r) ? [r.creator] : [],
+    },
+    // The creator's share goes to the vesting vault of their launch lock NFT.
+    creatorReward: { nftMint: s.lockNft!, ...CREATOR_REWARD[cfg.network] },
   };
   delete (tokenCfg as Partial<Config>).factory;
   fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(tokenCfg, null, 2) + "\n", { mode: 0o600 });
   fs.mkdirSync(path.join(dir, "state"), { recursive: true, mode: 0o700 });
-  const done = { ...r, registeredAt: new Date().toISOString() };
+  const done = { ...r, lockNft: s.lockNft!, registeredAt: new Date().toISOString() };
   writeLaunch(done);
   return done;
 }

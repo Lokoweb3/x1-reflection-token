@@ -8,14 +8,18 @@ import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, Tran
 
 export async function unsignedTx(
   conn: Connection, payer: PublicKey, ixs: TransactionInstruction[], extra: Keypair[] = [],
-  opts: { microLamports: number; units?: number } = { microLamports: 10_000 },
+  opts: { microLamports: number; units?: number; noBudget?: boolean } = { microLamports: 10_000 },
 ) {
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-  const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.microLamports }),
-    ComputeBudgetProgram.setComputeUnitLimit({ units: opts.units ?? 400_000 }),
-    ...ixs,
-  );
+  const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
+  // noBudget: leave out the priority-fee instructions to free space (receipt NFT metadata).
+  if (!opts.noBudget) {
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.microLamports }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: opts.units ?? 400_000 }),
+    );
+  }
+  tx.add(...ixs);
   if (extra.length) tx.partialSign(...extra);
   // Catch problems before asking the wallet to approve anything.
   const sim = await conn.simulateTransaction(tx);
@@ -26,6 +30,28 @@ export async function unsignedTx(
   const bytes = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
   if (bytes.length > 1232) throw new Error(`Transaction too large (${bytes.length} bytes)`);
   return bytes.toString("base64");
+}
+
+/**
+ * What the network will charge for these instructions (base + priority + X1's per-transaction
+ * extras), from the RPC's own fee quote. X1 charges far more than the Solana base fee for
+ * busier transactions (e.g. ~0.004 XNT to collect LP fees), so show it before asking.
+ */
+export async function networkFee(
+  conn: Connection, payer: PublicKey, ixs: TransactionInstruction[],
+  opts: { microLamports: number; units?: number; noBudget?: boolean } = { microLamports: 10_000 },
+) {
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
+  if (!opts.noBudget) {
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.microLamports }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: opts.units ?? 400_000 }),
+    );
+  }
+  tx.add(...ixs);
+  const { value } = await conn.getFeeForMessage(tx.compileMessage(), "confirmed");
+  return BigInt(value ?? 0);
 }
 
 /** Broadcast a wallet-signed transaction and wait for confirmation. */

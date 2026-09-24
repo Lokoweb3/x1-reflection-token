@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My earnings · 99 + Tax</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tilt+Neon&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0b0a12;
+  --surface-1: rgb(24 21 38 / .72);
+  --line: rgb(255 255 255 / .16);
+  --text-primary: #f5f2ff;
+  --text-secondary: #cdc6e4;
+  --text-muted: #9089ab;
+  --link: #7ff0ff;
+  --pink: #ff3ea5;
+  --cyan: #22e4ff;
+  --lime: #b6ff3b;
+  --warning: #ffe14d;
+  --critical: #ff5a7a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background-color: var(--bg); color: var(--text-primary); font: 14px/1.45 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-image: radial-gradient(ellipse at 10% 0%, rgb(255 62 165 / .18), transparent 55%), radial-gradient(ellipse at 100% 80%, rgb(34 228 255 / .14), transparent 55%); min-height: 100vh; }
+.topbar { background: #000; color: var(--text-secondary); font-size: 13px; text-align: center; padding: 7px 16px; border-bottom: 1px solid var(--line); }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-family: "Tilt Neon", system-ui, sans-serif; font-size: 26px; color: var(--pink); text-shadow: 0 0 10px rgb(255 62 165 / .6); text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+header nav a[aria-current="page"] { color: var(--text-primary); text-decoration: underline; text-decoration-color: var(--pink); text-underline-offset: 6px; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 34px; margin: 0 0 4px; }
+h2 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 22px; margin: 26px 0 10px; }
+.muted { color: var(--text-muted); }
+.btn { font: 600 14px Inter, system-ui, sans-serif; border-radius: 10px; padding: 8px 14px; cursor: pointer; border: 1.5px solid var(--cyan); background: rgb(34 228 255 / .06); color: var(--cyan); text-decoration: none; display: inline-block; }
+.btn:hover { background: rgb(34 228 255 / .14); text-decoration: none; }
+.btn.primary { background: var(--lime); border-color: var(--lime); color: #0b0a12; }
+.btn.sm { padding: 5px 11px; font-size: 13px; }
+.lede { max-width: 720px; margin: 0 0 18px; color: var(--text-secondary); }
+.search { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
+.search input { flex: 1; min-width: 200px; background: rgb(0 0 0 / .35); border: 1.5px solid var(--line); border-radius: 10px; padding: 9px 12px; color: var(--text-primary); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.search input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 12px rgb(34 228 255 / .35); }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tile { background: var(--surface-1); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+.tile .k { color: var(--text-muted); font-size: 12px; }
+.tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.tile .n { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.tile.hl { border-color: rgb(182 255 59 / .45); box-shadow: 0 0 22px -10px rgb(182 255 59 / .6); }
+.tile.hl .v { color: var(--lime); font-size: 28px; }
+.card { background: var(--surface-1); border: 1px solid var(--line); border-radius: 16px; padding: 4px 16px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+th { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+.num { text-align: right; }
+.st { font-size: 12px; font-weight: 600; }
+.st.earning { color: var(--lime); }
+.st.excluded, .st.program, .st.sold { color: var(--text-muted); }
+.st.below-minimum { color: var(--warning); }
+.nfts { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.nft { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 14px; background: var(--surface-1); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+.nft .thumb { background: #000; border-radius: 10px; padding: 5px; align-self: start; }
+.nft .thumb img { width: 100%; display: block; }
+.nft .thumb .none { color: var(--text-muted); font-size: 11px; text-align: center; padding: 16px 2px; }
+.nft h3 { margin: 0 0 4px; font-size: 16px; }
+.nft .line { font-size: 12px; color: var(--text-secondary); }
+.nft .ready { color: var(--lime); font-weight: 700; font-size: 16px; margin: 6px 0 4px; }
+.nft .btn { margin-top: 8px; }
+.nft-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 520px; margin: 0 auto; padding: 10px 14px; z-index: 10; }
+.wallet { display: flex; align-items: center; gap: 8px; position: relative; }
+.wallet-menu { position: absolute; right: 0; top: calc(100% + 6px); background: #15121f; border: 1px solid var(--line); border-radius: 10px; padding: 6px; z-index: 5; display: grid; min-width: 180px; }
+.wallet-menu button { background: none; border: 0; color: var(--text-primary); padding: 8px 12px; text-align: left; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.wallet-menu img { width: 18px; height: 18px; }
+.empty { color: var(--text-muted); padding: 14px 0; }
+.error { color: var(--critical); }
+.note { color: var(--text-muted); font-size: 12px; margin-top: 18px; }
+.addr-line { overflow-wrap: anywhere; }
+@media (max-width: 860px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } header nav { margin-left: 0; } }
+@media (max-width: 520px) { .tile .v { font-size: 17px; } .tile.hl .v { font-size: 20px; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note"><b>Heads up:</b> crypto is highly volatile and nothing is guaranteed. Not financial advice.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens">Tokens</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/wallet" aria-current="page">My earnings</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+  <h1>My earnings</h1>
+  <p class="lede">Everything a wallet has earned from 99 + Tax tokens: what it holds, the XNT it has received, what it's earning now, and any LP-lock NFTs with fees or rewards waiting.</p>
+  <form class="search" id="search">
+    <input id="addr" placeholder="Wallet address" aria-label="Wallet address" autocomplete="off" spellcheck="false">
+    <button class="btn" type="submit">Look up</button>
+  </form>
+  <div id="out"><p class="muted">Connect your wallet or paste any wallet address.</p></div>
+</main>
+<div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+<script src="/wallet.js"></script>
+<script src="/countdown.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const W = window.X1Wallet;
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopener", text, ...(cls ? { class: cls } : {}) });
+const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+const units = (v, dec = 9) => Number(BigInt(v ?? 0)) / 10 ** dec;
+const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
+const fmtSig = (v) => v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(12, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 });
+const bal = (v, dec) => { const n = units(v, dec); return n >= 1e6 ? n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 2 }) : fmt(n, 4); };
+const STATUS = { earning: "Earning", "below-minimum": "Below minimum", excluded: "Excluded", program: "Program", sold: "Sold" };
+let shown = null;
+
+async function show(addr) {
+  shown = addr;
+  $("addr").value = addr;
+  document.title = `${short(addr)} earnings · 99 + Tax`;
+  const out = $("out");
+  out.replaceChildren(el("p", { class: "muted", text: "Reading balances and payouts…" }));
+  try {
+    const r = await fetch(`/api/wallet/${encodeURIComponent(addr)}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    if (shown !== addr) return;
+    render(d);
+  } catch (e) { out.replaceChildren(el("p", { class: "error", text: e.message || String(e) })); }
+}
+
+let passSection = null;
+/** Holder passes: rewards build up in the pass; whoever holds it claims. */
+async function loadPasses(addr, me) {
+  const host = el("div", {}, el("h2", { text: "Holder passes" }), el("p", { class: "muted", text: "Loading passes…" }));
+  passSection = host;
+  try {
+    const p = await fetch(`/api/passes/${addr}`).then((r) => r.json());
+    if (!p.passes.length && !p.mintable.length) { host.remove(); passSection = null; return; }
+    const cards = p.passes.map((x) => {
+      const ready = BigInt(x.claimable), pending = BigInt(x.pending);
+      const claim = el("button", { class: "btn sm primary", type: "button", text: "Claim" });
+      claim.disabled = !me || busy || ready === 0n;
+      if (ready === 0n) claim.title = pending > 0n ? "Your latest rewards are added at the next distribution cycle" : "Nothing to claim yet";
+      claim.onclick = () => act(`Claim ${x.symbol} pass rewards`, "/api/pass/claim", null, { passMint: x.passMint, holder: W.state.address });
+      return el("div", { class: "nft" },
+        el("div", { class: "thumb" }, el("div", { class: "none", text: "HOLDER PASS" })),
+        el("div", {},
+          el("h3", { text: `${x.symbol} Holder Pass` }),
+          el("div", { class: "ready", text: `${fmtSig(units(x.claimable))} XNT ready` }),
+          el("div", { class: "line", text: `Earned ${fmtSig(units(x.earned))} XNT · claimed ${fmtSig(units(x.claimed))} XNT` }),
+          pending > 0n ? el("div", { class: "line muted", text: `+${fmtSig(units(x.pending))} XNT added at the next cycle` }) : null,
+          me ? el("div", { class: "nft-actions" }, claim) : null));
+    });
+    const mintable = p.mintable.map((m) => {
+      const b = el("button", { class: "btn sm primary", type: "button", text: `Mint ${m.symbol} pass` });
+      b.disabled = !me || busy || !m.poolReady;
+      b.title = !m.poolReady ? "This token's pass pool is created on its next distribution cycle" : "One-time cost: about 0.01 XNT of account rent and network fee";
+      b.onclick = () => act(`Mint ${m.symbol} holder pass`, "/api/pass/mint", null, { tokenMint: m.tokenMint, owner: W.state.address });
+      return el("div", { class: "line" }, `${m.name} (${m.symbol}): holders need a pass to earn. `, me ? b : el("span", { class: "muted", text: "Connect this wallet to mint one." }));
+    });
+    host.replaceChildren(el("h2", { text: "Holder passes" }),
+      el("p", { class: "muted", text: "These tokens pay holders through a Holder Pass: your share builds up in the pass each cycle and you claim it when you like. Whoever holds the pass can claim, so selling the pass sells its unclaimed rewards." }),
+      cards.length ? el("div", { class: "nfts" }, ...cards) : null, ...mintable);
+  } catch (e) { host.replaceChildren(el("h2", { text: "Holder passes" }), el("p", { class: "error", text: `Couldn't load passes: ${e.message || e}` })); }
+}
+
+function render(d) {
+  lastExplorer = d.explorer;
+  loadPasses(d.wallet, W.state.address === d.wallet);
+  const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
+  const received = sum(d.tokens, (t) => units(t.paidXnt)) ;
+  const clicker = sum(d.tokens, (t) => units(t.clickerXnt));
+  const worth = sum(d.tokens, (t) => units(t.valueXnt));
+  const perDay = sum(d.tokens, (t) => t.estPerDayXnt);
+  const feesReady = sum(d.nfts, (n) => units(n.earned.feesReadyXnt));
+  const rewardsReady = sum(d.nfts, (n) => (n.earned.rewards?.symbol === "XNT" ? units(n.earned.rewards.ready) : 0));
+  const vesting = sum(d.nfts, (n) => (n.earned.rewards?.symbol === "XNT" ? units(n.earned.rewards.vesting) : 0));
+  const me = W.state.address === d.wallet;
+
+  const tile = (k, v, n, cls = "") => el("div", { class: `tile ${cls}` }, el("div", { class: "k", text: k }), el("div", { class: "v", text: v }), n ? el("div", { class: "n", text: n }) : null);
+  const tiles = el("div", { class: "tiles" },
+    tile("XNT received", `${fmt(received + clicker, 6)} XNT`, clicker > 0 ? `incl. ${fmt(clicker, 6)} XNT “Distribute now” rewards` : "from holder payouts", "hl"),
+    tile("Earning now", perDay > 0 ? `≈ ${fmtSig(perDay)} XNT/day` : "–", perDay > 0 ? `≈ ${fmtSig(perDay * 365)} XNT a year at the current yield` : "no earning holdings"),
+    tile("Holdings worth", `≈ ${fmt(worth, 4)} XNT`, `${d.tokens.filter((t) => BigInt(t.balance) > 0n).length} token${d.tokens.length === 1 ? "" : "s"} at pool prices`),
+    tile("Ready to claim", `${fmt(feesReady + rewardsReady, 6)} XNT`, d.nfts.length ? `from ${d.nfts.length} LP-lock NFT${d.nfts.length === 1 ? "" : "s"}${vesting > 0 ? ` · ${fmt(vesting, 6)} XNT vesting` : ""}` : "no LP-lock NFTs"));
+
+  const rows = d.tokens.map((t) => el("tr", {},
+    el("td", {}, link(`${d.explorer}/address/${t.mint}`, t.symbol), el("span", { class: "muted", text: ` ${t.name}` })),
+    el("td", { class: "num", text: bal(t.balance, t.decimals) }),
+    el("td", { class: "num", text: `${t.pct < 0.01 && BigInt(t.balance) > 0n ? "<0.01" : t.pct.toFixed(2)}%` }),
+    el("td", { class: "num", text: BigInt(t.valueXnt) > 0n ? fmt(units(t.valueXnt), 4) : "–" }),
+    el("td", { class: "num", text: BigInt(t.paidXnt) + BigInt(t.clickerXnt) > 0n ? fmt(units(t.paidXnt) + units(t.clickerXnt), 6) : "–" }),
+    el("td", { class: "num", text: t.estPerDayXnt > 0 ? fmtSig(t.estPerDayXnt) : "–", title: t.yield ? `Yield ${fmtSig(t.yield.per1000PerDay)} XNT/day per 1,000 ${t.symbol}` : "" }),
+    el("td", { class: "num", text: t.status === "earning" && t.yield?.aprPct != null ? `≈ ${fmtSig(t.yield.aprPct)}%` : "–" }),
+    el("td", {}, el("span", { class: `st ${t.status}`, text: STATUS[t.status] ?? t.status, title: t.status === "below-minimum" ? `Hold at least ${Number(t.minHolding).toLocaleString()} ${t.symbol} to earn` : "" }))));
+  const tokenTable = d.tokens.length
+    ? el("div", { class: "card" }, el("div", { class: "table-wrap" }, el("table", {},
+      el("tr", {}, el("th", { text: "Token" }), el("th", { class: "num", text: "Balance" }), el("th", { class: "num", text: "% of supply" }),
+        el("th", { class: "num", text: "Worth (XNT)" }), el("th", { class: "num", text: "XNT received" }), el("th", { class: "num", text: "Est. XNT/day" }),
+        el("th", { class: "num", text: "Yearly %" }), el("th", { text: "Status" })),
+      ...rows)))
+    : el("p", { class: "empty" }, "This wallet doesn't hold any 99 + Tax tokens yet. ", el("a", { href: "/tokens", text: "Browse tokens →" }));
+
+  const nftCards = d.nfts.map((n) => {
+    const r = n.earned.rewards;
+    const ready = units(n.earned.feesReadyXnt) + (r?.symbol === "XNT" ? units(r.ready) : 0);
+    return el("div", { class: "nft" },
+      el("div", { class: "thumb" }, n.receipt ? el("img", { src: n.receipt, alt: `${n.name} receipt` }) : el("div", { class: "none", text: "No receipt" })),
+      el("div", {},
+        el("h3", { text: n.name }),
+        el("div", { class: "line", text: `${n.lpSharePct.toFixed(2)}% of the pool · ${n.unlockAt === null ? "locked forever" : `unlocks ${new Date(n.unlockAt * 1000).toLocaleDateString()}`}` }),
+        el("div", { class: "ready", text: `${fmtSig(ready)} XNT ready` }),
+        el("div", { class: "line", text: `Trading fees ${fmtSig(units(n.earned.feesReadyXnt))} XNT` + (n.earned.collectFeeXnt ? ` · network fee to collect ≈ ${fmtSig(units(n.earned.collectFeeXnt))} XNT` : "") }),
+        r ? el("div", { class: "line", text: `Creator rewards ${fmtSig(units(r.ready, r.decimals))} ${r.symbol} ready · ${fmtSig(units(r.vesting, r.decimals))} vesting` }) : null,
+        r?.nextUnlock ? el("div", { class: "line" }, `Next ${fmtSig(units(r.nextAmount ?? "0", r.decimals))} ${r.symbol} claimable in `, Countdown.el(r.nextUnlock)) : null,
+        n.unlockAt !== null && n.unlockAt * 1000 > Date.now() ? el("div", { class: "line" }, "LP unlocks in ", Countdown.el(n.unlockAt)) : null,
+        el("div", { class: "line muted", text: `Earned so far ≈ ${fmtSig(units(n.earned.totalXnt))} XNT` }),
+        el("div", { class: "nft-actions" }, ...nftButtons(n, me))));
+  });
+
+  $("out").replaceChildren(
+    el("div", { class: "muted addr-line", style: "margin-bottom:12px" }, "Wallet ", link(`${d.explorer}/address/${d.wallet}`, d.wallet, "mono"), me ? " (connected)" : ""),
+    tiles,
+    el("h2", { text: "Tokens" }), tokenTable,
+    passSection,
+    el("h2", { text: "LP-lock NFTs" }),
+    d.nfts.length ? el("div", { class: "nfts" }, ...nftCards) : el("p", { class: "empty", text: "This wallet doesn't hold any LP-lock NFTs." }),
+    el("p", { class: "note", text: "“Earning now” and “Yearly %” use each token's payouts over the last 7 days and today's pool price. They're estimates: payouts follow trading volume and nothing is guaranteed. Only the wallet holding an NFT can collect or claim." }));
+}
+
+// ---------- Collect / claim straight from the card (the NFT holder's wallet signs) ----------
+const DUST = 10_000n; // 0.00001 XNT: below this a collect costs more than it returns
+let busy = false;
+function nftButtons(n, me) {
+  const open = el("a", { class: "btn sm", href: `/nft/${n.nftMint}`, text: "Open NFT" });
+  if (!me) return [open];
+  const r = n.earned.rewards;
+  const fees = BigInt(n.earned.feesReadyXnt);
+  const collect = el("button", { class: "btn sm primary", type: "button", text: "Collect fees" });
+  const ok = n.earned.collectFeeXnt !== null ? n.earned.collectable : fees >= DUST;
+  collect.disabled = busy || !ok;
+  if (!ok) collect.title = n.earned.collectFeeXnt !== null && fees > 0n
+    ? `Fees ready are less than the network fee to collect them (≈ ${fmtSig(units(n.earned.collectFeeXnt))} XNT); wait for more trading`
+    : "Nothing worth collecting yet; fees grow as people trade";
+  collect.onclick = () => act("Collect trading fees", "/api/nft/collect", n.nftMint);
+  const out = [collect];
+  if (r) {
+    const claim = el("button", { class: "btn sm primary", type: "button", text: "Claim rewards" });
+    claim.disabled = busy || BigInt(r.ready) === 0n;
+    if (BigInt(r.ready) === 0n) claim.title = r.nextUnlock ? `Next part vests ${new Date(r.nextUnlock * 1000).toLocaleString()}` : "Nothing has vested yet";
+    claim.onclick = () => act("Claim creator rewards", "/api/nft/claim", n.nftMint);
+    out.push(claim);
+  }
+  return [...out, open];
+}
+async function api(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+let toastTimer;
+function toast(kind, ...parts) {
+  const t = $("toast"); t.className = `toast ${kind}`; t.replaceChildren(...parts); t.hidden = false;
+  clearTimeout(toastTimer); if (kind !== "info") toastTimer = setTimeout(() => { t.hidden = true; }, 9000);
+}
+async function act(label, url, nftMint, body) {
+  if (busy) return;
+  busy = true;
+  try {
+    toast("info", `${label}: preparing and simulating…`);
+    const { tx } = await api(url, body ?? { nftMint, holder: W.state.address });
+    toast("info", `${label}: approve it in your wallet…`);
+    const signed = await W.sign(W.b64ToBytes(tx));
+    toast("info", `${label}: sending…`);
+    const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
+    toast("success", `${label} confirmed. `, link(`${lastExplorer}/tx/${signature}`, "View transaction ↗"));
+  } catch (e) {
+    toast("error", `${label} failed: ${e.message || e}`);
+  }
+  busy = false;
+  // The NFT list is cached for a minute on the server; re-read after that.
+  setTimeout(() => shown && show(shown), 61_000);
+  if (shown) show(shown);
+}
+let lastExplorer = "";
+
+// Something just vested or unlocked: refresh after the server's 1-minute cache has moved on.
+document.addEventListener("countdown-done", () => { if (shown) setTimeout(() => show(shown), 60_000); });
+
+// ---------- Wallet connect ----------
+function renderWallet() {
+  const area = $("walletArea");
+  if (W.state.address) {
+    const b = el("button", { class: "btn sm", type: "button", text: "Disconnect" });
+    b.onclick = () => W.disconnect();
+    area.replaceChildren(el("span", { class: "mono muted", text: short(W.state.address) }), b);
+  } else {
+    const b = el("button", { class: "btn sm primary", type: "button", text: "Connect wallet" });
+    b.onclick = openWalletMenu;
+    area.replaceChildren(b);
+  }
+}
+function openWalletMenu(ev) {
+  ev.stopPropagation();
+  $("walletMenu")?.remove();
+  const choices = W.choices();
+  const go = (c) => W.connect(c).catch((e) => alert("Wallet connection failed: " + (e.message || e)));
+  if (!choices.length) { alert("No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  if (choices.length === 1) { go(choices[0]); return; }
+  const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
+  for (const c of choices) {
+    const b = el("button", { type: "button" });
+    if (typeof c.icon === "string" && c.icon.startsWith("data:image/")) b.append(el("img", { src: c.icon, alt: "" }));
+    b.append(c.name);
+    b.onclick = () => { menu.remove(); go(c); };
+    menu.append(b);
+  }
+  $("walletArea").append(menu);
+}
+document.addEventListener("click", () => $("walletMenu")?.remove());
+W.onChange((addr) => {
+  renderWallet();
+  // Connecting on /wallet shows your own earnings.
+  if (addr && location.pathname === "/wallet") { history.replaceState(null, "", `/wallet/${addr}`); show(addr); }
+  else if (shown) show(shown);
+});
+renderWallet();
+
+$("search").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const a = $("addr").value.trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a)) { $("out").replaceChildren(el("p", { class: "error", text: "That doesn't look like a wallet address." })); return; }
+  history.pushState(null, "", `/wallet/${a}`);
+  show(a);
+});
+const fromPath = () => { const m = location.pathname.match(/^\/wallet\/([1-9A-HJ-NP-Za-km-z]{32,44})$/); if (m) show(m[1]); };
+window.addEventListener("popstate", fromPath);
+fromPath();
+</script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+/*
+ * 99 + Tax arcade theme: fonts and colour tokens, then theme-base.css, then the arcade
+ * extras after the AFTER BASE marker. A dark cabinet with CRT scanlines, pixel-font
+ * headings and buttons, coin-counter numbers and a yellow "insert coin" accent.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+:root {
+  color-scheme: dark;
+  --paper: #170d30;
+  --paper-2: #221444;
+  --desk: #07040f;
+  --ink: #f3ecff;
+  --ink-2: #cdc2ea;
+  --ink-3: #a497cf;
+  --red: #ffd23f;          /* the accent slot: coin yellow */
+  --red-ink: #f0b800;
+  --amber: #ffb347;
+  --good: #5dff8a;
+  --rule: rgb(150 120 255 / .7);
+  --rule-soft: rgb(150 120 255 / .25);
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --pixel: "Press Start 2P", ui-monospace, monospace;
+  --coin: "VT323", ui-monospace, monospace;
+  --magenta: #ff4fd8;
+  --cyan-2: #5ce1ff;
+
+  --bg: var(--paper); --bg-2: var(--paper); --surface-1: var(--paper); --glass: var(--paper); --glass-strong: var(--paper);
+  --border: var(--rule); --line: var(--rule-soft); --line-2: var(--rule); --grid: var(--rule-soft); --shadow: transparent;
+  --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-3);
+  --muted: var(--ink-3);
+  --link: var(--cyan-2); --accent: var(--red); --pink: var(--magenta); --cyan: var(--cyan-2); --lime: var(--red); --yellow: var(--red); --gold: var(--amber);
+  --warning: var(--amber); --critical: #ff5a7a;
+  --receipt: #fbf8ef; --receipt-ink: #1b1824;
+  --glow-pink: none; --glow-cyan: none; --glow-lime: none;
+  /* Chart / split colours, validated on this surface (lightness band, colour-blind separation, contrast). */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #7a6f9c;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #7a6f9c;
+}
+
+/* AFTER BASE */
+
+/* ---------- the cabinet ---------- */
+html { background: var(--desk) radial-gradient(circle at 50% 0%, #2a1260 0%, var(--desk) 60%) fixed; }
+body {
+  background: #120a26 !important;
+  border-left: 4px solid #3b2a6b; border-right: 4px solid #3b2a6b;
+  box-shadow: 0 0 0 1px #000, 0 0 60px rgb(255 79 216 / .18) !important;
+}
+/* CRT scanlines over everything (no torn paper edge in the arcade). */
+body::after {
+  position: fixed !important; inset: 0 !important; height: auto !important; z-index: 90 !important;
+  background: repeating-linear-gradient(to bottom, rgb(0 0 0 / .22) 0 1px, transparent 1px 3px) !important;
+}
+a { color: var(--cyan-2) !important; text-decoration: none; }
+a:hover { color: var(--red) !important; text-decoration: underline; }
+
+/* Pixel type for headings, brand, buttons and labels; coin-counter digits for numbers. */
+h1, h2, h3, legend, summary, .display, .logo-word, .brand, a.logo, .btn, .gate-ok, .seg button, .badge, .lbl, .chip, .kind, .tag, .pill, .sticker, .stamp, th, .t,
+nav .links a:not(.btn), header nav a:not(.btn), .mainnav a, .topbar b, .stats-card h3, .panel h3 {
+  font-family: var(--pixel) !important; font-weight: 400 !important; letter-spacing: 0 !important;
+}
+h1 { font-size: clamp(20px, 4vw, 38px) !important; line-height: 1.35 !important; }
+h2 { font-size: clamp(15px, 2.2vw, 22px) !important; line-height: 1.4 !important; }
+h3, summary { font-size: 13px !important; line-height: 1.5 !important; }
+th, .lbl, .chip, .kind, .tag, .pill, .badge, .stamp, .sticker { font-size: 9px !important; }
+nav .links a:not(.btn), header nav a:not(.btn), .mainnav a { font-size: 10px !important; }
+.btn, .gate-ok, .seg button { font-size: 10px !important; line-height: 1.6; padding: 10px 14px !important; }
+.btn.big { font-size: 12px !important; padding: 14px !important; }
+.stats-card h3, .panel h3 { font-size: 10px !important; line-height: 1.6; }
+.tile .v, .stat .v, .metric .v, .yield-panel .v, .nft-card .earned, .nft .ready, .yield .yv, .calc b, .slider b {
+  font-family: var(--coin) !important; font-size: 30px !important; line-height: 1.05 !important; font-weight: 400 !important;
+}
+.metric.price .v, .tile.big .v, .tile.hl .v { font-size: 40px !important; }
+.stat .v { font-size: 44px !important; }
+h1 .hl, .hero h1 .hl { color: var(--red) !important; }
+
+/* ---------- panels: solid pixel frames instead of dashed paper ---------- */
+.card, .chunk, .panel, .tile, .stat, .tok, .nft, .nft-card, .tag-card, .loop, .final, .g, details, .receipt-side, .yield-panel, .mine-strip, .stat-tiles .tile,
+.disclaimer, fieldset, .art, .nft .thumb, .nft-card .thumb, .tok .logo {
+  border-style: solid !important; border-width: 3px !important; background: var(--paper) !important;
+}
+.tile.hl, .tile.big, .metric.price, .yield-panel, .final, .tag-card { border-color: var(--red) !important; box-shadow: 0 0 0 3px #120a26, 0 0 0 6px rgb(255 210 63 / .25) !important; }
+.mine-strip { border-color: var(--magenta) !important; }
+.chunk:hover, .nft-card:hover { border-color: var(--cyan-2) !important; }
+.art, .nft .thumb, .nft-card .thumb { background: #07040f !important; }
+header, nav, .topbar, footer, .gate-box h2 { border-bottom-style: solid !important; border-color: #3b2a6b !important; }
+footer { border-top-style: solid !important; }
+table th, table td { border-bottom-style: solid !important; }
+
+/* ---------- top strip and brand ---------- */
+.topbar { background: #07040f !important; color: var(--ink-2) !important; }
+.topbar b { color: var(--red) !important; font-size: 9px !important; }
+.brand, a.logo { font-size: 16px !important; color: var(--ink) !important; }
+.brand h1, .logo-word { font-size: 16px !important; }
+.brand::before, a.logo::before {
+  content: "99¢"; clip-path: none !important; -webkit-mask: none !important; mask: none !important; transform: none !important;
+  height: auto !important; padding: 7px 8px !important; font: 10px var(--pixel) !important;
+  background: var(--red) !important; color: #120a26 !important;
+  box-shadow: 3px 3px 0 var(--magenta) !important;
+}
+header nav a[aria-current="page"] { color: var(--red) !important; text-decoration: none !important; }
+header nav a[aria-current="page"]::before { content: "▶ "; }
+
+/* ---------- buttons: "insert coin" ---------- */
+.btn, .gate-ok { background: var(--paper-2) !important; color: var(--ink) !important; border: 3px solid var(--ink) !important; box-shadow: 4px 4px 0 #000 !important; }
+.btn:hover:not(:disabled), .gate-ok:hover { background: var(--cyan-2) !important; color: #120a26 !important; box-shadow: 4px 4px 0 var(--magenta) !important; }
+.btn.primary, .gate-ok { background: var(--red) !important; color: #120a26 !important; border-color: #fff3b0 !important; box-shadow: 4px 4px 0 var(--magenta) !important; }
+.btn.primary:hover:not(:disabled), .gate-ok:hover { background: #fff3b0 !important; color: #120a26 !important; box-shadow: 4px 4px 0 var(--cyan-2) !important; }
+.seg button[aria-pressed="true"] { background: var(--red) !important; color: #120a26 !important; }
+
+/* ---------- small things ---------- */
+input, select, textarea, .search input, .toolbar input, .toolbar select, .calc input { background: #07040f !important; color: var(--ink) !important; border: 3px solid var(--rule) !important; }
+input:focus, select:focus, textarea:focus { outline: 3px solid var(--red) !important; }
+select option { background: #120a26 !important; color: var(--ink) !important; }
+.lbl, .chip, .kind, .tag, .pill, .badge { background: #07040f !important; color: var(--ink-2) !important; border: 2px solid var(--rule) !important; }
+.sticker { color: var(--magenta) !important; border-color: var(--magenta) !important; background: #07040f !important; }
+tr.me td, .holders tr.me td { background: rgb(255 210 63 / .1) !important; }
+.tip, .ctip, .wallet-menu, .toast { background: #07040f !important; color: var(--ink) !important; border: 3px solid var(--red) !important; box-shadow: 4px 4px 0 var(--magenta) !important; }
+.wallet-menu button:hover { background: var(--paper-2) !important; }
+.receipt { color: var(--receipt-ink) !important; background: var(--receipt) !important; }
+.receipt * { color: inherit; }
+.receipt .note, .receipt .thanks { color: #6b6578 !important; }
+.receipt .tax b { color: #c8102e !important; }
+.gate { background: rgb(7 4 15 / .92) !important; }
+.gate-box { background: var(--paper) !important; border: 3px solid var(--red) !important; box-shadow: 6px 6px 0 var(--magenta) !important; }
+.yield { background: #07040f !important; border: 2px solid var(--red) !important; }
+.g .ic, .step::before, summary::after { color: var(--red) !important; border-color: var(--red) !important; background: #07040f !important; font-family: var(--pixel) !important; }
+.st.earning, .chg.up, .pill.ok, .stamp { color: var(--good) !important; border-color: var(--good) !important; }
+.dot { background: #07040f !important; border-color: var(--rule) !important; color: var(--ink) !important; font-family: var(--pixel) !important; font-size: 10px !important; }
+.steps li.done .dot { background: var(--good) !important; color: #07040f !important; border-color: var(--good) !important; }
+.steps li.active .dot { border-color: var(--red) !important; color: var(--red) !important; }
+@media (prefers-reduced-motion: no-preference) {
+  .btn.primary:hover:not(:disabled) { animation: coin-blink .6s steps(2) infinite; }
+}
+@keyframes coin-blink { 50% { box-shadow: 4px 4px 0 var(--cyan-2); } }
+.tok h2 { font-size: 13px !important; line-height: 1.5 !important; }

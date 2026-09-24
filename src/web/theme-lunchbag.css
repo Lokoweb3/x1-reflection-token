@@ -1,0 +1,173 @@
+/*
+ * 99 + Tax lunch bag theme: fonts and colour tokens, then theme-base.css, then the extras
+ * after the AFTER BASE marker. A brown kraft paper bag with fold creases, marker-pen
+ * headings, notes taped on with masking tape, a round "99¢" price sticker and red
+ * grease-pencil buttons.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Permanent+Marker&family=Nunito:wght@400;600;700;800&family=Caveat:wght@600;700&display=swap");
+
+:root {
+  color-scheme: light;
+  --paper: #fffaf0;        /* the notes and panels */
+  --paper-2: #f6ecd8;
+  --desk: #7a5a36;
+  --kraft: #c9a06a;
+  --kraft-dark: #b88c55;
+  --ink: #2b1d0e;
+  --ink-2: #4d3a24;
+  --ink-3: #56402a;        /* dark enough to read on the kraft too */
+  --red: #c1121f;          /* grease pencil */
+  --red-ink: #9b0e19;
+  --amber: #8a5a00;
+  --good: #2f7d32;
+  --sticker: #ff8a1f;
+  --tape: rgb(245 232 190 / .85);
+  --rule: rgb(90 62 30 / .55);
+  --rule-soft: rgb(90 62 30 / .2);
+  --mono: "Nunito", system-ui, sans-serif;
+  --marker: "Permanent Marker", "Comic Sans MS", cursive;
+  --hand: "Caveat", "Comic Sans MS", cursive;
+  --bag-link: #9b0e19;
+
+  --bg: var(--paper); --bg-2: var(--paper); --surface-1: var(--paper); --glass: var(--paper); --glass-strong: var(--paper);
+  --border: var(--rule); --line: var(--rule-soft); --line-2: var(--rule); --grid: var(--rule-soft); --shadow: transparent;
+  --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-3);
+  --muted: var(--ink-3);
+  --link: var(--ink); --accent: var(--red); --pink: var(--red); --cyan: var(--ink); --lime: var(--red); --yellow: var(--red); --gold: var(--amber);
+  --warning: var(--amber); --critical: var(--red);
+  --receipt: #fbf8ef; --receipt-ink: #1b1824;
+  --glow-pink: none; --glow-cyan: none; --glow-lime: none;
+  /* Chart / split colours: the paper-validated set (charts sit on the white notes). */
+  --holders: #c8323c; --liquidity: #2e6bbf; --creator: #3f8a2f; --burn: #8a8474;
+  --series-1: #c8323c; --series-2: #2e6bbf; --series-3: #3f8a2f;
+  --s-hold: #c8323c; --s-pool: #2e6bbf; --s-other: #3f8a2f; --s-burn: #8a8474;
+}
+
+/* Dark mode (a paper bag at night): chosen with the site's theme menu (html[data-mode="dark"]), or
+   automatically when the device is in dark mode and the viewer picked "Auto". */
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --paper: #2a2016; --paper-2: #33271b; --desk: #140d06;
+  --kraft: #4a3520; --kraft-dark: #3a2917;
+  --ink: #f5ead8; --ink-2: #dccbb0; --ink-3: #c4b092;
+  --red: #dc3e45; --red-ink: #b52f35; --amber: #e0a84a; --good: #7fd07f; --sticker: #ff9a3c;
+  --tape: rgb(200 185 140 / .55); --bag-link: #ff8f86;
+  --rule: rgb(240 220 190 / .45); --rule-soft: rgb(240 220 190 / .15);
+  /* Chart colours validated on this surface. */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8a8474;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8a8474;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-mode="light"]) {
+  color-scheme: dark;
+  --paper: #2a2016; --paper-2: #33271b; --desk: #140d06;
+  --kraft: #4a3520; --kraft-dark: #3a2917;
+  --ink: #f5ead8; --ink-2: #dccbb0; --ink-3: #c4b092;
+  --red: #dc3e45; --red-ink: #b52f35; --amber: #e0a84a; --good: #7fd07f; --sticker: #ff9a3c;
+  --tape: rgb(200 185 140 / .55); --bag-link: #ff8f86;
+  --rule: rgb(240 220 190 / .45); --rule-soft: rgb(240 220 190 / .15);
+  /* Chart colours validated on this surface. */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8a8474;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8a8474;
+  }
+}
+
+/* AFTER BASE */
+
+/* ---------- the bag: kraft paper with fibres and a centre fold ---------- */
+html { background: var(--desk) !important; }
+body {
+  background-color: var(--kraft) !important;
+  background-image:
+    linear-gradient(90deg, transparent calc(50% - 1px), rgb(90 62 30 / .18) 50%, rgb(255 255 255 / .12) calc(50% + 1px), transparent calc(50% + 3px)),
+    linear-gradient(90deg, rgb(90 62 30 / .12), transparent 6%, transparent 94%, rgb(90 62 30 / .12)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .24 0 0 0 0 .12 0 0 0 .22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E") !important;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / .15), 0 30px 80px -20px rgb(0 0 0 / .55) !important;
+}
+/* Folded bag top instead of a torn receipt edge. */
+body::after {
+  inset: auto 0 -14px 0 !important; height: 14px !important;
+  background: linear-gradient(-45deg, transparent 9px, var(--kraft-dark) 0) 0 0 / 18px 14px repeat-x,
+              linear-gradient(45deg, transparent 9px, var(--kraft-dark) 0) 0 0 / 18px 14px repeat-x !important;
+}
+
+/* ---------- type: marker headings, handwriting for notes ---------- */
+h1, h2, h3, legend, summary, .display, .logo-word, .brand, a.logo, .stats-card h3, .panel h3 {
+  font-family: var(--marker) !important; font-weight: 400 !important; text-transform: none !important; letter-spacing: .01em !important;
+}
+h1 { font-size: clamp(30px, 6vw, 58px) !important; line-height: 1.1 !important; transform: rotate(-1deg); }
+h2 { font-size: clamp(22px, 3.2vw, 34px) !important; }
+h3, summary { font-size: 19px !important; }
+.stats-card h3, .panel h3 { font-size: 16px !important; }
+.lede, .section-lede, .ts-sub, .fine, .note, .why { font-family: var(--hand) !important; font-size: 20px !important; line-height: 1.3 !important; color: var(--ink-2) !important; }
+.fine, .note, .why { font-size: 17px !important; }
+h1 .hl, .hero h1 .hl { color: var(--red) !important; }
+th { font-family: var(--mono) !important; font-weight: 800 !important; }
+.tile .v, .stat .v, .metric .v, .yield-panel .v, .nft-card .earned, .nft .ready, .yield .yv, .calc b {
+  font-family: var(--marker) !important; font-weight: 400 !important;
+}
+a { color: var(--bag-link) !important; text-decoration: underline wavy color-mix(in srgb, var(--bag-link) 50%, transparent); text-underline-offset: 3px; }
+a:hover { color: var(--red) !important; }
+nav .links a:not(.btn), header nav a:not(.btn), .mainnav a { color: var(--ink) !important; text-decoration: none !important; font-weight: 800; text-transform: none; font-size: 15px !important; letter-spacing: 0; }
+header nav a[aria-current="page"] { color: var(--red) !important; text-decoration: underline wavy var(--red) !important; }
+
+/* ---------- top strip and brand ---------- */
+.topbar { background: var(--paper) !important; border-bottom: 2px solid var(--rule) !important; }
+nav, header { border-bottom: 2px solid var(--rule) !important; }
+header nav { border-bottom: 0 !important; }
+.brand, a.logo { font-size: 26px !important; color: var(--ink) !important; text-transform: none !important; }
+.brand h1, .logo-word { font-size: 26px !important; transform: none; text-transform: none !important; }
+/* Round orange price sticker. */
+.brand::before, a.logo::before {
+  content: "99¢"; clip-path: none !important; -webkit-mask: none !important; mask: none !important;
+  width: 46px; height: 46px !important; padding: 0 !important; border-radius: 50%;
+  background: var(--sticker) !important; color: #fff !important; font: 400 16px var(--marker) !important;
+  box-shadow: inset 0 0 0 3px rgb(255 255 255 / .55), 2px 3px 0 rgb(0 0 0 / .2) !important; transform: rotate(-12deg) !important;
+}
+
+/* ---------- notes taped to the bag ---------- */
+.card, .chunk, .panel, .tile, .stat, .tok, .nft, .nft-card, .tag-card, .loop, .final, .g, details, .receipt-side, .yield-panel, .mine-strip, .stat-tiles .tile, .disclaimer {
+  background: var(--paper) !important; border: 1px solid rgb(90 62 30 / .25) !important; border-radius: 4px !important;
+  box-shadow: 2px 4px 0 rgb(60 40 15 / .18), 0 10px 18px -12px rgb(60 40 15 / .5) !important;
+}
+.tile.hl, .tile.big, .metric.price, .yield-panel, .final, .tag-card { border: 2px solid var(--red) !important; }
+.mine-strip { border: 2px solid var(--sticker) !important; }
+.chunk:hover, .nft-card:hover { border-color: var(--ink) !important; border-style: solid !important; }
+/* Masking tape on token cards and NFT cards. */
+.tok, .nft-card, .nft { position: relative; overflow: visible !important; }
+.tok::after, .nft-card::after, .nft::after {
+  content: ""; position: absolute; top: -10px; left: 50%; width: 92px; height: 22px; margin-left: -46px;
+  background: var(--tape); transform: rotate(-3deg); box-shadow: 0 1px 2px rgb(0 0 0 / .15);
+}
+.tok:nth-child(even), .nft-card:nth-child(even) { transform: rotate(.4deg); }
+.tok:nth-child(odd), .nft-card:nth-child(odd) { transform: rotate(-.4deg); }
+.art, .nft .thumb, .nft-card .thumb, .tok .logo { background: var(--paper-2) !important; border: 1px solid var(--rule-soft) !important; border-radius: 4px !important; }
+
+/* ---------- buttons: grease pencil + paper ---------- */
+.btn, .gate-ok, .seg button {
+  font-family: var(--mono) !important; font-weight: 800 !important; text-transform: none !important; letter-spacing: 0 !important;
+  background: var(--paper) !important; color: var(--ink) !important; border: 2px solid var(--ink) !important; border-radius: 10px !important;
+  box-shadow: 2px 3px 0 var(--ink) !important;
+}
+.btn:hover:not(:disabled), .gate-ok:hover { background: var(--paper-2) !important; color: var(--ink) !important; box-shadow: 3px 4px 0 var(--ink) !important; }
+.btn.primary, .gate-ok { background: var(--red) !important; color: #fff !important; border-color: var(--red-ink) !important; box-shadow: 2px 3px 0 var(--red-ink) !important; transform: rotate(-1deg); }
+.btn.primary:hover:not(:disabled), .gate-ok:hover { background: var(--red-ink) !important; color: #fff !important; }
+.seg { border-radius: 10px !important; overflow: hidden; }
+.seg button[aria-pressed="true"] { background: var(--ink) !important; color: var(--paper) !important; }
+
+/* ---------- small things ---------- */
+input, select, textarea, .search input, .toolbar input, .toolbar select, .calc input {
+  background: var(--paper) !important; border: 2px solid var(--rule) !important; border-radius: 8px !important; font-family: var(--mono) !important;
+}
+.lbl, .chip, .kind, .tag, .pill, .badge, .stamp { border-radius: 999px !important; text-transform: none !important; font-weight: 800; }
+.sticker { background: var(--sticker) !important; color: #fff !important; border: 0 !important; border-radius: 999px !important; transform: rotate(-3deg); }
+.sticker .pulse { background: #fff !important; }
+.tip, .ctip, .wallet-menu, .toast { border-radius: 8px !important; border: 2px solid var(--ink) !important; background: var(--paper) !important; }
+.gate { background: rgb(122 90 54 / .9) !important; }
+.gate-box { border-radius: 6px !important; border: 2px solid var(--ink) !important; }
+.g .ic, .step::before, summary::after, .dot { border-radius: 50% !important; }
+.yield { border-radius: 8px !important; border-style: solid !important; }
+.receipt { transform: rotate(-2deg); }
+.tok h2 { font-size: 22px !important; line-height: 1.15 !important; }

@@ -1,0 +1,198 @@
+/*
+ * 99 + Tax notebook theme: fonts and colour tokens (light + dark), then theme-base.css,
+ * then the extras after the AFTER BASE marker. Ruled notebook paper with a red margin
+ * and punched holes, handwritten headings, blue ballpoint accents, yellow highlighter,
+ * and every token / NFT card as a sticky note.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Gochi+Hand&family=Patrick+Hand&family=Nunito:wght@400;600;700;800&display=swap");
+
+:root {
+  color-scheme: light;
+  --paper: #fffef7;        /* a clean sheet: panels and cards */
+  --paper-2: #f4f1e6;
+  --desk: #d9d4c4;
+  --page: #fbfaf2;         /* the notebook page behind everything */
+  --ruled: rgb(120 160 215 / .38);
+  --margin: rgb(230 110 110 / .75);
+  --hole: #d9d4c4;
+  --ink: #1f2a44;          /* ballpoint-black */
+  --ink-2: #3c4763;
+  --ink-3: #5c6680;
+  --red: #1d4ed8;          /* the accent slot: blue ballpoint */
+  --red-ink: #1a3fae;
+  --amber: #8a5a00;
+  --good: #2f7d32;
+  --highlight: rgb(255 236 61 / .85);
+  --rule: rgb(31 42 68 / .45);
+  --rule-soft: rgb(31 42 68 / .16);
+  --note-yellow: #fff27a; --note-pink: #ffc9dc; --note-green: #d2f4b8; --note-blue: #c7e6ff;
+  --note-ink: #1f2a44;
+  --mono: "Nunito", system-ui, sans-serif;
+  --hand: "Patrick Hand", "Comic Sans MS", cursive;
+  --title: "Gochi Hand", "Comic Sans MS", cursive;
+
+  --bg: var(--paper); --bg-2: var(--paper); --surface-1: var(--paper); --glass: var(--paper); --glass-strong: var(--paper);
+  --border: var(--rule); --line: var(--rule-soft); --line-2: var(--rule); --grid: var(--rule-soft); --shadow: transparent;
+  --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-3);
+  --muted: var(--ink-3);
+  --link: var(--red); --accent: var(--red); --pink: var(--red); --cyan: var(--ink); --lime: var(--red); --yellow: var(--red); --gold: var(--amber);
+  --warning: var(--amber); --critical: #c8102e;
+  --receipt: #fbf8ef; --receipt-ink: #1b1824;
+  --glow-pink: none; --glow-cyan: none; --glow-lime: none;
+  /* Chart / split colours: validated on this paper, and 3:1+ against every sticky-note colour. */
+  --holders: #c8323c; --liquidity: #2e6bbf; --creator: #3f8a2f; --burn: #6f6a5f;
+  --series-1: #c8323c; --series-2: #2e6bbf; --series-3: #3f8a2f;
+  --s-hold: #c8323c; --s-pool: #2e6bbf; --s-other: #3f8a2f; --s-burn: #6f6a5f;
+}
+
+/* Dark mode (a navy notebook at night): the theme menu (html[data-mode="dark"]) or Auto on a dark device. */
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --paper: #222b3d; --paper-2: #2a3448; --desk: #0c1019; --page: #1b2231;
+  --ruled: rgb(140 170 230 / .16); --margin: rgb(240 120 120 / .45); --hole: #0c1019;
+  --ink: #e8edf7; --ink-2: #c7cfe0; --ink-3: #9aa6c0;
+  --red: #86a8ff; --red-ink: #a9c1ff; --amber: #e0b04a; --good: #7fd07f;
+  --highlight: rgb(255 214 0 / .35);
+  --rule: rgb(232 237 247 / .4); --rule-soft: rgb(232 237 247 / .14);
+  --note-yellow: #e9d85e; --note-pink: #eab0c4; --note-green: #b7dca0; --note-blue: #a9cdea;
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8a8474;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8a8474;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-mode="light"]) {
+    color-scheme: dark;
+    --paper: #222b3d; --paper-2: #2a3448; --desk: #0c1019; --page: #1b2231;
+    --ruled: rgb(140 170 230 / .16); --margin: rgb(240 120 120 / .45); --hole: #0c1019;
+    --ink: #e8edf7; --ink-2: #c7cfe0; --ink-3: #9aa6c0;
+    --red: #86a8ff; --red-ink: #a9c1ff; --amber: #e0b04a; --good: #7fd07f;
+    --highlight: rgb(255 214 0 / .35);
+    --rule: rgb(232 237 247 / .4); --rule-soft: rgb(232 237 247 / .14);
+    --note-yellow: #e9d85e; --note-pink: #eab0c4; --note-green: #b7dca0; --note-blue: #a9cdea;
+    --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8a8474;
+    --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+    --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8a8474;
+  }
+}
+
+/* AFTER BASE */
+
+/* ---------- the notebook page: ruled lines, red margin, punched holes ---------- */
+html { background: var(--desk) !important; }
+body {
+  background-color: var(--page) !important;
+  background-image:
+    radial-gradient(circle at 26px 50%, var(--hole) 0 9px, rgb(0 0 0 / .18) 9px 10px, transparent 10.5px),
+    linear-gradient(90deg, transparent 58px, var(--margin) 58px 60px, transparent 60px),
+    repeating-linear-gradient(to bottom, transparent 0 31px, var(--ruled) 31px 32px) !important;
+  background-size: 52px 120px, 100% 100%, 100% 32px !important;
+  background-repeat: repeat-y, no-repeat, repeat !important;
+  background-position: 0 40px, 0 0, 0 0 !important;
+  padding-left: 44px;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / .08), 0 24px 60px -24px rgb(0 0 0 / .45) !important;
+}
+body::after { display: none !important; }
+
+/* ---------- handwriting ---------- */
+h1, h2, h3, legend, summary, .display, .logo-word, .brand, a.logo, .stats-card h3, .panel h3 {
+  font-family: var(--title) !important; font-weight: 400 !important; text-transform: none !important; letter-spacing: .01em !important;
+}
+h1 { font-size: clamp(34px, 6vw, 60px) !important; line-height: 1.1 !important; }
+h2 { font-size: clamp(26px, 3.4vw, 36px) !important; }
+h3, summary { font-size: 22px !important; }
+.stats-card h3, .panel h3 { font-size: 19px !important; }
+.lede, .section-lede, .ts-sub, .fine, .note, .why, .tok .sub, .tok > .sub { font-family: var(--hand) !important; font-size: 19px !important; line-height: 1.35 !important; }
+.fine, .note, .why { font-size: 17px !important; }
+/* Highlighter on the key words. */
+h1 .hl, .hero h1 .hl { color: var(--ink) !important; background: linear-gradient(transparent 55%, var(--highlight) 55% 92%, transparent 92%); padding: 0 4px; }
+h2 { background: linear-gradient(transparent 62%, var(--highlight) 62% 90%, transparent 90%); display: inline; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.tile .v, .stat .v, .metric .v, .yield-panel .v, .nft-card .earned, .nft .ready, .yield .yv, .calc b { font-family: var(--title) !important; font-weight: 400 !important; }
+a { color: var(--red) !important; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--red) 40%, transparent); text-underline-offset: 3px; }
+a:hover { color: var(--red-ink) !important; }
+nav .links a:not(.btn), header nav a:not(.btn), .mainnav a { color: var(--ink) !important; text-decoration: none !important; font-weight: 700; text-transform: none; font-size: 15px !important; letter-spacing: 0; }
+header nav a[aria-current="page"] { color: var(--red) !important; text-decoration: underline !important; text-decoration-thickness: 2px !important; }
+
+/* ---------- header, brand ---------- */
+.topbar { background: var(--paper) !important; border-bottom: 1px solid var(--rule-soft) !important; }
+nav, header { border-bottom: 2px solid var(--ruled) !important; }
+header nav { border-bottom: 0 !important; }
+.brand, a.logo { font-size: 28px !important; color: var(--ink) !important; }
+.brand h1, .logo-word { font-size: 28px !important; }
+/* A tiny yellow sticky note with "99¢" on it. */
+.brand::before, a.logo::before {
+  content: "99¢"; clip-path: none !important; -webkit-mask: none !important; mask: none !important;
+  width: 44px; height: 40px !important; padding: 0 !important;
+  background: var(--note-yellow) !important; color: var(--note-ink) !important; font: 400 17px var(--title) !important;
+  box-shadow: 2px 3px 4px rgb(0 0 0 / .2) !important; transform: rotate(-6deg) !important;
+}
+
+/* ---------- panels: clean sheets clipped onto the page ---------- */
+.card, .chunk, .panel, .tile, .stat, .tag-card, .loop, .final, .g, details, .receipt-side, .yield-panel, .mine-strip, .stat-tiles .tile, .disclaimer {
+  background: var(--paper) !important; border: 1px solid var(--rule-soft) !important; border-radius: 3px !important;
+  box-shadow: 0 1px 0 var(--rule-soft), 2px 4px 10px -4px rgb(0 0 0 / .25) !important;
+}
+.tile.hl, .tile.big, .metric.price, .yield-panel, .final, .tag-card { border: 2px solid var(--red) !important; }
+.mine-strip { border: 2px dashed var(--red) !important; }
+.chunk:hover { border-color: var(--red) !important; }
+
+/* ---------- sticky notes: token cards and NFT cards ---------- */
+.tok, .nft-card, .nft {
+  --note: var(--note-yellow);
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--note) 88%, #000) 0 22px, var(--note) 22px) !important;
+  color: var(--note-ink) !important; border: 0 !important; border-radius: 0 0 2px 2px !important;
+  box-shadow: 0 1px 1px rgb(0 0 0 / .12), 3px 8px 14px -6px rgb(0 0 0 / .35) !important;
+  position: relative; overflow: visible !important; transition: transform .15s;
+}
+.tok:nth-child(4n+2), .nft-card:nth-child(4n+2), .nft:nth-child(4n+2) { --note: var(--note-pink); }
+.tok:nth-child(4n+3), .nft-card:nth-child(4n+3), .nft:nth-child(4n+3) { --note: var(--note-green); }
+.tok:nth-child(4n+4), .nft-card:nth-child(4n+4), .nft:nth-child(4n+4) { --note: var(--note-blue); }
+.tok:nth-child(odd), .nft-card:nth-child(odd), .nft:nth-child(odd) { transform: rotate(-1.2deg); }
+.tok:nth-child(even), .nft-card:nth-child(even), .nft:nth-child(even) { transform: rotate(1deg); }
+.tok:hover, .nft-card:hover, .nft:hover { transform: rotate(0deg) translateY(-3px); }
+/* Peeled bottom-right corner. */
+.tok::after, .nft-card::after, .nft::after {
+  content: ""; position: absolute; right: 0; bottom: 0; width: 26px; height: 26px;
+  background: linear-gradient(315deg, var(--page) 0 45%, color-mix(in srgb, var(--note) 70%, #000) 50%, var(--note) 56%);
+  box-shadow: -1px -1px 2px rgb(0 0 0 / .12);
+}
+/* Everything on a note is written in the note's ink, whatever the mode. */
+.tok *, .nft-card *, .nft * { color: var(--note-ink); }
+.tok a, .nft-card a, .nft a { color: #1a3fae !important; }
+.tok :is(.sub, .muted, .n, .note, .k, dt, th, .legend, .legend span), .nft-card :is(.line, .muted), .nft :is(.line, .muted) { color: #3c4763 !important; }
+.tok :is(dd, h2, b, strong), .nft-card :is(h3, b), .nft :is(h3, b) { color: var(--note-ink) !important; }
+.tok h2, .nft-card h3, .nft h3 { font-family: var(--title) !important; font-size: 24px !important; line-height: 1.15 !important; color: var(--note-ink) !important; background: none !important; display: block; }
+.tok .logo, .nft-card .thumb, .nft .thumb { background: rgb(255 255 255 / .55) !important; border: 1px solid rgb(31 42 68 / .15) !important; border-radius: 3px !important; }
+.tok .tag, .nft-card .mine { background: rgb(255 255 255 / .6) !important; color: var(--note-ink) !important; border-color: var(--note-ink) !important; }
+.tok .yield { background: rgb(255 255 255 / .55) !important; border: 1.5px solid #1d4ed8 !important; border-radius: 3px !important; }
+.tok .yield .yv, .tok .yield .apr, .nft-card .earned, .nft .ready { color: #1d4ed8 !important; }
+.tok .btn, .nft .btn { background: rgb(255 255 255 / .75) !important; color: var(--note-ink) !important; border-color: var(--note-ink) !important; }
+.tok .btn.primary, .nft .btn.primary { background: #1d4ed8 !important; color: #fff !important; border-color: #1a3fae !important; }
+
+/* ---------- buttons: ballpoint ink ---------- */
+.btn, .gate-ok, .seg button {
+  font-family: var(--mono) !important; font-weight: 800 !important; text-transform: none !important; letter-spacing: 0 !important;
+  background: var(--paper) !important; color: var(--ink) !important; border: 2px solid var(--ink) !important; border-radius: 6px !important;
+  box-shadow: 2px 2px 0 var(--ink) !important;
+}
+.btn:hover:not(:disabled), .gate-ok:hover { background: var(--highlight) !important; color: var(--ink) !important; }
+.btn.primary, .gate-ok { background: var(--red) !important; color: var(--paper) !important; border-color: var(--red-ink) !important; box-shadow: 2px 2px 0 var(--ink) !important; }
+.btn.primary:hover:not(:disabled), .gate-ok:hover { background: var(--red-ink) !important; color: var(--paper) !important; }
+.seg { border-radius: 6px !important; overflow: hidden; }
+.seg button[aria-pressed="true"] { background: var(--ink) !important; color: var(--paper) !important; }
+
+/* ---------- small things ---------- */
+input, select, textarea, .search input, .toolbar input, .toolbar select, .calc input {
+  background: var(--paper) !important; border: 0 !important; border-bottom: 2px solid var(--red) !important; border-radius: 0 !important; font-family: var(--hand) !important; font-size: 17px !important;
+}
+.lbl, .chip, .kind, .tag, .pill, .badge, .stamp { border-radius: 999px !important; text-transform: none !important; font-weight: 700; }
+.sticker { background: var(--note-yellow) !important; color: var(--note-ink) !important; border: 0 !important; border-radius: 0 !important; transform: rotate(-3deg); box-shadow: 2px 3px 4px rgb(0 0 0 / .18) !important; }
+.sticker .pulse { background: #c8102e !important; }
+.tip, .ctip, .wallet-menu, .toast { border-radius: 4px !important; border: 1.5px solid var(--ink) !important; background: var(--paper) !important; }
+.gate-box { border-radius: 4px !important; }
+.g .ic, .step::before, summary::after, .dot { border-radius: 50% !important; }
+.receipt { transform: rotate(-1.5deg); }
+@media (max-width: 520px) { body { padding-left: 30px; background-position: -8px 40px, -18px 0, 0 0 !important; } }
+/* Notes stay light in dark mode, so they keep the paper palette (3:1+ on every note colour) and dark ink. */
+.tok, .nft-card, .nft { --holders: #c8323c; --liquidity: #2e6bbf; --creator: #3f8a2f; --burn: #6f6a5f; --s-hold: #c8323c; }
+.tok .yield, .tok .yield * { color: #3c4763 !important; }
+.tok .yield .yv, .tok .yield .apr { color: #1d4ed8 !important; }

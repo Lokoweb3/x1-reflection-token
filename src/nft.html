@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Locked NFTs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tilt+Neon&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0b0a12;
+  --surface-1: rgb(24 21 38 / .72);
+  --line: rgb(255 255 255 / .16);
+  --text-primary: #f5f2ff;
+  --text-secondary: #cdc6e4;
+  --text-muted: #9089ab;
+  --link: #7ff0ff;
+  --pink: #ff3ea5;
+  --cyan: #22e4ff;
+  --lime: #b6ff3b;
+  --warning: #ffe14d;
+  --critical: #ff5a7a;
+  /* Data colours: validated on the dark surface (lightness band, colour-blind separation, contrast). */
+  --s-hold: #e93d98;
+  --s-pool: #1b9ed0;
+  --s-other: #6aa51c;
+  --s-burn: #6f6a85;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background-color: var(--bg); color: var(--text-primary); font: 14px/1.45 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-image: radial-gradient(ellipse at 10% 0%, rgb(255 62 165 / .18), transparent 55%), radial-gradient(ellipse at 100% 80%, rgb(34 228 255 / .14), transparent 55%); min-height: 100vh; }
+.topbar { background: #000; color: var(--text-secondary); font-size: 13px; text-align: center; padding: 7px 16px; border-bottom: 1px solid var(--line); }
+main { max-width: 1000px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+.brand { font-family: "Tilt Neon", system-ui, sans-serif; font-size: 26px; color: var(--pink); text-shadow: 0 0 10px rgb(255 62 165 / .6); text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 14px; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 32px; margin: 0 0 4px; }
+.muted { color: var(--text-muted); }
+.search { display: flex; gap: 8px; margin-bottom: 22px; }
+.search input { flex: 1; min-width: 0; background: rgb(0 0 0 / .35); border: 1.5px solid var(--line); border-radius: 10px; padding: 9px 12px; color: var(--text-primary); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.search input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 12px rgb(34 228 255 / .35); }
+.btn { font: 600 14px Inter, system-ui, sans-serif; border-radius: 10px; padding: 8px 14px; cursor: pointer; border: 1.5px solid var(--cyan); background: rgb(34 228 255 / .06); color: var(--cyan); text-decoration: none; display: inline-block; }
+.btn:hover { background: rgb(34 228 255 / .14); text-decoration: none; }
+.btn.primary { background: var(--lime); border-color: var(--lime); color: #0b0a12; }
+.view { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 28px; align-items: start; }
+.art { background: #000; border: 1px solid var(--line); border-radius: 16px; padding: 22px; display: grid; place-items: center; box-shadow: 0 0 40px -10px rgb(255 62 165 / .45); }
+.art img { width: 100%; max-width: 360px; height: auto; display: block; }
+.pill { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 3px 10px; margin: 8px 0 14px; }
+.pill.ok { color: var(--lime); border: 1px solid var(--lime); }
+.pill.warn { color: var(--warning); border: 1px solid var(--warning); }
+.card { background: var(--surface-1); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; margin: 0; }
+dt { color: var(--text-muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+.mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.note { font-size: 13px; color: var(--text-secondary); margin-top: 14px; }
+.error { color: var(--critical); }
+.withdraw { margin-top: 18px; }
+.withdraw h2 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 22px; margin: 0 0 4px; }
+.wd-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.wd-row:first-of-type { border-top: 0; }
+.wd-row .what { min-width: 0; }
+.wd-row .amt { font-weight: 600; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.wallet { display: flex; align-items: center; gap: 8px; }
+.wallet-menu { position: absolute; margin-top: 44px; background: #15121f; border: 1px solid var(--line); border-radius: 10px; padding: 6px; z-index: 5; display: grid; }
+.wallet-menu button { background: none; border: 0; color: var(--text-primary); padding: 8px 12px; text-align: left; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.wallet-menu img { width: 18px; height: 18px; }
+.toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 520px; margin: 0 auto; background: #15121f; border: 1px solid var(--line); border-left: 4px solid var(--cyan); border-radius: 10px; padding: 10px 14px; z-index: 10; }
+.toast.error { border-left-color: var(--critical); }
+.toast.success { border-left-color: var(--lime); }
+.gal-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.tile { background: var(--surface-1); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+.tile .k { color: var(--text-muted); font-size: 12px; }
+.tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; }
+.seg { display: inline-flex; border: 1.5px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg button { background: none; border: 0; color: var(--text-secondary); padding: 7px 14px; font: 600 13px Inter, system-ui, sans-serif; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: rgb(34 228 255 / .14); color: var(--cyan); }
+.seg button:disabled { opacity: .45; cursor: not-allowed; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.nft-card { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 14px; background: var(--surface-1); border: 1px solid var(--line); border-radius: 16px; padding: 14px; color: var(--text-primary); text-decoration: none; }
+.nft-card:hover { border-color: var(--cyan); box-shadow: 0 0 18px rgb(34 228 255 / .25); text-decoration: none; }
+.nft-card .thumb { background: #000; border-radius: 10px; display: grid; place-items: center; padding: 6px; align-self: start; }
+.nft-card .thumb img { width: 100%; display: block; }
+.nft-card .thumb .none { color: var(--text-muted); font-size: 11px; text-align: center; padding: 18px 4px; }
+.nft-card h3 { margin: 0; font-size: 16px; }
+.nft-card .earned { font-size: 20px; font-weight: 700; color: var(--lime); margin: 6px 0 2px; }
+.nft-card .line { font-size: 12px; color: var(--text-secondary); }
+.nft-card .mine { font-size: 11px; color: var(--pink); font-weight: 700; margin-left: 6px; }
+.back { display: inline-block; margin-bottom: 14px; }
+@media (max-width: 760px) { .tiles { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 760px) { .view { grid-template-columns: 1fr; } header nav { margin-left: 0; } }
+.stats-card { margin-top: 28px; padding: 22px; }
+.stats-card h2 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 24px; margin: 0; }
+.stats-card h3 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 10px; text-transform: uppercase; letter-spacing: .06em; }
+.ts-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.ts-sub { color: var(--text-muted); margin: 4px 0 18px; }
+.panel { background: rgb(0 0 0 / .25); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.hero-row { display: grid; grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.metric .k { color: var(--text-muted); font-size: 12px; }
+.metric .v { font-size: 20px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.metric .n { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.metric.price .v { font-size: clamp(22px, 2.4vw, 30px); white-space: nowrap; color: var(--lime); text-shadow: 0 0 14px rgb(182 255 59 / .3); }
+.chg { display: table; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 8px; margin: 6px 0 0; }
+.chg.up { color: var(--lime); border: 1px solid var(--lime); }
+.chg.down { color: var(--critical); border: 1px solid var(--critical); }
+.yield-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; align-items: center; margin-bottom: 12px;
+  border-color: rgb(182 255 59 / .45); box-shadow: 0 0 22px -10px rgb(182 255 59 / .6); }
+.yield-panel .v { font-size: 24px; font-weight: 700; color: var(--lime); font-variant-numeric: tabular-nums; }
+.yield-panel .k { color: var(--text-muted); font-size: 12px; }
+.yield-panel .n { color: var(--text-muted); font-size: 12px; }
+.yield-panel .why { color: var(--text-secondary); font-size: 12px; }
+.mine-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; border-color: rgb(255 62 165 / .5); box-shadow: 0 0 22px -8px rgb(255 62 165 / .6); margin-bottom: 12px; }
+.mine-strip .title { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.bar { display: flex; gap: 2px; height: 14px; border-radius: 4px; overflow: hidden; margin-bottom: 12px; }
+.bar span { display: block; height: 100%; min-width: 2px; }
+.brk { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.brk li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 13px; }
+.brk i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.brk .amt { font-variant-numeric: tabular-nums; color: var(--text-primary); font-weight: 600; text-align: right; }
+.brk .pct { color: var(--text-muted); font-weight: 400; margin-left: 6px; }
+.brk .lab { color: var(--text-secondary); }
+.chart-panel { margin-bottom: 12px; }
+.chart-box { position: relative; }
+.chart-box { min-height: 190px; }
+.chart-box svg { display: block; }
+.chart-box svg text { fill: var(--text-muted); font: 11px Inter, system-ui, sans-serif; }
+.ctip { position: absolute; pointer-events: none; background: #15121f; border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; font-size: 12px; white-space: nowrap; z-index: 3; }
+.hold-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 20px 0 8px; }
+.hold-head h2 { font-size: 20px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { font-size: 12px; color: var(--text-secondary); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+.chip b { color: var(--text-primary); }
+.table-wrap { overflow-x: auto; }
+.holders { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.holders th, .holders td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.holders th { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.holders .num { text-align: right; }
+.holders tr.me td { background: rgb(255 62 165 / .08); }
+.share { display: inline-block; width: 60px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+.share span { display: block; height: 100%; background: var(--s-hold); }
+.lbl { font-size: 11px; font-weight: 700; border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; margin-left: 6px; color: var(--text-secondary); }
+.st { font-size: 12px; font-weight: 600; }
+.st.earning { color: var(--lime); }
+.st.excluded, .st.program, .st.sold { color: var(--text-muted); }
+.st.below-minimum { color: var(--warning); }
+.more { margin-top: 12px; }
+@media (max-width: 860px) {
+  .hero-row, .mine-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .yield-panel { grid-template-columns: minmax(0, 1fr); }
+  .hero-row .price { grid-column: 1 / -1; }
+  .two { grid-template-columns: minmax(0, 1fr); }
+}
+header nav a[aria-current="page"] { color: var(--text-primary); text-decoration: underline; text-decoration-color: var(--pink); text-underline-offset: 6px; }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note"><b>Heads up:</b> crypto is highly volatile and nothing is guaranteed. Not financial advice.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main"><a href="/tokens">Tokens</a><a href="/nft" aria-current="page">NFTs</a><a href="/analytics">Analytics</a><a href="/wallet">My earnings</a><a href="/launch">Launch app</a></nav>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+  <form class="search" id="search">
+    <input id="mintInput" placeholder="LP-lock NFT address" aria-label="LP-lock NFT address" autocomplete="off" spellcheck="false">
+    <button class="btn" type="submit">View NFT</button>
+  </form>
+  <div id="out"></div>
+</main>
+<div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+<script src="/wallet.js"></script>
+<script src="/countdown.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const W = window.X1Wallet;
+let current = null; // the NFT on screen
+let busy = false;
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopener", text, ...(cls ? { class: cls } : {}) });
+const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+
+async function show(mint, quiet = false) {
+  const out = $("out");
+  if (current?.nftMint !== mint) { current = { nftMint: mint }; holdersShown = 25; } // single-NFT view from here on
+  if (!quiet) out.replaceChildren(el("p", { class: "muted", text: "Reading the NFT from the chain…" }));
+  try {
+    const r = await fetch(`/api/nft/${encodeURIComponent(mint)}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    document.title = `${d.name} · 99 + Tax`;
+    const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
+    const rows = [
+      ["Token", el("span", {}, `${d.tokenName} (${d.symbol}) `, addr(d.tokenMint))],
+      ["LP locked", `${d.lockedLp} LP · ${d.lpSharePct.toFixed(2)}% of the pool`],
+      ["Lock", d.term === "FOREVER" ? "Forever, can never be withdrawn" : d.term.replace(/^UNTIL/, "Until")],
+      ["Locked at", d.lockedAt],
+      ["Tax", d.split ? `${d.taxPct}%: ${d.split.holders}% holders · ${d.split.liquidity}% liquidity · ${d.split.burn}% burn · ${d.split.creator}% creator` : `${d.taxPct}%`],
+      ["Held by", d.holder ? addr(d.holder) : "Nobody (burned)"],
+      ["NFT", addr(d.nftMint)],
+      ["Lock account", addr(d.lock)],
+    ];
+    const img = el("img", { src: d.image, alt: `${d.name} receipt: ${d.lockedLp} LP locked ${d.term.toLowerCase()}, locked at ${d.lockedAt}` });
+    const download = el("a", { class: "btn", href: d.image, download: `${d.symbol}-lp-lock-${d.nftMint.slice(0, 8)}.svg`, text: "Download image" });
+    const copy = el("button", { class: "btn", type: "button", text: "Copy link" });
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(location.href); copy.textContent = "Copied"; } catch { copy.textContent = location.href; } };
+    const statsHost = el("section", { class: "card stats-card", "aria-live": "polite" }, el("p", { class: "muted", text: `Loading ${d.symbol} token stats…` }));
+    const back = el("a", { href: "/nft", class: "back", text: "← All locked NFTs" });
+    back.onclick = (ev) => { ev.preventDefault(); history.pushState(null, "", "/nft"); showGallery(); };
+    out.replaceChildren(back, el("div", { class: "view" },
+      el("div", { class: "art" }, img),
+      el("div", {},
+        el("h1", { text: d.name }),
+        el("span", { class: `pill ${d.printed ? "ok" : "warn"}`, text: d.printed ? "Receipt stored on-chain in the NFT" : "Preview: receipt not printed yet" }),
+        el("div", { class: "card" }, el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", {}, v)]))),
+        el("div", { class: "actions" }, link(`${d.explorer}/address/${d.nftMint}`, "View on explorer ↗", "btn primary"), download, copy, receiptButton(d)),
+        withdrawCard(d),
+        el("p", { class: "note", text: d.printed
+          ? "The image and details above are read straight from the NFT's on-chain metadata; nothing is hosted."
+            + (d.upToDate ? "" : ` The printed receipt is out of date; the wallet that locked (${d.authority ? short(d.authority) : "unknown"}) can update it.`)
+          : `This is how the receipt will look. The wallet that locked (${d.authority ? short(d.authority) : "unknown"}) can print it into the NFT from the launch app or the dashboard.` }))), statsHost);
+    loadTokenStats(d, statsHost);
+  } catch (e) {
+    out.replaceChildren(el("p", { class: "error", text: e.message || String(e) }));
+  }
+}
+
+// ---------- Token stats: burned, liquidity added, payouts, holders ----------
+const STATUS = {
+  earning: ["Earning", "Receives XNT payouts"],
+  "below-minimum": ["Below minimum", "Holds less than the minimum needed for payouts"],
+  excluded: ["Excluded", "Pool, distributor, burn address or an excluded wallet"],
+  program: ["Program", "Owned by a program, not a wallet"],
+  sold: ["Sold", "No longer holds the token, but was paid before"],
+};
+let holdersShown = 25;
+/** Yield numbers: 3 significant digits when small, commas when large. */
+const fmtSig = (v) => v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(12, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 });
+function yieldPanel(y, sym, extraNote) {
+  if (!y) return null;
+  const none = y.per1000PerDay <= 0;
+  return el("div", { class: "panel yield-panel" },
+    el("div", {}, el("div", { class: "k", text: `Holder yield per 1,000 ${sym}` }),
+      el("div", { class: "v", text: none ? "–" : `${fmtSig(y.per1000PerDay)} XNT/day` }),
+      el("div", { class: "n", text: none ? "no payouts in this period" : `≈ ${fmtSig(y.xntPerDay)} XNT/day to all holders` })),
+    el("div", {}, el("div", { class: "k", text: "Estimated yearly return" }),
+      el("div", { class: "v", text: y.aprPct == null ? "–" : `≈ ${fmtSig(y.aprPct)}%` }),
+      el("div", { class: "n", text: "at today's price, not compounded" })),
+    el("div", { class: "why", text: `Based on XNT paid to holders over the last ${y.windowDays} day${y.windowDays === 1 ? "" : "s"}, split across the tokens that earn payouts now. Payouts follow trading volume, so this changes and isn't guaranteed.${extraNote ?? ""}` }));
+}
+/** Small prices keep 3 significant digits (0.0000001534), larger ones up to 6 decimals. */
+const fmtPrice = (p) => p === 0 ? "0" : p < 0.001 ? p.toFixed(Math.min(18, 2 - Math.floor(Math.log10(p)))) : p.toLocaleString(undefined, { maximumFractionDigits: 6 });
+async function loadTokenStats(d, host) {
+  try {
+    const s = await api(`/api/token/${d.tokenMint}/stats`);
+    if (current?.nftMint !== d.nftMint) return; // navigated away meanwhile
+    renderTokenStats(d, s, host);
+  } catch (e) {
+    host.replaceChildren(el("p", { class: "muted", text: `Token stats aren't available: ${e.message || e}` }));
+  }
+}
+function renderTokenStats(d, s, host) {
+  const tok = (v, max = 4) => `${fmtUnits(v, s.decimals, max)} ${s.symbol}`;
+  // Summary panels: 999.99M instead of 999,999,987.68 so big supplies don't wrap.
+  const tokC = (v, max = 2) => { const n = Number(BigInt(v)) / 10 ** s.decimals;
+    return `${n >= 1e6 ? n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 2 }) : n.toLocaleString(undefined, { maximumFractionDigits: max })} ${s.symbol}`; };
+  const xntOf = (v, max = 4) => `${fmtUnits(v, 9, max)} XNT`;
+  const pctOf = (part, whole) => (BigInt(whole) > 0n ? Number((BigInt(part) * 1_000_000n) / BigInt(whole)) / 10_000 : 0);
+  const pctText = (p, raw) => (BigInt(raw) > 0n && p < 0.01 ? "<0.01%" : `${p.toFixed(2)}%`);
+  const me = W.state.address;
+  const metric = (k, v, n, cls = "") => el("div", { class: `panel metric ${cls}` }, el("div", { class: "k", text: k }), v instanceof Node ? v : el("div", { class: "v", text: v }), n ? el("div", { class: "n", text: n }) : null);
+
+  // Price, with the change since the launch price.
+  let chg = null;
+  if (s.priceXnt != null && s.launchPriceXnt) {
+    const c = (s.priceXnt / s.launchPriceXnt - 1) * 100;
+    chg = el("span", { class: `chg ${c >= 0 ? "up" : "down"}`, text: `${c >= 0 ? "+" : ""}${c.toFixed(1)}% since launch`, title: `Launch price ${fmtPrice(s.launchPriceXnt)} XNT` });
+  }
+  const priceV = el("div", { class: "v" }, s.priceXnt == null ? "–" : `${fmtPrice(s.priceXnt)} XNT`, chg);
+  const hero = el("div", { class: "hero-row" },
+    metric(`${s.symbol} price`, priceV, s.priceXnt != null ? `1 XNT ≈ ${Number(1 / s.priceXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 })} ${s.symbol}` : "no pool price", "price"),
+    metric("Market cap", s.marketCapXnt ? `≈ ${xntOf(s.marketCapXnt, 2)}` : "–", "supply × price"),
+    metric("Pool liquidity", s.poolXnt ? `≈ ${xntOf(s.poolXnt, 2)}` : "–", "both sides, in XNT"),
+    metric("Supply", tokC(s.supply), BigInt(s.burned) > 0n ? `${tok(s.supply, 2)} of ${tokC(s.originalSupply)}; fixed, can't be minted` : "fixed, can't be minted"));
+
+  // Your position, when the connected wallet holds or was paid.
+  const mine = me ? s.holders.find((h) => h.owner === me) : null;
+  const mineStrip = mine ? el("div", { class: "panel mine-strip" },
+    el("div", { class: "title" }, el("h3", { text: "Your position", style: "margin:0" }), el("span", { class: `st ${mine.status}`, text: (STATUS[mine.status] ?? [mine.status])[0] })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: "Balance" }), el("div", { class: "v", text: tokC(mine.balance) }), el("div", { class: "n", text: `${pctText(mine.pct, mine.balance)} of supply` })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: "Worth now" }), el("div", { class: "v", text: `≈ ${xntOf(mine.valueXnt)}` }), el("div", { class: "n", text: "at the pool price" })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: "XNT received" }), el("div", { class: "v", text: xntOf(mine.paidXnt, 6) }), el("div", { class: "n", text: "from payouts so far" })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: "Share of next payout" }), el("div", { class: "v", text: `${mine.payoutSharePct.toFixed(2)}%` }),
+      el("div", { class: "n", text: mine.status === "earning"
+        ? (s.yield && s.yield.per1000PerDay > 0 ? `≈ ${fmtSig(s.yield.per1000PerDay / 1000 * Number(BigInt(mine.balance)) / 10 ** s.decimals)} XNT/day at the current yield` : `of the holders' ${s.split.holders}% of the tax`)
+        : "not earning right now" }))) : null;
+
+  // Where the supply is.
+  const orig = s.originalSupply;
+  const sup = [
+    ["Holders earning", s.breakdown.earning, "var(--s-hold)"],
+    ["In the pool", s.breakdown.pool, "var(--s-pool)"],
+    ["Wallets not earning", s.breakdown.other, "var(--s-other)"],
+    ["Burned", s.burned, "var(--s-burn)"],
+  ];
+  const supplyPanel = el("div", { class: "panel" }, el("h3", { text: "Where the supply is" }),
+    el("div", { class: "muted", style: "font-size:12px;margin:-4px 0 10px", text: `% of the ${tokC(orig)} minted at launch (burned included). The holders table below uses today's supply.` }),
+    el("div", { class: "bar", role: "img", "aria-label": sup.map(([l, v]) => `${l} ${pctText(pctOf(v, orig), v)}`).join(", ") },
+      ...sup.filter(([, v]) => BigInt(v) > 0n).map(([l, v, c]) => el("span", { style: `flex:${Math.max(pctOf(v, orig), 0.4)};background:${c}`, title: `${l}: ${pctText(pctOf(v, orig), v)}` }))),
+    el("ul", { class: "brk" }, ...sup.map(([l, v, c]) => el("li", {}, el("i", { style: `background:${c}` }), el("span", { class: "lab", text: l }),
+      el("span", { class: "amt" }, tokC(v), el("span", { class: "pct", text: pctText(pctOf(v, orig), v) }))))));
+
+  // Where the tax went.
+  const taxXnt = BigInt(s.holdersXnt) + BigInt(s.liquidityXnt) + BigInt(s.creatorXnt);
+  const tax = [
+    ["Paid to holders", s.holdersXnt, "var(--s-hold)"],
+    ["Added to liquidity", s.liquidityXnt, "var(--s-pool)"],
+    ["Creator rewards", s.creatorXnt, "var(--s-other)"],
+  ];
+  const taxPanel = el("div", { class: "panel" }, el("h3", { text: `Where the tax went · ${xntOf(taxXnt)}` }),
+    taxXnt > 0n ? el("div", { class: "bar", role: "img", "aria-label": tax.map(([l, v]) => `${l} ${xntOf(v)}`).join(", ") },
+      ...tax.filter(([, v]) => BigInt(v) > 0n).map(([l, v, c]) => el("span", { style: `flex:${Number(BigInt(v))};background:${c}`, title: `${l}: ${xntOf(v)}` }))) : el("div", { class: "bar", style: "background:var(--line)" }),
+    el("ul", { class: "brk" }, ...tax.map(([l, v, c]) => el("li", {}, el("i", { style: `background:${c}` }), el("span", { class: "lab", text: l }),
+      el("span", { class: "amt" }, xntOf(v), el("span", { class: "pct", text: taxXnt > 0n ? `${pctOf(v, taxXnt).toFixed(0)}%` : "" })))),
+      el("li", {}, el("i", { style: "background:var(--s-burn)" }), el("span", { class: "lab", text: "Tokens burned" }), el("span", { class: "amt", text: tokC(s.taxBurned) }))),
+    el("div", { class: "n muted", style: "margin-top:10px;font-size:12px", text: `${s.taxPct}% tax per trade: ${s.split.holders}% holders · ${s.split.liquidity}% liquidity · ${s.split.burn}% burn · ${s.split.creator}% creator` }));
+
+  // Paid to holders over time (cumulative).
+  const chartPanel = el("div", { class: "panel chart-panel" },
+    el("h3", { text: `Paid to holders over time · ${s.payouts} payout${s.payouts === 1 ? "" : "s"} to ${s.walletsPaid} wallet${s.walletsPaid === 1 ? "" : "s"}` }),
+    payoutChart(s.payoutSeries));
+
+  // Holders.
+  const list = s.holders.slice(0, holdersShown);
+  const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
+  const circulating = s.holders.filter((h) => h.status !== "excluded").reduce((a, h) => a + BigInt(h.balance), 0n);
+  const top10 = s.holders.filter((h) => h.status !== "excluded").slice(0, 10).reduce((a, h) => a + BigInt(h.balance), 0n);
+  const table = el("table", { class: "holders" },
+    el("tr", {}, el("th", { class: "num", text: "#" }), el("th", { text: "Wallet" }), el("th", { class: "num", text: "Balance" }),
+      el("th", { class: "num", text: "% of supply now", title: "Share of today's supply (after burns)" }), el("th", { class: "num", text: "Worth (XNT)" }), el("th", { class: "num", text: "XNT received" }),
+      el("th", { text: "Next payout share" }), el("th", { text: "Status" })),
+    ...list.map((h, i) => {
+      const [st, why] = STATUS[h.status] ?? [h.status, ""];
+      return el("tr", { class: me && h.owner === me ? "me" : "" },
+        el("td", { class: "num muted", text: String(i + 1) }),
+        el("td", {}, addr(h.owner), h.label ? el("span", { class: "lbl", text: h.label }) : null, me && h.owner === me ? el("span", { class: "lbl", text: "You" }) : null),
+        el("td", { class: "num", text: fmtUnits(h.balance, s.decimals, 4) }),
+        el("td", { class: "num", text: pctText(h.pct, h.balance) }),
+        el("td", { class: "num", text: BigInt(h.valueXnt) > 0n ? fmtUnits(h.valueXnt, 9, 4) : "–" }),
+        el("td", { class: "num", text: BigInt(h.paidXnt) > 0n ? fmtUnits(h.paidXnt, 9, 6) : "–" }),
+        el("td", {}, h.payoutSharePct > 0 ? el("span", {}, el("span", { class: "share" }, el("span", { style: `width:${h.payoutSharePct}%` })), `${h.payoutSharePct.toFixed(2)}%`) : el("span", { class: "muted", text: "–" })),
+        el("td", {}, el("span", { class: `st ${h.status}`, text: st, title: why })));
+    }));
+  const more = s.holders.length > holdersShown ? el("button", { class: "btn more", type: "button", text: `Show all ${s.holders.length} holders` }) : null;
+  if (more) more.onclick = () => { holdersShown = Infinity; renderTokenStats(d, s, host); };
+
+  host.replaceChildren(
+    el("div", { class: "ts-head" }, el("h2", { text: `${s.name} (${s.symbol})` }), link(`${d.explorer}/address/${s.mint}`, "Token on explorer ↗")),
+    el("div", { class: "ts-sub", text: `Live token stats${s.lastRun ? ` · last distribution ${new Date(s.lastRun).toLocaleString()}` : ""}. Values in XNT use the current pool price and are estimates.` }),
+    ...[hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel,
+    el("div", { class: "hold-head" }, el("h2", { text: "Holders" }),
+      el("div", { class: "chips" },
+        el("span", { class: "chip" }, el("b", { text: String(s.holders.length) }), " addresses"),
+        el("span", { class: "chip" }, el("b", { text: String(s.earning) }), " earning"),
+        el("span", { class: "chip" }, "min ", el("b", { text: `${Number(s.minHolding).toLocaleString()} ${s.symbol}` }), " to earn"),
+        circulating > 0n && s.holders.filter((h) => h.status !== "excluded").length > 10 ? el("span", { class: "chip", title: "Share of tokens outside the pool held by the 10 largest wallets" }, "top 10 hold ", el("b", { text: `${pctOf(top10, circulating).toFixed(1)}%` })) : null)),
+    el("div", { class: "table-wrap" }, table), ...(more ? [more] : []));
+}
+
+/** Cumulative XNT paid to holders: a stepped line with a hover readout. */
+function payoutChart(series) {
+  const box = el("div", { class: "chart-box" });
+  if (!series.length) { box.append(el("p", { class: "muted", text: "No payouts yet. They start once holders qualify and tax has built up." })); return box; }
+  // Draw once the box has a width, at that width, so labels stay crisp on phones.
+  let lastW = 0;
+  const draw = () => {
+    const w = Math.round(box.clientWidth);
+    if (!box.isConnected) { window.removeEventListener("resize", draw); return; }
+    if (!w || w === lastW) return;
+    lastW = w; box.replaceChildren(...drawPayouts(series, w));
+  };
+  requestAnimationFrame(draw); window.addEventListener("resize", draw);
+  return box;
+}
+function drawPayouts(series, W) {
+  const pts = []; let cum = 0;
+  for (const p of series) { cum += Number(BigInt(p.xnt)) / 1e9; pts.push({ t: Date.parse(p.at), v: cum, add: Number(BigInt(p.xnt)) / 1e9 }); }
+  const H = 190, L = 50, R = 16, T = 12, B = 26;
+  const t0 = pts[0].t - 3_600_000, t1 = Math.max(pts.at(-1).t, Date.now());
+  const max = pts.at(-1).v || 1;
+  const nice = (() => { const p = 10 ** Math.floor(Math.log10(max)); return Math.ceil(max / p) * p; })();
+  const x = (t) => L + (W - L - R) * (t - t0) / (t1 - t0 || 1);
+  const y = (v) => T + (H - T - B) * (1 - v / nice);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": `Cumulative XNT paid to holders: ${max.toFixed(4)} XNT over ${pts.length} payouts` });
+  for (let i = 0; i <= 3; i++) {
+    const v = nice * i / 3;
+    svg.append(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1, "stroke-opacity": .5 }));
+    const tx = svgEl("text", { x: L - 8, y: y(v) + 4, "text-anchor": "end" }); tx.textContent = fmtNum(v); svg.append(tx);
+  }
+  let d = `M${x(t0)},${y(0)}`;
+  for (const p of pts) d += ` H${x(p.t)} V${y(p.v)}`;
+  d += ` H${x(t1)}`;
+  svg.append(svgEl("path", { d: `${d} V${y(0)} Z`, fill: "var(--s-hold)", "fill-opacity": .14 }));
+  svg.append(svgEl("path", { d, fill: "none", stroke: "var(--s-hold)", "stroke-width": 2 }));
+  for (const [t, anchor] of [[t0, "start"], [t1, "end"]]) {
+    const tx = svgEl("text", { x: x(t), y: H - 6, "text-anchor": anchor }); tx.textContent = new Date(t).toLocaleString(undefined, W < 500 ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", hour: "numeric" }); svg.append(tx);
+  }
+  const tip = el("div", { class: "ctip", hidden: "" });
+  // 9px markers with a 2px surface ring so touching points stay distinct.
+  for (const p of pts) svg.append(svgEl("circle", { cx: x(p.t), cy: y(p.v), r: 4.5, fill: "var(--s-hold)", stroke: "var(--bg)", "stroke-width": 2 }));
+  svg.addEventListener("mousemove", (ev) => {
+    const r = svg.getBoundingClientRect(), t = t0 + ((ev.clientX - r.left) - L) / (W - L - R) * (t1 - t0);
+    let best = pts[0]; for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    tip.replaceChildren(el("div", { class: "muted", text: new Date(best.t).toLocaleString() }), el("div", {}, "Payout ", el("b", { text: `${fmtNum(best.add)} XNT` })), el("div", {}, "Total so far ", el("b", { text: `${fmtNum(best.v)} XNT` })));
+    tip.hidden = false;
+    tip.style.left = `${Math.min(Math.max(0, x(best.t) - 80), W - 170)}px`; tip.style.top = "0px";
+  });
+  svg.addEventListener("mouseleave", () => { tip.hidden = true; });
+  return [svg, tip];
+}
+const fmtNum = (v) => v.toLocaleString(undefined, { maximumFractionDigits: v < 1 ? 6 : 4 });
+const svgEl = (tag, attrs = {}) => { const n = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; };
+
+// ---------- Gallery: every locked NFT and what it has earned ----------
+const xntFmt = (v) => `${fmtUnits(v, 9, 4)} XNT`;
+let mineOnly = false;
+let gallery = null;
+async function showGallery() {
+  current = null;
+  document.title = "Locked NFTs · 99 + Tax";
+  $("mintInput").value = "";
+  const out = $("out");
+  if (!gallery) out.replaceChildren(el("p", { class: "muted", text: "Loading every locked NFT from the chain…" }));
+  try {
+    gallery = await api("/api/nfts");
+  } catch (e) { out.replaceChildren(el("p", { class: "error", text: `Couldn't load NFTs: ${e.message || e}` })); return; }
+  renderGallery();
+}
+function renderGallery() {
+  if (current || !gallery) return;
+  const me = W.state.address;
+  const list = mineOnly && me ? gallery.filter((n) => n.holder === me) : gallery;
+  const sum = (f) => list.reduce((a, n) => a + BigInt(f(n)), 0n);
+  const segBtn = (text, on, fn, disabled) => { const b = el("button", { type: "button", "aria-pressed": String(on), text }); b.disabled = !!disabled; b.onclick = fn; return b; };
+  const seg = el("div", { class: "seg", role: "group", "aria-label": "Show" },
+    segBtn("All NFTs", !mineOnly, () => { mineOnly = false; renderGallery(); }),
+    segBtn("Mine", mineOnly, () => { mineOnly = true; renderGallery(); }, !me));
+  if (!me) seg.title = "Connect a wallet to see the NFTs it holds";
+  const cards = list.map((n) => {
+    const e = n.earned, r = e.rewards;
+    const a = el("a", { class: "nft-card", href: `/nft/${n.nftMint}` });
+    a.onclick = (ev) => { ev.preventDefault(); history.pushState(null, "", `/nft/${n.nftMint}`); $("mintInput").value = n.nftMint; show(n.nftMint); };
+    a.append(
+      el("div", { class: "thumb" }, n.receipt ? el("img", { src: n.receipt, alt: `${n.name} receipt` }) : el("div", { class: "none", text: "Receipt not printed" })),
+      el("div", {},
+        el("h3", {}, n.name, me && n.holder === me ? el("span", { class: "mine", text: "YOURS" }) : null),
+        el("div", { class: "line", text: `${n.lpSharePct.toFixed(2)}% of the pool · ${n.unlockAt === null ? "locked forever" : `unlocks ${new Date(n.unlockAt * 1000).toLocaleDateString()}`}` }),
+        el("div", { class: "earned", text: `≈ ${xntFmt(e.totalXnt)}`, title: "Total earned so far, valued at current pool prices" }),
+        el("div", { class: "line", text: `Fees collected ${xntFmt(e.feesCollectedXnt)}` }),
+        el("div", { class: "line", text: `Fees ready ${xntFmt(e.feesReadyXnt)}` }),
+        r ? el("div", { class: "line", text: `Creator rewards ${fmtUnits(BigInt(r.claimed) + BigInt(r.ready) + BigInt(r.vesting), r.decimals, 4)} ${r.symbol} (${fmtUnits(r.vesting, r.decimals, 4)} vesting)` }) : null,
+        el("div", { class: "line muted", text: `Liquidity locked ≈ ${xntFmt(n.valueXnt)}` })));
+    return a;
+  });
+  $("out").replaceChildren(
+    el("div", { class: "gal-head" }, el("div", {}, el("h1", { text: "Locked NFTs" }),
+      el("div", { class: "muted", text: "Every LP-lock NFT and what it has earned: trading fees from its locked liquidity, plus creator rewards. Values in XNT at current pool prices, estimates only." })), seg),
+    el("div", { class: "tiles" },
+      el("div", { class: "tile" }, el("div", { class: "k", text: mineOnly ? "Your NFTs" : "Locked NFTs" }), el("div", { class: "v", text: String(list.length) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Total earned" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.earned.totalXnt))}` })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Liquidity locked" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.valueXnt))}` }))),
+    list.length ? el("div", { class: "grid" }, ...cards)
+      : el("p", { class: "muted", text: mineOnly ? "This wallet doesn't hold any LP-lock NFTs." : "No LP-lock NFTs yet." }));
+}
+
+// ---------- Withdraw (the NFT holder's wallet signs) ----------
+const fmtUnits = (v, dec, max = 6) => (Number(BigInt(v)) / 10 ** dec).toLocaleString(undefined, { maximumFractionDigits: max });
+function withdrawCard(d) {
+  current = d;
+  const me = W.state.address;
+  const isHolder = !!me && me === d.holder;
+  const hint = !me ? "Connect the wallet that holds this NFT to withdraw." : isHolder ? "" : `Only the NFT holder (${d.holder ? short(d.holder) : "nobody"}) can withdraw.`;
+  const btn = (text, enabled, title, fn) => {
+    const b = el("button", { class: "btn primary", type: "button", text });
+    b.disabled = !isHolder || !enabled || busy; if (title) b.title = title;
+    b.onclick = fn; return b;
+  };
+  const rows = [];
+  const r = d.rewards;
+  if (r) {
+    const ready = BigInt(r.claimable) > 0n;
+    rows.push(el("div", { class: "wd-row" },
+      el("div", { class: "what" }, el("div", {}, "Creator rewards ", el("span", { class: "amt", text: `${fmtUnits(r.claimable, r.decimals)} ${r.symbol} ready` })),
+        r.nextUnlock ? el("div", { class: "cd-box" },
+          el("span", { class: "cd-label", text: `Next ${fmtUnits(r.nextAmount ?? "0", r.decimals)} ${r.symbol} claimable in` }), Countdown.el(r.nextUnlock),
+          el("span", { class: "cd-label", text: new Date(r.nextUnlock * 1000).toLocaleString() })) : null,
+        el("div", { class: "muted", text: `${fmtUnits(r.vesting, r.decimals)} ${r.symbol} still vesting in total · ${fmtUnits(r.claimed, r.decimals)} claimed so far. Each deposit vests 7 days.` })),
+      btn("Claim rewards", ready, ready ? "" : "Nothing has vested yet", () => withdraw("Claim creator rewards", "/api/nft/claim"))));
+  }
+  const f = d.fees;
+  if (f) {
+    rows.push(el("div", { class: "wd-row" },
+      el("div", { class: "what" }, el("div", {}, "Trading fees ", el("span", { class: "amt", text: `≈ ${fmtUnits(f.worth, 9)} XNT` })),
+        el("div", { class: "muted", text: `${fmtUnits(f.xnt, 9)} XNT + ${fmtUnits(f.tokens, 9, 4)} ${d.symbol}, from this NFT's share of pool trading` }),
+        f.networkFee ? el("div", { class: "muted", text: `Network fee to collect ≈ ${fmtUnits(f.networkFee, 9)} XNT (charged by X1). `
+          + (f.collectable ? "Collecting now nets ≈ " + fmtUnits(String(BigInt(f.worth) - BigInt(f.networkFee)), 9) + " XNT." : "Worth collecting once fees are above that.") }) : null),
+      btn("Collect fees", f.collectable, f.collectable ? "" : f.networkFee && BigInt(f.worth) > 0n
+        ? `Fees ready (≈ ${fmtUnits(f.worth, 9)} XNT) are less than the network fee (≈ ${fmtUnits(f.networkFee, 9)} XNT); wait for more trading`
+        : "Nothing worth collecting yet; fees grow as people trade", () => withdraw("Collect trading fees", "/api/nft/collect"))));
+  }
+  rows.push(el("div", { class: "wd-row" },
+    el("div", { class: "what" }, el("div", {}, "Locked liquidity ", el("span", { class: "amt", text: `${d.lockedLp} LP` })),
+      d.unlockAt ? el("div", { class: "cd-box" }, el("span", { class: "cd-label", text: "LP unlocks in" }), Countdown.el(d.unlockAt),
+        el("span", { class: "cd-label", text: new Date(d.unlockAt * 1000).toLocaleString() })) : null,
+      el("div", { class: "muted", text: d.term === "FOREVER" ? "Locked forever: it can never be withdrawn, only its fees."
+        : d.unlockAt * 1000 <= Date.now() ? "The lock has ended: the NFT holder can unlock the LP from the dashboard or CLI."
+        : "After that the NFT holder can unlock the LP from the dashboard or CLI." }))));
+  const connectBtn = !me ? el("button", { class: "btn primary", type: "button", text: "Connect wallet" }) : null;
+  if (connectBtn) connectBtn.onclick = openWalletMenu;
+  return el("div", { class: "card withdraw" }, el("h2", { text: "Withdraw" }),
+    hint ? el("p", { class: "muted", text: hint }) : null, connectBtn, ...rows);
+}
+// A countdown on the NFT page reached zero: re-read the NFT (the chain needs a moment).
+document.addEventListener("countdown-done", () => { if (current?.nftMint) setTimeout(() => show(current.nftMint, true), 4000); });
+function receiptButton(d) {
+  if (d.upToDate) return null;
+  const me = W.state.address, text = d.printed ? "Update receipt" : "Print receipt";
+  const b = el("button", { class: "btn", type: "button", text });
+  if (!me) {
+    b.title = `Connect the wallet that locked (${d.authority ? short(d.authority) : "unknown"}) to ${text.toLowerCase()}`;
+    b.onclick = openWalletMenu;
+  } else if (me !== d.authority) {
+    b.disabled = true;
+    b.title = `Only the wallet that locked (${d.authority ? short(d.authority) : "unknown"}) can ${text.toLowerCase()}`;
+  } else {
+    b.title = d.printed ? "Reprint the receipt in the NFT with the latest design and numbers (on-chain)" : "Write the receipt image into the NFT (on-chain, small rent)";
+    b.disabled = busy;
+    b.onclick = () => withdraw(text, "/api/nft/receipt");
+  }
+  return b;
+}
+async function withdraw(label, url) {
+  if (busy || !current) return;
+  busy = true; show(current.nftMint, true);
+  try {
+    toast("info", `${label}: preparing and simulating…`);
+    const { tx } = await api(url, { nftMint: current.nftMint, holder: W.state.address, authority: W.state.address });
+    toast("info", `${label}: approve it in your wallet…`);
+    const signed = await W.sign(W.b64ToBytes(tx));
+    toast("info", `${label}: sending…`);
+    const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
+    toast("success", `${label} confirmed. `, link(`${current.explorer}/tx/${signature}`, "View transaction ↗"));
+  } catch (e) {
+    toast("error", `${label} failed: ${e.message || e}`);
+  }
+  busy = false; show(current.nftMint, true);
+}
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+let toastTimer;
+function toast(kind, ...parts) {
+  const t = $("toast"); t.className = `toast ${kind}`; t.replaceChildren(...parts); t.hidden = false;
+  clearTimeout(toastTimer); if (kind !== "info") toastTimer = setTimeout(() => { t.hidden = true; }, 9000);
+}
+function renderWallet() {
+  const area = $("walletArea");
+  if (W.state.address) {
+    const b = el("button", { class: "btn", type: "button", text: "Disconnect" });
+    b.onclick = () => W.disconnect();
+    area.replaceChildren(el("span", { class: "mono", text: short(W.state.address) }), b);
+  } else {
+    const b = el("button", { class: "btn primary", type: "button", text: "Connect wallet" });
+    b.onclick = openWalletMenu;
+    area.replaceChildren(b);
+  }
+}
+function openWalletMenu(ev) {
+  ev.stopPropagation();
+  $("walletMenu")?.remove();
+  const choices = W.choices();
+  const go = (c) => W.connect(c).catch((e) => toast("error", "Wallet connection failed: " + (e.message || e)));
+  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  if (choices.length === 1) { go(choices[0]); return; }
+  const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
+  for (const c of choices) {
+    const b = el("button", { type: "button" });
+    if (typeof c.icon === "string" && c.icon.startsWith("data:image/")) b.append(el("img", { src: c.icon, alt: "" }));
+    b.append(c.name);
+    b.onclick = () => { menu.remove(); go(c); };
+    menu.append(b);
+  }
+  $("walletArea").append(menu);
+}
+document.addEventListener("click", () => $("walletMenu")?.remove());
+W.onChange(() => {
+  renderWallet();
+  if (!current) { renderGallery(); return; }
+  // Re-reading the NFT for this wallet takes a few seconds (fees come from the chain).
+  const wd = document.querySelector(".withdraw");
+  if (wd) { wd.querySelectorAll("button").forEach((b) => { b.disabled = true; }); const p = wd.querySelector("p.muted"); if (p) p.textContent = "Checking your wallet…"; }
+  show(current.nftMint, true);
+});
+renderWallet();
+
+$("search").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const m = $("mintInput").value.trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)) { $("out").replaceChildren(el("p", { class: "error", text: "That doesn't look like a Solana/X1 address." })); return; }
+  history.pushState(null, "", `/nft/${m}`);
+  show(m);
+});
+const fromPath = () => { const m = location.pathname.match(/^\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/); if (m) { $("mintInput").value = m[1]; show(m[1]); } else showGallery(); };
+window.addEventListener("popstate", fromPath);
+fromPath();
+</script>
+</body>
+</html>

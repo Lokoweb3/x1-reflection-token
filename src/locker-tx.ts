@@ -9,14 +9,16 @@ import {
   ExtensionType, LENGTH_SIZE, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TYPE_SIZE,
   calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, createCloseAccountInstruction,
   createInitializeAccount3Instruction, createInitializeMetadataPointerInstruction, createInitializeMintInstruction,
-  getAssociatedTokenAddressSync, getMintLen, unpackAccount,
+  createSyncNativeInstruction, getAssociatedTokenAddressSync, getMintLen, getTokenMetadata, unpackAccount, unpackMint,
 } from "@solana/spl-token";
-import { createInitializeInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
+import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
+import { receiptData, receiptUri } from "./web/receipt.js";
 import { Config, requireMint } from "./config.js";
 import { poolAuthority, snapshot } from "./xdex.js";
 import {
-  COLLECT_IX, LOCK_IX, LOCK_TIMED_IX, Lock, MEMO_PROGRAM_ID, UNLOCK_IX, isqrt, listLocks, lockPda, lockedLp, nftHolder,
-  pendingFeeLp, schedulePda, vaultPda,
+  CLAIM_REWARD_IX, COLLECT_IX, DEPOSIT_REWARD_IX, INIT_REWARD_VAULT_IX, LOCK_IX, LOCK_TIMED_IX, Lock, MEMO_PROGRAM_ID,
+  UNLOCK_IX, isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp, readRewardVault, rewardSummary, rewardTokensPda,
+  rewardVaultPda, schedulePda, vaultPda,
 } from "./locker.js";
 
 const LP_TEMP_SEED = "reflect-lock-fees-v1";
@@ -72,7 +74,8 @@ export async function buildLock(
   const uri = cfg.locker?.nftUri ?? "";
   const metadata: TokenMetadata = { mint: nft.publicKey, name, symbol, uri, updateAuthority: owner, additionalMetadata: [] };
   const mintLen = getMintLen([ExtensionType.MetadataPointer]);
-  const lamports = await conn.getMinimumBalanceForRentExemption(mintLen + TYPE_SIZE + LENGTH_SIZE + pack(metadata).length);
+  // Pre-fund room for the receipt (buildReceipt) so printing it needs no rent top-up.
+  const lamports = await conn.getMinimumBalanceForRentExemption(mintLen + TYPE_SIZE + LENGTH_SIZE + pack(metadata).length + RECEIPT_ROOM);
 
   if (unlockAt !== undefined && !(unlockAt > Date.now() / 1000)) throw new Error("Unlock time must be in the future.");
   const data = Buffer.alloc(unlockAt === undefined ? 16 : 24);
@@ -110,6 +113,41 @@ export async function buildLock(
   };
 }
 
+const RECEIPT_ROOM = 1_000;
+
+/**
+ * Print the lock's receipt into its NFT: sets the metadata `uri` to a data: URI holding
+ * the JSON and SVG image, so the artwork lives on-chain with nothing hosted. Run after the
+ * lock confirms, so it shows the real on-chain lock time. Only the NFT's update authority
+ * (the wallet that locked) can sign it. Tops up rent if the mint wasn't pre-funded.
+ */
+export async function buildReceipt(conn: Connection, cfg: Config, authority: PublicKey, nftMint: PublicKey) {
+  const d = await receiptData(conn, cfg, nftMint);
+  if (!d) throw new Error("Lock not found for that NFT.");
+  const info = await conn.getAccountInfo(nftMint, "confirmed");
+  if (!info) throw new Error("NFT mint not found.");
+  const current = await getTokenMetadata(conn, nftMint, "confirmed", TOKEN_2022_PROGRAM_ID);
+  if (!current) throw new Error("This NFT has no metadata.");
+  if (!current.updateAuthority?.equals(authority)) {
+    throw new Error(`Only the wallet that locked (${current.updateAuthority?.toBase58() ?? "nobody"}) can print this receipt.`);
+  }
+  const uri = receiptUri(d);
+  const ixs: TransactionInstruction[] = [];
+  const newLen = info.data.length + Buffer.byteLength(uri) - Buffer.byteLength(current.uri);
+  const need = BigInt(await conn.getMinimumBalanceForRentExemption(newLen)) - BigInt(info.lamports);
+  if (need > 0n) ixs.push(SystemProgram.transfer({ fromPubkey: authority, toPubkey: nftMint, lamports: need }));
+  ixs.push(createUpdateFieldInstruction({ programId: TOKEN_2022_PROGRAM_ID, metadata: nftMint, updateAuthority: authority, field: "uri", value: uri }));
+  return { ixs, receipt: d, printed: current.uri === uri };
+}
+
+/** The receipt image (data: URI) stored in an NFT's metadata, or null if none was printed. */
+export function receiptImage(uri: string) {
+  const prefix = "data:application/json,";
+  if (!uri.startsWith(prefix)) return null;
+  try { const img = JSON.parse(decodeURIComponent(uri.slice(prefix.length))).image; return typeof img === "string" && img.startsWith("data:image/svg+xml,") ? img : null; }
+  catch { return null; }
+}
+
 /** After a timed lock expires, return all its LP to the NFT holder and burn the NFT. */
 export async function buildUnlock(conn: Connection, cfg: Config, holder: PublicKey, nftMint: PublicKey) {
   const ids = lockerIds(cfg);
@@ -140,8 +178,8 @@ export async function buildUnlock(conn: Connection, cfg: Config, holder: PublicK
  * Collect the trading fees of the lock whose NFT `holder` holds (or of `nftMint`).
  * Returns null fees when there is nothing, or only dust, to collect.
  */
-export async function buildCollect(conn: Connection, cfg: Config, holder: PublicKey, nftMint?: PublicKey, force = false) {
-  const ids = lockerIds(cfg);
+export async function buildCollect(conn: Connection, cfg: Config, holder: PublicKey, nftMint?: PublicKey, force = false, where?: Target) {
+  const ids = lockerIds(cfg, where);
   const locks = await listLocks(conn, ids.programId, ids.pool);
   let target: Lock | undefined;
   if (nftMint) target = locks.find((l) => l.nftMint.equals(nftMint));
@@ -202,4 +240,96 @@ export async function buildCollect(conn: Connection, cfg: Config, holder: Public
     createCloseAccountInstruction(temp, holder, holder, [], wxntProgram),
   ];
   return { ixs, summary };
+}
+
+// ---------- Creator rewards ----------
+
+/**
+ * Deposit `amount` of `rewardMint` from `depositor`'s account into the vesting vault of
+ * lock NFT `nftMint`, creating the vault first if needed. For wrapped XNT (the native
+ * mint) the XNT is wrapped into the depositor's wrapped-XNT account in the same
+ * transaction.
+ */
+export async function buildDepositReward(
+  conn: Connection, cfg: Config, depositor: PublicKey, nftMint: PublicKey, rewardMint: PublicKey, amount: bigint,
+) {
+  const ids = lockerIds(cfg);
+  const mintInfo = await conn.getAccountInfo(rewardMint);
+  if (!mintInfo) throw new Error("Reward mint not found");
+  const rewardProgram = mintInfo.owner;
+  const vault = rewardVaultPda(ids.programId, nftMint, rewardMint);
+  const vaultTokens = rewardTokensPda(ids.programId, vault);
+  const from = getAssociatedTokenAddressSync(rewardMint, depositor, false, rewardProgram);
+  const ixs: TransactionInstruction[] = [];
+  if (!(await conn.getAccountInfo(vault))) {
+    ixs.push(new TransactionInstruction({
+      programId: ids.programId, data: Buffer.from(INIT_REWARD_VAULT_IX),
+      keys: [
+        meta(depositor, true, true), meta(nftMint, false, false), meta(lockPda(ids.programId, nftMint), false, false),
+        meta(rewardMint, false, false), meta(vault, false, true), meta(vaultTokens, false, true),
+        meta(rewardProgram, false, false), meta(TOKEN_2022_PROGRAM_ID, false, false), meta(SystemProgram.programId, false, false),
+      ],
+    }));
+  }
+  ixs.push(createAssociatedTokenAccountIdempotentInstruction(depositor, from, depositor, rewardMint, rewardProgram));
+  if (rewardMint.equals(NATIVE_MINT)) {
+    ixs.push(SystemProgram.transfer({ fromPubkey: depositor, toPubkey: from, lamports: amount }), createSyncNativeInstruction(from, rewardProgram));
+  }
+  const data = Buffer.alloc(16);
+  DEPOSIT_REWARD_IX.copy(data, 0);
+  data.writeBigUInt64LE(amount, 8);
+  ixs.push(new TransactionInstruction({
+    programId: ids.programId, data,
+    keys: [
+      meta(depositor, true, false), meta(vault, false, true), meta(vaultTokens, false, true),
+      meta(rewardMint, false, false), meta(from, false, true), meta(rewardProgram, false, false),
+    ],
+  }));
+  return { ixs, vault };
+}
+
+/**
+ * Claim every vested creator reward for lock NFT `nftMint` to `holder` (who must hold
+ * the NFT). Wrapped XNT is unwrapped straight into the wallet.
+ */
+export async function buildClaimReward(conn: Connection, cfg: Config, holder: PublicKey, nftMint: PublicKey, rewardMint: PublicKey) {
+  const ids = lockerIds(cfg);
+  const vaultState = await readRewardVault(conn, ids.programId, nftMint, rewardMint);
+  if (!vaultState) throw new Error("No creator rewards have been deposited for this NFT yet.");
+  const s = rewardSummary(vaultState);
+  if (s.claimable === 0n) {
+    throw new Error(s.vesting > 0n && s.nextUnlock
+      ? `Nothing has vested yet; the next part unlocks ${new Date(s.nextUnlock * 1000).toLocaleString()}.`
+      : "Nothing to claim.");
+  }
+  const nftAcc = await nftHolder(conn, nftMint);
+  if (!nftAcc?.owner.equals(holder)) throw new Error(`The NFT is held by ${nftAcc?.owner.toBase58() ?? "nobody"}, not this wallet.`);
+  const rewardProgram = (await conn.getAccountInfo(rewardMint))!.owner;
+  const native = rewardMint.equals(NATIVE_MINT);
+  const to = native
+    ? await PublicKey.createWithSeed(holder, LP_TEMP_SEED + "-r", rewardProgram)
+    : getAssociatedTokenAddressSync(rewardMint, holder, false, rewardProgram);
+  const ixs: TransactionInstruction[] = [];
+  if (native) {
+    if (await conn.getAccountInfo(to)) throw new Error(`Temporary account ${to.toBase58()} exists from an earlier attempt; close it first.`);
+    ixs.push(
+      SystemProgram.createAccountWithSeed({
+        fromPubkey: holder, newAccountPubkey: to, basePubkey: holder, seed: LP_TEMP_SEED + "-r",
+        lamports: await conn.getMinimumBalanceForRentExemption(165), space: 165, programId: rewardProgram,
+      }),
+      createInitializeAccount3Instruction(to, NATIVE_MINT, holder, rewardProgram),
+    );
+  } else {
+    ixs.push(createAssociatedTokenAccountIdempotentInstruction(holder, to, holder, rewardMint, rewardProgram));
+  }
+  ixs.push(new TransactionInstruction({
+    programId: ids.programId, data: Buffer.from(CLAIM_REWARD_IX),
+    keys: [
+      meta(holder, true, false), meta(vaultState.address, false, true), meta(rewardTokensPda(ids.programId, vaultState.address), false, true),
+      meta(rewardMint, false, false), meta(nftAcc.account, false, false), meta(to, false, true),
+      meta(rewardProgram, false, false), meta(TOKEN_2022_PROGRAM_ID, false, false),
+    ],
+  }));
+  if (native) ixs.push(createCloseAccountInstruction(to, holder, holder, [], rewardProgram));
+  return { ixs, amount: s.claimable };
 }

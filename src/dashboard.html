@@ -154,6 +154,8 @@ td .btn + .btn { margin-left: 6px; }
   .tiles, .burn-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hero .value { font-size: 40px; }
 }
+.receipt-thumb img { width: 34px; vertical-align: middle; margin-right: 8px; border-radius: 3px; }
+.receipt-thumb:hover img { outline: 2px solid var(--accent, deeppink); }
 </style>
 </head>
 <body>
@@ -321,7 +323,7 @@ function render(d) {
     tile("Owed, not yet paid", xnt(s.owedTotal), `Paid once a wallet reaches ${c.minPayoutXnt} XNT`),
     tile("Added to liquidity", xnt(t.lpXnt), `${compact(units(t.lpTokens, dec))} ${sym} with it · LP burned`),
     tile("Fees collected", `${compact(units(t.collected, dec))} ${sym}`, `${compact(units(t.sold, dec))} sold for ${xnt(t.raised)}` + (t.burned > 0n || c.burnBps ? ` · ${compact(units(t.burned, dec))} burned` : "")),
-    tile("Waiting to collect", live ? `${compact(units(live.withheld, dec))} ${sym}` : "–", live ? `Fee ${live.feeBps / 100}% · ${lpPct}% to auto-LP` + (c.burnBps ? ` · ${c.burnBps / 100}% burned` : "") : ""),
+    tile("Waiting to collect", live ? `${compact(units(live.withheld, dec))} ${sym}` : "–", live ? `Fee ${live.feeBps / 100}% · ${lpPct}% auto-LP` + (c.burnBps ? ` · ${c.burnBps / 100}% burn` : "") + (c.creatorBps ? ` · ${c.creatorBps / 100}% creator` : "") : ""),
     tile("Eligible holders", live ? String(live.eligible.length) : "–", live ? `${live.tokenAccounts} token accounts` : ""),
     tile("Pool", price != null ? `${compact(units(live.pool.xnt, 9))} XNT` : "–", price != null ? `1 ${sym} = ${price.toLocaleString(undefined, { maximumSignificantDigits: 3 })} XNT` : (c.pool ? "" : "No pool configured")),
   );
@@ -383,11 +385,13 @@ function renderBurn(d, dec, sym) {
     return;
   }
   const t = el("table", {}, el("tr", {}, el("th", { text: "NFT" }), el("th", { text: "Holder" }), el("th", { class: "num", text: "Locked LP" }),
-    el("th", { class: "num", text: "Share" }), el("th", { class: "num", text: "Fees ready" }), el("th", { class: "num", text: "Fees collected" }), el("th", { text: "Locked" }), el("th", { text: "Unlocks" }), el("th", {})));
+    el("th", { class: "num", text: "Share" }), el("th", { class: "num", text: "Fees ready" }), el("th", { class: "num", text: "Fees collected" }), el("th", { text: "Locked" }), el("th", { text: "Unlocks" }),
+    el("th", { text: "Creator rewards" }), el("th", {})));
   for (const l of locks) {
     const fee = big(l.feeXnt) + (big(pool.tokens) > 0n ? big(l.feeTokens) * big(pool.xnt) / big(pool.tokens) : 0n);
     t.append(el("tr", {},
-      el("td", {}, link(`${c.explorer}/address/${l.nftMint}`, short(l.nftMint), "mono")),
+      el("td", {}, receiptThumb(l, c), link(`${c.explorer}/address/${l.nftMint}`, short(l.nftMint), "mono"),
+        c.nftViewer ? el("span", {}, " ", link(c.nftViewer + l.nftMint, "View NFT")) : null),
       el("td", {}, l.holder ? link(`${c.explorer}/address/${l.holder}`, short(l.holder), "mono") : el("span", { class: "kind", text: "burned" })),
       el("td", { class: "num", text: compact(units(l.lp, lpDec)) }),
       el("td", { class: "num", text: fmtPct(pct(big(l.lp))) }),
@@ -395,7 +399,8 @@ function renderBurn(d, dec, sym) {
       el("td", { class: "num", text: `${compact(units(l.feeLpCollected, lpDec))} LP` }),
       el("td", { class: "kind", text: ago(new Date(l.lockedAt * 1000).toISOString()), title: new Date(l.lockedAt * 1000).toLocaleString() }),
       el("td", { class: "kind", text: l.unlockAt === null ? "never" : l.unlockAt <= now ? "unlocked" : until(l.unlockAt), title: l.unlockAt === null ? "Locked forever" : new Date(l.unlockAt * 1000).toLocaleString() }),
-      el("td", {}, collectButton(l, fee), unlockButton(l))));
+      el("td", {}, rewardsCell(l)),
+      el("td", {}, collectButton(l, fee), unlockButton(l), claimRewardButton(l), receiptButton(l))));
   }
   host.append(el("div", { class: "table-wrap" }, t));
 }
@@ -529,6 +534,10 @@ function renderActivity(d, dec, sym) {
       case "sell": return `Sold ${tok(e.tokens)} for ${xnt(e.xnt)}` + (big(e.lpXnt) ? ` (${xnt(e.lpXnt)} for liquidity)` : "");
       case "auto-lp": return `Added ${tok(e.tokens)} + ${xnt(e.xnt)} to the pool, LP burned`;
       case "burn": return `Burned ${tok(e.tokens)} of collected tax (supply reduced)`;
+      case "clicker-reward": return `Paid ${xnt(e.xnt)} to ${short(e.wallet)} for pressing Distribute now`;
+      case "creator-reward": return e.rewardMint === "XNT"
+        ? `Put ${xnt(e.amount)} into the creator reward vault (vests 7 days)`
+        : `Put ${compact(Number(e.amount) / 1e6, 6)} USDC into the creator reward vault (vests 7 days)`;
       case "allocate": return `Allocated ${xnt(e.xnt)} across ${e.holders} holder${e.holders === 1 ? "" : "s"}`;
       case "payout": return `Paid ${xnt(e.total)} to ${e.payments?.length ?? 0} wallet${e.payments?.length === 1 ? "" : "s"}`;
       default: return e.kind;
@@ -739,15 +748,55 @@ document.getElementById("lockBtn").addEventListener("click", () => {
     ? `${what} FOREVER?\n\nThis can never be undone. The liquidity can never be withdrawn by you or anyone. You'll receive an NFT that collects this liquidity's trading fees.`
     : `${what} for ${durationText(days)}?\n\nNobody can withdraw it before ${new Date(Date.now() + days * 86_400_000).toLocaleString()}. You'll receive an NFT that collects its trading fees; after that date, whoever holds the NFT can unlock the LP.`);
   if (!ok) return;
-  runTx("Lock", () => post("/api/tx/lock", { owner: wallet.address, amount: all ? "all" : amount.toString(), days }))
-    .then((ok) => { if (ok) document.getElementById("lockAmount").value = ""; });
+  let nftMint = null;
+  runTx("Lock", async () => { const r = await post("/api/tx/lock", { owner: wallet.address, amount: all ? "all" : amount.toString(), days }); nftMint = r.nftMint; return r; })
+    .then((ok) => {
+      if (!ok) return;
+      document.getElementById("lockAmount").value = "";
+      // Second, optional approval: write the receipt artwork into the NFT (on-chain).
+      printReceipt(nftMint);
+    });
 });
+
+/** Write the lock's receipt (JSON + SVG) into the NFT's on-chain metadata. */
+function printReceipt(nftMint) {
+  return runTx("Print receipt NFT", () => post("/api/tx/receipt", { authority: wallet.address, nftMint }));
+}
+function receiptButton(l) {
+  if (l.receipt || !wallet.address || l.nftAuthority !== wallet.address) return null;
+  const b = el("button", { class: "btn small", type: "button", text: "Print receipt" });
+  b.title = "Write this lock's receipt image into the NFT, on-chain (small rent, about 0.007 XNT)";
+  b.onclick = () => printReceipt(l.nftMint);
+  return b;
+}
+function receiptThumb(l, c) {
+  if (!l.receipt) return null;
+  const a = c.nftViewer ? link(c.nftViewer + l.nftMint, "") : el("span", {});
+  a.className = "receipt-thumb"; a.title = "Receipt stored on-chain in the NFT";
+  a.append(el("img", { src: l.receipt, alt: "Lock receipt" }));
+  return a;
+}
 
 function collectButton(l, feeLamports) {
   if (!wallet.address || l.holder !== wallet.address) return null;
   const b = el("button", { class: "btn small primary", type: "button", text: "Collect" });
   if (feeLamports < DUST_LAMPORTS) { b.disabled = true; b.title = "Nothing worth collecting yet; fees grow as people trade."; }
   b.onclick = () => runTx("Collect fees", () => post("/api/tx/collect", { holder: wallet.address, nftMint: l.nftMint }));
+  return b;
+}
+
+function rewardsCell(l) {
+  const r = l.rewards;
+  if (!r) return el("span", { class: "kind", text: "–" });
+  const amt = (v) => compact(units(v, r.decimals), 6);
+  return el("span", { title: r.nextUnlock ? `Next part vests ${new Date(r.nextUnlock * 1000).toLocaleString()}` : "" },
+    `${amt(r.claimable)} ${r.symbol} ready`, el("span", { class: "kind", text: ` · ${amt(r.vesting)} vesting · ${amt(r.claimed)} claimed` }));
+}
+function claimRewardButton(l) {
+  const r = l.rewards;
+  if (!r || !wallet.address || l.holder !== wallet.address || big(r.claimable) === 0n) return null;
+  const b = el("button", { class: "btn small primary", type: "button", text: "Claim rewards" });
+  b.onclick = () => runTx("Claim creator rewards", () => post("/api/tx/claim-reward", { holder: wallet.address }));
   return b;
 }
 

@@ -53,14 +53,25 @@ export function eligibleBalances(rows: TokenAccountRow[], rules: EligibilityRule
 
 /**
  * Split freshly collected fee tokens: `burnBps` of them are burned, `lpBps` go to
- * auto-LP (half kept as the token side, half sold for the XNT side), and the rest is
- * sold for holders.
+ * auto-LP (half kept as the token side, half sold for the XNT side), `creatorBps` are
+ * sold for the creator's reward, and the rest is sold for holders.
  */
-export function splitTax(amount: bigint, lpBps: number, burnBps = 0) {
+export function splitTax(amount: bigint, lpBps: number, burnBps = 0, creatorBps = 0) {
   const burn = (amount * BigInt(burnBps)) / 10_000n;
   const lp = (amount * BigInt(lpBps)) / 10_000n;
+  const creator = (amount * BigInt(creatorBps)) / 10_000n;
   const keep = lp / 2n;
-  return { burn, keep, sell: lp - keep };
+  return { burn, keep, sell: lp - keep, creator };
+}
+
+/**
+ * Reward for whoever triggered this run ("Distribute now"): `bps` of the holder pot,
+ * capped at `cap`. Zero when there is no pot.
+ */
+export function clickerReward(pot: bigint, bps: number, cap: bigint) {
+  if (pot <= 0n || bps <= 0) return 0n;
+  const r = (pot * BigInt(bps)) / 10_000n;
+  return r < cap ? r : cap;
 }
 
 /** Pro-rata split of `pot`, rounded down; the remainder stays unallocated. */

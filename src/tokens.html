@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tokens · 99 + Tax</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tilt+Neon&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0b0a12;
+  --surface-1: rgb(24 21 38 / .72);
+  --line: rgb(255 255 255 / .16);
+  --text-primary: #f5f2ff;
+  --text-secondary: #cdc6e4;
+  --text-muted: #9089ab;
+  --link: #7ff0ff;
+  --pink: #ff3ea5;
+  --cyan: #22e4ff;
+  --lime: #b6ff3b;
+  --critical: #ff5a7a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background-color: var(--bg); color: var(--text-primary); font: 14px/1.45 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-image: radial-gradient(ellipse at 10% 0%, rgb(255 62 165 / .18), transparent 55%), radial-gradient(ellipse at 100% 80%, rgb(34 228 255 / .14), transparent 55%); min-height: 100vh; }
+.topbar { background: #000; color: var(--text-secondary); font-size: 13px; text-align: center; padding: 7px 16px; border-bottom: 1px solid var(--line); }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-family: "Tilt Neon", system-ui, sans-serif; font-size: 26px; color: var(--pink); text-shadow: 0 0 10px rgb(255 62 165 / .6); text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+header nav a[aria-current="page"] { color: var(--text-primary); text-decoration: underline; text-decoration-color: var(--pink); text-underline-offset: 6px; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 34px; margin: 0 0 4px; }
+.muted { color: var(--text-muted); }
+.btn { font: 600 14px Inter, system-ui, sans-serif; border-radius: 10px; padding: 8px 14px; cursor: pointer; border: 1.5px solid var(--cyan); background: rgb(34 228 255 / .06); color: var(--cyan); text-decoration: none; display: inline-block; }
+.btn:hover { background: rgb(34 228 255 / .14); text-decoration: none; }
+.btn.primary { background: var(--lime); border-color: var(--lime); color: #0b0a12; }
+.btn.sm { padding: 5px 11px; font-size: 13px; }
+.lede { max-width: 720px; margin: 0 0 20px; color: var(--text-secondary); }
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.toolbar input { flex: 1; min-width: 180px; background: rgb(0 0 0 / .35); border: 1.5px solid var(--line); border-radius: 10px; padding: 9px 12px; color: var(--text-primary); font: 14px Inter, system-ui, sans-serif; }
+.toolbar input:focus, .toolbar select:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 12px rgb(34 228 255 / .35); }
+.toolbar select { background: rgb(0 0 0 / .35); border: 1.5px solid var(--line); border-radius: 10px; padding: 9px 12px; color: var(--text-primary); font: 14px Inter, system-ui, sans-serif; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.tok { background: var(--surface-1); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.tok-head { display: flex; gap: 12px; align-items: center; }
+.logo { width: 46px; height: 46px; border-radius: 12px; background: #000; border: 1px solid var(--line); display: grid; place-items: center; overflow: hidden; flex: none;
+  font-family: "Tilt Neon", system-ui, sans-serif; color: var(--pink); font-size: 18px; }
+.logo img { width: 100%; height: 100%; object-fit: cover; }
+.tok h2 { margin: 0; font-size: 18px; }
+.tok .sub { font-size: 12px; color: var(--text-muted); }
+.tag { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 8px; border: 1px solid var(--line); color: var(--text-secondary); margin-left: 6px; vertical-align: 2px; }
+.split { display: flex; height: 8px; border-radius: 99px; overflow: hidden; gap: 2px; background: transparent; }
+.split span { display: block; height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-secondary); }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin: 0; }
+.stats dt { color: var(--text-muted); font-size: 12px; }
+.stats dd { margin: 0; font-weight: 600; }
+.yield { font-size: 13px; color: var(--text-secondary); background: rgb(182 255 59 / .06); border: 1px solid rgb(182 255 59 / .35); border-radius: 10px; padding: 8px 10px; }
+.yield .yv { color: var(--lime); font-weight: 700; font-size: 15px; }
+.yield .apr { float: right; color: var(--lime); font-weight: 700; }
+.yield.muted { color: var(--text-muted); background: none; border-color: var(--line); }
+.links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+.error { color: var(--critical); }
+.empty { padding: 30px; text-align: center; color: var(--text-muted); }
+@media (max-width: 720px) { header nav { margin-left: 0; } .grid { grid-template-columns: 1fr; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note"><b>Heads up:</b> crypto is highly volatile and nothing is guaranteed. Not financial advice.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens" aria-current="page">Tokens</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/wallet">My earnings</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+  </header>
+  <h1>Tokens</h1>
+  <p class="lede">Every token on 99 + Tax. Each one taxes its trades and pays the tax to its holders in XNT, deepens its own pool, burns, and pays its creator. Prices and liquidity are live from the pool; payouts are totals so far.</p>
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search by name, symbol or address" aria-label="Search tokens">
+    <select id="sort" aria-label="Sort by">
+      <option value="yield">Highest yield</option>
+      <option value="paid">Most paid to holders</option>
+      <option value="liquidity">Most liquidity</option>
+      <option value="new">Newest</option>
+      <option value="tax">Lowest tax</option>
+    </select>
+  </div>
+  <div id="out"><p class="muted">Loading tokens…</p></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopener", text, ...(cls ? { class: cls } : {}) });
+const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+const units = (v, dec = 9) => Number(BigInt(v ?? 0)) / 10 ** dec;
+const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
+const xnt = (v) => `${fmt(units(v))} XNT`;
+const price = (p) => p == null ? "–" : p === 0 ? "0" : p < 0.0001 ? p.toPrecision(3) : fmt(p, 6);
+const fmtSig = (v) => v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(12, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 });
+const SPLIT = [["holders", "Holders", "var(--holders)"], ["liquidity", "Liquidity", "var(--liquidity)"], ["burn", "Burn", "var(--burn)"], ["creator", "Creator", "var(--creator)"]];
+let tokens = [], explorer = "";
+
+function card(t) {
+  const logo = el("div", { class: "logo" });
+  if (t.image && /^https:\/\//.test(t.image)) logo.append(el("img", { src: t.image, alt: "", loading: "lazy" })); else logo.textContent = t.symbol.slice(0, 2);
+  const bar = el("div", { class: "split", role: "img", "aria-label": SPLIT.map(([k, l]) => `${l} ${t.split[k]}%`).join(", ") });
+  for (const [k, , c] of SPLIT) if (t.split[k] > 0) bar.append(el("span", { style: `width:${t.split[k]}%;background:${c}` }));
+  return el("article", { class: "tok" },
+    el("div", { class: "tok-head" }, logo,
+      el("div", {}, el("h2", {}, t.name, el("span", { class: "tag", text: t.symbol })),
+        el("div", { class: "sub" }, link(`${explorer}/address/${t.mint}`, short(t.mint)), t.createdAt ? ` · since ${new Date(t.createdAt).toLocaleDateString()}` : ""))),
+    t.description ? el("div", { class: "sub", text: t.description.slice(0, 140) }) : null,
+    el("div", {}, el("div", { class: "sub", text: `${t.taxPct}% tax on every trade, split:` }), bar,
+      el("div", { class: "legend" }, ...SPLIT.filter(([k]) => t.split[k] > 0).map(([k, l, c]) => el("span", {}, el("i", { style: `background:${c}` }), `${l} ${t.split[k]}%`)))),
+    t.yield && t.yield.per1000PerDay > 0 ? el("div", { class: "yield", title: `From payouts over the last ${t.yield.windowDays} days, split across tokens that earn now. Not guaranteed.` },
+      el("span", { class: "yv", text: `${fmtSig(t.yield.per1000PerDay)} XNT/day` }), ` per 1,000 ${t.symbol}`,
+      t.yield.aprPct != null ? el("span", { class: "apr", text: `≈ ${fmtSig(t.yield.aprPct)}% a year` }) : null)
+      : el("div", { class: "yield muted", text: "No holder payouts in the last 7 days" }),
+    el("dl", { class: "stats" },
+      el("dt", { text: "Price" }), el("dt", { text: "Pool liquidity" }),
+      el("dd", { text: `${price(t.priceXnt)} XNT` }), el("dd", { text: t.liquidityXnt ? `≈ ${xnt(t.liquidityXnt)}` : "–" }),
+      el("dt", { text: "Paid to holders" }), el("dt", { text: "Wallets paid" }),
+      el("dd", { text: xnt(t.holdersXnt) }), el("dd", { text: String(t.walletsPaid) }),
+      el("dt", { text: "Added to liquidity" }), el("dt", { text: "Creator rewards" }),
+      el("dd", { text: xnt(t.liquidityAddedXnt) }), el("dd", { text: xnt(t.creatorXnt) })),
+    t.holderPass ? el("div", { class: "yield" }, "Holders earn through a ", el("b", { text: "Holder Pass" }), ": mint one, then claim whenever you like. ",
+      el("a", { href: "/wallet", text: "Mint / claim in My earnings →" })) : null,
+    el("div", { class: "sub", text: t.lastRun ? `Last distribution ${new Date(t.lastRun).toLocaleString()}` : "No distributions yet" }),
+    el("div", { class: "links" },
+      t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}`, text: "LP lock NFT" }) : null,
+      el("a", { class: "btn sm", href: "/launch#distribute", text: "Distribute now" }),
+      link(`${explorer}/address/${t.pool}`, "Pool ↗", "btn sm")));
+}
+
+function render() {
+  const q = $("q").value.trim().toLowerCase();
+  const by = $("sort").value;
+  const list = tokens.filter((t) => !q || [t.name, t.symbol, t.mint].some((s) => s.toLowerCase().includes(q)));
+  const key = {
+    yield: (t) => -(t.yield?.aprPct ?? -1), paid: (t) => -units(t.holdersXnt), liquidity: (t) => -units(t.liquidityXnt ?? 0),
+    new: (t) => -(t.createdAt ? Date.parse(t.createdAt) : 0), tax: (t) => t.taxPct,
+  }[by];
+  list.sort((a, b) => key(a) - key(b));
+  $("out").replaceChildren(list.length ? el("div", { class: "grid" }, ...list.map(card))
+    : el("div", { class: "empty" }, q ? "No token matches that search." : "No tokens yet. ", q ? null : el("a", { href: "/launch", text: "Launch the first one →" })));
+}
+
+(async () => {
+  try {
+    const [info, list] = await Promise.all([fetch("/api/info").then((r) => r.json()), fetch("/api/token-list").then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })]);
+    explorer = info.explorer; tokens = list; render();
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load tokens: ${e.message || e}` })); }
+})();
+$("q").addEventListener("input", render);
+$("sort").addEventListener("change", render);
+</script>
+</body>
+</html>

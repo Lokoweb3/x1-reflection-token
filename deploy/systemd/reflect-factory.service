@@ -1,0 +1,19 @@
+[Unit]
+Description=99 + Tax launch site (landing page, launch app, Distribute now)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=reflect
+WorkingDirectory=/opt/x1-reflection-token
+ExecStart=/usr/bin/node node_modules/tsx/dist/cli.mjs src/factory-server.ts
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/x1-reflection-token/state /opt/x1-reflection-token/factory
+
+[Install]
+WantedBy=multi-user.target

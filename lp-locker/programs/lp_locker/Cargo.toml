@@ -12,6 +12,8 @@ name = "lp_locker"
 default = []
 # Build with --features testnet for X1 testnet's XDEX program.
 testnet = []
+# Local testing only: rewards vest in seconds.
+short-vest = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
@@ -24,6 +26,8 @@ custom-panic = []
 [dependencies]
 anchor-lang = "0.32.1"
 anchor-spl = "0.32.1"
+# SHA-256 for the holder-pass Merkle tree (already a dependency of anchor-lang).
+solana-sha256-hasher = "2.3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

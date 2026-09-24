@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { allocate, eligibleBalances, splitTax, type TokenAccountRow } from "../src/holders.js";
+import { allocate, clickerReward, eligibleBalances, splitTax, type TokenAccountRow } from "../src/holders.js";
 import { XDEX_CREATE, cpmmOut, depositAmounts, inverseTransferFee, lpKeepForBalance, maxInputForImpact, maxLpFor, poolAddresses } from "../src/xdex.js";
-import { validateParams } from "../src/factory/launch.js";
+import { creatorExcluded, validateParams } from "../src/factory/launch.js";
 import { fromBaseUnits, toBaseUnits } from "../src/config.js";
 
 const row = (owner: string, amount: bigint, extra: Partial<TokenAccountRow> = {}): TokenAccountRow =>
@@ -48,14 +48,15 @@ test("decimal conversions are exact", () => {
   assert.throws(() => toBaseUnits("0.0000000001", 9));
 });
 
-test("splitTax sets aside burnBps to burn and lpBps for LP (half kept, half sold)", () => {
-  assert.deepEqual(splitTax(1_000n, 4_000), { burn: 0n, keep: 200n, sell: 200n });
-  assert.deepEqual(splitTax(1_001n, 4_000), { burn: 0n, keep: 200n, sell: 200n });
-  assert.deepEqual(splitTax(999n, 4_000), { burn: 0n, keep: 199n, sell: 200n });
-  assert.deepEqual(splitTax(1_000n, 0), { burn: 0n, keep: 0n, sell: 0n });
-  assert.deepEqual(splitTax(1_000n, 4_000, 2_000), { burn: 200n, keep: 200n, sell: 200n });
-  const s = splitTax(123_456_789n, 3_000, 2_500);
-  assert.ok(s.burn + s.keep + s.sell <= 123_456_789n);
+test("splitTax sets aside burn, LP (half kept, half sold) and creator shares", () => {
+  assert.deepEqual(splitTax(1_000n, 4_000), { burn: 0n, keep: 200n, sell: 200n, creator: 0n });
+  assert.deepEqual(splitTax(1_001n, 4_000), { burn: 0n, keep: 200n, sell: 200n, creator: 0n });
+  assert.deepEqual(splitTax(999n, 4_000), { burn: 0n, keep: 199n, sell: 200n, creator: 0n });
+  assert.deepEqual(splitTax(1_000n, 4_000, 2_000), { burn: 200n, keep: 200n, sell: 200n, creator: 0n });
+  // RFLT: 40% holders / 25% LP / 25% burn / 10% creator
+  assert.deepEqual(splitTax(1_000n, 2_500, 2_500, 1_000), { burn: 250n, keep: 125n, sell: 125n, creator: 100n });
+  const s = splitTax(123_456_789n, 2_500, 2_500, 1_000);
+  assert.ok(s.burn + s.keep + s.sell + s.creator <= 123_456_789n);
 });
 
 test("inverseTransferFee delivers at least the net amount after Token-2022's fee", () => {
@@ -121,15 +122,32 @@ test("factory pool addresses match the real RFLT testnet pool", () => {
 test("factory launch input is validated", () => {
   const ok = {
     creator: "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy", name: "My Token", symbol: "MYT", description: "", image: "https://x.io/a.png",
-    supply: "1000000000", taxBps: 500, autoLpBps: 4000, poolTokens: "900000000", poolXnt: "5", lockDays: null,
+    supply: "1000000000", taxBps: 500, autoLpBps: 4000, poolTokens: "1000000000", poolXnt: "5", lockDays: null,
   };
   assert.equal(validateParams(ok).symbol, "MYT");
   assert.equal(validateParams({ ...ok, lockDays: 7 }).lockDays, 7);
-  assert.equal(validateParams({ ...ok, burnBps: 2000 }).burnBps, 2000);
+  assert.equal(validateParams({ ...ok, burnBps: 1500 }).burnBps, 1500);
   assert.equal(validateParams(ok).burnBps, 0);
+  // With the creator's fixed 10%, liquidity + burn can reach 55%; holders keep at least 35%.
+  assert.equal(validateParams({ ...ok, autoLpBps: 3000, burnBps: 2500 }).burnBps, 2500);
+  assert.throws(() => validateParams({ ...ok, autoLpBps: 3500, burnBps: 3000 }));
   for (const bad of [
     { taxBps: 50 }, { taxBps: 1500 }, { autoLpBps: 6000 }, { symbol: "BAD SYMBOL" }, { name: "" }, { poolTokens: "2000000000" },
     { poolXnt: "0.001" }, { image: "javascript:alert(1)" }, { image: "http://insecure.io/x.png" }, { supply: "12.5" }, { lockDays: 0 },
-    { creator: "not-a-key" }, { burnBps: 6000 }, { autoLpBps: 5000, burnBps: 4500 },
+    { creator: "not-a-key" }, { burnBps: 6000 }, { autoLpBps: 5000, burnBps: 4500 }, { autoLpBps: 4000, burnBps: 3000 }, { poolTokens: "900000000" },
   ]) assert.throws(() => validateParams({ ...ok, ...bad }), `should reject ${JSON.stringify(bad)}`);
+});
+
+test("creator is excluded from rewards only when they keep part of the supply", () => {
+  assert.equal(creatorExcluded({ supply: "1000000000", poolTokens: "1000000000" }), false);
+  assert.equal(creatorExcluded({ supply: "1000000000", poolTokens: "999999999" }), true);
+  assert.equal(creatorExcluded({ supply: "1000000000", poolTokens: "900000000" }), true);
+});
+
+test("clicker reward is 1% of the holder pot, capped", () => {
+  const cap = 50_000_000n; // 0.05 XNT
+  assert.equal(clickerReward(1_000_000_000n, 100, cap), 10_000_000n);   // 1 XNT pot -> 0.01 XNT
+  assert.equal(clickerReward(20_000_000_000n, 100, cap), cap);          // 20 XNT pot -> capped at 0.05
+  assert.equal(clickerReward(0n, 100, cap), 0n);
+  assert.equal(clickerReward(1_000_000_000n, 0, cap), 0n);
 });

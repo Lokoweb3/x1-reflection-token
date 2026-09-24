@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analytics · 99 + Tax</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tilt+Neon&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0b0a12;
+  --surface-1: rgb(24 21 38 / .72);
+  --chart-bg: #0b0a12;
+  --line: rgb(255 255 255 / .16);
+  --grid: rgb(255 255 255 / .08);
+  --text-primary: #f5f2ff;
+  --text-secondary: #cdc6e4;
+  --text-muted: #9089ab;
+  --link: #7ff0ff;
+  --pink: #ff3ea5;
+  --cyan: #22e4ff;
+  --lime: #b6ff3b;
+  --critical: #ff5a7a;
+  /* Chart series: validated for the dark surface (lightness band, CVD, contrast). */
+  --series-1: #e93d98;
+  --series-2: #1b9ed0;
+  --series-3: #6aa51c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background-color: var(--bg); color: var(--text-primary); font: 14px/1.45 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-image: radial-gradient(ellipse at 10% 0%, rgb(255 62 165 / .18), transparent 55%), radial-gradient(ellipse at 100% 80%, rgb(34 228 255 / .14), transparent 55%); min-height: 100vh; }
+.topbar { background: #000; color: var(--text-secondary); font-size: 13px; text-align: center; padding: 7px 16px; border-bottom: 1px solid var(--line); }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-family: "Tilt Neon", system-ui, sans-serif; font-size: 26px; color: var(--pink); text-shadow: 0 0 10px rgb(255 62 165 / .6); text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+header nav a[aria-current="page"] { color: var(--text-primary); text-decoration: underline; text-decoration-color: var(--pink); text-underline-offset: 6px; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 34px; margin: 0 0 4px; }
+h2 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-size: 22px; margin: 0 0 12px; }
+.muted { color: var(--text-muted); }
+.btn { font: 600 14px Inter, system-ui, sans-serif; border-radius: 10px; padding: 8px 14px; cursor: pointer; border: 1.5px solid var(--cyan); background: rgb(34 228 255 / .06); color: var(--cyan); text-decoration: none; display: inline-block; }
+.btn:hover { background: rgb(34 228 255 / .14); text-decoration: none; }
+.btn.primary { background: var(--lime); border-color: var(--lime); color: #0b0a12; }
+.btn.sm { padding: 5px 11px; font-size: 13px; }
+.lede { max-width: 720px; margin: 0 0 20px; color: var(--text-secondary); }
+.hero { display: grid; grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+.tile { background: var(--surface-1); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+.tile .k { color: var(--text-muted); font-size: 12px; }
+.tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.tile.big .v { font-size: 34px; color: var(--lime); text-shadow: 0 0 14px rgb(182 255 59 / .35); }
+.tile .n { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.card { background: var(--surface-1); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 22px; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.chart-wrap { position: relative; }
+svg.chart { width: 100%; height: 260px; display: block; }
+svg.chart text { fill: var(--text-muted); font: 11px Inter, system-ui, sans-serif; }
+.tip { position: absolute; pointer-events: none; background: #15121f; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px; min-width: 170px; box-shadow: 0 8px 24px rgb(0 0 0 / .5); z-index: 3; }
+.tip .t { color: var(--text-secondary); margin-bottom: 4px; }
+.tip .row { display: flex; justify-content: space-between; gap: 14px; }
+.tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+td.num, th.num { text-align: right; }
+.feed { list-style: none; margin: 0; padding: 0; }
+.feed li { display: flex; gap: 12px; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.feed .when { color: var(--text-muted); font-size: 12px; }
+.kind { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--line); color: var(--text-secondary); margin-right: 8px; }
+.error { color: var(--critical); }
+.cols { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 22px; }
+.cols .card { margin-bottom: 0; }
+@media (max-width: 860px) { .hero, .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tile.big { grid-column: 1 / -1; } .cols { grid-template-columns: minmax(0, 1fr); } header nav { margin-left: 0; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note"><b>Heads up:</b> crypto is highly volatile and nothing is guaranteed. Not financial advice.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens">Tokens</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics" aria-current="page">Analytics</a>
+      <a href="/wallet">My earnings</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+  </header>
+  <h1>Analytics</h1>
+  <p class="lede">What every 99 + Tax token has done with its tax so far: XNT paid to holders, added to liquidity and paid to creators, from each token's distribution log. Pool values are live.</p>
+  <div id="out"><p class="muted">Loading…</p></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const svgEl = (tag, attrs = {}) => { const n = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; };
+const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopener", text, ...(cls ? { class: cls } : {}) });
+const units = (v, dec = 9) => Number(BigInt(v ?? 0)) / 10 ** dec;
+const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
+const xnt = (v) => `${fmt(units(v))} XNT`;
+const SERIES = [["holders", "Holders", "var(--series-1)"], ["liquidity", "Liquidity", "var(--series-2)"], ["creator", "Creators", "var(--series-3)"]];
+const KIND = { payout: "Payout", "auto-lp": "Auto-LP", burn: "Burn", "creator-reward": "Creator", "clicker-reward": "Clicker" };
+let explorer = "";
+
+/** Hourly buckets; grouped by day once the history spans more than three days. */
+function buckets(hourly) {
+  if (!hourly.length) return { rows: [], daily: false };
+  const span = Date.parse(hourly.at(-1).hour + ":00:00Z") - Date.parse(hourly[0].hour + ":00:00Z");
+  const daily = span > 3 * 86_400_000;
+  const map = new Map();
+  for (const h of hourly) {
+    const k = daily ? h.hour.slice(0, 10) : h.hour;
+    const b = map.get(k) ?? { k, holders: 0, liquidity: 0, creator: 0 };
+    b.holders += units(h.holders); b.liquidity += units(h.liquidity); b.creator += units(h.creator);
+    map.set(k, b);
+  }
+  // Hours with only burns carry no XNT; leave them off the XNT chart.
+  return { rows: [...map.values()].filter((r) => r.holders + r.liquidity + r.creator > 0), daily };
+}
+const label = (k, daily) => daily ? new Date(k + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", day: "numeric" })
+  : new Date(k + ":00:00Z").toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" });
+
+function chart(hourly) {
+  const { rows, daily } = buckets(hourly);
+  const wrap = el("div", { class: "chart-wrap" });
+  if (!rows.length) { wrap.append(el("p", { class: "muted", text: "No distributions yet." })); return { node: wrap, rows, daily }; }
+  const W = 1000, H = 260, L = 56, R = 10, T = 10, B = 28;
+  const max = Math.max(...rows.map((r) => r.holders + r.liquidity + r.creator)) || 1;
+  const nice = (() => { const p = 10 ** Math.floor(Math.log10(max)); return Math.ceil(max / p) * p; })();
+  const y = (v) => T + (H - T - B) * (1 - v / nice);
+  const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
+    "aria-label": `XNT from the tax per ${daily ? "day" : "hour"}: to holders, to liquidity and to creators` });
+  for (let i = 0; i <= 4; i++) {
+    const v = nice * i / 4, yy = y(v);
+    svg.append(svgEl("line", { x1: L, x2: W - R, y1: yy, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 8, y: yy + 4, "text-anchor": "end" }); t.textContent = fmt(v, 3); svg.append(t);
+  }
+  const slot = (W - L - R) / rows.length, bw = Math.max(4, Math.min(38, slot * 0.6));
+  const tip = el("div", { class: "tip", hidden: "" });
+  const every = Math.ceil(rows.length / 8);
+  rows.forEach((r, i) => {
+    const cx = L + slot * i + slot / 2;
+    let base = 0;
+    const segs = SERIES.filter(([k]) => r[k] > 0);
+    segs.forEach(([k, , c], j) => {
+      const y0 = y(base), y1 = y(base + r[k]);
+      const top = j === segs.length - 1;
+      const h = Math.max(0, y0 - y1 - (j > 0 ? 2 : 0)); // 2px surface gap between stacked segments
+      const yTop = y1;
+      if (h > 0) {
+        const rad = top ? Math.min(4, bw / 2, h) : 0;
+        const d = `M${cx - bw / 2},${yTop + h} V${yTop + rad} Q${cx - bw / 2},${yTop} ${cx - bw / 2 + rad},${yTop} H${cx + bw / 2 - rad} Q${cx + bw / 2},${yTop} ${cx + bw / 2},${yTop + rad} V${yTop + h} Z`;
+        svg.append(svgEl("path", { d, fill: c }));
+      }
+      base += r[k];
+    });
+    if (i % every === 0) { const t = svgEl("text", { x: cx, y: H - 8, "text-anchor": "middle" }); t.textContent = label(r.k, daily); svg.append(t); }
+    const hit = svgEl("rect", { x: L + slot * i, y: T, width: slot, height: H - T - B, fill: "transparent" });
+    hit.addEventListener("mouseenter", () => {
+      tip.replaceChildren(el("div", { class: "t", text: label(r.k, daily) }),
+        ...SERIES.map(([k, l, c]) => el("div", { class: "row" }, el("span", {}, el("i", { style: `background:${c}` }), l), el("b", { text: `${fmt(r[k], 6)} XNT` }))));
+      tip.hidden = false;
+      const box = svg.getBoundingClientRect(), px = (cx / W) * box.width;
+      tip.style.left = `${Math.min(Math.max(0, px - 90), box.width - 190)}px`; tip.style.top = "0px";
+    });
+    hit.addEventListener("mouseleave", () => { tip.hidden = true; });
+    svg.append(hit);
+  });
+  wrap.append(svg, tip);
+  return { node: wrap, rows, daily };
+}
+
+function render(d) {
+  const c = chart(d.hourly);
+  const table = el("table", { hidden: "" }, el("tr", {}, el("th", { text: c.daily ? "Day" : "Hour" }), ...SERIES.map(([, l]) => el("th", { class: "num", text: `${l} (XNT)` }))),
+    ...c.rows.map((r) => el("tr", {}, el("td", { text: label(r.k, c.daily) }), ...SERIES.map(([k]) => el("td", { class: "num", text: fmt(r[k], 6) })))));
+  const toggle = el("button", { class: "btn sm", type: "button", text: "Show data table" });
+  toggle.onclick = () => { table.hidden = !table.hidden; toggle.textContent = table.hidden ? "Show data table" : "Hide data table"; };
+  const totalOut = BigInt(d.holdersXnt) + BigInt(d.liquidityXnt) + BigInt(d.creatorXnt);
+
+  const perToken = el("table", {},
+    el("tr", {}, el("th", { text: "Token" }), el("th", { class: "num", text: "To holders" }), el("th", { class: "num", text: "Wallets" }),
+      el("th", { class: "num", text: "To liquidity" }), el("th", { class: "num", text: "To creator" }), el("th", { class: "num", text: "Payouts" }), el("th", { text: "Last run" })),
+    ...d.perToken.map((t) => el("tr", {},
+      el("td", {}, link(`${explorer}/address/${t.mint}`, t.symbol)),
+      el("td", { class: "num", text: xnt(t.holdersXnt) }), el("td", { class: "num", text: String(t.walletsPaid) }),
+      el("td", { class: "num", text: xnt(t.liquidityXnt) }), el("td", { class: "num", text: xnt(t.creatorXnt) }),
+      el("td", { class: "num", text: String(t.payouts) }),
+      el("td", { class: "muted", text: t.lastRun ? new Date(t.lastRun).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–" }))));
+
+  const feed = el("ul", { class: "feed" }, ...d.recent.map((e) => {
+    const what = e.kind === "payout" ? `${xnt(e.xnt)} to ${e.wallets} wallet${e.wallets === 1 ? "" : "s"}`
+      : e.kind === "burn" ? `${fmt(units(e.tokens))} ${e.symbol} burned`
+      : e.kind === "auto-lp" ? `${xnt(e.xnt)} added to liquidity`
+      : `${xnt(e.xnt)}`;
+    return el("li", {}, el("span", {}, el("span", { class: "kind", text: KIND[e.kind] ?? e.kind }), el("b", { text: e.symbol }), ` ${what}`),
+      el("span", { class: "when" }, e.signature ? link(`${explorer}/tx/${e.signature}`, new Date(e.at).toLocaleString()) : new Date(e.at).toLocaleString()));
+  }));
+  if (!d.recent.length) feed.append(el("li", { class: "muted", text: "No activity yet." }));
+
+  $("out").replaceChildren(
+    el("div", { class: "hero" },
+      el("div", { class: "tile big" }, el("div", { class: "k", text: "Paid to holders" }), el("div", { class: "v", text: xnt(d.holdersXnt) }),
+        el("div", { class: "n", text: `across ${d.payouts} payout${d.payouts === 1 ? "" : "s"}` })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Wallets paid" }), el("div", { class: "v", text: String(d.walletsPaid) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Added to liquidity" }), el("div", { class: "v", text: xnt(d.liquidityXnt) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Paid to creators" }), el("div", { class: "v", text: xnt(d.creatorXnt) }))),
+    el("div", { class: "tiles" },
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Tokens" }), el("div", { class: "v", text: String(d.tokens) }), el("div", { class: "n", text: `${d.launches} launched here` })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Total XNT from tax" }), el("div", { class: "v", text: xnt(totalOut) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Burns" }), el("div", { class: "v", text: String(d.burns) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: "Clicker rewards" }), el("div", { class: "v", text: xnt(d.clickerXnt) }), el("div", { class: "n", text: "paid for “Distribute now”" }))),
+    el("div", { class: "card" },
+      el("div", { class: "card-head" }, el("h2", { text: `XNT from the tax, per ${c.daily ? "day" : "hour"}` }), toggle),
+      el("div", { class: "legend" }, ...SERIES.map(([, l, col]) => el("span", {}, el("i", { style: `background:${col}` }), l))),
+      c.node, el("div", { class: "table-wrap" }, table)),
+    el("div", { class: "cols" },
+      el("div", { class: "card" }, el("h2", { text: "By token" }), el("div", { class: "table-wrap" }, perToken)),
+      el("div", { class: "card" }, el("h2", { text: "Recent activity" }), feed)),
+  );
+}
+
+(async () => {
+  try {
+    const [info, d] = await Promise.all([fetch("/api/info").then((r) => r.json()), fetch("/api/analytics").then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })]);
+    explorer = info.explorer; render(d);
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load analytics: ${e.message || e}` })); }
+})();
+</script>
+</body>
+</html>

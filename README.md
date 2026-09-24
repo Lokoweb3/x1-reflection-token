@@ -89,6 +89,16 @@ fee changes by two epochs, so holders can't be surprised by a sudden fee increas
    the supply shrinks. They are never sold, so there's no swap fee and no sell
    pressure for that share. `burnBps` is 0 (off) unless you set it; `autoLpBps +
    burnBps` can't exceed 10000.
+   **Creator reward:** `creatorBps` of the collected tax (RFLT and every factory token:
+   10%) is sold with the holders' share. That XNT is deposited into an `lp_locker`
+   reward vault tied to a lock NFT (`creatorReward.nftMint`), as wrapped XNT, or swapped
+   to USDC first when `creatorReward.rewardMint` and `swapPool` are set (mainnet: the
+   XNT/USDC.X pool). Each deposit vests for 7 days; then whoever holds the NFT claims it
+   (dashboard **Claim rewards**, or the factory page's **Claim**). Selling the NFT sells
+   the reward stream. Quiet cycles skip collecting tax worth less than `minHarvestXnt`
+   (default 0.05 XNT): X1 charges roughly 0.01–0.015 XNT in network fees for one full
+   cycle, so collecting less would mostly feed fees. Sales under `minSellXnt` (0.002 XNT)
+   also wait.
 3. **Sell** the collected tokens for XNT through XDEX `swap_base_input`. The sale size is
    capped by `maxPriceImpactBps` and optionally by `maxSellTokensPerCycle`. The quote
    accounts for the 5% transfer fee on the way into the pool and the pool's trade fee.
@@ -128,7 +138,12 @@ the NFT.
 
 - **Forever** (`lock`): nobody can ever withdraw the liquidity.
 - **Timed** (`lock_timed`): nobody can withdraw it before the unlock time. After that,
-  the NFT holder can `unlock`: all the LP goes back to them and the NFT is burned. The
+  the NFT holder can `unlock`: all the LP goes back to them. The NFT is kept, because
+  it's also the key for claiming creator rewards.
+- **Creator rewards** (`init_reward_vault`, `deposit_reward`, `claim_reward`): a vesting
+  vault per lock NFT and reward token. Deposits vest 7 days; only the NFT holder can
+  claim. Tested on local copies of testnet (XNT) and mainnet (swap on the real
+  XNT/USDC.X pool, then USDC.X deposit and claim). The
   unlock time lives in a separate schedule account that only `lock_timed` can create,
   in the same instruction as its lock, so a forever lock can never become unlockable.
 
@@ -164,10 +179,51 @@ Deploy with `solana program deploy`, then set `locker.programId` in `config.json
 `solana program set-upgrade-authority <program id> --final`. Until then, whoever holds
 the upgrade key could change the program. The program has not had a third-party audit.
 
+### Lock receipt NFT (on-chain image)
+
+After a lock confirms, one more approval "prints" a receipt into the NFT: a small SVG
+(token, tax split, LP locked, pool share, lock term, and the exact on-chain lock time)
+plus its JSON, stored as a `data:` URI in the NFT's Token-2022 metadata. Nothing is
+hosted. A transaction can only write about 1,000 bytes of metadata, so the art is kept
+compact. Only the wallet that locked (the NFT's update authority) can print it.
+
+- Dashboard: prompted right after Lock; otherwise a "Print receipt" button on the lock row.
+- Launch app: printed after step 3; otherwise "Print receipt" in "Your launches".
+- CLI: `npm run lp-lock -- receipt --nft <mint> --yes`.
+- View any lock NFT at `/nft/<mint>` on the launch site. Unprinted NFTs show a preview.
+  The holder can withdraw there: "Collect fees" (the liquidity's trading fees) and
+  "Claim rewards" (creator rewards, once vested). Locked LP itself only comes back when
+  a timed lock ends; forever locks never release it.
+- `/tokens` lists every token (RFLT and all launches) with live price and pool liquidity,
+  its tax split, and what it has paid to holders, liquidity and its creator.
+- `/analytics` shows platform totals, XNT from the tax over time (holders, liquidity,
+  creators), a per-token table and recent activity, from each token's `events.jsonl`.
+- Each NFT page also shows its token's stats: tokens burned (and % of supply), XNT added
+  to liquidity, paid to holders and to the creator, and every holder with balance,
+  share, XNT received and status (earning, below minimum, excluded, sold).
+- Holder yield (NFT token stats and `/tokens`): XNT paid to holders over the last 7 days,
+  split across the tokens that earn now, as XNT per 1,000 tokens per day and a simple
+  yearly % at today's price. A trailing estimate, not a promise.
+- `/wallet/<address>` ("My earnings"): a wallet's holdings across every token, XNT
+  received (payouts and "Distribute now" rewards), estimated XNT/day at the current
+  yield, and its LP-lock NFTs with fees and creator rewards ready to claim.
+- Themes: every page has a **Theme** menu in its header. Visitors pick Receipt (cream
+  paper, monospace, red price tags), Arcade (dark cabinet, pixel font, CRT scanlines;
+  always dark), Lunch bag (kraft paper bag, marker pen, taped notes) or Notebook (ruled
+  paper, handwriting, tokens and NFTs as sticky notes), and a mode:
+  Auto (follows the device), Light or Dark. The choice is saved in their browser and
+  applied before the page paints. `factory.theme` in config.json sets the default for
+  new visitors. Links can carry `?theme=arcade&mode=dark` (`?theme=default` clears it).
+  Files: `src/web/theme-<name>.css` (fonts, colours and a dark-mode token set) on top of
+  `src/web/theme-base.css` (shared layout rules); `src/web/theme.js` is the menu.
+- `/nft` lists every lock NFT (RFLT and all launches) with what it has earned: fees
+  collected, fees ready and creator rewards, valued in XNT at current pool prices.
+  "Mine" filters to the connected wallet.
+
 ## Token factory (launchpad): "99 + Tax"
 
 The launchpad is branded **99 + Tax**: `/` is the landing page (live totals, how it works,
-guarantees, costs, launched tokens, FAQ) and `/launch` is the launch app.
+on-chain checks, costs, launched tokens, FAQ) and `/launch` is the launch app.
 
 A public launch page where anyone connects a wallet and launches a tax token that works
 like RFLT: every transfer pays a tax, the tax is sold for XNT and paid to holders, and a
@@ -183,13 +239,14 @@ npm run factory:stop
 
 The site runs at `http://127.0.0.1:8124` (launch app at `/launch`). The creator picks the name, symbol, logo,
 supply, tax (1–10%), the share of the tax that goes to liquidity (0–50%), the share that
-is burned (0–50%; liquidity + burn at most 90%, so holders keep at least 10%), the starting
+is burned (0–50%; liquidity + burn at most 55%, because 10% is the creator's reward and
+holders keep at least 35%), the starting
 liquidity, and the lock (forever, 7, 30, 90 days or 1 year). Their wallet approves three
 transactions:
 
 1. **Token:** Token-2022 mint with the tax and **no fee authority** (the tax can never
    change), supply minted to the creator, **mint authority revoked**, the launch fee
-   (`factory.feeUsdc` USDC to `factory.feeReceiver`) and the token distributor's gas.
+   (`factory.feeUsdc` USDC to `factory.feeReceiver`; on testnet `factory.feeToken` can swap in another token such as XNM, and mainnet ignores it and always charges USDC.X) and the token distributor's gas.
 2. **Pool:** a TOKEN/XNT pool on XDEX with the creator's tokens and XNT.
 3. **Lock:** all of the creator's LP locked in an NFT, which collects the trading fees.
 
@@ -206,6 +263,47 @@ commit it** (it is gitignored).
 - Token metadata (`/meta/<mint>.json`) is served by the factory. To make the page public,
   put it behind an HTTPS reverse proxy, set `factory.publicUrl` and list the host name in
   `factory.hosts`. It only listens on 127.0.0.1 by default.
+
+## Holder passes (pull-based holder rewards)
+
+Paying every holder a transfer each cycle costs gas per holder, and X1 fees are
+~0.001–0.004 XNT per transaction. With `distribution.holderRewards: "claims"` a token
+pays holders through **Holder Passes** instead:
+
+- A holder mints a 1-of-1 **Holder Pass** NFT for the token (My earnings → Mint pass;
+  one-time ~0.01 XNT of rent + fee). Only wallets holding a pass earn; a wallet counts
+  once however many passes it holds.
+- Each cycle the distributor adds every pass's share to its running total and posts
+  **one** Merkle root of all totals, funding the on-chain pool in the same transaction
+  (`set_root`). Gas per cycle stays flat whatever the number of holders.
+- Whoever holds a pass clicks **Claim** (`claim_pass`) and receives its total minus
+  what it already claimed. Rewards follow the pass: selling it sells the unclaimed part.
+  Unclaimed rewards never expire.
+- On-chain (lp_locker): `init_holder_pool` (only the token's tax-withdraw authority, i.e.
+  its distributor), `set_root` (epoch must increase, totals can only grow), `mint_pass`,
+  `claim_pass`. The pool can never pay out more than it was funded with.
+- The root is journaled in state before sending; the next cycle settles or re-sends it
+  from what the chain shows, so a crash can't double-fund or lose rewards.
+- Tests: `npm test` (tree + a fixed hash vector shared with the Rust tests),
+  `cargo test` in `lp-locker/programs/lp_locker`, and two local-validator end-to-end
+  scripts: `scripts/local-holder-pass-test.ts` (program, incl. rejected cheats) and
+  `scripts/local-claims-cycle-test.ts` (distributor publish, crash recovery, expiry).
+
+## Distribute now (anyone can trigger a payout)
+
+The site's **Keep payouts moving** section lists RFLT and every launched token with the
+tax waiting to be collected. Anyone can press **Distribute now** and approve one
+transaction: a small tip (`factory.tipXnt`, default 0.005 XNT) to that token's
+distributor wallet. The server checks the tip on-chain (confirmed, recent, sent to the
+right wallet, never used before), then runs that token's normal cycle immediately. The
+tip becomes the distributor's gas; nobody can change who gets paid. Guardrails: 10
+minutes between triggered runs per token, never overlapping a running cycle (the lock
+is held only during each cycle), and not while the waiting tax is dust.
+
+## Running on a VPS
+
+See [deploy/README.md](deploy/README.md): one setup script, systemd services that
+restart on crash and boot, HTTPS via Caddy, a firewall, and daily encrypted backups.
 
 ## Dashboard
 

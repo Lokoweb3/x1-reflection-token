@@ -101,3 +101,60 @@ export async function nftHolder(conn: Connection, nftMint: PublicKey) {
   const info = await conn.getAccountInfo(acc.address, "confirmed");
   return { account: acc.address, owner: unpackAccount(acc.address, info, TOKEN_2022_PROGRAM_ID).owner };
 }
+
+// ---------- Creator rewards (vesting vault per lock NFT and reward token) ----------
+
+export const INIT_REWARD_VAULT_IX = disc("global:init_reward_vault");
+export const DEPOSIT_REWARD_IX = disc("global:deposit_reward");
+export const CLAIM_REWARD_IX = disc("global:claim_reward");
+const REWARD_VAULT_ACCOUNT = disc("account:RewardVault");
+const TRANCHES = 10;
+export const REWARD_VAULT_LEN = 8 + 32 + 32 + 8 * 3 + TRANCHES * 16 + 2;
+
+export const rewardVaultPda = (programId: PublicKey, nftMint: PublicKey, rewardMint: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("reward"), nftMint.toBuffer(), rewardMint.toBuffer()], programId)[0];
+export const rewardTokensPda = (programId: PublicKey, vault: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("reward_tokens"), vault.toBuffer()], programId)[0];
+
+export interface RewardVault {
+  address: PublicKey;
+  nftMint: PublicKey;
+  rewardMint: PublicKey;
+  claimable: bigint;
+  totalDeposited: bigint;
+  totalClaimed: bigint;
+  tranches: { amount: bigint; unlockAt: number }[];
+}
+
+export function decodeRewardVault(address: PublicKey, d: Buffer): RewardVault {
+  if (d.length !== REWARD_VAULT_LEN || !d.subarray(0, 8).equals(REWARD_VAULT_ACCOUNT)) throw new Error("Not a reward vault");
+  const tranches = [];
+  for (let i = 0; i < TRANCHES; i++) {
+    const o = 8 + 64 + 24 + i * 16;
+    const amount = d.readBigUInt64LE(o);
+    if (amount > 0n) tranches.push({ amount, unlockAt: Number(d.readBigInt64LE(o + 8)) });
+  }
+  return {
+    address, nftMint: new PublicKey(d.subarray(8, 40)), rewardMint: new PublicKey(d.subarray(40, 72)),
+    claimable: d.readBigUInt64LE(72), totalDeposited: d.readBigUInt64LE(80), totalClaimed: d.readBigUInt64LE(88), tranches,
+  };
+}
+
+/** What the NFT holder could claim right now, what's still vesting, and when the next part unlocks. */
+export function rewardSummary(v: RewardVault, nowSec = Date.now() / 1000) {
+  let claimable = v.claimable, vesting = 0n, nextUnlock: number | null = null;
+  for (const t of v.tranches) {
+    if (t.unlockAt <= nowSec) claimable += t.amount;
+    else { vesting += t.amount; nextUnlock = nextUnlock === null ? t.unlockAt : Math.min(nextUnlock, t.unlockAt); }
+  }
+  // How much vests at nextUnlock (deposits in the same bucket share an unlock time).
+  let nextAmount = 0n;
+  if (nextUnlock !== null) for (const t of v.tranches) if (t.unlockAt === nextUnlock) nextAmount += t.amount;
+  return { claimable, vesting, nextUnlock, nextAmount, totalDeposited: v.totalDeposited, totalClaimed: v.totalClaimed };
+}
+
+export async function readRewardVault(conn: Connection, programId: PublicKey, nftMint: PublicKey, rewardMint: PublicKey) {
+  const address = rewardVaultPda(programId, nftMint, rewardMint);
+  const info = await conn.getAccountInfo(address, "confirmed");
+  return info ? decodeRewardVault(address, info.data) : null;
+}

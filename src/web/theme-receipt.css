@@ -1,0 +1,67 @@
+/*
+ * 99 + Tax receipt theme: fonts and colour tokens. The server serves this, then
+ * theme-base.css (shared layout rules), then anything after the AFTER BASE marker.
+ * Cream thermal paper, black monospace ink, dashed tear lines, red price-tag accents.
+ */
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");
+
+:root {
+  color-scheme: light;
+  --paper: #fbf8ef;
+  --paper-2: #f3eedf;
+  --desk: #e9e2cf;
+  --ink: #1d1b16;
+  --ink-2: #45413a;
+  --ink-3: #6b665a;
+  --red: #c8102e;
+  --red-ink: #a40d25;
+  --amber: #9a6a00;
+  --good: #2f7d32;
+  --rule: rgb(29 27 22 / .55);
+  --rule-soft: rgb(29 27 22 / .18);
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Map every page's token names onto the receipt palette. */
+  --bg: var(--paper); --bg-2: var(--paper); --surface-1: var(--paper); --glass: var(--paper); --glass-strong: var(--paper);
+  --border: var(--rule); --line: var(--rule-soft); --line-2: var(--rule); --grid: var(--rule-soft); --shadow: transparent;
+  --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-3);
+  --muted: var(--ink-3);
+  --link: var(--ink); --accent: var(--red); --pink: var(--red); --cyan: var(--ink); --lime: var(--red); --yellow: var(--red); --gold: var(--amber);
+  --warning: var(--amber); --critical: var(--red);
+  --receipt: var(--paper); --receipt-ink: var(--ink);
+  --glow-pink: none; --glow-cyan: none; --glow-lime: none;
+  /* Chart / split colours, validated on this paper (lightness band, colour-blind separation, contrast). */
+  --holders: #c8323c; --liquidity: #2e6bbf; --creator: #3f8a2f; --burn: #8a8474;
+  --series-1: #c8323c; --series-2: #2e6bbf; --series-3: #3f8a2f;
+  --s-hold: #c8323c; --s-pool: #2e6bbf; --s-other: #3f8a2f; --s-burn: #8a8474;
+}
+
+
+/* Dark mode (a carbon-copy receipt): chosen with the site's theme menu (html[data-mode="dark"]), or
+   automatically when the device is in dark mode and the viewer picked "Auto". */
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --paper: #1d1c19; --paper-2: #26241f; --desk: #0f0e0c;
+  --ink: #efe9da; --ink-2: #cfc7b5; --ink-3: #a39b88;
+  --red: #ff5a6a; --red-ink: #e03a4c; --amber: #e0b04a; --good: #6fcf73;
+  --rule: rgb(239 233 218 / .5); --rule-soft: rgb(239 233 218 / .16);
+  /* Chart colours validated on this surface. */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8a8474;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8a8474;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-mode="light"]) {
+  color-scheme: dark;
+  --paper: #1d1c19; --paper-2: #26241f; --desk: #0f0e0c;
+  --ink: #efe9da; --ink-2: #cfc7b5; --ink-3: #a39b88;
+  --red: #ff5a6a; --red-ink: #e03a4c; --amber: #e0b04a; --good: #6fcf73;
+  --rule: rgb(239 233 218 / .5); --rule-soft: rgb(239 233 218 / .16);
+  /* Chart colours validated on this surface. */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8a8474;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8a8474;
+  }
+}
+
+/* AFTER BASE */

@@ -19,6 +19,10 @@
 
   "mint": "",
 
+  "creatorReward": {
+    "nftMint": ""
+  },
+
   "locker": {
     "programId": "",
     "nftUri": ""
@@ -27,6 +31,8 @@
   "factory": {
     "feeReceiver": "",
     "feeUsdc": "1",
+    "feeToken": null,
+    "theme": "receipt",
     "gasXnt": "0.05",
     "port": 8124,
     "publicUrl": "http://127.0.0.1:8124",

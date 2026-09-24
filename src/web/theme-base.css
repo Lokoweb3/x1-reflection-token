@@ -1,0 +1,239 @@
+/*
+ * Shared theme rules for every public page, written against the colour tokens a theme
+ * file defines (--paper, --ink, --red, --rule, --mono…). Loaded after each page's own
+ * <style>, so it wins on equal specificity; !important only where a page hard-codes the
+ * old neon colours.
+ */
+/* ---------- paper and ink ---------- */
+html { background: var(--desk); }
+body {
+  background: var(--paper) !important; color: var(--ink) !important;
+  font-family: var(--mono) !important; font-size: 14px; line-height: 1.55;
+  max-width: 1180px; margin: 0 auto !important; min-height: 100vh;
+  box-shadow: 0 0 0 1px rgb(29 27 22 / .08), 0 30px 80px -30px rgb(60 45 20 / .45) !important;
+  position: relative;
+}
+/* Torn receipt edge along the bottom of the page. */
+body::after {
+  content: "" !important; position: absolute !important; inset: auto 0 -10px 0 !important; height: 10px !important;
+  opacity: 1 !important; mix-blend-mode: normal !important; z-index: 0 !important; pointer-events: none;
+  background: linear-gradient(-45deg, transparent 7px, var(--paper) 0) 0 0 / 14px 10px repeat-x,
+              linear-gradient(45deg, transparent 7px, var(--paper) 0) 0 0 / 14px 10px repeat-x !important;
+}
+*, *::before, *::after { text-shadow: none !important; }
+/* Zero specificity, so each theme's own heading/label fonts override it. */
+:where(body *:not(svg):not(svg *)) { font-family: var(--mono) !important; }
+/* Text inside headings, buttons and labels takes their font, not the body font. */
+:is(h1, h2, h3, legend, summary, .brand, a.logo, .btn, th, .lbl, .chip, .badge) * { font-family: inherit !important; }
+h1, h2, h3, legend, summary, .display, .logo-word, .t { color: var(--ink) !important; font-weight: 700 !important; letter-spacing: .02em; }
+h1 { text-transform: uppercase; letter-spacing: .01em; }
+h2 { text-transform: uppercase; }
+a { color: var(--ink) !important; text-decoration: underline dotted color-mix(in srgb, var(--ink) 45%, transparent); text-underline-offset: 3px; }
+a:hover { color: var(--red) !important; text-decoration-color: var(--red); }
+::selection { background: var(--red); color: var(--paper); }
+.muted, .sub, .n, .note, .fine, .est, .k, dt, th { color: var(--ink-3) !important; }
+
+/* ---------- the "heads up" strip: printed at the top of the receipt ---------- */
+.topbar {
+  background: var(--paper) !important; color: var(--ink-2) !important; border-bottom: 2px dashed var(--rule) !important;
+  font-size: 12px !important; letter-spacing: .03em;
+}
+.topbar b { color: var(--red) !important; text-transform: uppercase; }
+.topbar a { color: var(--ink) !important; }
+
+/* ---------- header / nav ---------- */
+nav, header { background: transparent !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+nav { border-bottom: 2px dashed var(--rule) !important; }
+header { border-bottom: 2px dashed var(--rule); padding-bottom: 16px; }
+header nav { border-bottom: 0 !important; }
+nav .links a:not(.btn), header nav a:not(.btn), .mainnav a {
+  color: var(--ink) !important; text-transform: uppercase; font-size: 13px !important; font-weight: 600; letter-spacing: .06em; text-decoration: none;
+}
+nav .links a:not(.btn):hover, header nav a:not(.btn):hover, .mainnav a:hover { color: var(--red) !important; }
+header nav a[aria-current="page"] { color: var(--red) !important; text-decoration: underline !important; text-decoration-style: solid !important; text-decoration-color: var(--red) !important; text-decoration-thickness: 2px !important; }
+
+/* Brand: the old neon sign becomes a red price tag + wordmark. */
+.brand svg, a.logo svg { display: none !important; }
+.brand, a.logo { display: inline-flex !important; align-items: center; gap: 10px; color: var(--ink) !important; text-decoration: none !important; text-shadow: none !important;
+  font-size: 22px !important; font-weight: 700 !important; text-transform: uppercase; letter-spacing: .02em; }
+.brand h1, .logo-word { font-size: 22px !important; margin: 0 !important; color: var(--ink) !important; text-transform: uppercase; }
+.brand::before, a.logo::before {
+  content: "99¢"; display: inline-grid; place-items: center; height: 30px; padding: 0 10px 0 16px;
+  background: var(--red); color: var(--paper); font: 700 14px var(--mono); letter-spacing: .02em;
+  clip-path: polygon(8px 0, 100% 0, 100% 100%, 8px 100%, 0 50%);
+  -webkit-mask: radial-gradient(circle 3px at 9px 50%, transparent 98%, #000); mask: radial-gradient(circle 3px at 9px 50%, transparent 98%, #000);
+  transform: rotate(-4deg);
+}
+.badge { background: var(--paper) !important; color: var(--ink) !important; border: 1.5px solid var(--ink) !important; border-radius: 0 !important; box-shadow: none !important;
+  text-transform: uppercase; font-size: 11px !important; letter-spacing: .08em; }
+
+/* ---------- boxes: dashed receipt panels ---------- */
+.card, .chunk, .panel, .tile, .stat, .tok, .nft, .nft-card, .tag-card, .loop, .final, .g, details, .receipt-side, .yield-panel, .mine-strip, .stat-tiles .tile {
+  background: var(--paper) !important; border: 1.5px dashed var(--rule) !important; border-radius: 0 !important;
+  box-shadow: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+}
+.chunk:hover, .nft-card:hover { border-color: var(--ink) !important; border-style: solid !important; box-shadow: none !important; }
+.tile.hl, .tile.big, .metric.price, .yield-panel, .mine-strip, .final, .tag-card {
+  border: 2px solid var(--ink) !important;
+}
+.mine-strip { border-color: var(--red) !important; }
+.tag-card::before, .step::before, summary::after { box-shadow: none !important; }
+.tile .v, .stat .v, .metric .v, .yield-panel .v, .tile.big .v, .tile.hl .v, .metric.price .v { color: var(--ink) !important; text-shadow: none !important; }
+.tile.big .v, .tile.hl .v, .metric.price .v, .yield-panel .v, .nft-card .earned, .nft .ready, .yield .yv, .yield .apr, .calc b { color: var(--red) !important; }
+.stats .stat .v { color: var(--ink) !important; }
+.stats .stat:nth-child(2) .v { color: var(--red) !important; }
+
+/* ---------- buttons: ink boxes; primary is a red price tag ---------- */
+.btn, button.btn, .gate-ok, .seg button {
+  font-family: var(--mono) !important; font-weight: 700 !important; text-transform: uppercase; letter-spacing: .06em;
+  background: var(--paper) !important; color: var(--ink) !important; border: 2px solid var(--ink) !important; border-radius: 0 !important;
+  box-shadow: 3px 3px 0 var(--ink) !important; text-shadow: none !important; transition: transform .08s, box-shadow .08s;
+}
+.btn:hover:not(:disabled), .gate-ok:hover { background: var(--ink) !important; color: var(--paper) !important; transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--red) !important; text-decoration: none !important; }
+.btn:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink) !important; }
+.btn.primary, .gate-ok {
+  background: var(--red) !important; color: var(--paper) !important; border-color: var(--red-ink) !important;
+  box-shadow: 3px 3px 0 var(--ink) !important;
+}
+.btn.primary:hover:not(:disabled), .gate-ok:hover { background: var(--red-ink) !important; color: var(--paper) !important; box-shadow: 4px 4px 0 var(--ink) !important; }
+.btn:disabled { opacity: .4 !important; box-shadow: none !important; }
+.seg { border: 2px solid var(--ink) !important; border-radius: 0 !important; }
+.seg button { box-shadow: none !important; border: 0 !important; }
+.seg button[aria-pressed="true"] { background: var(--ink) !important; color: var(--paper) !important; }
+
+/* ---------- forms ---------- */
+input, select, textarea, .search input, .toolbar input, .toolbar select, .calc input {
+  background: var(--paper) !important; color: var(--ink) !important; border: 1.5px solid var(--ink) !important; border-radius: 0 !important;
+  box-shadow: none !important; font-family: var(--mono) !important;
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--red) !important; outline-offset: 1px; box-shadow: none !important; }
+select option { background: var(--paper) !important; color: var(--ink) !important; }
+input[type=range] { accent-color: var(--red); border: 0 !important; background: transparent !important; }
+fieldset { border: 1.5px dashed var(--rule) !important; border-radius: 0 !important; }
+legend { color: var(--red) !important; text-transform: uppercase; font-size: 13px !important; letter-spacing: .06em; }
+.holders-share, .creator-share, .fixed-pct { background: var(--paper) !important; box-shadow: none !important; border-radius: 0 !important; border: 2px solid var(--ink) !important; color: var(--ink) !important; }
+.creator-share, .fixed-pct { color: var(--red) !important; border-color: var(--red) !important; }
+.holders-share.bad { color: var(--red) !important; border-color: var(--red) !important; background: color-mix(in srgb, var(--red) 8%, transparent) !important; }
+
+/* ---------- tables: dotted receipt lines ---------- */
+table th, table td { border-bottom: 1px dashed var(--rule-soft) !important; }
+table th { text-transform: uppercase; font-size: 11px !important; letter-spacing: .06em; }
+tr.me td, .holders tr.me td { background: color-mix(in srgb, var(--red) 10%, transparent) !important; }
+.lbl, .chip, .kind, .tag, .pill, .sticker, .stamp {
+  background: var(--paper) !important; color: var(--ink) !important; border: 1.5px solid var(--ink) !important; border-radius: 0 !important;
+  box-shadow: none !important; text-transform: uppercase; letter-spacing: .05em;
+}
+.pill.ok, .stamp { color: var(--good) !important; border-color: var(--good) !important; }
+.pill.warn { color: var(--amber) !important; border-color: var(--amber) !important; }
+.sticker { color: var(--red) !important; border-color: var(--red) !important; transform: rotate(-2deg); }
+.sticker .pulse { background: var(--red) !important; box-shadow: none !important; }
+.st.earning, .chg.up { color: var(--good) !important; }
+.chg.up { border-color: var(--good) !important; }
+.chg.down { color: var(--red) !important; border-color: var(--red) !important; }
+.st.below-minimum { color: var(--amber) !important; }
+
+/* ---------- things that were black glass ---------- */
+.art, .logo:not(a), .nft .thumb, .nft-card .thumb, .tok .logo {
+  background: var(--paper-2) !important; border: 1.5px dashed var(--rule) !important; border-radius: 0 !important; box-shadow: none !important;
+}
+.tok .logo { color: var(--red) !important; font-weight: 700; }
+.tip, .ctip, .wallet-menu, .toast {
+  background: var(--paper) !important; color: var(--ink) !important; border: 2px solid var(--ink) !important; border-radius: 0 !important;
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--ink) 25%, transparent) !important;
+}
+.toast { border-left: 8px solid var(--ink) !important; }
+.toast.success { border-left-color: var(--good) !important; }
+.toast.error { border-left-color: var(--red) !important; }
+.wallet-menu button:hover { background: var(--paper-2) !important; }
+.bar, .split { border-radius: 0 !important; box-shadow: none !important; }
+.bar > div, .bar span, .split span { box-shadow: none !important; border-radius: 0 !important; }
+.sw, .legend i, .brk i { box-shadow: none !important; border-radius: 0 !important; }
+.share { background: var(--rule-soft) !important; border-radius: 0 !important; }
+.share span { background: var(--s-hold) !important; }
+svg.chart text, .chart-box svg text { fill: var(--ink-3) !important; font-family: var(--mono) !important; }
+.yield { background: var(--paper) !important; border: 1.5px dashed var(--red) !important; border-radius: 0 !important; color: var(--ink-2) !important; }
+.yield.muted { border-color: var(--rule) !important; }
+
+/* ---------- landing specifics ---------- */
+.hero h1 .hl, h1 .hl { color: var(--red) !important; }
+.receipt { transform: rotate(-1deg); border: 1.5px solid var(--rule) !important; box-shadow: 6px 8px 0 color-mix(in srgb, var(--ink) 12%, transparent) !important; }
+.receipt::after { background: radial-gradient(circle, var(--paper) 3.5px, transparent 4px) 0 0/16px 10px repeat-x !important; }
+.receipt .tax b { color: var(--red) !important; }
+.loop { background: var(--paper) !important; }
+.loop b { color: var(--red) !important; }
+.arrow { color: var(--red) !important; }
+.g .ic, .step::before, summary::after { color: var(--red) !important; border: 2px solid var(--red) !important; border-radius: 0 !important; background: var(--paper) !important; }
+.final { background: var(--paper) !important; }
+.final .big-tag { display: none !important; }
+.disclaimer { background: var(--paper-2) !important; border: 1.5px dashed var(--rule) !important; border-radius: 0 !important; color: var(--ink-2) !important; }
+footer { border-top: 2px dashed var(--rule) !important; color: var(--ink-3) !important; }
+.neon-sign { animation: none !important; }
+
+/* ---------- launch app specifics ---------- */
+.dot { border: 2px solid var(--ink) !important; background: var(--paper) !important; color: var(--ink) !important; border-radius: 0 !important; box-shadow: none !important; }
+.steps li.done .dot { background: var(--ink) !important; color: var(--paper) !important; }
+.steps li.active .dot { border-color: var(--red) !important; color: var(--red) !important; }
+.steps li.error .dot { background: var(--red) !important; border-color: var(--red) !important; color: var(--paper) !important; }
+
+/* ---------- entry disclaimer: a printed notice ---------- */
+.gate { background: color-mix(in srgb, var(--desk) 92%, transparent) !important; backdrop-filter: none !important; }
+.gate-box { background: var(--paper) !important; color: var(--ink) !important; border: 2px solid var(--ink) !important; border-radius: 0 !important; box-shadow: 8px 8px 0 color-mix(in srgb, var(--ink) 20%, transparent) !important; }
+.gate-box h2 { color: var(--ink) !important; border-bottom: 2px dashed var(--rule); padding-bottom: 10px; }
+.gate-box ul, .gate-box ul b { color: var(--ink) !important; }
+.gate-box .gate-leave { color: var(--ink-3) !important; }
+
+@media (max-width: 1200px) { body { box-shadow: none !important; } }
+
+/* Theme fonts are wider than the old one: let the hero headline wrap so the calculator keeps its width. */
+h1 .line { white-space: normal !important; }
+.hero > * { min-width: 0; }
+/* Wider theme fonts: let every header menu wrap instead of pushing the page sideways. */
+header nav { flex-wrap: wrap !important; row-gap: 8px !important; }
+
+/* ---------- theme picker (src/web/theme.js) ---------- */
+.theme-picker { position: relative; }
+.theme-picker summary {
+  list-style: none; cursor: pointer; display: inline-flex !important; align-items: center; gap: 6px; padding: 6px 10px !important;
+  border: 1.5px solid var(--rule); color: var(--ink) !important; font-size: 13px !important; font-weight: 600 !important;
+  text-transform: none !important; letter-spacing: 0 !important; line-height: 1.2 !important; user-select: none;
+}
+.theme-picker summary::-webkit-details-marker { display: none; }
+.theme-picker summary::after { content: none !important; display: none !important; }
+.theme-picker[open] summary { border-color: var(--red); color: var(--red) !important; }
+.tp-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 80; width: 250px; padding: 10px;
+  background: var(--paper); color: var(--ink); border: 2px solid var(--ink); box-shadow: 4px 4px 0 color-mix(in srgb, var(--ink) 25%, transparent);
+  display: grid; gap: 6px; text-align: left;
+}
+.tp-h { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); margin-top: 4px; }
+.tp-opt { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px; background: transparent; color: var(--ink); border: 1.5px solid transparent; cursor: pointer; text-align: left; font: inherit; }
+.tp-opt:hover { border-color: var(--rule); }
+.tp-opt[aria-pressed="true"] { border-color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.tp-opt b { display: block; font-size: 13px; }
+.tp-opt small { display: block; font-size: 11px; color: var(--ink-3); }
+.tp-sw { flex: none; width: 28px; height: 28px; border: 1.5px solid var(--rule); }
+.tp-sw-receipt { background: linear-gradient(135deg, #fbf8ef 60%, #c8102e 60%); }
+.tp-sw-arcade { background: repeating-linear-gradient(0deg, #170d30 0 3px, #221444 3px 4px), #170d30; box-shadow: inset -9px -9px 0 #ffd23f; }
+.tp-sw-lunchbag { background: linear-gradient(90deg, #c9a06a 48%, #b88c55 50%, #c9a06a 52%); box-shadow: inset 0 -9px 0 #ff8a1f; border-radius: 3px; }
+.tp-sw-notebook { background: repeating-linear-gradient(to bottom, #fbfaf2 0 5px, #9fbde6 5px 6px); box-shadow: inset 5px 0 0 -3px #e66e6e, inset -12px -12px 0 #fff27a; }
+.tp-modes { display: grid; grid-template-columns: repeat(3, 1fr); border: 1.5px solid var(--ink); }
+.tp-modes button { padding: 7px 0; background: transparent; color: var(--ink); border: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; }
+.tp-modes button + button { border-left: 1.5px solid var(--ink); }
+.tp-modes button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.tp-modes button:disabled { opacity: .4; cursor: not-allowed; }
+.tp-note { font-size: 11px; color: var(--ink-3); }
+@media (max-width: 520px) { .tp-menu { right: auto; left: 0; } }
+/* The home page's top bar: let it grow and wrap (theme fonts + the Theme button). */
+nav .wrap { height: auto !important; min-height: 70px; flex-wrap: wrap; row-gap: 8px; padding-top: 8px; padding-bottom: 8px; }
+nav .links { flex-wrap: wrap; row-gap: 6px; justify-content: flex-end; }
+/* The picker is a <details>, but it isn't a FAQ panel. */
+details.theme-picker { border: 0 !important; padding: 0 !important; margin: 0 !important; background: transparent !important; box-shadow: none !important; }
+details.theme-picker > summary { font-family: var(--mono) !important; font-size: 13px !important; padding: 6px 10px !important; }
+
+/* ---------- live countdowns (src/web/countdown.js) ---------- */
+.countdown { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--red); white-space: nowrap; }
+.countdown.done { color: var(--good); }
+.cd-box { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 8px 0 4px; padding: 8px 10px;
+  border: 1.5px dashed var(--red); background: color-mix(in srgb, var(--red) 6%, transparent); }
+.cd-box .countdown { font-size: 20px; }
+.cd-box .cd-label { font-size: 12px; color: var(--ink-3); }

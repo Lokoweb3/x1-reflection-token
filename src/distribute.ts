@@ -17,21 +17,25 @@
  */
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import {
-  TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction,
+  NATIVE_MINT, TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction,
   createBurnCheckedInstruction, createHarvestWithheldTokensToMintInstruction, createWithdrawWithheldTokensFromMintInstruction,
   getAssociatedTokenAddressSync, getEpochFee, getTransferFeeConfig, unpackAccount, unpackMint,
 } from "@solana/spl-token";
 import {
-  Config, connection, fromBaseUnits, loadConfig, loadKeypair, requireMint, toBaseUnits, xnt, XNT_DECIMALS,
+  Config, DEFAULT_MIN_HARVEST_XNT, DEFAULT_MIN_SELL_XNT, connection, fromBaseUnits, loadConfig, loadKeypair, requireMint, toBaseUnits, xnt, XNT_DECIMALS,
 } from "./config.js";
-import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, splitTax } from "./holders.js";
+import { BURN_OWNERS, allocate, clickerReward, eligibleBalances, scanTokenAccounts, splitTax } from "./holders.js";
 import {
-  Inflight, State, acquireLock, addLp, addOwed, loadState, logEvent, record, reservedXnt, saveState, totalOwed,
+  Inflight, State, acquireLock, addCreator, addLp, addOwed, loadState, logEvent, record, reservedXnt, saveState, totalOwed,
 } from "./state.js";
 import { outcome, run, sendAndConfirm, sign, simulate, withPriority } from "./tx.js";
 import {
-  buildDepositAndBurn, buildSell, lpKeepForBalance, poolAuthority, quoteDeposit, quoteSell, snapshot,
+  buildBuy, buildDepositAndBurn, buildSell, lpKeepForBalance, poolAuthority, quoteBuy, quoteDeposit, quoteSell, snapshot,
 } from "./xdex.js";
+import { buildDepositReward } from "./locker-tx.js";
+import { nftHolder } from "./locker.js";
+import { listPasses } from "./holder-pass.js";
+import { PASS, claimsMode, lockerProgram, publishRoot, reconcileRoot } from "./claims.js";
 
 const HARVEST_CHUNK = 20;
 
@@ -61,6 +65,8 @@ interface Ctx {
   decimals: number;
   /** Dry run only: tokens and XNT a real run would have collected or raised by this point. */
   projected: { tokens: bigint; xnt: bigint };
+  /** Wallet that triggered this run with "Distribute now" (earns the clicker reward). */
+  clicker?: PublicKey;
 }
 
 async function resolvePending(ctx: Ctx, s: State): Promise<boolean> {
@@ -151,6 +157,7 @@ async function reconcile(ctx: Ctx, s: State): Promise<"done" | "dropped" | "wait
     addLp(s, "tokens", BigInt(f.lpTokens ?? "0"));
     addLp(s, "sellTokens", BigInt(f.lpSellTokens ?? "0"));
     s.burn.pending = (BigInt(s.burn.pending) + BigInt(f.burnTokens ?? "0")).toString();
+    addCreator(s, "sellTokens", BigInt(f.creatorSellTokens ?? "0"));
     logEvent({ kind: "withdraw", signature: f.signature, tokens: f.amount ?? "0",
       lpTokens: (BigInt(f.lpTokens ?? "0") + BigInt(f.lpSellTokens ?? "0")).toString() });
     record(s, "withdraw", `set aside ${fromBaseUnits(BigInt(f.lpTokens ?? "0") + BigInt(f.lpSellTokens ?? "0"), d)} tokens for auto-LP`, f.signature);
@@ -161,12 +168,32 @@ async function reconcile(ctx: Ctx, s: State): Promise<"done" | "dropped" | "wait
     s.burn.burned = (BigInt(s.burn.burned) + burned).toString();
     logEvent({ kind: "burn", signature: f.signature, tokens: burned.toString() });
     record(s, "burn", `burned ${fromBaseUnits(burned, d)} tokens`, f.signature);
+  } else if (f.kind === "creator-swap") {
+    const spent = BigInt(f.creatorXnt ?? "0");
+    const rewardMint = new PublicKey(ctx.cfg.creatorReward!.rewardMint!);
+    const i = keys.findIndex((k) => k.equals(getAssociatedTokenAddressSync(rewardMint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID)));
+    const bal = (list: typeof meta.preTokenBalances) => BigInt(list?.find((b) => b.accountIndex === i)?.uiTokenAmount.amount ?? "0");
+    const got = bal(meta.postTokenBalances) - bal(meta.preTokenBalances);
+    addCreator(s, "xnt", -spent);
+    addCreator(s, "rewardTokens", got);
+    record(s, "creator-swap", `swapped ${xnt(spent)} for ${got} reward base units`, f.signature);
+  } else if (f.kind === "creator") {
+    const amount = BigInt(f.rewardAmount ?? "0");
+    addCreator(s, "xnt", -BigInt(f.creatorXnt ?? "0"));
+    addCreator(s, "rewardTokens", -(f.creatorXnt ? 0n : amount));
+    addCreator(s, "deposited", amount);
+    logEvent({ kind: "creator-reward", signature: f.signature, amount: amount.toString(), rewardMint: ctx.cfg.creatorReward?.rewardMint ?? "XNT" });
+    record(s, "creator", `deposited ${amount} reward base units into the creator's 7-day vesting vault`, f.signature);
   } else if (f.kind === "sell") {
     const amountIn = BigInt(f.amountIn ?? "0");
     const lpPart = BigInt(f.lpSellTokens ?? "0");
     const lpXnt = amountIn > 0n ? (xntDelta * lpPart) / amountIn : 0n;
     addLp(s, "xnt", lpXnt);
     addLp(s, "sellTokens", -lpPart);
+    const creatorPart = BigInt(f.creatorSellTokens ?? "0");
+    const creatorXnt = amountIn > 0n ? (xntDelta * creatorPart) / amountIn : 0n;
+    addCreator(s, "xnt", creatorXnt);
+    addCreator(s, "sellTokens", -creatorPart);
     logEvent({ kind: "sell", signature: f.signature, tokens: amountIn.toString(), xnt: xntDelta.toString(), lpXnt: lpXnt.toString() });
     record(s, "sell", `${fromBaseUnits(amountIn, d)} tokens for ${xnt(xntDelta)} (${xnt(lpXnt)} to auto-LP)`, f.signature);
   } else {
@@ -191,16 +218,31 @@ async function harvest(ctx: Ctx, s: State) {
   const withheld = rows.filter((r) => r.withheld > 0n);
   const heldTotal = withheld.reduce((a, r) => a + r.withheld, 0n);
   console.log(`Holder accounts: ${rows.length}; ${withheld.length} with withheld fees totalling ${fromBaseUnits(heldTotal, ctx.decimals)}`);
+  // Don't spend gas collecting dust: wait until the tax waiting to be collected is worth
+  // at least minHarvestXnt at the pool price (collection never loses anything; it waits).
+  const mintNow = unpackMint(mint, await conn.getAccountInfo(mint), TOKEN_2022_PROGRAM_ID);
+  const waiting = heldTotal + (getTransferFeeConfig(mintNow)?.withheldAmount ?? 0n);
+  if (cfg.xdex.pool && waiting > 0n) {
+    const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(cfg.xdex.pool), mint);
+    const worth = (waiting * snap.reserveXnt) / snap.reserveToken;
+    const min = toBaseUnits(cfg.distribution.minHarvestXnt ?? DEFAULT_MIN_HARVEST_XNT, XNT_DECIMALS);
+    if (worth < min) {
+      console.log(`Tax waiting is worth ~${xnt(worth)}, under minHarvestXnt (${xnt(min)}); collecting later.`);
+      return;
+    }
+  }
   const lpBps = cfg.distribution.autoLpBps ?? 0;
   const burnBps = cfg.distribution.burnBps ?? 0;
+  const creatorBps = cfg.distribution.creatorBps ?? 0;
 
   if (!ctx.execute) {
     // Dry run: act on in-memory state as if the fees had been collected. Never saved.
     const mintState = unpackMint(mint, await conn.getAccountInfo(mint), TOKEN_2022_PROGRAM_ID);
     const total = heldTotal + (getTransferFeeConfig(mintState)?.withheldAmount ?? 0n);
-    const { burn, keep, sell } = splitTax(total, lpBps, burnBps);
+    const { burn, keep, sell, creator } = splitTax(total, lpBps, burnBps, creatorBps);
     addLp(s, "tokens", keep); addLp(s, "sellTokens", sell);
     s.burn.pending = (BigInt(s.burn.pending) + burn).toString();
+    addCreator(s, "sellTokens", creator);
     ctx.projected.tokens += total;
     return;
   }
@@ -217,12 +259,13 @@ async function harvest(ctx: Ctx, s: State) {
   const inMint = getTransferFeeConfig(mintState)?.withheldAmount ?? 0n;
   if (inMint === 0n) return;
   const ata = getAssociatedTokenAddressSync(mint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID);
-  const { burn, keep, sell } = splitTax(inMint, lpBps, burnBps);
+  const { burn, keep, sell, creator } = splitTax(inMint, lpBps, burnBps, creatorBps);
   await sendJournaled(ctx, s, [
     createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, ata, distributor.publicKey, mint, TOKEN_2022_PROGRAM_ID),
     createWithdrawWithheldTokensFromMintInstruction(mint, ata, distributor.publicKey, [], TOKEN_2022_PROGRAM_ID),
   ], 100_000, {
     kind: "withdraw", amount: inMint.toString(), lpTokens: keep.toString(), lpSellTokens: sell.toString(), burnTokens: burn.toString(),
+    creatorSellTokens: creator.toString(),
   });
   console.log(`  withdrew ${fromBaseUnits(inMint, ctx.decimals)} tokens to ${ata.toBase58()}`);
 }
@@ -292,23 +335,72 @@ async function sell(ctx: Ctx, s: State) {
     maxImpactBps: cfg.distribution.maxPriceImpactBps, slippageBps: cfg.distribution.slippageBps,
   });
   if (!q) { console.log("Pool too shallow to sell within the price-impact limit."); return; }
-  // The auto-LP share of this sale, pro-rata to its share of everything awaiting sale.
+  if (q.expectedOut < toBaseUnits(cfg.distribution.minSellXnt ?? DEFAULT_MIN_SELL_XNT, XNT_DECIMALS)) {
+    console.log(`Tokens to sell are worth only ~${xnt(q.expectedOut)}; selling later.`);
+    return;
+  }
+  // The auto-LP and creator shares of this sale, pro-rata to their share of everything awaiting sale.
   const lpSell = BigInt(s.lp.sellTokens);
   const lpPart = ((lpSell < sellable ? lpSell : sellable) * q.amountIn) / sellable;
+  const creatorSell = BigInt(s.creator.sellTokens);
+  const creatorPart = ((creatorSell < sellable ? creatorSell : sellable) * q.amountIn) / sellable;
   const d = ctx.decimals;
   console.log(`Sell ${fromBaseUnits(q.amountIn, d)} (of ${fromBaseUnits(sellable, d)}) -> ~${xnt(q.expectedOut)}`
     + ` (min ${xnt(q.minimumOut)}, impact ${Number(q.priceImpactBps) / 100}%, transfer fee ${fromBaseUnits(q.transferFee, d)})`
-    + (lpPart > 0n ? `; ${fromBaseUnits(lpPart, d)} of it for auto-LP` : ""));
+    + (lpPart > 0n ? `; ${fromBaseUnits(lpPart, d)} of it for auto-LP` : "")
+    + (creatorPart > 0n ? `; ${fromBaseUnits(creatorPart, d)} for the creator` : ""));
 
   if (!ctx.execute) {
     addLp(s, "xnt", (q.expectedOut * lpPart) / q.amountIn);
     addLp(s, "sellTokens", -lpPart);
+    addCreator(s, "xnt", (q.expectedOut * creatorPart) / q.amountIn);
+    addCreator(s, "sellTokens", -creatorPart);
     ctx.projected.tokens -= q.amountIn;
     ctx.projected.xnt += q.expectedOut;
     return;
   }
   await sendJournaled(ctx, s, await buildSell(conn, programId, distributor, mint, q), 250_000,
-    { kind: "sell", amountIn: q.amountIn.toString(), lpSellTokens: lpPart.toString() });
+    { kind: "sell", amountIn: q.amountIn.toString(), lpSellTokens: lpPart.toString(), creatorSellTokens: creatorPart.toString() });
+}
+
+/**
+ * Creator reward: deposit the XNT set aside for the creator into the lock NFT's 7-day
+ * vesting vault. With wrapped XNT as the reward it is wrapped and deposited directly;
+ * with another reward token (USDC) it is first swapped on the configured XDEX pool.
+ */
+async function creatorReward(ctx: Ctx, s: State) {
+  const { conn, cfg, distributor } = ctx;
+  const cr = cfg.creatorReward;
+  if (!cr?.nftMint || !(cfg.distribution.creatorBps ?? 0) && BigInt(s.creator.xnt) === 0n && BigInt(s.creator.rewardTokens) === 0n) return;
+  const nftMint = new PublicKey(cr.nftMint);
+  const rewardMint = cr.rewardMint ? new PublicKey(cr.rewardMint) : NATIVE_MINT;
+  const pending = BigInt(s.creator.xnt);
+  const min = toBaseUnits(cfg.distribution.minCycleXnt, XNT_DECIMALS);
+
+  if (rewardMint.equals(NATIVE_MINT)) {
+    if (pending < min) { if (pending > 0n) console.log(`Creator reward: holding ${xnt(pending)} until at least minCycleXnt.`); return; }
+    console.log(`Creator reward: deposit ${xnt(pending)} into the lock NFT's vesting vault (claimable in 7 days)`);
+    if (!ctx.execute) { s.creator.xnt = "0"; ctx.projected.xnt -= pending; return; }
+    const { ixs } = await buildDepositReward(conn, cfg, distributor.publicKey, nftMint, NATIVE_MINT, pending);
+    await sendJournaled(ctx, s, ixs, 120_000, { kind: "creator", creatorXnt: pending.toString(), rewardAmount: pending.toString() });
+    return;
+  }
+
+  // Another reward token (USDC): swap the creator's XNT on the XNT/USDC pool, then deposit.
+  if (!cr.swapPool) throw new Error("creatorReward.swapPool is required for a non-XNT reward token");
+  if (pending >= min) {
+    const q = await quoteBuy(conn, new PublicKey(cfg.xdex.programId), new PublicKey(cr.swapPool), rewardMint, pending,
+      cfg.distribution.slippageBps, cfg.distribution.maxPriceImpactBps);
+    console.log(`Creator reward: swap ${xnt(pending)} for ~${q.expectedOut} reward base units (impact ${Number(q.priceImpactBps) / 100}%)`);
+    if (!ctx.execute) { s.creator.xnt = "0"; ctx.projected.xnt -= pending; return; }
+    await sendJournaled(ctx, s, await buildBuy(conn, new PublicKey(cfg.xdex.programId), distributor, q), 250_000,
+      { kind: "creator-swap", creatorXnt: q.amountIn.toString() });
+  }
+  const rewardTokens = BigInt(s.creator.rewardTokens);
+  if (rewardTokens > 0n && ctx.execute) {
+    const { ixs } = await buildDepositReward(conn, cfg, distributor.publicKey, nftMint, rewardMint, rewardTokens);
+    await sendJournaled(ctx, s, ixs, 120_000, { kind: "creator", rewardAmount: rewardTokens.toString() });
+  }
 }
 
 /** Pair the set-aside tokens with the set-aside XNT in the pool and burn the LP tokens. */
@@ -358,12 +450,35 @@ async function allocateNew(ctx: Ctx, s: State) {
   const balances = eligibleBalances(rows, {
     excluded, excludeOffCurve: dc.excludeOffCurveOwners, minHolding: toBaseUnits(dc.minHoldingTokens, ctx.decimals),
   });
-  const shares = allocate(balances, pot);
+  // Claims mode: only wallets holding a pass earn, and each wallet counts once (its
+  // oldest pass gets the share; extra passes in the same wallet earn nothing).
+  const passOf = new Map<string, string>();
+  if (claimsMode(cfg)) {
+    for (const p of await listPasses(conn, lockerProgram(cfg), mint)) {
+      const h = await nftHolder(conn, p.passMint);
+      const owner = h?.owner.toBase58();
+      if (owner && balances.has(owner) && !passOf.has(owner)) passOf.set(owner, p.passMint.toBase58());
+    }
+    for (const owner of [...balances.keys()]) if (!passOf.has(owner)) balances.delete(owner);
+    console.log(`Holder passes: ${passOf.size} eligible wallet(s) hold one.`);
+  }
+  // Whoever pressed "Distribute now" earns a small cut of this run's holder pot, but
+  // only when there are holders to pay.
+  const reward = ctx.clicker && balances.size > 0
+    ? clickerReward(pot, dc.clickerRewardBps ?? 100, toBaseUnits(dc.clickerRewardCapXnt ?? "0.05", XNT_DECIMALS))
+    : 0n;
+  const shares = allocate(balances, pot - reward);
   let allocated = 0n;
   for (const v of shares.values()) allocated += v;
-  console.log(`Eligible holders: ${balances.size}; allocating ${xnt(allocated)}`);
+  console.log(`Eligible holders: ${balances.size}; allocating ${xnt(allocated)}`
+    + (reward > 0n ? `; clicker reward ${xnt(reward)} to ${ctx.clicker!.toBase58()}` : ""));
   if (!ctx.execute || allocated === 0n) return;
-  for (const [owner, v] of shares) addOwed(s, owner, v);
+  if (reward > 0n) {
+    addOwed(s, ctx.clicker!.toBase58(), reward);
+    record(s, "clicker-reward", `${xnt(reward)} to ${ctx.clicker!.toBase58()} for triggering this run`);
+    logEvent({ kind: "clicker-reward", xnt: reward.toString(), wallet: ctx.clicker!.toBase58() });
+  }
+  for (const [owner, v] of shares) addOwed(s, passOf.size ? PASS + passOf.get(owner)! : owner, v);
   record(s, "allocate", `${xnt(allocated)} across ${shares.size} holders`);
   logEvent({ kind: "allocate", xnt: allocated.toString(), holders: shares.size });
   saveState(s);
@@ -373,7 +488,7 @@ async function planPayouts(ctx: Ctx, s: State) {
   if (s.pending) return;
   const { conn, cfg } = ctx;
   const minPayout = toBaseUnits(cfg.distribution.minPayoutXnt, XNT_DECIMALS);
-  const due = Object.entries(s.owed).map(([o, v]) => [o, BigInt(v)] as const).filter(([, v]) => v >= minPayout);
+  const due = Object.entries(s.owed).filter(([o]) => !o.startsWith(PASS)).map(([o, v]) => [o, BigInt(v)] as const).filter(([, v]) => v >= minPayout);
   if (due.length === 0) { console.log("No holder has reached minPayoutXnt yet."); return; }
   const g = await gas(ctx, s);
   if (g.free < g.min) {
@@ -434,6 +549,7 @@ async function cycle(ctx: Ctx) {
   console.log(`\n=== Reflection cycle ${new Date().toISOString()} (${ctx.execute ? "EXECUTE" : "dry run"}) ===`);
   if (!(await resolvePending(ctx, s))) return;
   if ((await reconcile(ctx, s)) === "wait") return;
+  if ((await reconcileRoot(ctx, s)) === "wait") return;
   await sendPayouts(ctx, s); // finish a plan interrupted mid-way before collecting more
   if (s.pending) return;
   const g = await gas(ctx, s);
@@ -453,9 +569,16 @@ async function cycle(ctx: Ctx) {
     if (s.inflight) throw e; // unresolved deposit: stop until it is reconciled
     console.error(`Auto-LP skipped this cycle: ${e instanceof Error ? e.message : e}`);
   }
+  try {
+    await creatorReward(ctx, s);
+  } catch (e) {
+    if (s.inflight) throw e;
+    console.error(`Creator reward skipped this cycle: ${e instanceof Error ? e.message : e}`);
+  }
   await allocateNew(ctx, s);
   await planPayouts(ctx, s);
   await sendPayouts(ctx, s);
+  await publishRoot(ctx, s);
 }
 
 async function main() {
@@ -465,27 +588,43 @@ async function main() {
   const distributor = loadKeypair(cfg.keypairs.distributor);
   const decimals = unpackMint(mint, await conn.getAccountInfo(mint), TOKEN_2022_PROGRAM_ID).decimals;
   const args = process.argv.slice(2);
-  const unknown = args.filter((a, i) => a !== "--execute" && a !== "--loop" && args[i - 1] !== "--loop");
-  if (unknown.length) throw new Error(`Unknown argument(s): ${unknown.join(" ")}. Use --execute and/or --loop <minutes>.`);
+  const valued = new Set(["--loop", "--clicker"]);
+  const unknown = args.filter((a, i) => a !== "--execute" && !valued.has(a) && !valued.has(args[i - 1]));
+  if (unknown.length) throw new Error(`Unknown argument(s): ${unknown.join(" ")}. Use --execute, --loop <minutes>, --clicker <wallet>.`);
+  const clickerIdx = args.indexOf("--clicker");
+  const clicker = clickerIdx >= 0 ? new PublicKey(args[clickerIdx + 1]) : undefined;
   const execute = args.includes("--execute");
   const loopIdx = process.argv.indexOf("--loop");
   const loopMinutes = loopIdx > 0 ? Number(process.argv[loopIdx + 1]) : 0;
   if (loopIdx > 0 && !(loopMinutes >= 1)) throw new Error("--loop needs a number of minutes >= 1");
-  const ctx: Ctx = { cfg, conn, mint, distributor, execute, decimals, projected: { tokens: 0n, xnt: 0n } };
+  const ctx: Ctx = { cfg, conn, mint, distributor, execute, decimals, projected: { tokens: 0n, xnt: 0n }, clicker };
 
-  const release = execute ? acquireLock() : () => {};
+  // The lock is held only while a cycle runs, so a holder-triggered run ("Distribute
+  // now") can happen between scheduled cycles without the two ever overlapping.
+  let release = () => {};
   const stop = () => { release(); process.exit(0); };
   process.on("SIGINT", stop); process.on("SIGTERM", stop);
-  try {
-    for (;;) {
-      try { await cycle(ctx); } catch (e) {
-        console.error(`Cycle failed: ${e instanceof Error ? e.message : e}`);
-        if (!loopMinutes) throw e;
+  for (;;) {
+    try {
+      if (execute) {
+        try { release = acquireLock(); } catch (e) {
+          if (!loopMinutes) throw e;
+          console.log(`Skipping this cycle: ${e instanceof Error ? e.message : e}`);
+          await new Promise((r) => setTimeout(r, loopMinutes * 60_000));
+          continue;
+        }
       }
-      if (!loopMinutes) break;
-      await new Promise((r) => setTimeout(r, loopMinutes * 60_000));
+      await cycle(ctx);
+    } catch (e) {
+      console.error(`Cycle failed: ${e instanceof Error ? e.message : e}`);
+      if (!loopMinutes) { release(); throw e; }
+    } finally {
+      release();
+      release = () => {};
     }
-  } finally { release(); }
+    if (!loopMinutes) break;
+    await new Promise((r) => setTimeout(r, loopMinutes * 60_000));
+  }
 }
 
 main().catch((e) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });

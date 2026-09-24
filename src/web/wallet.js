@@ -1,16 +1,22 @@
-// Browser wallet helper for the token factory page: finds Wallet Standard wallets
-// (X1 Wallet, Backpack, ...) and older injected ones, connects, and signs raw
-// transaction bytes. Keys never leave the wallet.
+// Browser wallet helper for every page: finds Wallet Standard wallets (X1 Wallet,
+// Backpack, ...) and older injected ones, connects, and signs raw transaction bytes.
+// Keys never leave the wallet. It remembers which wallet was used (by name, in this
+// browser) and reconnects to it silently on the next page; wallets only allow that for
+// sites the viewer already approved, so it never pops a prompt on its own.
 window.X1Wallet = (() => {
   const standard = [];
   const state = { address: null, name: null, active: null, account: null, legacy: null };
   const listeners = new Set();
   const emit = () => listeners.forEach((f) => f(state.address));
+  const KEY = "99tax-wallet";
+  const remember = (name) => { try { name ? localStorage.setItem(KEY, name) : localStorage.removeItem(KEY); } catch {} };
+  const remembered = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
 
   function register(...ws) {
     for (const w of ws) {
       if (w?.features?.["standard:connect"] && w.features["solana:signTransaction"] && !standard.includes(w)) standard.push(w);
     }
+    queueMicrotask(autoConnect); // the remembered wallet may have just announced itself
     return () => {};
   }
   window.addEventListener("wallet-standard:register-wallet", (e) => { try { e.detail({ register }); } catch {} });
@@ -24,23 +30,40 @@ window.X1Wallet = (() => {
     return [...standard.map((w) => ({ name: w.name, icon: w.icon, standard: w })), ...legacy.map(([name, p]) => ({ name, legacy: p }))];
   }
 
-  async function connect(choice) {
+  async function connect(choice, { silent = false } = {}) {
     if (choice.standard) {
-      const r = await choice.standard.features["standard:connect"].connect();
+      const r = await choice.standard.features["standard:connect"].connect(silent ? { silent: true } : undefined);
       const account = r?.accounts?.[0] ?? choice.standard.accounts?.[0];
       if (!account) throw new Error("The wallet didn't share an account.");
       Object.assign(state, { active: choice.standard, account, legacy: null, address: account.address, name: choice.name });
     } else {
-      const r = await choice.legacy.connect();
+      const r = await choice.legacy.connect(silent ? { onlyIfTrusted: true } : undefined);
       const pk = r?.publicKey ?? choice.legacy.publicKey;
+      if (!pk) throw new Error("The wallet didn't share an account.");
       Object.assign(state, { active: null, account: null, legacy: choice.legacy, address: pk.toString(), name: choice.name });
     }
+    remember(choice.name);
     emit();
   }
+
+  /** Reconnect to the wallet used last time, without a prompt. Quietly gives up if not allowed. */
+  let tried = false;
+  async function autoConnect() {
+    const name = remembered();
+    if (!name || state.address || tried) return;
+    const c = choices().find((x) => x.name === name);
+    if (!c) return; // not announced yet; register() calls back when it is
+    tried = true;
+    try { await connect(c, { silent: true }); } catch { /* not pre-approved: wait for a click */ }
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => setTimeout(autoConnect, 50));
+  else setTimeout(autoConnect, 50);
+  setTimeout(autoConnect, 800); // injected (non-standard) wallets can appear late
 
   async function disconnect() {
     try { await state.active?.features["standard:disconnect"]?.disconnect(); await state.legacy?.disconnect?.(); } catch {}
     Object.assign(state, { active: null, account: null, legacy: null, address: null, name: null });
+    remember(null); // an explicit disconnect sticks across pages
     emit();
   }
 

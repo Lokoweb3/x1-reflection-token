@@ -7,6 +7,7 @@
  *   npm run lp-lock -- lock <amount|all> --yes    # send it (irreversible)
  *   npm run lp-lock -- lock <amount|all> --days 7 # timed lock: the NFT holder can unlock after 7 days
  *   npm run lp-lock -- unlock --nft <mint> --yes  # after a timed lock ends: LP back to the holder, NFT burned
+ *   npm run lp-lock -- receipt --nft <mint> --yes # write the lock's receipt image into the NFT (on-chain)
  *   npm run lp-lock -- collect [--nft <mint>]     # simulate collecting fees as the NFT holder
  *   npm run lp-lock -- collect [--nft <mint>] --yes
  *
@@ -18,7 +19,7 @@ import { connection, fromBaseUnits, loadConfig, loadKeypair, toBaseUnits, xnt } 
 import { run, sign, simulate, withPriority } from "./tx.js";
 import { snapshot } from "./xdex.js";
 import { isqrt, listLocks, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
-import { buildCollect, buildLock, buildUnlock, lockerIds } from "./locker-tx.js";
+import { buildCollect, buildLock, buildReceipt, buildUnlock, lockerIds } from "./locker-tx.js";
 
 const cfg = loadConfig();
 const conn = connection(cfg);
@@ -27,8 +28,9 @@ const arg = (name: string) => { const i = process.argv.indexOf(name); return i >
 const signer = loadKeypair(arg("--keypair") ?? cfg.keypairs.creator);
 const send = process.argv.includes("--yes");
 
-async function sendOrSimulate(ixs: TransactionInstruction[], extra: Keypair[] = []) {
-  const all = withPriority(ixs, cfg.distribution.priorityMicroLamports, 400_000);
+async function sendOrSimulate(ixs: TransactionInstruction[], extra: Keypair[] = [], priority = true) {
+  // priority=false leaves out the compute-budget instructions (the receipt needs the room).
+  const all = priority ? withPriority(ixs, cfg.distribution.priorityMicroLamports, 400_000) : ixs;
   if (!send) {
     const sim = await simulate(conn, (await sign(conn, all, signer, extra)).tx);
     console.log(`Simulation OK (${sim.unitsConsumed} compute units). Nothing sent; add --yes to send.`);
@@ -76,6 +78,20 @@ async function lock() {
     ? "  This cannot be undone. The liquidity can never be withdrawn; only fees can be collected."
     : "  This cannot be undone early. Until the unlock time, only fees can be collected.");
   await sendOrSimulate(ixs, signers);
+  if (send) await printReceipt(s.nftMint);
+}
+
+async function printReceipt(nftMint: PublicKey) {
+  const { ixs, receipt: r, printed } = await buildReceipt(conn, cfg, signer.publicKey, nftMint);
+  if (printed) { console.log("Receipt already printed in this NFT."); return; }
+  console.log(`Receipt for ${nftMint.toBase58()}: ${r.symbol}, ${r.lockedLp} LP (${r.lpSharePct.toFixed(2)}%), ${r.term}, locked ${r.lockedAt}`);
+  await sendOrSimulate(ixs, [], false);
+}
+
+async function receipt() {
+  const nft = arg("--nft");
+  if (!nft) throw new Error("usage: receipt --nft <mint> [--yes]");
+  await printReceipt(new PublicKey(nft));
 }
 
 async function collect() {
@@ -99,6 +115,6 @@ async function unlock() {
 }
 
 const cmd = process.argv[2];
-const commands: Record<string, () => Promise<void>> = { status, lock, collect, unlock };
+const commands: Record<string, () => Promise<void>> = { status, lock, receipt, collect, unlock };
 (commands[cmd ?? "status"] ?? (() => Promise.reject(new Error(`Unknown command ${cmd}`))))()
   .catch((e) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });

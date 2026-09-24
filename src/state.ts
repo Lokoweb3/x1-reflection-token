@@ -21,7 +21,7 @@ export interface Batch {
 }
 
 export interface Inflight {
-  kind: "withdraw" | "sell" | "lp" | "burn";
+  kind: "withdraw" | "sell" | "lp" | "burn" | "creator-swap" | "creator";
   signature: string;
   lastValidBlockHeight: number;
   amount?: string;        // withdraw: tokens withdrawn
@@ -29,6 +29,9 @@ export interface Inflight {
   lpTokens?: string;      // withdraw: tokens to keep for the LP token side
   lpSellTokens?: string;  // withdraw: tokens to sell for the LP XNT side; sell: LP's part of amountIn
   burnTokens?: string;    // withdraw: tokens set aside to burn; burn: tokens burned
+  creatorSellTokens?: string; // withdraw: tokens to sell for the creator; sell: creator's part of amountIn
+  creatorXnt?: string;    // creator-swap / creator: XNT of the creator's share spent
+  rewardAmount?: string;  // creator: reward tokens deposited into the vesting vault
   amountIn?: string;      // sell
 }
 
@@ -40,8 +43,23 @@ export interface State {
   lp: { tokens: string; sellTokens: string; xnt: string };
   /** Collected tax set aside to burn, and the running total burned. */
   burn: { pending: string; burned: string };
+  /** Creator reward: tax tokens to sell for it, XNT raised for it, reward tokens (e.g. USDC) bought, total deposited. */
+  creator: { sellTokens: string; xnt: string; rewardTokens: string; deposited: string };
   inflight: Inflight | null;
   history: { at: string; kind: string; detail: string; signature?: string }[];
+  /**
+   * Holder passes (distribution.holderRewards = "claims"): each pass's cumulative reward
+   * in the latest published root, and a root being published (journaled before sending).
+   * Rewards allocated but not yet published sit in `owed` under "pass:<pass mint>".
+   */
+  claims?: {
+    epoch: string;
+    cumulative: Record<string, string>;
+    pending: null | {
+      epoch: string; root: string; cumulative: Record<string, string>; delta: Record<string, string>;
+      total: string; signature: string; lastValidBlockHeight: number; createdAt: string;
+    };
+  };
 }
 
 const FILE = path.join(STATE_DIR, "distributor-state.json");
@@ -51,13 +69,15 @@ const LOCK = path.join(STATE_DIR, "distributor.lock");
 export function loadState(mint: string): State {
   const empty: State = {
     version: 1, mint, owed: {}, pending: null, lp: { tokens: "0", sellTokens: "0", xnt: "0" },
-    burn: { pending: "0", burned: "0" }, inflight: null, history: [],
+    burn: { pending: "0", burned: "0" }, creator: { sellTokens: "0", xnt: "0", rewardTokens: "0", deposited: "0" },
+    inflight: null, history: [],
   };
   if (!fs.existsSync(FILE)) return empty;
   const s = JSON.parse(fs.readFileSync(FILE, "utf8")) as State;
   if (s.mint !== mint) throw new Error(`State file belongs to mint ${s.mint}, config has ${mint}`);
   s.lp ??= empty.lp;
   s.burn ??= empty.burn;
+  s.creator ??= empty.creator;
   s.inflight ??= null;
   return s;
 }
@@ -80,8 +100,14 @@ export function record(s: State, kind: string, detail: string, signature?: strin
 
 export const totalOwed = (s: State) => Object.values(s.owed).reduce((a, v) => a + BigInt(v), 0n);
 
-/** XNT in the distributor wallet that is spoken for: owed to holders or set aside for auto-LP. */
-export const reservedXnt = (s: State) => totalOwed(s) + BigInt(s.lp.xnt);
+/** XNT in the distributor wallet that is spoken for: owed to holders, or set aside for auto-LP or the creator. */
+export const reservedXnt = (s: State) => totalOwed(s) + BigInt(s.lp.xnt) + BigInt(s.creator.xnt);
+
+/** Adjust a `creator` counter, flooring at zero. */
+export function addCreator(s: State, key: keyof State["creator"], delta: bigint) {
+  const next = BigInt(s.creator[key]) + delta;
+  s.creator[key] = (next > 0n ? next : 0n).toString();
+}
 
 /** Adjust an `lp` counter, flooring at zero. */
 export function addLp(s: State, key: keyof State["lp"], delta: bigint) {
@@ -103,7 +129,7 @@ export function addOwed(s: State, owner: string, lamports: bigint) {
  */
 export interface Event {
   at: string;
-  kind: "withdraw" | "sell" | "auto-lp" | "burn" | "allocate" | "payout";
+  kind: "withdraw" | "sell" | "auto-lp" | "burn" | "creator-reward" | "clicker-reward" | "allocate" | "payout";
   signature?: string;
   [field: string]: unknown;
 }

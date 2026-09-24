@@ -415,3 +415,85 @@ export function buildCreatePool(
     ],
   };
 }
+
+export interface BuyQuote {
+  pool: Pool;
+  xntSide: number;          // index of wrapped XNT in pool.mints
+  outMint: PublicKey;
+  amountIn: bigint;         // lamports of XNT spent
+  expectedOut: bigint;      // output token base units received (after any transfer fee)
+  minimumOut: bigint;
+  priceImpactBps: bigint;
+}
+
+/**
+ * Quote buying `outMint` with up to `xntIn` lamports on an XNT/<token> pool, capped so
+ * the price impact stays within `maxImpactBps`. Handles an output token with a
+ * Token-2022 transfer fee (USDC.X has none).
+ */
+export async function quoteBuy(
+  conn: Connection, programId: PublicKey, poolAddr: PublicKey, outMint: PublicKey, xntIn: bigint,
+  slippageBps: number, maxImpactBps = 300,
+): Promise<BuyQuote> {
+  const [poolInfo] = await conn.getMultipleAccountsInfo([poolAddr]);
+  const pool = decodePool(poolAddr, poolInfo, programId);
+  const xntSide = pool.mints.findIndex((m) => m.equals(NATIVE_MINT));
+  if (xntSide < 0 || !pool.mints[1 - xntSide].equals(outMint)) throw new Error("Pool is not an XNT pool for the reward token");
+  const [cfgInfo, vIn, vOut, mintInfo] = await conn.getMultipleAccountsInfo(
+    [pool.ammConfig, pool.vaults[xntSide], pool.vaults[1 - xntSide], outMint]);
+  if (!cfgInfo || !cfgInfo.data.subarray(0, 8).equals(CONFIG_DISC)) throw new Error("Invalid XDEX fee config");
+  const tradeFeeRate = cfgInfo.data.readBigUInt64LE(12);
+  const reserveIn = unpackAccount(pool.vaults[xntSide], vIn, pool.programs[xntSide]).amount - pool.protocolFees[xntSide] - pool.fundFees[xntSide];
+  const reserveOut = unpackAccount(pool.vaults[1 - xntSide], vOut, pool.programs[1 - xntSide]).amount - pool.protocolFees[1 - xntSide] - pool.fundFees[1 - xntSide];
+  if (reserveIn <= 0n || reserveOut <= 0n) throw new Error("Pool has no liquidity");
+  const cap = maxInputForImpact(reserveIn, BigInt(maxImpactBps), 0n);
+  const amountIn = xntIn < cap ? xntIn : cap;
+  if (amountIn <= 0n) throw new Error("Pool too shallow to swap within the price-impact limit");
+  let out = cpmmOut(amountIn, reserveIn, reserveOut, tradeFeeRate);
+  const outProgram = pool.programs[1 - xntSide];
+  if (outProgram.equals(TOKEN_2022_PROGRAM_ID)) {
+    const feeCfg = getTransferFeeConfig(unpackMint(outMint, mintInfo, TOKEN_2022_PROGRAM_ID));
+    if (feeCfg) out -= calculateEpochFee(feeCfg, BigInt((await conn.getEpochInfo()).epoch), out);
+  }
+  if (out <= 0n) throw new Error("Swap amount too small");
+  return {
+    pool, xntSide, outMint, amountIn, expectedOut: out,
+    minimumOut: (out * BigInt(10_000 - slippageBps)) / 10_000n,
+    priceImpactBps: (amountIn * 10_000n) / (reserveIn + amountIn),
+  };
+}
+
+/** Buy `q.outMint` with XNT: wrap into a temporary account, swap into the owner's token account, close the temp. */
+export async function buildBuy(conn: Connection, programId: PublicKey, owner: Keypair, q: BuyQuote): Promise<TransactionInstruction[]> {
+  const { pool, xntSide } = q;
+  const wxntProgram = pool.programs[xntSide];
+  const outProgram = pool.programs[1 - xntSide];
+  const temp = await PublicKey.createWithSeed(owner.publicKey, TEMP_SEED + "-buy", wxntProgram);
+  if (await conn.getAccountInfo(temp)) throw new Error(`Temporary XNT account ${temp.toBase58()} already exists; close it before retrying`);
+  const rent = await conn.getMinimumBalanceForRentExemption(165);
+  const out = getAssociatedTokenAddressSync(q.outMint, owner.publicKey, false, outProgram);
+  const data = Buffer.alloc(24);
+  SWAP_BASE_INPUT.copy(data, 0);
+  data.writeBigUInt64LE(q.amountIn, 8);
+  data.writeBigUInt64LE(q.minimumOut, 16);
+  const m = (pubkey: PublicKey, isSigner: boolean, isWritable: boolean) => ({ pubkey, isSigner, isWritable });
+  return [
+    SystemProgram.createAccountWithSeed({
+      fromPubkey: owner.publicKey, newAccountPubkey: temp, basePubkey: owner.publicKey,
+      seed: TEMP_SEED + "-buy", lamports: rent + Number(q.amountIn), space: 165, programId: wxntProgram,
+    }),
+    createInitializeAccount3Instruction(temp, NATIVE_MINT, owner.publicKey, wxntProgram),
+    createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, out, owner.publicKey, q.outMint, outProgram),
+    new TransactionInstruction({
+      programId, data,
+      keys: [
+        m(owner.publicKey, true, true), m(poolAuthority(programId), false, false), m(pool.ammConfig, false, false),
+        m(pool.address, false, true), m(temp, false, true), m(out, false, true),
+        m(pool.vaults[xntSide], false, true), m(pool.vaults[1 - xntSide], false, true),
+        m(wxntProgram, false, false), m(outProgram, false, false), m(NATIVE_MINT, false, false), m(q.outMint, false, false),
+        m(pool.observation, false, true),
+      ],
+    }),
+    createCloseAccountInstruction(temp, owner.publicKey, owner.publicKey, [], wxntProgram),
+  ];
+}

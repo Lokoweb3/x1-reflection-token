@@ -4,153 +4,274 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>99 + Tax</title>
-<meta name="description" content="Launch a tax token on X1 that pays its holders in XNT, deepens its own liquidity, and locks the launch liquidity in an NFT.">
+<meta name="description" content="Launch a tax token on X1 that pays its holders in XNT, deepens its own liquidity, burns supply and locks the launch liquidity in an NFT.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tilt+Neon&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* 99 + Tax: neon night-store theme (a 24/7 corner store after midnight) */
 :root {
-  color-scheme: light;
-  --bg: #f7f6f2;
-  --surface-1: #fdfdfb;
-  --surface-2: #f0efe9;
-  --border: #e3e1d9;
-  --text-primary: #0d0d0c;
-  --text-secondary: #4f4e4a;
-  --text-muted: #77756f;
-  --brand: #15803d;
-  --brand-ink: #ffffff;
-  --brand-soft: #e3f3e8;
-  --holders: #2a78d6;
-  --liquidity: #eb6834;
-  --burn: #4a3aa7;
-  --link: #1f63b8;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg: #0f0f0e; --surface-1: #181817; --surface-2: #20201e; --border: #2d2d2a;
-    --text-primary: #ffffff; --text-secondary: #c6c4ba; --text-muted: #8f8d85;
-    --brand: #16803c; --brand-ink: #ffffff; --brand-soft: #16301f;
-    --holders: #3987e5; --liquidity: #d95926; --burn: #9085e9; --link: #7fb2f0;
-  }
-}
-:root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0f0f0e; --surface-1: #181817; --surface-2: #20201e; --border: #2d2d2a;
-  --text-primary: #ffffff; --text-secondary: #c6c4ba; --text-muted: #8f8d85;
-  --brand: #16803c; --brand-ink: #ffffff; --brand-soft: #16301f;
-  --holders: #3987e5; --liquidity: #d95926; --burn: #9085e9; --link: #7fb2f0;
+  --bg: #0b0a12;
+  --bg-2: #120f1d;
+  --glass: rgb(24 21 38 / .66);
+  --glass-strong: rgb(30 26 48 / .85);
+  --line: rgb(255 255 255 / .12);
+  --line-2: rgb(255 255 255 / .22);
+  --ink: #f5f2ff;
+  --ink-2: #cdc6e4;
+  --muted: #9089ab;
+  --pink: #ff3ea5;
+  --cyan: #22e4ff;
+  --lime: #b6ff3b;
+  --gold: #ffe14d;
+  --holders: #22e4ff;
+  --liquidity: #ff9f40;
+  --burn: #b18cff;
+  --creator: #b6ff3b;
+  --link: #7ff0ff;
+  --receipt: #fbf8ef;
+  --receipt-ink: #1b1824;
+  --glow-pink: 0 0 6px rgb(255 62 165 / .9), 0 0 18px rgb(255 62 165 / .6), 0 0 42px rgb(255 62 165 / .35);
+  --glow-cyan: 0 0 6px rgb(34 228 255 / .9), 0 0 18px rgb(34 228 255 / .55), 0 0 42px rgb(34 228 255 / .3);
+  --glow-lime: 0 0 6px rgb(182 255 59 / .9), 0 0 18px rgb(182 255 59 / .5), 0 0 40px rgb(182 255 59 / .3);
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { margin: 0; background: var(--bg); color: var(--text-primary); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-a { color: var(--link); text-decoration: none; }
+body {
+  margin: 0; color: var(--ink); font: 16px/1.6 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(900px 600px at 8% -5%, rgb(255 62 165 / .18), transparent 60%),
+    radial-gradient(900px 700px at 100% 30%, rgb(34 228 255 / .13), transparent 60%),
+    radial-gradient(800px 600px at 40% 110%, rgb(182 255 59 / .08), transparent 60%);
+  background-attachment: fixed;
+}
+/* film grain */
+body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50; opacity: .07; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+a { color: var(--link); text-decoration: none; font-weight: 600; }
 a:hover { text-decoration: underline; }
-.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+.display, h1, h2, h3, .logo-word, .btn, .stat .v, summary { font-family: "Tilt Neon", Inter, system-ui, sans-serif; letter-spacing: .2px; }
 
-nav { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
-nav .wrap { display: flex; align-items: center; gap: 18px; height: 60px; }
-.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text-primary); }
+/* glass panels with a neon edge on hover */
+.chunk { background: var(--glass); border: 1px solid var(--line); border-radius: 18px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 10px 40px -20px rgb(0 0 0 / .8); transition: border-color .25s, box-shadow .25s; }
+.chunk:hover { border-color: rgb(34 228 255 / .45); box-shadow: 0 0 0 1px rgb(34 228 255 / .15), 0 10px 40px -18px rgb(34 228 255 / .35); }
+
+.topbar { position: relative; z-index: 6; background: linear-gradient(90deg, rgb(255 62 165 / .22), rgb(34 228 255 / .18)); border-bottom: 1px solid var(--line); color: var(--ink-2); font-size: 13px; text-align: center; padding: 7px 16px; line-height: 1.45; }
+.topbar b { color: var(--gold); }
+.topbar a { color: var(--cyan); text-decoration: underline; }
+
+nav { position: sticky; top: 0; z-index: 5; background: rgb(11 10 18 / .72); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+nav .wrap { display: flex; align-items: center; gap: 18px; height: 70px; }
+.logo { display: flex; align-items: center; gap: 12px; color: var(--ink); }
 .logo:hover { text-decoration: none; }
-.mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--brand); color: var(--brand-ink); font-size: 13px; font-weight: 800; letter-spacing: -.5px; }
-nav .links { display: flex; align-items: center; gap: 18px; margin-left: auto; font-size: 14px; }
-nav .links a { color: var(--text-secondary); }
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: inherit; font-weight: 600; border-radius: 10px; padding: 11px 20px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
-.btn:hover { text-decoration: none; border-color: var(--text-muted); }
-.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
-.btn.primary:hover { filter: brightness(1.08); }
-.btn.sm { padding: 7px 14px; font-size: 14px; }
+.logo svg { width: 84px; height: 46px; overflow: visible; }
+.logo-word { font-size: 24px; color: #fff; text-shadow: var(--glow-pink); }
+nav .links { display: flex; align-items: center; gap: 22px; margin-left: auto; font-size: 15px; }
+nav .links a:not(.btn) { color: var(--ink-2); font-weight: 500; }
+nav .links a:not(.btn):hover { color: var(--cyan); text-shadow: var(--glow-cyan); text-decoration: none; }
 
-.hero { padding: 72px 0 40px; display: grid; grid-template-columns: 1.15fr .85fr; gap: 40px; align-items: center; }
-.eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; background: var(--surface-1); }
-.eyebrow .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
-h1 { font-size: clamp(34px, 5.2vw, 56px); line-height: 1.05; letter-spacing: -1.5px; margin: 18px 0 16px; }
-h1 em { font-style: normal; color: var(--brand); }
-.lede { font-size: 19px; color: var(--text-secondary); max-width: 560px; margin: 0 0 28px; }
-.cta { display: flex; flex-wrap: wrap; gap: 12px; }
-.fine { color: var(--text-muted); font-size: 13px; margin-top: 14px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 18px; padding: 12px 24px; border-radius: 14px; cursor: pointer;
+  border: 1.5px solid var(--cyan); background: rgb(34 228 255 / .06); color: var(--cyan); text-shadow: 0 0 8px rgb(34 228 255 / .6);
+  box-shadow: 0 0 14px rgb(34 228 255 / .25), inset 0 0 14px rgb(34 228 255 / .12); transition: transform .12s, box-shadow .2s, background .2s; }
+.btn:hover { text-decoration: none; background: rgb(34 228 255 / .14); box-shadow: 0 0 22px rgb(34 228 255 / .45), inset 0 0 18px rgb(34 228 255 / .18); transform: translateY(-1px); }
+.btn.primary { background: var(--lime); color: #0b0a12; border-color: var(--lime); text-shadow: none; box-shadow: 0 0 18px rgb(182 255 59 / .55), 0 0 44px rgb(182 255 59 / .25); }
+.btn.primary:hover { background: #c9ff6b; box-shadow: 0 0 26px rgb(182 255 59 / .75), 0 0 60px rgb(182 255 59 / .35); }
+.btn.sm { padding: 8px 16px; font-size: 16px; }
 
-.coin { background: var(--surface-1); border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: 0 20px 50px -30px rgb(0 0 0 / .35); }
-.coin h3 { margin: 0 0 4px; font-size: 15px; }
-.coin .sub { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; }
-.slider { display: grid; gap: 6px; margin-bottom: 14px; font-size: 14px; color: var(--text-secondary); }
+.hero { padding: 70px 0 40px; display: grid; grid-template-columns: 1.15fr .85fr; gap: 48px; align-items: center; }
+.sticker { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase;
+  color: var(--pink); border: 1.5px solid var(--pink); border-radius: 999px; padding: 5px 14px; box-shadow: 0 0 14px rgb(255 62 165 / .4), inset 0 0 10px rgb(255 62 165 / .15); text-shadow: 0 0 8px rgb(255 62 165 / .7); }
+.sticker .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--pink); box-shadow: var(--glow-pink); animation: blink 1.6s infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+h1 { font-size: clamp(32px, 7.4vw, 60px); line-height: 1.08; margin: 22px 0 16px; font-weight: 400; color: #fff; }
+h1 .line { white-space: nowrap; }
+h1 .hl { color: var(--lime); text-shadow: var(--glow-lime); }
+.lede { font-size: 19px; color: var(--ink-2); max-width: 560px; margin: 0 0 30px; }
+.cta { display: flex; flex-wrap: wrap; gap: 14px; }
+.fine { color: var(--muted); font-size: 14px; margin-top: 16px; }
+
+/* calculator: a glowing price tag */
+.tag-card { position: relative; padding: 30px 24px 24px; border-color: rgb(255 62 165 / .45); box-shadow: 0 0 30px -6px rgb(255 62 165 / .35), inset 0 0 30px -12px rgb(255 62 165 / .3); }
+.tag-card::before { content: ""; position: absolute; top: 14px; left: 50%; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; border: 2px solid var(--pink); box-shadow: var(--glow-pink); }
+.tag-card h3 { margin: 12px 0 2px; font-size: 24px; font-weight: 400; color: #fff; }
+.tag-card .sub { color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+.slider { display: grid; gap: 6px; margin-bottom: 14px; font-size: 15px; color: var(--ink-2); }
 .slider .row { display: flex; justify-content: space-between; }
-.slider b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
-input[type=range] { width: 100%; accent-color: var(--brand); }
-.bar { display: flex; gap: 2px; height: 14px; border-radius: 999px; overflow: hidden; background: var(--surface-2); margin: 6px 0 10px; }
-.bar > div { height: 100%; transition: width .2s; }
-.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--text-secondary); }
-.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
-.calc { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 14px; color: var(--text-secondary); }
-.calc b { color: var(--text-primary); }
-.calc input { width: 110px; font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-primary); }
+.slider b { color: var(--cyan); font-family: "Tilt Neon", sans-serif; font-weight: 400; font-size: 20px; text-shadow: 0 0 8px rgb(34 228 255 / .6); }
+input[type=range] { width: 100%; accent-color: var(--pink); }
+.bar { display: flex; gap: 3px; height: 14px; border-radius: 999px; overflow: hidden; background: rgb(255 255 255 / .06); margin: 10px 0 12px; padding: 2px; border: 1px solid var(--line); }
+.bar > div { height: 100%; border-radius: 999px; transition: width .2s; box-shadow: 0 0 10px currentColor; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 14px; color: var(--ink-2); }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 7px; vertical-align: 0; box-shadow: 0 0 8px currentColor; }
+.calc { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line-2); font-size: 15px; color: var(--ink-2); }
+.calc b { color: var(--lime); font-family: "Tilt Neon", sans-serif; font-weight: 400; font-size: 20px; text-shadow: 0 0 8px rgb(182 255 59 / .6); }
+.calc input { width: 110px; font: inherit; padding: 4px 8px; border-radius: 10px; border: 1px solid var(--line-2); background: rgb(0 0 0 / .35); color: var(--ink); }
+.calc input:focus { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.est { margin-top: 8px; font-size: 12px; color: var(--muted); }
 
-.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 8px 0 72px; }
-.stat { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
-.stat .v { font-size: 28px; font-weight: 700; letter-spacing: -.5px; }
-.stat .l { color: var(--text-muted); font-size: 13px; }
+/* live totals: glowing digits */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 14px 0 90px; }
+.stat { position: relative; padding: 18px 20px; background: var(--glass); border: 1px solid var(--line); border-radius: 16px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.stat .hole { display: none; }
+.stat .v { font-size: 36px; line-height: 1.1; color: var(--cyan); text-shadow: var(--glow-cyan); }
+.stats .stat:nth-child(2) .v { color: var(--lime); text-shadow: var(--glow-lime); }
+.stats .stat:nth-child(3) .v { color: var(--pink); text-shadow: var(--glow-pink); }
+.stats .stat:nth-child(4) .v { color: var(--gold); text-shadow: 0 0 8px rgb(255 225 77 / .7), 0 0 24px rgb(255 225 77 / .35); }
+.stat .l { color: var(--muted); font-size: 14px; }
 
-section { margin-bottom: 80px; }
-h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -.8px; margin: 0 0 10px; }
-.section-lede { color: var(--text-secondary); max-width: 640px; margin: 0 0 28px; font-size: 17px; }
-.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; counter-reset: s; }
-.step { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; padding: 22px; position: relative; }
-.step::before { counter-increment: s; content: counter(s); display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-weight: 700; margin-bottom: 12px; }
-.step h3 { margin: 0 0 6px; font-size: 17px; }
-.step p { margin: 0; color: var(--text-secondary); font-size: 15px; }
-.loop { margin-top: 14px; background: var(--brand-soft); border-radius: 16px; padding: 18px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; font-size: 15px; }
-.loop b { color: var(--brand); }
-.chip { background: var(--surface-1); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 14px; }
-.arrow { color: var(--text-muted); }
+section { margin-bottom: 96px; }
+h2 { font-size: clamp(30px, 4.2vw, 46px); margin: 0 0 10px; font-weight: 400; color: #fff; text-shadow: 0 0 22px rgb(255 62 165 / .35); }
+.section-lede { color: var(--ink-2); max-width: 640px; margin: 0 0 32px; font-size: 18px; }
 
-.guarantees { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.g { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; display: grid; grid-template-columns: 34px 1fr; gap: 12px; }
-.g .ic { width: 34px; height: 34px; border-radius: 10px; background: var(--brand-soft); color: var(--brand); display: grid; place-items: center; }
-.g h3 { margin: 0 0 4px; font-size: 16px; }
-.g p { margin: 0; color: var(--text-secondary); font-size: 14px; }
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; counter-reset: s; }
+.step { padding: 26px 24px 24px; position: relative; }
+.step::before { counter-increment: s; content: counter(s); display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 14px; border-radius: 50%;
+  border: 1.5px solid var(--pink); color: var(--pink); font-family: "Tilt Neon", sans-serif; font-size: 22px; box-shadow: 0 0 14px rgb(255 62 165 / .45), inset 0 0 10px rgb(255 62 165 / .2); text-shadow: var(--glow-pink); }
+.step h3 { margin: 0 0 6px; font-size: 22px; font-weight: 400; color: #fff; }
+.step p { margin: 0; color: var(--ink-2); font-size: 15px; }
+.loop { margin-top: 22px; padding: 18px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; font-size: 15px;
+  border: 1px solid transparent; background: linear-gradient(var(--glass-strong), var(--glass-strong)) padding-box, linear-gradient(90deg, var(--pink), var(--cyan), var(--lime)) border-box; }
+.loop b { font-family: "Tilt Neon", sans-serif; font-weight: 400; font-size: 19px; color: var(--gold); text-shadow: 0 0 10px rgb(255 225 77 / .5); }
+.chip { background: rgb(255 255 255 / .05); color: var(--ink); border: 1px solid var(--line-2); border-radius: 999px; padding: 4px 13px; font-size: 14px; font-weight: 500; }
+.arrow { color: var(--cyan); font-weight: 700; text-shadow: 0 0 8px rgb(34 228 255 / .7); }
+.loop-note { flex-basis: 100%; font-size: 14px; color: var(--ink-2); }
+.loop-note a { color: var(--lime); text-decoration: underline; }
 
-.costs { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
-.costs table { width: 100%; border-collapse: collapse; font-size: 15px; }
-.costs td { padding: 14px 20px; border-bottom: 1px solid var(--border); }
-.costs tr:last-child td { border-bottom: 0; }
-.costs td:last-child { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-.costs .note { color: var(--text-muted); font-size: 13px; font-weight: 400; display: block; }
+.checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.g { padding: 22px; display: grid; grid-template-columns: 46px 1fr; gap: 14px; position: relative; }
+.g .ic { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; font-size: 19px; font-weight: 700; color: var(--cyan);
+  border: 1.5px solid rgb(34 228 255 / .6); box-shadow: 0 0 14px rgb(34 228 255 / .3), inset 0 0 12px rgb(34 228 255 / .15); text-shadow: 0 0 8px rgb(34 228 255 / .8); }
+.g h3 { margin: 0 0 4px; font-size: 20px; font-weight: 400; color: #fff; }
+.g p { margin: 0; color: var(--ink-2); font-size: 15px; }
+.stamp { position: absolute; top: 14px; right: 14px; font-weight: 700; font-size: 10px; letter-spacing: 1.4px; color: var(--lime);
+  border: 1px solid var(--lime); border-radius: 6px; padding: 1px 6px; text-shadow: 0 0 6px rgb(182 255 59 / .8); box-shadow: 0 0 10px rgb(182 255 59 / .3); }
 
-.tokens { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; overflow-x: auto; }
-.tokens table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.tokens th, .tokens td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
-.tokens th { color: var(--text-muted); font-weight: 500; font-size: 13px; }
-.tokens img { width: 26px; height: 26px; border-radius: 50%; vertical-align: middle; margin-right: 8px; object-fit: cover; background: var(--surface-2); }
-.tokens .empty { text-align: center; color: var(--text-muted); padding: 36px 16px; }
+/* costs: a paper receipt glowing under the store lights */
+.receipt-wrap { display: grid; grid-template-columns: minmax(0, 460px) 1fr; gap: 40px; align-items: start; }
+.receipt { background: var(--receipt); color: var(--receipt-ink); border-radius: 6px; padding: 22px 24px 34px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;
+  position: relative; transform: rotate(-1.2deg); box-shadow: 0 0 0 1px rgb(255 255 255 / .6), 0 0 40px rgb(255 225 77 / .25), 0 30px 60px -20px rgb(0 0 0 / .9); }
+.receipt::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 8px; height: 10px;
+  background: radial-gradient(circle, var(--bg) 3.5px, transparent 4px) 0 0/16px 10px repeat-x; }
+.receipt .rh { text-align: center; border-bottom: 2px dashed #1b1824; padding-bottom: 12px; margin-bottom: 8px; }
+.receipt .rh b { font-family: "Tilt Neon", sans-serif; font-weight: 400; font-size: 24px; display: block; }
+.receipt table { width: 100%; border-collapse: collapse; }
+.receipt td { padding: 7px 0; vertical-align: top; }
+.receipt td:last-child { text-align: right; font-weight: 700; white-space: nowrap; padding-left: 10px; }
+.receipt .note { color: #6b6578; font-size: 12px; display: block; }
+.receipt .tax { border-top: 2px dashed #1b1824; margin-top: 8px; padding-top: 10px; display: flex; justify-content: space-between; gap: 10px; }
+.receipt .tax b { color: #d6197a; white-space: nowrap; }
+.receipt .thanks { text-align: center; margin-top: 14px; color: #6b6578; letter-spacing: 2px; }
+.receipt-side h3 { font-size: 26px; font-weight: 400; margin: 6px 0 8px; color: #fff; }
+.receipt-side p { color: var(--ink-2); margin: 0 0 12px; }
+
+.tokens { overflow-x: auto; padding: 4px 0; }
+.tokens table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.tokens th, .tokens td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tokens tr:last-child td { border-bottom: 0; }
+.tokens th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .8px; }
+.tokens img { width: 28px; height: 28px; border-radius: 50%; vertical-align: middle; margin-right: 8px; object-fit: cover; border: 1px solid var(--line-2); }
+.tokens .empty { text-align: center; color: var(--ink-2); padding: 40px 16px; font-size: 16px; }
 .num { text-align: right !important; font-variant-numeric: tabular-nums; }
 
-details { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 4px 20px; margin-bottom: 10px; }
-summary { cursor: pointer; font-weight: 600; padding: 14px 0; list-style: none; display: flex; justify-content: space-between; gap: 12px; }
+details { padding: 4px 22px; margin-bottom: 12px; }
+summary { cursor: pointer; font-size: 19px; padding: 15px 0; list-style: none; display: flex; justify-content: space-between; gap: 12px; color: #fff; }
 summary::-webkit-details-marker { display: none; }
-summary::after { content: "+"; color: var(--text-muted); font-weight: 400; font-size: 20px; line-height: 1; }
+summary::after { content: "+"; display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid var(--pink); color: var(--pink);
+  font-size: 18px; line-height: 1; box-shadow: 0 0 10px rgb(255 62 165 / .4); }
 details[open] summary::after { content: "–"; }
-details p { margin: 0 0 16px; color: var(--text-secondary); font-size: 15px; }
+details p { margin: 0 0 16px; color: var(--ink-2); font-size: 16px; }
 
-.final { text-align: center; background: var(--surface-1); border: 1px solid var(--border); border-radius: 22px; padding: 48px 20px; }
-.final p { color: var(--text-secondary); margin: 0 0 22px; }
-footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--text-muted); font-size: 13px; }
+.disclaimer { margin-top: 60px; padding: 22px 24px; border: 1px dashed var(--line-2); border-radius: 16px; background: rgb(0 0 0 / .3); font-size: 14px; color: var(--ink-2); }
+.disclaimer h2 { font-size: 24px; margin: 0 0 8px; text-shadow: none; }
+.disclaimer p { margin: 0 0 10px; }
+.disclaimer p:last-child { margin-bottom: 0; }
+
+.final { text-align: center; padding: 64px 20px; position: relative; overflow: hidden; border-color: rgb(182 255 59 / .35);
+  background: radial-gradient(600px 300px at 50% 0%, rgb(182 255 59 / .12), transparent 70%), var(--glass); }
+.final h2 { text-shadow: 0 0 24px rgb(182 255 59 / .35); }
+.final p { color: var(--ink-2); margin: 0 0 26px; font-size: 18px; }
+.final .big-tag { position: absolute; right: -10px; top: 18px; width: 180px; transform: rotate(12deg); opacity: .9; overflow: visible; }
+footer { border-top: 1px solid var(--line); padding: 28px 0 44px; color: var(--muted); font-size: 14px; margin-top: 80px; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; }
+footer a { color: var(--cyan); }
 
+/* neon sign flicker */
+.neon-sign { animation: flicker 7s infinite; }
+@keyframes flicker { 0%, 92%, 100% { opacity: 1; } 93% { opacity: .55; } 94% { opacity: 1; } 96% { opacity: .7; } 97% { opacity: 1; } }
+
+/* entry disclaimer */
+.gate { position: fixed; inset: 0; z-index: 100; background: rgb(6 5 12 / .9); backdrop-filter: blur(6px); display: grid; place-items: center; padding: 16px; }
+.gate[hidden] { display: none; }
+.gate-box { max-width: 520px; width: 100%; background: var(--bg-2); color: var(--ink); border: 1px solid rgb(255 62 165 / .55); border-radius: 18px; padding: 26px;
+  box-shadow: 0 0 40px rgb(255 62 165 / .25); font-size: 15px; line-height: 1.55; }
+.gate-box h2 { font-size: 30px; margin: 0 0 10px; }
+.gate-box ul { margin: 0 0 16px; padding-left: 20px; display: grid; gap: 6px; color: var(--ink-2); }
+.gate-box ul b { color: #fff; }
+.gate-box .gate-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.gate-box .gate-ok { font-family: "Tilt Neon", sans-serif; font-size: 18px; padding: 11px 22px; border-radius: 12px; border: 1.5px solid var(--lime); background: var(--lime); color: #0b0a12;
+  box-shadow: 0 0 18px rgb(182 255 59 / .55); cursor: pointer; }
+.gate-box .gate-leave { color: var(--muted); font-size: 14px; }
+body.gated { overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 @media (max-width: 860px) {
-  .hero { grid-template-columns: 1fr; padding-top: 44px; }
+  .hero, .receipt-wrap { grid-template-columns: 1fr; }
+  .hero { padding-top: 40px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .steps, .guarantees { grid-template-columns: 1fr; }
+  .steps, .checks { grid-template-columns: 1fr; }
   nav .links a:not(.btn) { display: none; }
+  .logo svg { width: 66px; height: 36px; }
+  .final .big-tag { display: none; }
 }
 </style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="neonGlow" x="-40%" y="-60%" width="180%" height="220%">
+      <feGaussianBlur stdDeviation="2.4" result="b1"/><feGaussianBlur stdDeviation="6" result="b2"/>
+      <feMerge><feMergeNode in="b2"/><feMergeNode in="b1"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <symbol id="pricetag" viewBox="0 0 140 76">
+      <g filter="url(#neonGlow)" class="neon-sign">
+        <path d="M26 5 H129 a6 6 0 0 1 6 6 V65 a6 6 0 0 1 -6 6 H26 L5 38 Z" fill="rgb(255 62 165 / .08)" stroke="#ff3ea5" stroke-width="3.5" stroke-linejoin="round"/>
+        <circle cx="24" cy="38" r="5.5" fill="none" stroke="#22e4ff" stroke-width="3"/>
+        <text x="80" y="46" text-anchor="middle" font-family="Tilt Neon, system-ui, sans-serif" font-size="33" fill="#22e4ff">99¢</text>
+        <text x="80" y="63" text-anchor="middle" font-family="Tilt Neon, system-ui, sans-serif" font-size="13" fill="#b6ff3b" letter-spacing="2">+ TAX</text>
+      </g>
+    </symbol>
+  </defs>
+</svg>
+<div class="gate" id="gate" role="dialog" aria-modal="true" aria-labelledby="gateTitle" hidden>
+  <div class="gate-box">
+    <h2 id="gateTitle">Before you go in</h2>
+    <ul>
+      <li><b>Everything here is an estimate.</b> Payouts, prices and splits change with trading.</li>
+      <li><b>Crypto is highly volatile.</b> Tokens can drop to zero, and you can lose everything you put in.</li>
+      <li><b>Nothing is guaranteed</b>, and nothing here is financial, investment, legal or tax advice.</li>
+      <li>The lock program hasn't had an independent audit. Only use money you can afford to lose.</li>
+    </ul>
+    <div class="gate-actions">
+      <button class="gate-ok" id="gateOk" type="button">I understand, continue</button>
+      <a class="gate-leave" href="https://x1.xyz" rel="noopener">Leave</a>
+    </div>
+  </div>
+</div>
+<div class="topbar" role="note"><b>Heads up:</b> everything on this site is an estimate. Crypto is highly volatile, you can lose everything you put in, and nothing is guaranteed. Not financial advice. <a href="#disclaimer">Read the disclaimer</a></div>
 <nav>
   <div class="wrap">
-    <a class="logo" href="/"><span class="mark">99+</span>99 + Tax</a>
+    <a class="logo" href="/" aria-label="99 + Tax home"><svg role="img" aria-label="99¢ + TAX price tag"><use href="#pricetag"/></svg><span class="logo-word">99 + Tax</span></a>
     <div class="links">
-      <a href="#how">How it works</a>
-      <a href="#guarantees">Guarantees</a>
-      <a href="#tokens">Tokens</a>
-      <a href="#faq">FAQ</a>
+      <a href="/tokens">Tokens</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/wallet">My earnings</a>
       <a class="btn primary sm" href="/launch">Launch a token</a>
     </div>
   </div>
@@ -159,96 +280,121 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: 
 <main class="wrap">
   <header class="hero">
     <div>
-      <span class="eyebrow"><span class="pulse"></span><span id="netLabel">Live on X1</span></span>
-      <h1>Launch a tax token that <em>pays its holders</em> in XNT.</h1>
-      <p class="lede">Every trade pays a small tax. That tax is sold for XNT and sent straight to holders' wallets, part of it deepens the pool, part can be burned for good, and the launch liquidity is locked in an NFT. Set it up in three clicks, <span id="feeLede">for about a dollar</span>.</p>
+      <span class="sticker"><span class="pulse"></span><span id="netLabel">Live on X1</span></span>
+      <h1><span class="line">Every trade pays tax.</span><br><span class="hl line">Holders get paid.</span></h1>
+      <p class="lede">Launch a token where every trade pays a small tax. It's sold for XNT and sent straight to holders' wallets, part of it deepens the pool, part can be burned for good, and 10% is your creator reward in USDC. The launch liquidity is locked in an NFT. Three clicks, <span id="feeLede">about a dollar</span>.</p>
       <div class="cta">
         <a class="btn primary" href="/launch">Launch a token →</a>
-        <a class="btn" href="#how">See how it works</a>
+        <a class="btn" href="#how">How does it work?</a>
       </div>
-      <p class="fine">No code. Your wallet signs everything. Tokens run on XDEX, X1's DEX.</p>
+      <p class="fine">No code. Your wallet signs everything. Tokens trade on XDEX, X1's DEX.</p>
     </div>
 
-    <div class="coin" aria-label="Tax split calculator">
-      <h3>Where each trade's tax goes</h3>
-      <div class="sub">Drag to see how a token splits its tax.</div>
+    <div class="chunk tag-card" aria-label="Tax split calculator">
+      <h3>Where the tax goes</h3>
+      <div class="sub">Drag the sliders. Every trade splits like this.</div>
       <label class="slider"><span class="row"><span>Tax on every transfer</span><b id="taxV">5%</b></span>
         <input id="tax" type="range" min="1" max="10" step="0.5" value="5"></label>
-      <label class="slider"><span class="row"><span>Share added to liquidity</span><b id="lpV">40%</b></span>
-        <input id="lp" type="range" min="0" max="50" step="5" value="40"></label>
-      <label class="slider"><span class="row"><span>Share burned</span><b id="burnV">20%</b></span>
-        <input id="burn" type="range" min="0" max="50" step="5" value="20"></label>
-      <div class="bar" role="img" id="bar" aria-label="Tax split"><div id="barH" style="background:var(--holders)"></div><div id="barL" style="background:var(--liquidity)"></div><div id="barB" style="background:var(--burn)"></div></div>
+      <label class="slider"><span class="row"><span>Share added to liquidity</span><b id="lpV">25%</b></span>
+        <input id="lp" type="range" min="0" max="50" step="5" value="25"></label>
+      <label class="slider"><span class="row"><span>Share burned</span><b id="burnV">25%</b></span>
+        <input id="burn" type="range" min="0" max="50" step="5" value="25"></label>
+      <div class="bar" role="img" id="bar" aria-label="Tax split"><div id="barH" style="background:var(--holders)"></div><div id="barL" style="background:var(--liquidity)"></div><div id="barB" style="background:var(--burn)"></div><div id="barC" style="background:var(--creator)"></div></div>
       <div class="legend">
         <span><span class="sw" style="background:var(--holders)"></span><span id="legH"></span></span>
         <span><span class="sw" style="background:var(--liquidity)"></span><span id="legL"></span></span>
         <span id="legBWrap"><span class="sw" style="background:var(--burn)"></span><span id="legB"></span></span>
+        <span><span class="sw" style="background:var(--creator)"></span><span id="legC"></span></span>
       </div>
-      <div class="calc">With <input id="vol" inputmode="decimal" value="1000" aria-label="Daily volume in XNT"> XNT of daily trading, holders share about <b id="calcOut">30 XNT a day</b>.</div>
+      <div class="calc">With <input id="vol" inputmode="decimal" value="1000" aria-label="Daily volume in XNT"> XNT of daily trading, holders share about <b id="calcOut">30 XNT a day</b>.
+        <div class="est">Estimate only. Real payouts depend on trading volume and prices, and aren't guaranteed.</div></div>
     </div>
   </header>
 
   <div class="stats" aria-label="Live totals">
-    <div class="stat"><div class="v" id="sTokens">–</div><div class="l">tokens launched</div></div>
-    <div class="stat"><div class="v" id="sPaid">–</div><div class="l">XNT paid to holders</div></div>
-    <div class="stat"><div class="v" id="sWallets">–</div><div class="l">holder payouts sent</div></div>
-    <div class="stat"><div class="v" id="sLiq">–</div><div class="l">XNT of launch liquidity locked</div></div>
+    <div class="stat"><span class="hole"></span><div class="v" id="sTokens">–</div><div class="l">tokens launched</div></div>
+    <div class="stat"><span class="hole"></span><div class="v" id="sPaid">–</div><div class="l">XNT paid to holders</div></div>
+    <div class="stat"><span class="hole"></span><div class="v" id="sWallets">–</div><div class="l">holder payouts sent</div></div>
+    <div class="stat"><span class="hole"></span><div class="v" id="sLiq">–</div><div class="l">XNT of launch liquidity locked</div></div>
   </div>
 
   <section id="how">
-    <h2>Three approvals, and your token is live</h2>
-    <p class="section-lede">Fill in one form. Your wallet approves three transactions, and 99 + Tax does the rest, on-chain and in the open.</p>
+    <h2>Three approvals. Token's live.</h2>
+    <p class="section-lede">Fill in one form, approve three transactions in your wallet, and 99 + Tax rings up the rest, on-chain and in the open.</p>
     <div class="steps">
-      <div class="step"><h3>Create the token</h3><p>Name, logo, supply and tax. The tax is fixed forever and the supply can never grow.</p></div>
-      <div class="step"><h3>Open the pool</h3><p>Your tokens and XNT become the starting liquidity on XDEX, so people can trade right away.</p></div>
-      <div class="step"><h3>Lock the liquidity</h3><p>The LP is locked in an NFT, forever or until a date you pick. The NFT keeps earning the pool's trading fees.</p></div>
+      <div class="chunk step"><h3>Create the token</h3><p>Name, logo, supply and tax. The tax is fixed forever and the supply can never grow.</p></div>
+      <div class="chunk step"><h3>Open the pool</h3><p>The whole supply plus your XNT become the starting liquidity on XDEX. You start with no tokens, so there's no dev bag.</p></div>
+      <div class="chunk step"><h3>Lock the liquidity</h3><p>The LP goes into an NFT, forever or until a date you pick. The NFT earns the pool's trading fees and your 10% creator reward.</p></div>
     </div>
-    <div class="loop">
+    <div class="chunk loop">
       <b>Then every 30 minutes:</b>
       <span class="chip">collect the tax</span><span class="arrow">→</span>
-      <span class="chip">sell it for XNT</span><span class="arrow">→</span>
       <span class="chip">burn a share</span><span class="arrow">→</span>
+      <span class="chip">sell it for XNT</span><span class="arrow">→</span>
       <span class="chip">add liquidity, burn the LP</span><span class="arrow">→</span>
+      <span class="chip">fund the creator reward</span><span class="arrow">→</span>
       <span class="chip">pay every holder</span>
+      <span class="loop-note">Can't wait? Anyone can press <a href="/launch#distribute">Distribute now</a> and earn 1% of that payout.</span>
     </div>
   </section>
 
-  <section id="guarantees">
-    <h2>Built so nobody can pull the rug</h2>
-    <p class="section-lede">These aren't promises. Every one of them is a setting anyone can check on-chain.</p>
-    <div class="guarantees">
-      <div class="g"><span class="ic" aria-hidden="true">%</span><div><h3>The tax can never change</h3><p>The token has no fee authority, so no one can raise the tax later. Not the creator, not us.</p></div></div>
-      <div class="g"><span class="ic" aria-hidden="true">∑</span><div><h3>The supply is fixed</h3><p>The mint authority is revoked at launch. No one can ever print more tokens.</p></div></div>
-      <div class="g"><span class="ic" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span><div><h3>Liquidity is locked in an NFT</h3><p>Forever, or until the date shown. The lock program has no way to release it early.</p></div></div>
-      <div class="g"><span class="ic" aria-hidden="true">↻</span><div><h3>Only holders get the tax</h3><p>Each token has its own distributor wallet, the only one that can collect its tax, and it pays holders automatically.</p></div></div>
+  <section id="checks">
+    <h2>Don't trust us. Check the chain.</h2>
+    <p class="section-lede">Every one of these is a setting on the token or the lock that anyone can look up on an explorer. Two honest notes: timed locks end on their unlock date, and the lock program hasn't had an independent audit yet.</p>
+    <div class="checks">
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">%</span><div><h3>The tax can never change</h3><p>The token has no fee authority, so no one can raise the tax later. Not the creator, not us.</p></div></div>
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">∑</span><div><h3>The supply is fixed</h3><p>The mint authority is revoked at launch. No one can ever print more tokens.</p></div></div>
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span><div><h3>Liquidity is locked in an NFT</h3><p>Forever, or until the date shown. The lock program has no way to release it early.</p></div></div>
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">↻</span><div><h3>The tax goes where the token says</h3><p>Each token has its own distributor wallet, the only one that can collect its tax. It splits it the same way every time: holders (at least 35%), liquidity, burn and the creator's 10%.</p></div></div>
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">0</span><div><h3>No dev bag</h3><p>The whole supply goes into the pool at launch. The creator's wallet starts with zero tokens, and you can see it on the explorer.</p></div></div>
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">7d</span><div><h3>Creator rewards vest</h3><p>The creator's 10% sits in an on-chain vault and unlocks 7 days after each deposit. Only the LP-lock NFT's holder can claim it.</p></div></div>
     </div>
   </section>
 
   <section id="costs">
     <h2>What it costs</h2>
-    <p class="section-lede">One flat launch fee. Everything else goes into your own token or to the network.</p>
-    <div class="costs"><table id="costTable"></table></div>
+    <div class="receipt-wrap">
+      <div class="receipt" aria-label="Launch costs receipt">
+        <div class="rh"><b>99 + TAX</b>TOKEN LAUNCH · X1</div>
+        <table id="costTable"></table>
+        <div class="tax"><span>+ TAX<span class="note">on every trade: holders, liquidity, burn, creator</span></span><b>→ EVERYONE</b></div>
+        <div class="thanks">* THANK YOU *</div>
+      </div>
+      <div class="receipt-side">
+        <h3>One flat fee. That's it.</h3>
+        <p>The launch fee is the only thing that goes to 99 + Tax. Your XNT goes into your own pool, the pool fee goes to XDEX, and the gas funds your token's own payouts.</p>
+        <p>And the "+ tax"? That's the good part. It's paid by every trade of your token, forever. Most of it goes to your holders, and 10% comes back to you as your creator reward, in USDC.</p>
+      </div>
+    </div>
   </section>
 
   <section id="tokens">
-    <h2>Launched with 99 + Tax</h2>
-    <p class="section-lede">Every token here was created, pooled and locked through the launchpad.</p>
-    <div class="tokens"><table id="tokenTable"></table></div>
+    <h2>Fresh off the shelf</h2>
+    <p class="section-lede">Every token here was created, pooled and locked through 99 + Tax. Holding one and don't want to wait for the next payout? <a href="/launch#distribute">Distribute now →</a></p>
+    <div class="chunk tokens"><table id="tokenTable"></table></div>
   </section>
 
   <section id="faq">
-    <h2>Questions</h2>
-    <details><summary>What is a tax (reflection) token?</summary><p>A token that takes a small percentage of every transfer, including every buy and sell. Here that tax isn't kept by the team. It's sold for XNT and paid to everyone who holds the token, in proportion to how much they hold.</p></details>
-    <details><summary>How do holders get paid?</summary><p>About every 30 minutes, the token's distributor collects the tax, sells it on XDEX and sends XNT directly to holders' wallets. There's nothing to claim. Very small shares build up until they reach 0.001 XNT, then they're sent.</p></details>
-    <details><summary>Who gets the tax that goes to liquidity?</summary><p>Nobody. It's added to the pool, and the LP tokens it creates are burned, so that liquidity stays in the pool for good and the price gets steadier over time.</p></details>
-    <details><summary>What does the burn do?</summary><p>If the creator turns it on, that share of each cycle's collected tax is burned outright, before anything is sold. The token supply goes down every cycle, and because those tokens are never sold, there's less selling pressure too. The creator picks the share at launch (up to 50%), and it can't be changed later.</p></details>
-    <details><summary>What does the LP NFT do?</summary><p>It holds the launch liquidity. Whoever owns the NFT can collect the trading fees that liquidity earns and can sell or transfer that right, but can't withdraw the liquidity itself. With a timed lock, the NFT holder can take the LP back after the date.</p></details>
-    <details><summary>Can the creator rug?</summary><p>They can't change the tax, print tokens or pull locked liquidity. They can still sell tokens they hold, like anyone else, so check how much of the supply went into the pool and whether the lock is forever.</p></details>
-    <details><summary>Is it audited?</summary><p>Not yet. The code is open source and has been tested on X1 testnet and against attack cases, but the lock program hasn't had an independent audit. Only use what you can afford to lose.</p></details>
+    <h2>Questions at the register</h2>
+    <details class="chunk"><summary>What is a tax (reflection) token?</summary><p>A token that takes a small percentage of every transfer, including every buy and sell. Here that tax isn't kept by the team. It's sold for XNT and paid to everyone who holds the token, in proportion to how much they hold.</p></details>
+    <details class="chunk"><summary>How do holders get paid?</summary><p>About every 30 minutes, the token's distributor collects the tax, sells it on XDEX and sends XNT directly to holders' wallets. There's nothing to claim. Very small shares build up until they reach 0.001 XNT, then they're sent.</p></details>
+    <details class="chunk"><summary>What's "Distribute now"?</summary><p>If you don't want to wait for the next 30-minute run, anyone can press Distribute now on the launch page and pay a small tip (0.005 XNT) that covers the gas. The token's full distribution runs right away, and the person who pressed it earns 1% of that run's holder payout, up to 0.05 XNT. It only works when enough tax is waiting, at most once every 10 minutes per token.</p></details>
+    <details class="chunk"><summary>Who gets the tax that goes to liquidity?</summary><p>Nobody. It's added to the pool, and the LP tokens it creates are burned, so that liquidity stays in the pool for good and the price gets steadier over time.</p></details>
+    <details class="chunk"><summary>What does the burn do?</summary><p>If the creator turns it on, that share of each cycle's collected tax is burned outright, before anything is sold. The token supply goes down every cycle, and because those tokens are never sold, there's less selling pressure too. The creator picks the share at launch (up to 50%; liquidity plus burn can't pass 55%, because 10% goes to the creator and holders always get at least 35%), and it can't be changed later.</p></details>
+    <details class="chunk"><summary>How do creators earn?</summary><p>Creators start with no tokens, so instead every token pays its creator 10% of its tax. It's sold and swapped to USDC (XNT on testnet), then held in an on-chain vault tied to the launch's LP-lock NFT. Each deposit vests for 7 days, then whoever holds the NFT can claim it. Sell the NFT and you sell the income with it.</p></details>
+    <details class="chunk"><summary>What does the LP NFT do?</summary><p>It holds the launch liquidity. Whoever owns the NFT collects the trading fees that liquidity earns and the token's creator rewards, and can sell or transfer both, but can't withdraw the liquidity itself. With a timed lock, the NFT holder can take the LP back after the date and keeps the NFT for the rewards.</p></details>
+    <details class="chunk"><summary>Can the creator rug?</summary><p>They can't change the tax, print tokens or pull locked liquidity. They also start with no tokens: every launch puts 100% of the supply into the pool, so there's no dev bag to dump. What's left to check is whether the lock is forever or timed.</p></details>
+    <details class="chunk"><summary>Is it audited?</summary><p>Not yet. The code is open source and has been tested on X1 testnet and against attack cases, but the lock program hasn't had an independent audit. Only use what you can afford to lose.</p></details>
   </section>
 
-  <div class="final">
-    <h2>Your token, paying its holders, in three clicks.</h2>
+  <section class="disclaimer" id="disclaimer" aria-label="Disclaimer">
+    <h2>Disclaimer</h2>
+    <p><b>Everything shown here is an estimate.</b> Tax splits, daily earnings, starting prices, rewards and payouts are calculated from current on-chain data and change constantly with trading. Real results depend on trading volume and prices, which nobody controls.</p><p><b>Cryptocurrency is highly volatile.</b> Token prices can fall sharply or to zero, trading and rewards can stop, and you can lose everything you put in. <b>Nothing here is guaranteed.</b></p><p>Nothing on this site is financial, investment, legal or tax advice. Smart contracts can contain bugs, and the lock program has not had an independent audit. Launching or buying a token may have legal or tax consequences where you live. Do your own research and only use money you can afford to lose.</p>
+  </section>
+
+  <div class="chunk final">
+    <svg class="big-tag" viewBox="0 0 140 76" aria-hidden="true"><use href="#pricetag"/></svg>
+    <h2>Your token, paying its holders,<br>in three clicks.</h2>
     <p>Connect a wallet, fill in the form, approve three transactions.</p>
     <a class="btn primary" href="/launch">Launch a token →</a>
   </div>
@@ -257,7 +403,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: 
 <footer>
   <div class="wrap">
     <span>99 + Tax · tax tokens on X1 that pay holders in XNT · <span id="footNet"></span></span>
-    <span><a href="https://github.com/Lokoweb3/x1-reflection-token" target="_blank" rel="noopener">Open source on GitHub</a> · Not financial advice. Tokens can lose all their value.</span>
+    <span><a href="https://github.com/Lokoweb3/x1-reflection-token" target="_blank" rel="noopener">Open source on GitHub</a> · Estimates only. Crypto is volatile and nothing is guaranteed. Not financial advice. <a href="#disclaimer">Disclaimer</a></span>
   </div>
 </footer>
 
@@ -277,22 +423,25 @@ const compact = (n) => n >= 1e6 ? fmt(n / 1e6, 2) + "M" : n >= 1e4 ? fmt(n / 1e3
 function renderSplit() {
   const tax = Number($("tax").value);
   let lp = Number($("lp").value), burn = Number($("burn").value);
-  // Liquidity + burn is capped at 90% so holders always keep at least 10%.
-  if (lp + burn > 90) { burn = 90 - lp; $("burn").value = burn; }
-  const toLp = tax * lp / 100, toBurn = tax * burn / 100, toHolders = tax - toLp - toBurn;
+  // 10% of the tax is the creator's reward; liquidity + burn is capped at 55% so holders keep at least 35%.
+  const CREATOR = 10;
+  if (lp + burn > 55) { burn = 55 - lp; $("burn").value = burn; }
+  const toLp = tax * lp / 100, toBurn = tax * burn / 100, toCreator = tax * CREATOR / 100, toHolders = tax - toLp - toBurn - toCreator;
   $("taxV").textContent = `${fmt(tax, 1)}%`;
   $("lpV").textContent = `${lp}%`;
   $("burnV").textContent = `${burn}%`;
   $("barH").style.width = `${(toHolders / tax) * 100}%`;
   $("barL").style.width = `${(toLp / tax) * 100}%`;
   $("barB").style.width = `${(toBurn / tax) * 100}%`;
+  $("barC").style.width = `${(toCreator / tax) * 100}%`;
   $("barL").style.display = toLp > 0 ? "" : "none";
   $("barB").style.display = toBurn > 0 ? "" : "none";
   $("legH").textContent = `${fmt(toHolders, 2)}% to holders in XNT`;
   $("legL").textContent = `${fmt(toLp, 2)}% to liquidity (LP burned)`;
   $("legB").textContent = `${fmt(toBurn, 2)}% of tokens burned`;
+  $("legC").textContent = `${fmt(toCreator, 2)}% to the creator (USDC)`;
   $("legBWrap").style.display = toBurn > 0 ? "" : "none";
-  $("bar").setAttribute("aria-label", `Of a ${fmt(tax, 1)}% tax: ${fmt(toHolders, 2)}% to holders, ${fmt(toLp, 2)}% to liquidity, ${fmt(toBurn, 2)}% burned`);
+  $("bar").setAttribute("aria-label", `Of a ${fmt(tax, 1)}% tax: ${fmt(toHolders, 2)}% to holders, ${fmt(toLp, 2)}% to liquidity, ${fmt(toBurn, 2)}% burned, ${fmt(toCreator, 2)}% to the creator`);
   const vol = Number(String($("vol").value).replace(/[, ]/g, ""));
   $("calcOut").textContent = isFinite(vol) && vol >= 0 ? `${fmt(vol * toHolders / 100, 2)} XNT a day` : "–";
 }
@@ -307,10 +456,10 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
     const net = info.network === "mainnet" ? "X1 mainnet" : "X1 testnet";
     $("netLabel").textContent = `Live on ${net}`;
     $("footNet").textContent = net;
-    const fee = Number(info.feeUsdc);
-    $("feeLede").textContent = fee === 0.99 ? "for 99 cents" : `for ${fmt(fee)} USDC`;
+    const fee = Number(info.feeAmount), feeSym = info.feeSymbol;
+    $("feeLede").textContent = fee === 0.99 && feeSym === "USDC" ? "99¢ + tax" : `${fmt(fee)} ${feeSym} + tax`;
     const rows = [
-      ["Launch fee", "Flat, paid once in USDC", `${fmt(fee)} USDC`],
+      ["Launch fee", `Flat, paid once in ${feeSym}`, `${fmt(fee)} ${feeSym}`],
       ["Starting liquidity", "Your XNT, paired with your tokens in the pool. It stays in your token.", "You choose"],
       ["XDEX pool creation", "Charged by XDEX, not by us", info.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "–"],
       ["Distributor gas", "Pays for your token's first payouts, then refills itself from the tax", `${info.gasXnt} XNT`],
@@ -351,6 +500,25 @@ async function loadTokens(info) {
       el("td", { text: new Date(k.registeredAt).toLocaleDateString() })));
   }
 }
+
+// Entry disclaimer: shown before the site until the visitor accepts it. Bump the key
+// if the disclaimer changes so everyone sees it again.
+(() => {
+  const KEY = "99tax-disclaimer-v1";
+  let accepted = false;
+  try { accepted = localStorage.getItem(KEY) === "yes"; } catch {}
+  const gate = document.getElementById("gate");
+  if (accepted) return;
+  gate.hidden = false;
+  document.body.classList.add("gated");
+  const ok = document.getElementById("gateOk");
+  ok.focus();
+  ok.addEventListener("click", () => {
+    try { localStorage.setItem(KEY, "yes"); } catch {}
+    gate.hidden = true;
+    document.body.classList.remove("gated");
+  });
+})();
 </script>
 </body>
 </html>
