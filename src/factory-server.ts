@@ -20,9 +20,9 @@ import path from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
-import { networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
+import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
-  CREATOR_BPS, CREATOR_REWARD, buildLockStep, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
+  CREATOR_BPS, CREATOR_REWARD, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch,
   registeredLaunches, validateParams,
 } from "./factory/launch.js";
@@ -32,7 +32,8 @@ import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, receiptIma
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
 import { snapshot } from "./xdex.js";
-import { faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
+import { positions, refreshTrades } from "./trades.js";
+import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
 import { MAX_LOGO_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
 import { TOKEN_2022_PROGRAM_ID, getTokenMetadata } from "@solana/spl-token";
@@ -56,6 +57,7 @@ const bind = f.bind ?? "127.0.0.1";
 const publicUrl = f.publicUrl ?? `http://127.0.0.1:${port}`;
 const explorer = `https://explorer.${cfg.network}.x1.xyz`;
 const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, ...(f.hosts ?? [])]);
+for (const id of [cfg.xdex.programId, cfg.locker?.programId]) if (id) allowRelayProgram(id);
 const LANDING = path.join(ROOT, "src", "landing.html");
 const PAGE = path.join(ROOT, "src", "factory.html");
 const NFT_PAGE = path.join(ROOT, "src", "nft.html");
@@ -63,6 +65,7 @@ const TOKENS_PAGE = path.join(ROOT, "src", "tokens.html");
 const ANALYTICS_PAGE = path.join(ROOT, "src", "analytics.html");
 const WALLET_PAGE = path.join(ROOT, "src", "wallet.html");
 const FAUCET_PAGE = path.join(ROOT, "src", "faucet.html");
+const LEADERBOARD_PAGE = path.join(ROOT, "src", "leaderboard.html");
 /** Serve a page; without a faucet (e.g. mainnet), leave its "Faucet" tab out. */
 function page(file: string) {
   const html = fs.readFileSync(file, "utf8");
@@ -95,24 +98,39 @@ async function creatorRewards(lockNft: string | null | undefined) {
     nextAmount: s.nextAmount.toString(), symbol: rewardSymbol, decimals: rewardDecimals };
 }
 
-const uploads = new Map<string, number[]>();
-function uploadLimit(ip: string, max = 20, windowMs = 3_600_000) {
+/** Metadata updates waiting for their on-chain transaction (applied by /api/launch/metadata/confirm). */
+const pendingMeta = new Map<string, { uri: string; next: Record<string, unknown>; at: number }>();
+/**
+ * Request limits. Each is per client address and also site-wide, since addresses can be
+ * rotated: the site-wide cap is the safety net for what costs us (RPC calls, the
+ * Pinata quota, files on disk).
+ */
+class RateLimited extends Error {}
+const buckets = new Map<string, number[]>();
+function limit(name: string, key: string, max: number, windowMs: number, message: string) {
   const now = Date.now();
-  const hits = (uploads.get(ip) ?? []).filter((t) => now - t < windowMs);
-  if (hits.length >= max) throw new Error("Too many logo uploads from this address; try again later.");
+  const id = `${name}:${key}`;
+  const hits = (buckets.get(id) ?? []).filter((t) => now - t < windowMs);
+  if (hits.length >= max) throw new RateLimited(message);
   hits.push(now);
-  uploads.set(ip, hits);
+  buckets.set(id, hits);
 }
-
-// Starting a launch generates keys and files, so cap it per client address.
-const recent = new Map<string, number[]>();
-function rateLimit(ip: string, max = 10, windowMs = 3_600_000) {
+const LIMITS = {
+  // name: [per address, site-wide (0: none), window ms]. Plain reads get no site-wide cap
+  // (that would let one client lock everyone out); they're served from caches.
+  get: [120, 0, 60_000], post: [30, 0, 60_000], send: [20, 300, 60_000],
+  launch: [10, 60, 3_600_000], upload: [20, 200, 3_600_000], faucet: [5, 200, 3_600_000],
+} as const;
+function rateLimit(kind: keyof typeof LIMITS, ip: string, what = "requests") {
+  if (ip === "127.0.0.1" || ip === "::1") return; // this machine, not through the proxy (local use)
+  const [perIp, total, windowMs] = LIMITS[kind];
+  limit(kind, ip, perIp, windowMs, `Too many ${what} from this address; try again later.`);
+  if (total) limit(kind, "*", total, windowMs, `The site is getting too many ${what} right now; try again in a few minutes.`);
+}
+setInterval(() => {
   const now = Date.now();
-  const hits = (recent.get(ip) ?? []).filter((t) => now - t < windowMs);
-  if (hits.length >= max) throw new Error("Too many launches started from this address; try again later.");
-  hits.push(now);
-  recent.set(ip, hits);
-}
+  for (const [id, hits] of buckets) if (!hits.some((t) => now - t < 3_600_000)) buckets.delete(id);
+}, 600_000).unref();
 
 function readJson(req: http.IncomingMessage, max = 64_000): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -120,6 +138,12 @@ function readJson(req: http.IncomingMessage, max = 64_000): Promise<Record<strin
     req.on("data", (c) => { body += c; if (body.length > max) { reject(new Error("Body too large")); req.destroy(); } });
     req.on("end", () => { try { resolve(JSON.parse(body || "{}")); } catch { reject(new Error("Invalid JSON")); } });
   });
+}
+
+/** Only the wallet holding a lock NFT may collect or claim with it (the locker checks too; this gives a clear message). */
+async function requireNftHolder(nft: PublicKey, wallet: PublicKey) {
+  const h = await nftHolder(conn, nft);
+  if (!h || !h.owner.equals(wallet)) throw new Error(`Only the wallet holding this LP-lock NFT${h ? ` (${h.owner.toBase58().slice(0, 4)}…${h.owner.toBase58().slice(-4)})` : ""} can collect or claim.`);
 }
 
 /** The launch record for `mint`, checked to belong to `creator`. */
@@ -132,7 +156,7 @@ function ownLaunch(body: Record<string, unknown>) {
 
 async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/launch/token") {
-    rateLimit(ip);
+    rateLimit("launch", ip, "launches started");
     const p = validateParams(body);
     const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
@@ -162,10 +186,14 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, noBudget: true }) };
   }
   // Withdraw from a lock NFT (any lock, RFLT or a launch): the NFT holder's wallet signs.
-  if (url === "/api/faucet") return faucetClaim(conn, cfg, String(body.wallet), ip);
+  if (url === "/api/faucet") {
+    rateLimit("faucet", ip, "faucet claims");
+    await checkCaptcha(cfg, body.captcha, ip);
+    return faucetClaim(conn, cfg, String(body.wallet), ip);
+  }
   if (url === "/api/upload-logo") {
     // Straight through to IPFS; nothing is kept here. Limited per IP to protect the Pinata quota.
-    uploadLimit(ip);
+    rateLimit("upload", ip, "logo uploads");
     const bytes = Buffer.from(String(body.data ?? ""), "base64");
     return pinLogo(cfg, bytes, String(body.name ?? "logo"));
   }
@@ -209,6 +237,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/nft/collect" || url === "/api/nft/claim") {
     const nft = new PublicKey(String(body.nftMint));
     const holder = new PublicKey(String(body.holder));
+    await requireNftHolder(nft, holder);
     if (url === "/api/nft/claim") {
       const { ixs } = await buildClaimReward(conn, cfg, holder, nft, rewardMint);
       return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
@@ -218,6 +247,25 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const { ixs, summary } = await buildCollect(conn, cfg, holder, nft, false, nftTarget(d));
     if (!ixs) throw new Error(summary.feeLp > 0n ? "Fees ready are still dust; wait for more trading." : "No trading fees to collect yet.");
     return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
+  }
+  // Update a launched token's logo / description / links. The launch record only changes
+  // once the creator-signed transaction is on-chain (see /api/launch/metadata/confirm).
+  if (url === "/api/launch/metadata") {
+    const r = ownLaunch(body);
+    const { ixs, uri, next } = await buildMetadataUpdate(conn, cfg, r, body, publicUrl);
+    pendingMeta.set(r.mint, { uri, next, at: Date.now() });
+    return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], opts), uri };
+  }
+  if (url === "/api/launch/metadata/confirm") {
+    const r = readLaunch(String(body.mint));
+    const p = r && pendingMeta.get(r.mint);
+    if (!r || !p) throw new Error("No metadata update waiting for this token.");
+    const md = await getTokenMetadata(conn, new PublicKey(r.mint), "confirmed", TOKEN_2022_PROGRAM_ID);
+    if (md?.uri !== p.uri) throw new Error("The token's on-chain link doesn't show the update yet.");
+    applyMetadataUpdate(r, p.next);
+    pendingMeta.delete(r.mint);
+    tokenListCache = null;
+    return { updated: true };
   }
   if (url === "/api/launch/register") {
     const r = await registerLaunch(conn, cfg, ownLaunch(body));
@@ -229,6 +277,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const holder = new PublicKey(String(body.holder));
     const nft = r.lockNft ?? (await launchStatus(conn, cfg, r)).lockNft;
     if (!nft) throw new Error("This launch has no lock NFT yet.");
+    await requireNftHolder(new PublicKey(nft), holder);
     const { ixs } = await buildClaimReward(conn, cfg, holder, new PublicKey(nft), rewardMint);
     return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
   }
@@ -248,6 +297,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     readinessCache.delete(t.mint);
     return { started: true };
   }
+  if (url === "/api/send") rateLimit("send", ip, "transactions");
   if (url === "/api/send") return { signature: await sendSigned(conn, String(body.tx)) };
   return null;
 }
@@ -381,20 +431,23 @@ async function get(url: URL) {
       const nft = r.lockNft ?? status.lockNft;
       const nftMeta = nft ? await getTokenMetadata(conn, new PublicKey(nft), "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null) : null;
       // Trading fees the lock NFT can collect now, and who holds it (only they can collect).
-      let fees = null;
+      let fees = null, nftHolderAddr: string | null = null;
       if (nft) {
         const holder = await nftHolder(conn, new PublicKey(nft));
+        nftHolderAddr = holder?.owner.toBase58() ?? null;
         if (holder) {
           const q = await collectQuote(holder.owner, new PublicKey(nft), { pool: new PublicKey(r.pool), mint: new PublicKey(r.mint), symbol: r.symbol }).catch(() => null);
           if (q) fees = { ...q, holder: holder.owner.toBase58() };
         }
       }
-      return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? receiptImage(nftMeta.uri) : null, rewards: await creatorRewards(nft), fees };
+      return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? receiptImage(nftMeta.uri) : null, rewards: await creatorRewards(nft), fees, nftHolder: nftHolderAddr };
     }));
   }
   if (url.pathname === "/api/tokens") return registeredLaunches().map((r) => ({ ...publicView(r), paid: tokenPayouts(r.mint) }));
   if (url.pathname === "/api/stats") return stats();
   if (url.pathname === "/api/token-list") return tokenList();
+  const lb = /^\/api\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
+  if (lb) return leaderboard(lb[1]);
   if (url.pathname === "/api/faucet") return faucetStatus(conn, cfg, url.searchParams.get("wallet") ?? undefined);
   const wp = /^\/api\/passes\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (wp) return walletPasses(new PublicKey(wp[1]).toBase58());
@@ -733,6 +786,75 @@ async function walletView(addr: string) {
   return { wallet: owner, explorer, tokens, nfts };
 }
 
+/**
+ * Holder leaderboard for one token: every holder's average cost (XNT per token) from
+ * their swaps, what their holding is worth now, and profit/loss. Trades are indexed
+ * incrementally; results are cached for a minute.
+ */
+const boardCache = new Map<string, { at: number; data: Promise<unknown> }>();
+function leaderboard(mintStr: string) {
+  const hit = boardCache.get(mintStr);
+  if (hit && Date.now() - hit.at < 60_000) return hit.data;
+  const data = (async () => {
+    const t = findTarget(cfg, mintStr);
+    const [idx, st] = await Promise.all([
+      refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir),
+      tokenStats(t.mint) as Promise<any>,
+    ]);
+    const skip = new Set([t.distributor, poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58(), ...BURN_OWNERS]);
+    const pos = positions(idx.trades, skip);
+    const dec = 10 ** st.decimals;
+    const price: number | null = st.priceXnt;
+    const x = (v: bigint) => Number(v) / 1e9;
+    const rows: any[] = [];
+    const seen = new Set<string>();
+    for (const h of st.holders) {
+      if (skip.has(h.owner)) continue;
+      seen.add(h.owner);
+      const p = pos.get(h.owner);
+      const bal = Number(BigInt(h.balance)) / dec;
+      const heldFromBuys = p ? Math.min(bal, Number(p.held) / dec) : 0; // the rest arrived by transfer
+      const avg = p && p.held > 0n ? x(p.cost) / (Number(p.held) / dec) : null;
+      const costKnown = avg !== null ? avg * heldFromBuys : 0;
+      const value = price !== null ? bal * price : null;
+      const pnl = value !== null && avg !== null && price !== null ? price * heldFromBuys - costKnown : null;
+      rows.push({
+        wallet: h.owner, label: h.label, status: h.status, balance: bal, pctSupply: h.pct,
+        avgCost: avg, value, costBasis: costKnown, pnl, pnlPct: pnl !== null && costKnown > 0 ? (pnl / costKnown) * 100 : null,
+        unknownCost: bal - heldFromBuys > 1e-9 ? bal - heldFromBuys : 0,
+        bought: p ? Number(p.bought) / dec : 0, sold: p ? Number(p.sold) / dec : 0,
+        spent: p ? x(p.spent) : 0, received: p ? x(p.received) : 0, realized: p ? x(p.realized) : 0,
+        trades: p?.trades ?? 0, firstAt: p?.firstAt ?? null, lastAt: p?.lastAt ?? null,
+      });
+    }
+    // Wallets that traded and no longer hold any.
+    for (const p of pos.values()) {
+      if (seen.has(p.wallet)) continue;
+      rows.push({
+        wallet: p.wallet, label: null, status: "sold", balance: 0, pctSupply: 0, avgCost: null, value: 0, costBasis: 0, pnl: null, pnlPct: null, unknownCost: 0,
+        bought: Number(p.bought) / dec, sold: Number(p.sold) / dec, spent: x(p.spent), received: x(p.received), realized: x(p.realized),
+        trades: p.trades, firstAt: p.firstAt, lastAt: p.lastAt,
+      });
+    }
+    const priced = rows.filter((r) => r.balance > 0 && r.avgCost !== null);
+    const tokensKnown = priced.reduce((a, r) => a + (r.balance - r.unknownCost), 0);
+    const costKnown = priced.reduce((a, r) => a + r.costBasis, 0);
+    return {
+      mint: t.mint, symbol: t.symbol, name: t.name, price,
+      summary: {
+        holders: rows.filter((r) => r.balance > 0).length, traders: pos.size, trades: idx.trades.length, trackedSince: idx.since ?? null,
+        avgCost: tokensKnown > 0 ? costKnown / tokensKnown : null,
+        inProfit: priced.filter((r) => (r.pnl ?? 0) > 0).length, inLoss: priced.filter((r) => (r.pnl ?? 0) < 0).length,
+        realized: rows.reduce((a, r) => a + r.realized, 0), unrealized: priced.reduce((a, r) => a + (r.pnl ?? 0), 0),
+      },
+      rows: rows.sort((a, b) => b.balance - a.balance || b.bought - a.bought),
+    };
+  })();
+  data.catch(() => boardCache.delete(mintStr));
+  boardCache.set(mintStr, { at: Date.now(), data });
+  return data;
+}
+
 /** Headline numbers for the landing page, across every launched token. */
 let statsCache: { at: number; data: unknown } | null = null;
 function stats() {
@@ -764,11 +886,43 @@ function publicView(r: ReturnType<typeof listLaunches>[number]) {
 const send = (res: http.ServerResponse, code: number, body: unknown, type = "application/json") =>
   res.writeHead(code, { "content-type": type, "cache-control": "no-store" }).end(type === "application/json" ? JSON.stringify(body) : body as string);
 
+/**
+ * The visitor's address. X-Forwarded-For is only believed when the request comes from this
+ * machine (the local Caddy, which sets it: it replaces a client's own value, or in Vercel
+ * mode passes on the one Vercel sets). Anyone else could write any address into it.
+ */
+function clientIp(req: http.IncomingMessage) {
+  const peer = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
+  const fwd = req.headers["x-forwarded-for"];
+  if ((peer === "127.0.0.1" || peer === "::1") && typeof fwd === "string" && fwd) return fwd.split(",")[0].trim();
+  return peer;
+}
+
+/**
+ * Sent with every response. frame-ancestors/X-Frame-Options stop other sites framing the
+ * pages to trick people into approving a transaction; the CSP limits scripts to this site
+ * (plus Cloudflare's captcha on the faucet) and fetches to this site.
+ */
+const SECURITY_HEADERS: Record<string, string> = {
+  "content-security-policy": [
+    "default-src 'self'", "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com", "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https:", "connect-src 'self'", "frame-src https://challenges.cloudflare.com",
+    "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
+  ].join("; "),
+  "x-frame-options": "DENY",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+};
+
 const server = http.createServer(async (req, res) => {
   if (!allowedHosts.has(req.headers.host ?? "")) { res.writeHead(403).end("Forbidden host"); return; }
   const url = new URL(req.url ?? "/", "http://localhost");
-  const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
+  const ip = clientIp(req);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   try {
+    if (url.pathname.startsWith("/api/")) rateLimit(req.method === "POST" ? "post" : "get", ip);
     if (req.method === "POST") {
       const origin = req.headers.origin ?? "";
       if (![...allowedHosts].some((h) => origin === `http://${h}` || origin === `https://${h}`)) { res.writeHead(403).end("Forbidden origin"); return; }
@@ -786,6 +940,9 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/nft" || /^\/nft\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname)) {
       send(res, 200, page(NFT_PAGE), "text/html; charset=utf-8"); return;
     }
+    if (url.pathname === "/leaderboard" || /^\/leaderboard\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname)) {
+      send(res, 200, page(LEADERBOARD_PAGE), "text/html; charset=utf-8"); return;
+    }
     if (url.pathname === "/faucet") { send(res, 200, page(FAUCET_PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/launch") { send(res, 200, page(PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/theme.js") {
@@ -797,6 +954,12 @@ const server = http.createServer(async (req, res) => {
       const name = themeReq[1] ?? f!.theme ?? "receipt";
       if (!(THEMES as readonly string[]).includes(name)) { res.writeHead(404).end("Not found"); return; }
       send(res, 200, themeCss(name), "text/css; charset=utf-8"); return;
+    }
+    const brand = /^\/brand\/(logo-(?:512|192|64|32|wide-120)\.png)$/.exec(url.pathname);
+    if (brand || url.pathname === "/favicon.ico") {
+      const file = path.join(ROOT, "src", "web", "brand", brand ? brand[1] : "logo-64.png");
+      res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=86400" }).end(fs.readFileSync(file));
+      return;
     }
     if (url.pathname === "/countdown.js") { send(res, 200, fs.readFileSync(COUNTDOWN_JS, "utf8"), "text/javascript"); return; }
     if (url.pathname === "/wallet.js") { send(res, 200, fs.readFileSync(WALLET_JS, "utf8"), "text/javascript"); return; }
@@ -813,7 +976,7 @@ const server = http.createServer(async (req, res) => {
     if (!out) { res.writeHead(404).end("Not found"); return; }
     send(res, 200, out);
   } catch (e) {
-    send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    send(res, e instanceof RateLimited ? 429 : 400, { error: e instanceof Error ? e.message : String(e) });
   }
 });
 
@@ -821,6 +984,17 @@ server.on("error", (e: NodeJS.ErrnoException) => {
   console.error(e.code === "EADDRINUSE" ? `Port ${port} is already in use; set factory.port in config.json.` : e.message);
   process.exit(1);
 });
+// Index every token's swaps every 10 minutes: public RPCs only keep about a day of
+// history, so trades have to be saved before they age out (the leaderboard needs them).
+async function indexAllTrades() {
+  for (const t of targets(cfg)) {
+    await refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir)
+      .catch((e) => console.error(`Trade index for ${t.symbol} failed: ${e instanceof Error ? e.message : e}`));
+  }
+}
+setTimeout(() => indexAllTrades(), 5_000);
+setInterval(() => indexAllTrades(), 10 * 60_000).unref();
+
 // Keep the Locked NFTs list warm so visitors never wait for its chain reads.
 setTimeout(() => allNfts().catch(() => undefined), 2_000);
 setInterval(() => allNfts().catch(() => undefined), 60_000).unref();

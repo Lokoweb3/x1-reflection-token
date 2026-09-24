@@ -109,6 +109,29 @@ Open `https://launch.example.com`. To see your private dashboard from your lapto
 ssh -L 8123:127.0.0.1:8123 root@SERVER    # then open http://127.0.0.1:8123
 ```
 
+## Security checklist
+
+The server never holds users' keys, but it builds the transactions they sign, so a
+taken-over server could hand them a draining transaction. Keep it locked down:
+
+- **SSH key-only.** Once your key login works, set `PasswordAuthentication no` and
+  `PermitRootLogin prohibit-password` in `/etc/ssh/sshd_config`, then `systemctl restart ssh`.
+  Test in a second terminal before closing the first.
+- **Firewall:** only 22, 80 and 443 open (`setup.sh` does this). The app itself listens
+  on 127.0.0.1 only.
+- **Vercel mode:** the secret path in `/root/.reflect-vercel-secret` is what keeps the
+  server from being called directly. Never commit the generated `vercel.json`; if the
+  secret leaks, make a new one and re-run `deploy/vercel-deploy.sh`.
+- **Faucet captcha:** create a free Cloudflare Turnstile widget (dash.cloudflare.com →
+  Turnstile, add your domain) and put its keys in `config.json` as
+  `factory.turnstile: { "siteKey": "...", "secret": "..." }` (or `TURNSTILE_SECRET` in the
+  environment). Without it the faucet relies on per-wallet, per-IP and daily limits only.
+- **Hot wallets small:** keep only what's needed in the faucet and distributor wallets.
+  The Pinata key only needs Files: Write.
+- Built in: per-address and site-wide request limits (429 when exceeded), `/api/send`
+  only relays transactions for this site's programs, and security headers (CSP,
+  `frame-ancestors 'none'`) on every page.
+
 ## 5. Backups
 
 `deploy/backup.sh` runs daily at 03:15 UTC and writes an AES-256 encrypted archive of

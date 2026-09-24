@@ -49,6 +49,7 @@ h2 { margin: 0 0 8px; font-size: 20px; }
       <a href="/tokens">Tokens</a>
       <a href="/nft">NFTs</a>
       <a href="/analytics">Analytics</a>
+      <a href="/leaderboard">Leaderboard</a>
       <a href="/wallet">My earnings</a>
       <a href="/faucet" aria-current="page">Faucet</a>
       <a class="btn primary sm" href="/launch">Launch a token</a>
@@ -57,6 +58,7 @@ h2 { margin: 0 0 8px; font-size: 20px; }
   </header>
   <h1>Testnet faucet</h1>
   <p class="lede">Free testnet tokens so you can try a launch: the launch fee is paid in XNM, and XNT covers network fees and your pool.</p>
+  <div id="captcha" class="card" hidden><h2>Check you're human</h2><div class="muted">Needed once per claim, to stop bots draining the faucet.</div><div id="captchaWidget" style="margin-top:10px"></div></div>
   <div id="out"><p class="muted">Loading…</p></div>
 </main>
 <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
@@ -75,7 +77,26 @@ function el(tag, attrs = {}, ...kids) {
 const link = (href, text) => el("a", { href, target: "_blank", rel: "noopener", text });
 const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
-let explorer = "", busy = false;
+let explorer = "", busy = false, captchaToken = null, captchaId = null;
+
+/** Cloudflare Turnstile, loaded only when the faucet has a captcha set up. */
+function setupCaptcha(siteKey) {
+  if (captchaId !== null || $("captcha").dataset.loading) return;
+  $("captcha").dataset.loading = "1";
+  const s = document.createElement("script");
+  s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+  s.onload = () => {
+    $("captcha").hidden = false;
+    captchaId = window.turnstile.render("#captchaWidget", {
+      sitekey: siteKey,
+      callback: (t) => { captchaToken = t; render(); },
+      "expired-callback": () => { captchaToken = null; render(); },
+      "error-callback": () => { captchaToken = null; render(); },
+    });
+  };
+  s.onerror = () => toast("error", "The captcha couldn't load; check your connection or ad blocker.");
+  document.head.append(s);
+}
 
 async function api(url, body) {
   const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
@@ -95,6 +116,7 @@ async function render() {
   try { f = await api(`/api/faucet${W.state.address ? `?wallet=${W.state.address}` : ""}`); }
   catch (e) { out.replaceChildren(el("p", { class: "error", text: `Couldn't reach the faucet: ${e.message || e}` })); return; }
   if (!f.enabled) { out.replaceChildren(el("div", { class: "card" }, el("h2", { text: "The faucet is off" }), el("p", { class: "muted", text: "It only runs on testnet." }))); return; }
+  if (f.captchaSiteKey) setupCaptcha(f.captchaSiteKey);
   const gives = `${f.amount} ${f.symbol}` + (Number(f.xntAmount) > 0 ? ` + ${f.xntAmount} XNT` : "");
 
   // Claim
@@ -104,14 +126,17 @@ async function render() {
   else if (f.nextClaimAt) { claim.disabled = true; note = `You've claimed today. Next claim: ${new Date(f.nextClaimAt).toLocaleString()}.`; }
   else if (f.empty) { claim.disabled = true; note = f.balance < Number(f.amount) ? `The faucet is out of ${f.symbol} right now.` : "The faucet is out of XNT right now."; }
   else if (!f.remainingToday) { claim.disabled = true; note = "Today's faucet limit is reached; try again tomorrow."; }
+  else if (f.captchaSiteKey && !captchaToken) { claim.disabled = true; note = "Complete the check above to claim."; }
   if (busy) claim.disabled = true;
   claim.onclick = async () => {
     busy = true; render();
     toast("info", `Sending ${gives}…`);
     try {
-      const r = await api("/api/faucet", { wallet: W.state.address });
+      const r = await api("/api/faucet", { wallet: W.state.address, captcha: captchaToken });
       toast("success", `Sent ${gives} to your wallet. `, link(`${explorer}/tx/${r.signature}`, "View transaction ↗"));
     } catch (e) { toast("error", `Faucet: ${e.message || e}`); }
+    // A captcha token works once: get a fresh one for the next try.
+    if (captchaId !== null) { captchaToken = null; window.turnstile.reset(captchaId); }
     busy = false; render();
   };
 

@@ -44,6 +44,8 @@ export interface Config {
     /** Gateway for IPFS links wallets fetch (default https://gateway.pinata.cloud/ipfs/). */
     ipfsGateway?: string;
     faucet?: { keypair: string; amount: string; xntAmount?: string; cooldownHours?: number; dailyCap?: number };
+    /** Cloudflare Turnstile keys; when set, faucet claims need the captcha. Keep `secret` out of git. */
+    turnstile?: { siteKey: string; secret: string };
     /** Testnet only: pay the launch fee in another token (e.g. XNM). Ignored on mainnet, which always charges USDC. */
     feeToken?: { mint: string; symbol: string; amount: string };
     gasXnt?: string;         // XNT the creator pre-funds each token's distributor with

@@ -237,3 +237,11 @@ details.theme-picker > summary { font-family: var(--mono) !important; font-size:
   border: 1.5px dashed var(--red); background: color-mix(in srgb, var(--red) 6%, transparent); }
 .cd-box .countdown { font-size: 20px; }
 .cd-box .cd-label { font-size: 12px; color: var(--ink-3); }
+
+/* ---------- the 99 + Tax logo (added to the header by theme.js) ---------- */
+.brand.has-logo::before, a.logo.has-logo::before { content: none !important; display: none !important; }
+.brand-logo { height: 44px; width: auto; display: block; flex: none; }
+/* The logo already says "99¢ + TAX", so the text beside it stays for screen readers only. */
+a.has-logo { gap: 0 !important; font-size: 0 !important; }
+a.has-logo > :not(.brand-logo) { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 520px) { .brand-logo { height: 38px; } }

@@ -29,6 +29,20 @@ function settings(cfg: Config) {
   return { ...f, keypath, xntAmount: f.xntAmount ?? "0", cooldownMs: (f.cooldownHours ?? 24) * 3_600_000, dailyCap: f.dailyCap ?? 100, token: launchFee(cfg) };
 }
 
+const turnstileSecret = (cfg: Config) => process.env.TURNSTILE_SECRET || cfg.factory?.turnstile?.secret || "";
+
+/** Check a Cloudflare Turnstile token (skipped when no captcha is set up). */
+export async function checkCaptcha(cfg: Config, token: unknown, ip: string) {
+  const secret = turnstileSecret(cfg);
+  if (!secret) return;
+  if (typeof token !== "string" || !token) throw new Error("Please complete the captcha first.");
+  const form = new URLSearchParams({ secret, response: token });
+  if (ip) form.set("remoteip", ip);
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form, signal: AbortSignal.timeout(10_000) })
+    .then((x) => x.json() as Promise<{ success?: boolean }>).catch(() => ({ success: false }));
+  if (!r.success) throw new Error("The captcha didn't pass; please try it again.");
+}
+
 /** What the page shows: whether it's on, how much it gives, and when this wallet can claim. */
 export async function faucetStatus(conn: Connection, cfg: Config, wallet?: string) {
   const s = settings(cfg);
@@ -41,7 +55,7 @@ export async function faucetStatus(conn: Connection, cfg: Config, wallet?: strin
   const next = wallet && log.wallets[wallet] ? log.wallets[wallet] + s.cooldownMs : 0;
   const xnt = (await conn.getBalance(faucet)) / 1e9;
   return {
-    enabled: true, symbol: s.token.symbol, amount: s.amount, xntAmount: s.xntAmount, address: faucet.toBase58(),
+    enabled: true, captchaSiteKey: turnstileSecret(cfg) ? cfg.factory?.turnstile?.siteKey ?? null : null, symbol: s.token.symbol, amount: s.amount, xntAmount: s.xntAmount, address: faucet.toBase58(),
     balance: bal, xnt, empty: bal < Number(s.amount) || xnt < Number(s.xntAmount) + 0.005,
     remainingToday: Math.max(0, s.dailyCap - (log.day === today() ? log.count : 0)),
     nextClaimAt: next > Date.now() ? new Date(next).toISOString() : null,

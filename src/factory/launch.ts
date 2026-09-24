@@ -20,9 +20,9 @@ import {
   createAssociatedTokenAccountIdempotentInstruction, createInitializeMetadataPointerInstruction,
   createInitializeMintInstruction, createInitializeTransferFeeConfigInstruction, createMintToCheckedInstruction,
   createSetAuthorityInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync, getMintLen,
-  getTransferFeeConfig, unpackMint,
+  getTokenMetadata, getTransferFeeConfig, unpackMint,
 } from "@solana/spl-token";
-import { createInitializeInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
+import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
 import { Config, FACTORY_DIR, ROOT, fromBaseUnits, toBaseUnits } from "../config.js";
 import { buildCreatePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
@@ -67,7 +67,8 @@ export function tokenMetadataJson(p: Pick<LaunchParams, "name" | "symbol" | "des
   if (p.description) out.description = p.description;
   if (p.image) out.image = p.image;
   out.showName = true;
-  out.createdOn = publicUrl.replace(/\/$/, "");
+  // Credit the site, but only once it has a public address (a local one means nothing to others).
+  if (!/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/.test(publicUrl)) out.createdOn = publicUrl.replace(/\/$/, "");
   if (p.twitter) out.twitter = p.twitter;
   if (p.telegram) out.telegram = p.telegram;
   if (p.website) out.website = p.website;
@@ -174,6 +175,36 @@ export const readLaunch = (mint: string): LaunchRecord | null => {
   const f = path.join(launchDir(new PublicKey(mint).toBase58()), "launch.json");
   return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : null;
 };
+/**
+ * Change a launched token's logo, description and social links: pin new metadata to IPFS
+ * and build the instruction that points the token's on-chain link at it. The creator
+ * (the token's metadata update authority) signs. The launch record is only changed after
+ * that transaction confirms (applyMetadataUpdate), so nobody else can edit it.
+ */
+export async function buildMetadataUpdate(conn: Connection, cfg: Config, r: LaunchRecord, raw: Record<string, unknown>, publicUrl: string) {
+  if (!ipfsEnabled(cfg)) throw new Error("Metadata updates need IPFS uploads set up on this site.");
+  const p = validateParams({ ...r, image: raw.image, description: raw.description, website: raw.website, twitter: raw.twitter, telegram: raw.telegram });
+  const next = { image: p.image, description: p.description, website: p.website, twitter: p.twitter, telegram: p.telegram };
+  const mint = new PublicKey(r.mint);
+  const creator = new PublicKey(r.creator);
+  const [info, current] = await Promise.all([
+    conn.getAccountInfo(mint, "confirmed"),
+    getTokenMetadata(conn, mint, "confirmed", TOKEN_2022_PROGRAM_ID),
+  ]);
+  if (!info || !current) throw new Error("Token not found on-chain.");
+  if (!current.updateAuthority?.equals(creator)) throw new Error("Only the token's metadata authority can update it.");
+  const uri = await pinMetadata(cfg, tokenMetadataJson({ ...r, ...next }, publicUrl), `${r.symbol} ${r.mint} update`);
+  const ixs: TransactionInstruction[] = [];
+  const newLen = info.data.length + Buffer.byteLength(uri) - Buffer.byteLength(current.uri);
+  const need = BigInt(await conn.getMinimumBalanceForRentExemption(newLen)) - BigInt(info.lamports);
+  if (need > 0n) ixs.push(SystemProgram.transfer({ fromPubkey: creator, toPubkey: mint, lamports: need }));
+  ixs.push(createUpdateFieldInstruction({ programId: TOKEN_2022_PROGRAM_ID, metadata: mint, updateAuthority: creator, field: "uri", value: uri }));
+  return { ixs, uri, next };
+}
+export function applyMetadataUpdate(r: LaunchRecord, next: Partial<LaunchRecord>) {
+  writeLaunch({ ...r, ...next });
+}
+
 function writeLaunch(r: LaunchRecord) {
   fs.mkdirSync(launchDir(r.mint), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(launchDir(r.mint), "launch.json"), JSON.stringify(r, null, 2) + "\n", { mode: 0o600 });

@@ -176,3 +176,10 @@ test("social links: optional, https only, right hosts; metadata follows X1's sha
     createdOn: "https://99tax.vercel.app", twitter: "https://x.com/cup", telegram: "https://t.me/cup", website: "https://cup.fun/",
   });
 });
+
+test("createdOn is left out while the site only has a local address", async () => {
+  const { tokenMetadataJson } = await import("../src/factory/launch.js");
+  const p = { name: "Cup", symbol: "CUP", description: "", image: "" };
+  assert.equal(tokenMetadataJson(p, "http://127.0.0.1:8124").createdOn, undefined);
+  assert.equal(tokenMetadataJson(p, "https://99tax.vercel.app").createdOn, "https://99tax.vercel.app");
+});

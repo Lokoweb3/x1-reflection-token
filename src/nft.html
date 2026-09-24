@@ -167,7 +167,7 @@ header nav a[aria-current="page"] { color: var(--text-primary); text-decoration:
 <main>
   <header>
     <a class="brand" href="/">99 + Tax</a>
-    <nav aria-label="Main"><a href="/tokens">Tokens</a><a href="/nft" aria-current="page">NFTs</a><a href="/analytics">Analytics</a><a href="/wallet">My earnings</a><a href="/faucet">Faucet</a><a href="/launch">Launch app</a></nav>
+    <nav aria-label="Main"><a href="/tokens">Tokens</a><a href="/nft" aria-current="page">NFTs</a><a href="/analytics">Analytics</a><a href="/leaderboard">Leaderboard</a><a href="/wallet">My earnings</a><a href="/faucet">Faucet</a><a class="btn primary sm" href="/launch">Launch a token</a></nav>
     <div class="wallet" id="walletArea"></div>
   </header>
   <form class="search" id="search">
@@ -495,9 +495,11 @@ function withdrawCard(d) {
   const me = W.state.address;
   const isHolder = !!me && me === d.holder;
   const hint = !me ? "Connect the wallet that holds this NFT to withdraw." : isHolder ? "" : `Only the NFT holder (${d.holder ? short(d.holder) : "nobody"}) can withdraw.`;
+  // Only the wallet holding the NFT gets withdraw buttons (the locker enforces it on-chain too).
   const btn = (text, enabled, title, fn) => {
+    if (!isHolder) return null;
     const b = el("button", { class: "btn primary", type: "button", text });
-    b.disabled = !isHolder || !enabled || busy; if (title) b.title = title;
+    b.disabled = !enabled || busy; if (title) b.title = title;
     b.onclick = fn; return b;
   };
   const rows = [];

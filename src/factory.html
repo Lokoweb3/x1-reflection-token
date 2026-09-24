@@ -203,6 +203,9 @@ table.list img { border: 1px solid var(--line); }
 #logoUploadBtn.busy { opacity: .6; pointer-events: none; }
 .socials { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 @media (max-width: 760px) { .socials { grid-template-columns: minmax(0, 1fr); } }
+.lc-edit { display: grid; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.lc-edit[hidden] { display: none; }
+.lc-edit .socials { grid-template-columns: minmax(0, 1fr); }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -229,7 +232,7 @@ table.list img { border: 1px solid var(--line); }
     <a class="brand" href="/" aria-label="99 + Tax home"><svg viewBox="0 0 140 76" role="img" aria-label="99¢ + TAX neon price tag"><defs><filter id="neonGlow" x="-40%" y="-60%" width="180%" height="220%"><feGaussianBlur stdDeviation="2.4" result="b1"/><feGaussianBlur stdDeviation="6" result="b2"/><feMerge><feMergeNode in="b2"/><feMergeNode in="b1"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g filter="url(#neonGlow)" class="neon-sign"><path d="M26 5 H129 a6 6 0 0 1 6 6 V65 a6 6 0 0 1 -6 6 H26 L5 38 Z" fill="rgb(255 62 165 / .08)" stroke="#ff3ea5" stroke-width="3.5" stroke-linejoin="round"/><circle cx="24" cy="38" r="5.5" fill="none" stroke="#22e4ff" stroke-width="3"/><text x="80" y="46" text-anchor="middle" font-family="Tilt Neon, system-ui, sans-serif" font-size="33" fill="#22e4ff">99¢</text><text x="80" y="63" text-anchor="middle" font-family="Tilt Neon, system-ui, sans-serif" font-size="13" fill="#b6ff3b" letter-spacing="2">+ TAX</text></g></svg><h1>99 + Tax</h1></a>
     <span class="badge" id="network">…</span>
     <span class="sub">Tax tokens that pay holders in XNT, with the launch liquidity locked in an NFT</span>
-    <nav class="mainnav" aria-label="Main"><a href="/tokens">Tokens</a><a href="/nft">NFTs</a><a href="/analytics">Analytics</a><a href="/wallet">My earnings</a><a href="/faucet">Faucet</a></nav>
+    <nav class="mainnav" aria-label="Main"><a href="/tokens">Tokens</a><a href="/nft">NFTs</a><a href="/analytics">Analytics</a><a href="/leaderboard">Leaderboard</a><a href="/wallet">My earnings</a><a href="/faucet">Faucet</a></nav>
     <div class="wallet" id="walletArea"></div>
   </header>
 
@@ -676,7 +679,7 @@ function launchCard(l) {
   // Trading fees: the NFT holder can collect them any time they're worth a transaction.
   const fe = l.fees;
   if (fe) {
-    const mineNft = fe.holder === W.state.address;
+    const mineNft = !!fe.holder && fe.holder === W.state.address;
     const netFee = fe.networkFee ? Number(fe.networkFee) / 1e9 : null;
     rows.push(row("Trading fees", [`${fmt(Number(fe.worth) / 1e9, 6)} XNT ready`, mineNft ? null : el("span", { class: "muted", text: ` · only the NFT holder (${short(fe.holder)}) can collect` }),
       netFee !== null ? el("div", { class: "muted", text: `Network fee to collect ≈ ${fmt(netFee, 6)} XNT` }) : null],
@@ -689,9 +692,11 @@ function launchCard(l) {
   if (rw) {
     const amt = (v) => fmt(Number(v) / 10 ** (rw.decimals ?? 9), 6);
     const ready = BigInt(rw.claimable) > 0n;
+    const mineNft = !!l.nftHolder && l.nftHolder === W.state.address;
     rows.push(row("Creator rewards", [`${amt(rw.claimable)} ${rw.symbol} ready`, el("span", { class: "muted", text: ` · ${amt(rw.vesting)} vesting` }),
+      mineNft ? null : el("span", { class: "muted", text: ` · only the NFT holder (${l.nftHolder ? short(l.nftHolder) : "nobody"}) can claim` }),
       rw.nextUnlock ? el("div", { class: "muted" }, `Next ${amt(rw.nextAmount ?? "0")} ${rw.symbol} in `, Countdown.el(rw.nextUnlock)) : null],
-      btn("Claim", "primary", () => claimRewards(l.mint), !ready, ready ? "" : "Nothing has vested yet")));
+      mineNft ? btn("Claim", "primary", () => claimRewards(l.mint), !ready, ready ? "" : "Nothing has vested yet") : null));
   }
 
   // The receipt, if it hasn't been printed into the NFT yet.
@@ -699,13 +704,66 @@ function launchCard(l) {
     ? btn("Print receipt", "", async () => { if (running) return; running = true; try { await printReceipt(l.mint); } catch (e) { toast("error", `Print receipt failed: ${e.message || e}`); } running = false; loadMine(); }, false, "Write the lock receipt image into your LP NFT, on-chain")
     : null;
 
-  return el("div", { class: "lc" },
+  // Edit the token's logo, description and links (creator only; needs IPFS uploads).
+  const editBtn = s.token && info?.logoUpload ? btn("Update metadata", "", () => {
+    const box = card.querySelector(".lc-edit");
+    box.hidden = !box.hidden;
+  }) : null;
+  const card = el("div", { class: "lc" },
     el("div", { class: "lc-head" },
       l.receipt ? el("a", { href: `/nft/${l.lockNft}`, title: "View your LP-lock NFT" }, el("img", { src: l.receipt, alt: "LP lock receipt", class: "lc-thumb" })) : null,
       el("div", {}, el("div", { class: "lc-title" }, link(`${info.explorer}/address/${l.mint}`, l.symbol), el("span", { class: "muted", text: ` ${l.name}` })),
         el("div", { class: "muted" }, short(l.mint), l.lockNft ? el("span", {}, " · ", el("a", { href: `/nft/${l.lockNft}`, text: "View NFT" })) : null)),
-      print),
-    ...rows);
+      print, editBtn),
+    ...rows,
+    s.token && info?.logoUpload ? metadataEditor(l) : null);
+  return card;
+}
+
+/** Inline editor: logo (upload or link), description, links. Saves to IPFS + one signed update. */
+function metadataEditor(l) {
+  const f = (name, label, value, attrs = {}) => el("label", {}, label, el("input", { name, value: value ?? "", ...attrs }));
+  const preview = el("div", { class: "logo-preview" }, l.image ? el("img", { src: l.image, alt: "Current logo" }) : "No logo");
+  const image = el("input", { name: "image", value: l.image ?? "", placeholder: "https://… (PNG, JPG, WebP or GIF)" });
+  const file = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: "" });
+  const upload = el("label", { class: "btn small" }, "Upload image", file);
+  const setPreview = (url) => preview.replaceChildren(url ? el("img", { src: url, alt: "Logo preview" }) : "No logo");
+  image.addEventListener("change", () => setPreview(image.value.trim()));
+  file.addEventListener("change", async () => {
+    const fl = file.files?.[0]; file.value = "";
+    if (!fl) return;
+    if (fl.size > (info?.maxLogoBytes ?? 500000)) { toast("error", "That image is too large (500 KB max)."); return; }
+    const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = fail; r.readAsDataURL(fl); });
+    upload.firstChild.textContent = "Uploading…";
+    try { const r = await api("/api/upload-logo", { name: fl.name.replace(/\.[^.]+$/, ""), data }); image.value = r.url; setPreview(r.url); }
+    catch (e) { toast("error", `Upload failed: ${e.message || e}`); }
+    upload.firstChild.textContent = "Upload image";
+  });
+  const desc = el("textarea", { name: "description", maxlength: "500" }); desc.value = l.description ?? "";
+  const website = f("website", "Website", l.website, { type: "url", placeholder: "https://…" });
+  const twitter = f("twitter", "X (Twitter)", l.twitter, { type: "url", placeholder: "https://x.com/…" });
+  const telegram = f("telegram", "Telegram", l.telegram, { type: "url", placeholder: "https://t.me/…" });
+  const save = el("button", { class: "btn small primary", type: "button", text: "Save to IPFS & update token" });
+  save.onclick = async () => {
+    if (running) return;
+    running = true; save.disabled = true;
+    try {
+      const val = (x) => x.querySelector("input").value.trim();
+      await signAndSend("Update token metadata", () => api("/api/launch/metadata", {
+        mint: l.mint, creator: W.state.address, image: image.value.trim(), description: desc.value.trim(),
+        website: val(website), twitter: val(twitter), telegram: val(telegram),
+      }));
+      await api("/api/launch/metadata/confirm", { mint: l.mint });
+      toast("success", "Token metadata updated. Wallets may take a little while to refresh.");
+    } catch (e) { toast("error", `Update failed: ${e.message || e}`); }
+    running = false; save.disabled = false; loadMine();
+  };
+  return el("div", { class: "lc-edit", hidden: "" },
+    el("div", { class: "logo-row" }, preview, el("div", { class: "logo-controls" }, upload, image)),
+    el("label", {}, "Description", desc),
+    el("div", { class: "socials" }, website, twitter, telegram),
+    el("div", { class: "muted", text: "Saved to IPFS; your wallet signs one small transaction to point the token at it." }),
+    save);
 }
 async function collectFees(nftMint) {
   if (running) return;

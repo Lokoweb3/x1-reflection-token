@@ -32,6 +32,25 @@
   }
   apply();
 
+  // Browser-tab and home-screen icons (same on every page).
+  for (const [rel, href, sizes] of [["icon", "/brand/logo-64.png", "64x64"], ["apple-touch-icon", "/brand/logo-192.png", "192x192"]]) {
+    if (document.head.querySelector(`link[rel="${rel}"]`)) continue;
+    const l = document.createElement("link"); l.rel = rel; l.href = href; l.sizes = sizes; l.type = "image/png";
+    document.head.append(l);
+  }
+
+  /** The 99 + Tax logo in the header, in place of each theme's text badge. */
+  function brandLogo() {
+    for (const a of document.querySelectorAll("a.brand, header .brand, a.logo")) {
+      if (a.classList.contains("has-logo")) continue;
+      const img = document.createElement("img");
+      img.src = "/brand/logo-wide-120.png"; img.alt = ""; img.className = "brand-logo"; img.width = 88; img.height = 48;
+      a.setAttribute("aria-label", "99 + Tax home");
+      a.classList.add("has-logo");
+      a.prepend(img);
+    }
+  }
+
   // ---------- the menu ----------
   function build() {
     const host = document.querySelector("header nav") || document.querySelector("nav .links") || document.querySelector(".mainnav");
@@ -77,5 +96,5 @@
     document.addEventListener("click", (ev) => { if (d.open && !ev.composedPath().includes(d)) d.open = false; });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && d.open) { d.open = false; s.focus(); } });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", build); else build();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => { brandLogo(); build(); }); else { brandLogo(); build(); }
 })();

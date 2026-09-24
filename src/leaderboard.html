@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaderboard · 99 + Tax</title>
+<style>
+:root { --bg: #fbf8ef; --line: rgb(29 27 22 / .18); --text-primary: #1d1b16; --text-secondary: #45413a; --text-muted: #6b665a; --good: #2f7d32; --critical: #c8102e; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary); font: 14px/1.5 system-ui, sans-serif; }
+.topbar { font-size: 13px; text-align: center; padding: 7px 16px; }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 60px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-size: 24px; text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.wallet { display: flex; align-items: center; gap: 8px; }
+h1 { margin: 0 0 6px; font-size: 34px; }
+.lede { color: var(--text-secondary); margin: 0 0 18px; max-width: 760px; }
+.bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.bar select, .bar input { padding: 9px 10px; font: inherit; }
+.bar input { flex: 1; min-width: 180px; }
+.tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.tile { border: 1px dashed var(--line); padding: 12px 14px; }
+.tile .k { font-size: 12px; color: var(--text-muted); }
+.tile .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile .n { font-size: 12px; color: var(--text-muted); }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
+th { font-size: 12px; color: var(--text-muted); }
+th button { all: unset; cursor: pointer; }
+th button:hover, th button[aria-sort] { text-decoration: underline; }
+.num { text-align: right; }
+.up { color: var(--good); font-weight: 700; }
+.down { color: var(--critical); font-weight: 700; }
+.muted { color: var(--text-muted); }
+.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+.lbl { font-size: 11px; font-weight: 700; border: 1px solid var(--line); padding: 1px 7px; margin-left: 6px; }
+tr.me td { background: rgb(200 16 46 / .07); }
+.note { color: var(--text-muted); font-size: 12px; margin-top: 12px; }
+.error { color: var(--critical); }
+@media (max-width: 860px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } header nav { margin-left: 0; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note"><b>Heads up:</b> figures are estimates from on-chain trades. Not financial advice.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens">Tokens</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/leaderboard" aria-current="page">Leaderboard</a>
+      <a href="/wallet">My earnings</a>
+      <a href="/faucet">Faucet</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+  <h1>Holder leaderboard</h1>
+  <p class="lede">Every holder's average buy price, worked out from their trades on XDEX, against today's price. Average cost counts only tokens bought on the pool; tokens received any other way have no known cost.</p>
+  <div class="bar">
+    <select id="token" aria-label="Token"></select>
+    <input id="q" type="search" placeholder="Find a wallet" aria-label="Find a wallet">
+  </div>
+  <div id="out"><p class="muted">Loading…</p></div>
+</main>
+<script src="/wallet.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const W = window.X1Wallet;
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+/** Plain decimals, 3 significant digits when small (no scientific notation). */
+const sig = (v) => v === 0 ? "0" : Math.abs(v) < 1 ? v.toFixed(Math.min(14, 2 - Math.floor(Math.log10(Math.abs(v))))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) < 100 ? 4 : 2 });
+const amt = (v) => v >= 1e6 ? v.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 2 }) : v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+const pnlSpan = (v, pct) => v === null ? el("span", { class: "muted", text: "–" })
+  : el("span", { class: v > 0 ? "up" : v < 0 ? "down" : "", text: `${v > 0 ? "+" : ""}${sig(v)} XNT` + (pct != null ? ` (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%)` : "") });
+let explorer = "", data = null, sortKey = "balance", sortDir = -1;
+
+const COLS = [
+  ["#", null], ["Wallet", null], ["Balance", "balance"], ["Avg cost (XNT)", "avgCost"], ["Cost (XNT)", "costBasis"], ["Worth now (XNT)", "value"],
+  ["Profit / loss", "pnl"], ["Bought", "bought"], ["Spent (XNT)", "spent"], ["Sold", "sold"], ["Realized (XNT)", "realized"], ["Trades", "trades"],
+];
+
+function render() {
+  if (!data) return;
+  const me = W.state.address;
+  const q = $("q").value.trim();
+  const rows = data.rows.filter((r) => !q || r.wallet.includes(q))
+    .sort((a, b) => ((a[sortKey] ?? -Infinity) - (b[sortKey] ?? -Infinity)) * sortDir);
+  const s = data.summary;
+  const tile = (k, v, n) => el("div", { class: "tile" }, el("div", { class: "k", text: k }), el("div", { class: "v", text: v }), n ? el("div", { class: "n", text: n }) : null);
+  const vsPrice = s.avgCost && data.price ? (data.price / s.avgCost - 1) * 100 : null;
+  const head = el("tr", {}, ...COLS.map(([label, key]) => {
+    if (!key) return el("th", { text: label });
+    const b = el("button", { type: "button", text: label + (sortKey === key ? (sortDir < 0 ? " ↓" : " ↑") : "") });
+    if (sortKey === key) b.setAttribute("aria-sort", sortDir < 0 ? "descending" : "ascending");
+    b.onclick = () => { if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = -1; } render(); };
+    return el("th", { class: "num" }, b);
+  }));
+  const body = rows.map((r, i) => el("tr", { class: me && r.wallet === me ? "me" : "" },
+    el("td", { class: "muted", text: String(i + 1) }),
+    el("td", {}, el("a", { href: `${explorer}/address/${r.wallet}`, target: "_blank", rel: "noopener", class: "mono", text: short(r.wallet) }),
+      r.label ? el("span", { class: "lbl", text: r.label }) : null, me && r.wallet === me ? el("span", { class: "lbl", text: "You" }) : null,
+      r.status === "sold" ? el("span", { class: "lbl", text: "Sold out" }) : null),
+    el("td", { class: "num", text: amt(r.balance), title: r.unknownCost > 0 ? `${amt(r.unknownCost)} of these weren't bought on the pool (no known cost)` : "" }),
+    el("td", { class: "num", text: r.avgCost !== null ? sig(r.avgCost) : "–", title: r.avgCost === null ? "No buys on the pool since tracking began" : "" }),
+    el("td", { class: "num", text: r.avgCost !== null && r.costBasis > 0 ? sig(r.costBasis) : "–",
+      title: r.unknownCost > 0 && r.costBasis > 0 ? `What the ${amt(r.balance - r.unknownCost)} bought tokens they still hold cost; ${amt(r.unknownCost)} more have no known cost` : "What the tokens they hold now cost them" }),
+    el("td", { class: "num", text: r.value !== null ? sig(r.value) : "–" }),
+    el("td", { class: "num" }, pnlSpan(r.pnl, r.pnlPct)),
+    el("td", { class: "num", text: r.bought ? amt(r.bought) : "–" }),
+    el("td", { class: "num", text: r.spent ? sig(r.spent) : "–", title: "Total XNT paid on all buys, including tokens since sold" }),
+    el("td", { class: "num", text: r.sold ? amt(r.sold) : "–" }),
+    el("td", { class: "num" }, r.realized ? pnlSpan(r.realized, null) : el("span", { class: "muted", text: "–" })),
+    el("td", { class: "num", text: String(r.trades || "–") })));
+  $("out").replaceChildren(
+    el("div", { class: "tiles" },
+      tile("Price now", data.price ? `${sig(data.price)} XNT` : "–"),
+      tile("Average holder cost", s.avgCost ? `${sig(s.avgCost)} XNT` : "–", vsPrice !== null ? `price is ${vsPrice >= 0 ? "+" : ""}${vsPrice.toFixed(1)}% vs this` : "no pool buys tracked yet"),
+      tile("Holders' total cost", `${sig(data.rows.reduce((t, r) => t + (r.balance > 0 ? r.costBasis : 0), 0))} XNT`, `${sig(data.rows.reduce((t, r) => t + r.spent, 0))} XNT spent on all buys`),
+      tile("Holders in profit", s.inProfit + s.inLoss ? `${s.inProfit} of ${s.inProfit + s.inLoss}` : "–", s.inLoss ? `${s.inLoss} in loss` : ""),
+      tile("Unrealized P/L", `${s.unrealized >= 0 ? "+" : ""}${sig(s.unrealized)} XNT`, "holders' open positions"),
+      tile("Realized P/L", `${s.realized >= 0 ? "+" : ""}${sig(s.realized)} XNT`, `${s.trades} trades by ${s.traders} wallets`)),
+    el("div", { class: "table-wrap" }, el("table", {}, head, ...body)),
+    el("p", { class: "note", text: `Average cost uses the average-cost method: buys add to cost, sells remove cost at the average price. Network fees and account rent aren't counted as price. Trades tracked since ${s.trackedSince ? new Date(s.trackedSince * 1000).toLocaleString() : "now"} (public RPCs keep about a day of history, so earlier trades can't be read). The pool and the token's distributor are left out.` }));
+}
+
+async function load(mint) {
+  $("out").replaceChildren(el("p", { class: "muted", text: "Reading trades from the chain…" }));
+  try {
+    const r = await fetch(`/api/leaderboard/${mint}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    data = d; document.title = `${d.symbol} leaderboard · 99 + Tax`; render();
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load the leaderboard: ${e.message || e}` })); }
+}
+
+(async () => {
+  try {
+    const [info, tokens] = await Promise.all([fetch("/api/info").then((r) => r.json()), fetch("/api/token-list").then((r) => r.json())]);
+    explorer = info.explorer;
+    const want = new URLSearchParams(location.search).get("mint") || location.pathname.split("/")[2];
+    $("token").replaceChildren(...tokens.map((t) => el("option", { value: t.mint, text: `${t.name} (${t.symbol})` })));
+    if (want && tokens.some((t) => t.mint === want)) $("token").value = want;
+    $("token").onchange = () => { history.replaceState(null, "", `/leaderboard/${$("token").value}`); load($("token").value); };
+    if (tokens.length) load($("token").value); else $("out").replaceChildren(el("p", { class: "muted", text: "No tokens yet." }));
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load tokens: ${e.message || e}` })); }
+})();
+$("q").addEventListener("input", render);
+W.onChange(render);
+</script>
+</body>
+</html>
