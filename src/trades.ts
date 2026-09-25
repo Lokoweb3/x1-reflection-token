@@ -53,11 +53,24 @@ export function parseSwap(tx: VersionedTransactionResponse, mint: string): Omit<
 export async function refreshTrades(conn: Connection, pool: PublicKey, mint: string, stateDir: string) {
   const idx = loadIndex(stateDir);
   const fresh: { signature: string; blockTime?: number | null; err: unknown }[] = [];
+  // RPCs drop old history, so the last-seen signature can vanish; then `until` fails and
+  // we page back without it, stopping at trades already indexed or older than the last one.
+  let until = idx.newest ?? undefined;
+  const known = new Set(idx.trades.map((t) => t.sig));
+  const lastAt = idx.trades.at(-1)?.at ?? 0;
   let before: string | undefined;
   while (fresh.length < MAX_NEW_PER_REFRESH) {
-    const page = await conn.getSignaturesForAddress(pool, { limit: 1000, before, until: idx.newest ?? undefined }, "confirmed");
-    fresh.push(...page);
-    if (page.length < 1000) break;
+    let page: typeof fresh;
+    try {
+      page = await conn.getSignaturesForAddress(pool, { limit: 1000, before, until }, "confirmed");
+    } catch (e) {
+      if (!until || !/not found/i.test(String(e))) throw e;
+      until = undefined;
+      continue;
+    }
+    const seenOld = page.findIndex((s) => s.signature === idx.newest || known.has(s.signature) || (s.blockTime ?? Infinity) < lastAt);
+    fresh.push(...(seenOld < 0 ? page : page.slice(0, seenOld)));
+    if (page.length < 1000 || seenOld >= 0) break;
     before = page.at(-1)!.signature;
   }
   idx.since ??= Math.floor(Date.now() / 1000) - 86_400; // RPCs keep about a day; older trades can't be read

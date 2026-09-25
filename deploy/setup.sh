@@ -60,7 +60,13 @@ if [[ -f /etc/iptables/rules.v4 ]] && grep -q "icmp-host-prohibited" /etc/iptabl
   done
   command -v netfilter-persistent >/dev/null && netfilter-persistent save
 fi
-ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable
+# SKIP_FIREWALL=1 on a server that already runs other things with the firewall off:
+# enabling ufw here would cut off their ports. The app itself listens on 127.0.0.1 only.
+if [[ "${SKIP_FIREWALL:-}" == 1 ]]; then
+  echo "   (skipped: SKIP_FIREWALL=1; only Caddy's ports 80/443 are new on this server)"
+else
+  ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable
+fi
 
 echo "== daily encrypted backup (03:15 UTC)"
 [[ -s /root/.reflect-backup-pass ]] || { head -c 48 /dev/urandom | base64 > /root/.reflect-backup-pass; chmod 600 /root/.reflect-backup-pass; }
