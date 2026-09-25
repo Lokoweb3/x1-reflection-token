@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 User=reflect
 WorkingDirectory=/opt/x1-reflection-token
-ExecStart=/usr/bin/node node_modules/tsx/dist/cli.mjs src/factory-distributor.ts --execute --loop 30
+ExecStart=/usr/bin/node node_modules/tsx/dist/cli.mjs src/factory-distributor.ts --execute --loop 15
 Restart=always
 RestartSec=15
 NoNewPrivileges=true
