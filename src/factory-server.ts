@@ -801,7 +801,10 @@ function leaderboard(mintStr: string) {
       refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir),
       tokenStats(t.mint) as Promise<any>,
     ]);
-    const skip = new Set([t.distributor, poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58(), ...BURN_OWNERS]);
+    // Not holders in the leaderboard's sense: the pool, burn address, distributor, and
+    // wallets the token's settings exclude from rewards (excludeOwners).
+    const skip = new Set([t.distributor, poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58(), ...BURN_OWNERS,
+      ...(tokenConfig(t).distribution.excludeOwners ?? [])]);
     const pos = positions(idx.trades, skip);
     const dec = 10 ** st.decimals;
     const price: number | null = st.priceXnt;
