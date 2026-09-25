@@ -610,9 +610,16 @@ function openWalletMenu(ev) {
     b.onclick = () => { menu.remove(); go(c); };
     menu.append(b);
   }
-  $("walletArea").append(menu);
+  // Open it under the button that was clicked (the Withdraw card's button can be far below the header).
+  const btn = ev.currentTarget;
+  if (btn && !$("walletArea").contains(btn)) {
+    const r = btn.getBoundingClientRect();
+    Object.assign(menu.style, { position: "fixed", top: `${Math.min(r.bottom + 6, innerHeight - 20)}px`, left: `${Math.max(8, Math.min(r.left, innerWidth - 220))}px`, marginTop: "0", minWidth: "200px" });
+    document.body.append(menu);
+  } else $("walletArea").append(menu);
 }
 document.addEventListener("click", () => $("walletMenu")?.remove());
+addEventListener("scroll", () => { if ($("walletMenu")?.style.position === "fixed") $("walletMenu").remove(); }, { passive: true });
 W.onChange(() => {
   renderWallet();
   if (!current) { renderGallery(); return; }
