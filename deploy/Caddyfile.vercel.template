@@ -10,7 +10,10 @@
 }
 :80 {
 	encode gzip
-	handle_path /__SECRET__/* {
+	# Vercel forwards the home page as /__SECRET__ (no slash) and the rest as /__SECRET__/...
+	@site path /__SECRET__ /__SECRET__/*
+	handle @site {
+		uri strip_prefix /__SECRET__
 		reverse_proxy 127.0.0.1:8124 {
 			header_up Host __PUBLIC_HOST__
 		}

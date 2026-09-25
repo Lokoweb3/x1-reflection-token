@@ -17,7 +17,10 @@ cat > "$DIR/vercel.json" <<JSON
 {
   "\$schema": "https://openapi.vercel.sh/vercel.json",
   "outputDirectory": "public",
-  "rewrites": [{ "source": "/:path*", "destination": "${BACKEND%/}/${SECRET}/:path*" }]
+  "rewrites": [
+    { "source": "/", "destination": "${BACKEND%/}/${SECRET}/" },
+    { "source": "/:path*", "destination": "${BACKEND%/}/${SECRET}/:path*" }
+  ]
 }
 JSON
 cd "$DIR"
