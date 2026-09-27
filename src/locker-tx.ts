@@ -32,7 +32,8 @@ export interface Target { pool: PublicKey; mint: PublicKey; symbol: string }
 
 export function lockerIds(cfg: Config, target?: Target) {
   if (!cfg.locker?.programId) throw new Error("Set locker.programId in config.json to the deployed lp_locker program.");
-  if (!cfg.xdex.pool) throw new Error("xdex.pool is not set");
+  // A launch passes its own pool; only the single-token (RFLT) tools fall back to config.
+  if (!target && !cfg.xdex.pool) throw new Error("xdex.pool is not set");
   return {
     programId: new PublicKey(cfg.locker.programId), xdex: new PublicKey(cfg.xdex.programId),
     pool: target?.pool ?? new PublicKey(cfg.xdex.pool), mint: target?.mint ?? requireMint(cfg),
