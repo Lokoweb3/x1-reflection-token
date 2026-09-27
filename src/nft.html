@@ -174,6 +174,7 @@ header nav a[aria-current="page"] { color: var(--text-primary); text-decoration:
     <input id="mintInput" placeholder="LP-lock NFT address" aria-label="LP-lock NFT address" autocomplete="off" spellcheck="false">
     <button class="btn" type="submit">View NFT</button>
   </form>
+  <p id="lockerNote" class="note" hidden><b>For now:</b> until its security audit is done, the 99 + Tax team can still upgrade the lock program, so "forever" locks rely on that key staying safe. After the audit it will be made permanent, and this note disappears automatically.</p>
   <div id="out"></div>
 </main>
 <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
@@ -640,6 +641,7 @@ $("search").addEventListener("submit", (ev) => {
 const fromPath = () => { const m = location.pathname.match(/^\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/); if (m) { $("mintInput").value = m[1]; show(m[1]); } else showGallery(); };
 window.addEventListener("popstate", fromPath);
 fromPath();
+api("/api/info").then((i) => { if (i.lockerUpgradeable) $("lockerNote").hidden = false; }).catch(() => {});
 </script>
 </body>
 </html>

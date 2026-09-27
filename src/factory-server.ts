@@ -410,17 +410,40 @@ async function collectQuote(holder: PublicKey, nft: PublicKey, where: { pool: Pu
 const nftTarget = (d: { pool: string; tokenMint: string; symbol: string }) =>
   ({ pool: new PublicKey(d.pool), mint: new PublicKey(d.tokenMint), symbol: d.symbol });
 
+/**
+ * Who can still upgrade the lp_locker program, read from its program-data account (null
+ * once it's immutable). Cached 10 minutes. On a read error it assumes upgradeable, so the
+ * site never claims more permanence than it can show.
+ */
+let lockerAuthCache: { at: number; value: Promise<string | null> } | null = null;
+function lockerUpgradeAuthority(): Promise<string | null> {
+  if (lockerAuthCache && Date.now() - lockerAuthCache.at < 600_000) return lockerAuthCache.value;
+  const value = (async () => {
+    const prog = await conn.getAccountInfo(new PublicKey(cfg.locker!.programId));
+    if (!prog || prog.data.length < 36) return "unknown";
+    const pd = await conn.getAccountInfo(new PublicKey(prog.data.subarray(4, 36)));
+    if (!pd || pd.data.length < 45) return "unknown";
+    return pd.data[12] === 1 ? new PublicKey(pd.data.subarray(13, 45)).toBase58() : null;
+  })().catch(() => "unknown");
+  lockerAuthCache = { at: Date.now(), value };
+  return value;
+}
+
 async function get(url: URL) {
   if (url.pathname === "/api/nfts") return allNfts();
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (nftApi) return nftView(nftApi[1]);
   if (url.pathname === "/api/info") {
-    const ammInfo = await conn.getAccountInfo(new PublicKey(XDEX_CREATE[cfg.network].ammConfig));
+    const [ammInfo, lockerAuthority] = await Promise.all([
+      conn.getAccountInfo(new PublicKey(XDEX_CREATE[cfg.network].ammConfig)), lockerUpgradeAuthority(),
+    ]);
     return {
       logoUpload: ipfsEnabled(cfg), maxLogoBytes: MAX_LOGO_BYTES, network: cfg.network, explorer, feeAmount: launchFee(cfg).amount, feeSymbol: launchFee(cfg).symbol, feeMint: launchFee(cfg).mint, feeReceiver: f!.feeReceiver,
       creatorBps: CREATOR_BPS, creatorRewardSymbol: rewardSymbol,
       gasXnt: f!.gasXnt ?? "0.05", poolCreateFeeXnt: ammInfo ? Number(ammInfo.data.readBigUInt64LE(36)) / 1e9 : null,
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
+      // Until the locker is made immutable, pages say so next to "locked forever" claims.
+      lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
     };
   }
   if (url.pathname === "/api/launches") {
