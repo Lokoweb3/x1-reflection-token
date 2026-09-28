@@ -1125,6 +1125,19 @@ async function indexAllTrades() {
 setTimeout(() => indexAllTrades(), 5_000);
 setInterval(() => indexAllTrades(), 10 * 60_000).unref();
 
+// Warm the main read-only views (one at a time, gentle on the RPC) so the first visitor
+// after a restart doesn't wait on rate-limited chain reads.
+async function warmViews() {
+  const paths = ["/api/tokens", "/api/token-list", "/api/stats"];
+  for (const r of registeredLaunches()) {
+    paths.push(`/api/token/${r.mint}/stats`, `/api/leaderboard/${r.mint}`);
+    if (r.lockNft) paths.push(`/api/nft/${r.lockNft}`);
+  }
+  for (const p of paths) await get(new URL(p, "http://localhost")).catch(() => undefined);
+}
+setTimeout(() => warmViews(), 15_000);
+setInterval(() => warmViews(), 300_000).unref();
+
 // Keep the Locked NFTs list warm so visitors never wait for its chain reads.
 setTimeout(() => allNfts().catch(() => undefined), 2_000);
 setInterval(() => allNfts().catch(() => undefined), 180_000).unref(); // every 3 min: public RPCs rate-limit
