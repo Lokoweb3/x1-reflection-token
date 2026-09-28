@@ -158,6 +158,13 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .two { grid-template-columns: minmax(0, 1fr); }
 }
 header nav a[aria-current="page"] { color: var(--text-primary); text-decoration: underline; text-decoration-color: var(--pink); text-underline-offset: 6px; }
+.burn-panel { margin-top: 16px; }
+.burn-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 16px; margin: 8px 0 12px; }
+.burn-facts > div { display: grid; gap: 2px; }
+.burn-facts b { font-variant-numeric: tabular-nums; }
+table.burns { width: 100%; border-collapse: collapse; margin-top: 10px; font-variant-numeric: tabular-nums; }
+table.burns th, table.burns td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+table.burns .num { text-align: right; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -250,6 +257,7 @@ const STATUS = {
   sold: ["Sold", "No longer holds the token, but was paid before"],
 };
 let holdersShown = 25;
+let burnsShown = 10;
 /** Yield numbers: 3 significant digits when small, commas when large. */
 const fmtSig = (v) => v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(12, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 });
 function yieldPanel(y, sym, extraNote) {
@@ -354,6 +362,33 @@ function renderTokenStats(d, s, host) {
     el("h3", { text: `Paid to holders over time · ${s.payouts} payout${s.payouts === 1 ? "" : "s"} to ${s.walletsPaid} wallet${s.walletsPaid === 1 ? "" : "s"}` }),
     payoutChart(s.payoutSeries));
 
+  // Burns: every tax burn, a running total, and the latest burns with their transactions.
+  const burns = s.burnSeries ?? [];
+  const tokNum = (v) => Number(BigInt(v)) / 10 ** s.decimals;
+  const burnTotal = burns.reduce((a, b) => a + BigInt(b.tokens), 0n);
+  const recent = burns.slice().reverse().slice(0, burnsShown);
+  const burnPanel = el("div", { class: "panel chart-panel burn-panel" },
+    el("h3", { text: `Burned · ${tokC(burnTotal.toString())} in ${burns.length} burn${burns.length === 1 ? "" : "s"}` }),
+    burns.length ? el("div", { class: "burn-facts" },
+      el("div", {}, el("span", { class: "muted", text: "Burned so far" }), el("b", { text: tokC(burnTotal.toString()) })),
+      el("div", {}, el("span", { class: "muted", text: "Share of launch supply" }), el("b", { text: `${(s.burnedPct ?? 0).toFixed(2)}%` })),
+      el("div", {}, el("span", { class: "muted", text: "Burns" }), el("b", { text: String(burns.length) })),
+      el("div", {}, el("span", { class: "muted", text: "Last burn" }), el("b", { text: new Date(burns.at(-1).at).toLocaleString() }))) : null,
+    payoutChart(burns, {
+      empty: `No burns yet. Each distribution burns ${s.split.burn}% of the collected tax.`,
+      amount: (p) => tokNum(p.tokens), unit: s.symbol, color: "var(--s-burn)", what: "Burned",
+      aria: (max, n) => `Cumulative ${s.symbol} burned: ${fmtNum(max)} over ${n} burns`,
+    }),
+    burns.length ? el("div", { class: "table-wrap" }, el("table", { class: "burns" },
+      el("tr", {}, el("th", { text: "When" }), el("th", { class: "num", text: `Burned (${s.symbol})` }), el("th", { class: "num", text: "Total after" }), el("th", { text: "Transaction" })),
+      ...(() => { let after = burnTotal; return recent.map((b) => {
+        const row = el("tr", {}, el("td", { text: new Date(b.at).toLocaleString() }), el("td", { class: "num", text: fmtNum(tokNum(b.tokens)) }),
+          el("td", { class: "num", text: fmtNum(tokNum(after.toString())) }),
+          el("td", {}, b.sig ? link(`${d.explorer}/tx/${b.sig}`, `${b.sig.slice(0, 8)}… ↗`, "mono") : el("span", { class: "muted", text: "–" })));
+        after -= BigInt(b.tokens); return row; }); })())) : null,
+    burns.length > burnsShown ? (() => { const b = el("button", { class: "btn more", type: "button", text: `Show all ${burns.length} burns` }); b.onclick = () => { burnsShown = Infinity; renderTokenStats(d, s, host); }; return b; })() : null,
+    el("div", { class: "n muted", style: "margin-top:8px;font-size:12px", text: `Tokens are burned straight from the collected tax (${s.split.burn}% of it), not bought back. Burned tokens are gone for good, so the supply only goes down.` }));
+
   // Holders.
   const list = s.holders.slice(0, holdersShown);
   const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
@@ -381,7 +416,7 @@ function renderTokenStats(d, s, host) {
   host.replaceChildren(
     el("div", { class: "ts-head" }, el("h2", { text: `${s.name} (${s.symbol})` }), link(`${d.explorer}/address/${s.mint}`, "Token on explorer ↗")),
     el("div", { class: "ts-sub", text: `Live token stats${s.lastRun ? ` · last distribution ${new Date(s.lastRun).toLocaleString()}` : ""}. Values in XNT use the current pool price and are estimates.` }),
-    ...[hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel,
+    ...[hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel, burnPanel,
     el("div", { class: "hold-head" }, el("h2", { text: "Holders" }),
       el("div", { class: "chips" },
         el("span", { class: "chip" }, el("b", { text: String(s.holders.length) }), " addresses"),
@@ -392,30 +427,32 @@ function renderTokenStats(d, s, host) {
 }
 
 /** Cumulative XNT paid to holders: a stepped line with a hover readout. */
-function payoutChart(series) {
+function payoutChart(series, opts) {
   const box = el("div", { class: "chart-box" });
-  if (!series.length) { box.append(el("p", { class: "muted", text: "No payouts yet. They start once holders qualify and tax has built up." })); return box; }
+  if (!series.length) { box.append(el("p", { class: "muted", text: opts?.empty ?? "No payouts yet. They start once holders qualify and tax has built up." })); return box; }
   // Draw once the box has a width, at that width, so labels stay crisp on phones.
   let lastW = 0;
   const draw = () => {
     const w = Math.round(box.clientWidth);
     if (!box.isConnected) { window.removeEventListener("resize", draw); return; }
     if (!w || w === lastW) return;
-    lastW = w; box.replaceChildren(...drawPayouts(series, w));
+    lastW = w; box.replaceChildren(...drawPayouts(series, w, opts));
   };
   requestAnimationFrame(draw); window.addEventListener("resize", draw);
   return box;
 }
-function drawPayouts(series, W) {
+// opts (burns): { amount(p) → number, unit, color, what, aria }; defaults draw XNT payouts.
+function drawPayouts(series, W, opts = {}) {
+  const amount = opts.amount ?? ((p) => Number(BigInt(p.xnt)) / 1e9), unit = opts.unit ?? "XNT", color = opts.color ?? "var(--s-hold)";
   const pts = []; let cum = 0;
-  for (const p of series) { cum += Number(BigInt(p.xnt)) / 1e9; pts.push({ t: Date.parse(p.at), v: cum, add: Number(BigInt(p.xnt)) / 1e9 }); }
+  for (const p of series) { const a = amount(p); cum += a; pts.push({ t: Date.parse(p.at), v: cum, add: a }); }
   const H = 190, L = 50, R = 16, T = 12, B = 26;
   const t0 = pts[0].t - 3_600_000, t1 = Math.max(pts.at(-1).t, Date.now());
   const max = pts.at(-1).v || 1;
   const nice = (() => { const p = 10 ** Math.floor(Math.log10(max)); return Math.ceil(max / p) * p; })();
   const x = (t) => L + (W - L - R) * (t - t0) / (t1 - t0 || 1);
   const y = (v) => T + (H - T - B) * (1 - v / nice);
-  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": `Cumulative XNT paid to holders: ${max.toFixed(4)} XNT over ${pts.length} payouts` });
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": opts.aria ? opts.aria(max, pts.length) : `Cumulative XNT paid to holders: ${max.toFixed(4)} XNT over ${pts.length} payouts` });
   for (let i = 0; i <= 3; i++) {
     const v = nice * i / 3;
     svg.append(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1, "stroke-opacity": .5 }));
@@ -424,18 +461,18 @@ function drawPayouts(series, W) {
   let d = `M${x(t0)},${y(0)}`;
   for (const p of pts) d += ` H${x(p.t)} V${y(p.v)}`;
   d += ` H${x(t1)}`;
-  svg.append(svgEl("path", { d: `${d} V${y(0)} Z`, fill: "var(--s-hold)", "fill-opacity": .14 }));
-  svg.append(svgEl("path", { d, fill: "none", stroke: "var(--s-hold)", "stroke-width": 2 }));
+  svg.append(svgEl("path", { d: `${d} V${y(0)} Z`, fill: color, "fill-opacity": .14 }));
+  svg.append(svgEl("path", { d, fill: "none", stroke: color, "stroke-width": 2 }));
   for (const [t, anchor] of [[t0, "start"], [t1, "end"]]) {
     const tx = svgEl("text", { x: x(t), y: H - 6, "text-anchor": anchor }); tx.textContent = new Date(t).toLocaleString(undefined, W < 500 ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", hour: "numeric" }); svg.append(tx);
   }
   const tip = el("div", { class: "ctip", hidden: "" });
   // 9px markers with a 2px surface ring so touching points stay distinct.
-  for (const p of pts) svg.append(svgEl("circle", { cx: x(p.t), cy: y(p.v), r: 4.5, fill: "var(--s-hold)", stroke: "var(--bg)", "stroke-width": 2 }));
+  for (const p of pts) svg.append(svgEl("circle", { cx: x(p.t), cy: y(p.v), r: 4.5, fill: color, stroke: "var(--bg)", "stroke-width": 2 }));
   svg.addEventListener("mousemove", (ev) => {
     const r = svg.getBoundingClientRect(), t = t0 + ((ev.clientX - r.left) - L) / (W - L - R) * (t1 - t0);
     let best = pts[0]; for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
-    tip.replaceChildren(el("div", { class: "muted", text: new Date(best.t).toLocaleString() }), el("div", {}, "Payout ", el("b", { text: `${fmtNum(best.add)} XNT` })), el("div", {}, "Total so far ", el("b", { text: `${fmtNum(best.v)} XNT` })));
+    tip.replaceChildren(el("div", { class: "muted", text: new Date(best.t).toLocaleString() }), el("div", {}, `${opts.what ?? "Payout"} `, el("b", { text: `${fmtNum(best.add)} ${unit}` })), el("div", {}, "Total so far ", el("b", { text: `${fmtNum(best.v)} ${unit}` })));
     tip.hidden = false;
     tip.style.left = `${Math.min(Math.max(0, x(best.t) - 80), W - 170)}px`; tip.style.top = "0px";
   });

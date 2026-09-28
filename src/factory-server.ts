@@ -977,6 +977,9 @@ function tokenStats(mintStr: string) {
         other: (m.supply > poolTokens + earningTotal ? m.supply - poolTokens - earningTotal : 0n).toString(),
       },
       payoutSeries,
+      // Every tax burn, oldest first: time, tokens (base units) and its transaction.
+      burnSeries: events.filter((x) => x.kind === "burn" && x.at).map((x) => ({ at: x.at, tokens: String(x.tokens ?? 0), sig: x.signature ?? null }))
+        .sort((a, b) => a.at.localeCompare(b.at)),
       burned: burnedTotal.toString(), burnedPct: original > 0n ? Number((burnedTotal * 1_000_000n) / original) / 10_000 : 0, taxBurned: e.burned.toString(),
       liquidityXnt: e.liquidityXnt.toString(), holdersXnt: e.holdersXnt.toString(), creatorXnt: e.creatorXnt.toString(),
       payouts: e.payouts, walletsPaid: e.wallets.size, earning: earning.size, minHolding: dc.minHoldingTokens, lastRun: e.lastRun,
