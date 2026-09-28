@@ -64,7 +64,9 @@
     const path = location.pathname.replace(/^\/(nft|leaderboard)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
     for (const id of ["mainnet", "testnet"]) {
       const here = id === net.network;
-      const url = here ? null : net.other && net.other.network === id ? net.other.url.replace(/\/$/, "") + path : null;
+      // The faucet only exists on testnet.
+      const to = id === "mainnet" && path === "/faucet" ? "/" : path;
+      const url = here ? null : net.other && net.other.network === id ? net.other.url.replace(/\/$/, "") + to : null;
       const el = document.createElement(url ? "a" : "span");
       el.textContent = id === "mainnet" ? "Mainnet" : "Testnet";
       el.className = `net-${id}`;
