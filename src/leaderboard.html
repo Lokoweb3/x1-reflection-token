@@ -155,7 +155,8 @@ async function load(mint) {
     $("token").replaceChildren(...tokens.map((t) => el("option", { value: t.mint, text: `${t.name} (${t.symbol})` })));
     if (want && tokens.some((t) => t.mint === want)) $("token").value = want;
     $("token").onchange = () => { history.replaceState(null, "", `/leaderboard/${$("token").value}`); load($("token").value); };
-    if (tokens.length) load($("token").value); else $("out").replaceChildren(el("p", { class: "muted", text: "No tokens yet." }));
+    if (tokens.length) load($("token").value);
+    else { document.querySelector(".bar").style.display = "none"; $("out").replaceChildren(siteEmpty("No tokens to rank yet: the leaderboard fills in once a token trades.")); }
   } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load tokens: ${e.message || e}` })); }
 })();
 $("q").addEventListener("input", render);

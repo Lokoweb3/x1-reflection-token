@@ -240,7 +240,10 @@ function render(d) {
 (async () => {
   try {
     const [info, d] = await Promise.all([fetch("/api/info").then((r) => r.json()), fetch("/api/analytics").then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })]);
-    explorer = info.explorer; render(d);
+    explorer = info.explorer;
+    // Nothing launched on this network yet: say so instead of a page of zeros and empty charts.
+    if (!d.tokens) $("out").replaceChildren(siteEmpty("No tokens launched on this network yet, so there's nothing to chart."));
+    else render(d);
   } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load analytics: ${e.message || e}` })); }
 })();
 </script>

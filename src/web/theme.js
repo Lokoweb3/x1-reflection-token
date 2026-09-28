@@ -123,6 +123,53 @@
     document.addEventListener("click", (ev) => { if (d.open && !ev.composedPath().includes(d)) d.open = false; });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && d.open) { d.open = false; s.focus(); } });
   }
+  // ---------- shared empty state ----------
+  // A friendly "nothing here yet" block for list pages: a launch link, and on mainnet a
+  // link to the same page on testnet, where there's something to look at.
+  window.siteEmpty = (message) => {
+    const net = typeof SITE_NET === "object" && SITE_NET ? SITE_NET : null;
+    const box = document.createElement("div"); box.className = "site-empty";
+    const p = document.createElement("p"); p.textContent = message; box.append(p);
+    const row = document.createElement("div"); row.className = "site-empty-actions";
+    const launch = document.createElement("a"); launch.className = "btn primary"; launch.href = "/launch"; launch.textContent = "Launch the first one →";
+    row.append(launch);
+    if (net?.network === "mainnet" && net.other?.url) {
+      const t = document.createElement("a"); t.className = "btn"; t.textContent = "Try it free on testnet →";
+      t.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
+      row.append(t);
+      const n = document.createElement("p"); n.className = "site-empty-note";
+      n.textContent = "Testnet has live example tokens, NFTs and payouts, plus a faucet for free test XNT.";
+      box.append(row, n);
+    } else box.append(row);
+    return box;
+  };
+
+  // ---------- phone tables ----------
+  // Tables with 4+ columns become stacked cards on phones (CSS in theme-base.css): each
+  // cell gets its column's name as a label. Pages redraw tables, so this re-runs on changes.
+  function labelTables() {
+    for (const t of document.querySelectorAll("table")) {
+      if (t.closest(".receipt, #contracts") || t.id === "costTable") continue;
+      const head = [...t.rows].find((r) => r.querySelector("th"));
+      if (!head) continue;
+      const names = [...head.cells].map((c) => c.textContent.replace(/[↑↓]/g, "").trim());
+      if (names.length < 4) { t.removeAttribute("data-stack"); continue; }
+      t.setAttribute("data-stack", "");
+      head.classList.add("stack-head");
+      for (const r of t.rows) {
+        if (r === head) continue;
+        [...r.cells].forEach((c, i) => {
+          const n = r.cells.length === 1 ? "" : names[i] ?? "";
+          if (c.dataset.label !== n) c.dataset.label = n;
+          c.classList.toggle("stack-hide", n === "#");
+          c.classList.toggle("stack-full", /^(wallet|token|name)$/i.test(n) || r.cells.length === 1);
+        });
+      }
+    }
+  }
+  let tablesQueued = false;
+  const queueTables = () => { if (!tablesQueued) { tablesQueued = true; requestAnimationFrame(() => { tablesQueued = false; labelTables(); }); } };
+
   // ---------- phone menu ----------
   // Under 860px the header's links collapse behind a Menu button (CSS in theme-base.css);
   // the page's main button (Launch a token) stays visible.
@@ -140,6 +187,9 @@
     host.before(b);
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && host.classList.contains("open")) b.click(); });
   }
-  const mount = () => { brandLogo(); netToggle(); build(); phoneMenu(); };
+  const mount = () => {
+    brandLogo(); netToggle(); build(); phoneMenu(); labelTables();
+    new MutationObserver(queueTables).observe(document.body, { childList: true, subtree: true });
+  };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
 })();

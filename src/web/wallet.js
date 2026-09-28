@@ -76,8 +76,62 @@ window.X1Wallet = (() => {
     });
   }
 
+  // ---------- wrong-network hint ----------
+  // Wallets don't reliably say which network they're on, so: warn when the wallet reports
+  // only test/dev chains on the mainnet site, or when the wallet has 0 XNT on this site's
+  // network (usually it's set to the other one). SITE_NET comes from /theme.js.
+  const siteNet = () => (typeof SITE_NET === "object" && SITE_NET ? SITE_NET : null);
+  const netName = (n) => (n === "mainnet" ? "X1 Mainnet" : "X1 Testnet");
+  function showNetWarning(text) {
+    document.getElementById("netWarn")?.remove();
+    if (!text) return;
+    const net = siteNet();
+    const bar = document.createElement("div");
+    bar.id = "netWarn"; bar.className = "net-warn"; bar.setAttribute("role", "status");
+    const msg = document.createElement("span"); msg.textContent = text; bar.append(msg);
+    if (net?.other?.url) {
+      const a = document.createElement("a");
+      a.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
+      a.textContent = `Open the ${net.other.network} site →`;
+      bar.append(" ", a);
+    }
+    const x = document.createElement("button");
+    x.type = "button"; x.className = "net-warn-x"; x.setAttribute("aria-label", "Dismiss"); x.textContent = "✕";
+    x.onclick = () => { bar.remove(); try { sessionStorage.setItem("99tax-netwarn-" + state.address, "1"); } catch {} };
+    bar.append(x);
+    (document.querySelector(".topbar") ?? document.body.firstElementChild)?.after(bar);
+  }
+  async function checkNetwork() {
+    const net = siteNet();
+    if (!net || !state.address) { showNetWarning(null); return; }
+    try { if (sessionStorage.getItem("99tax-netwarn-" + state.address)) return; } catch {}
+    const chains = state.account?.chains ?? [];
+    if (net.network === "mainnet" && chains.length && chains.every((c) => /testnet|devnet/i.test(c))) {
+      showNetWarning(`Your wallet looks set to a test network, but this is the ${netName(net.network)} site. Switch your wallet to ${netName(net.network)} before signing anything.`);
+      return;
+    }
+    try {
+      const r = await fetch(`/api/balance/${state.address}`).then((x) => x.json());
+      if (typeof r.xnt === "number" && r.xnt === 0) {
+        showNetWarning(`This wallet has no XNT on ${netName(net.network)}. If your wallet is set to ${net.network === "mainnet" ? "testnet" : "mainnet"}, switch it to ${netName(net.network)} (every transaction here needs a little XNT for fees).`);
+      } else showNetWarning(null);
+    } catch { /* no hint if the check fails */ }
+  }
+  listeners.add(() => { checkNetwork(); });
+
   /** Sign serialized transaction bytes; returns the signed bytes. */
   async function sign(bytes) {
+    try { return await signRaw(bytes); } catch (e) {
+      const m = String(e?.message ?? e);
+      const net = siteNet();
+      // A wallet on the other network can't find this network's blockhash or accounts.
+      if (net && /blockhash|simulat|not found|cluster|genesis|network|insufficient/i.test(m)) {
+        throw new Error(`${m} (Check that your wallet is set to ${netName(net.network)}.)`);
+      }
+      throw e;
+    }
+  }
+  async function signRaw(bytes) {
     if (state.active) {
       const input = { account: state.account, transaction: bytes };
       if (state.account.chains?.length) input.chain = state.account.chains[0];

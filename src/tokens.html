@@ -163,7 +163,7 @@ function render() {
   }[by];
   list.sort((a, b) => key(a) - key(b));
   $("out").replaceChildren(list.length ? el("div", { class: "grid" }, ...list.map(card))
-    : el("div", { class: "empty" }, q ? "No token matches that search." : "No tokens yet. ", q ? null : el("a", { href: "/launch", text: "Launch the first one →" })));
+    : q ? el("div", { class: "empty" }, "No token matches that search.") : siteEmpty("No tokens launched on this network yet."));
 }
 
 (async () => {

@@ -486,7 +486,7 @@ function renderGallery() {
       el("div", { class: "tile" }, el("div", { class: "k", text: "Total earned" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.earned.totalXnt))}` })),
       el("div", { class: "tile" }, el("div", { class: "k", text: "Liquidity locked" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.valueXnt))}` }))),
     list.length ? el("div", { class: "grid" }, ...cards)
-      : el("p", { class: "muted", text: mineOnly ? "This wallet doesn't hold any LP-lock NFTs." : "No LP-lock NFTs yet." }));
+      : mineOnly ? el("p", { class: "muted", text: "This wallet doesn't hold any LP-lock NFTs." }) : siteEmpty("No LP-lock NFTs yet: every launch creates one."));
 }
 
 // ---------- Withdraw (the NFT holder's wallet signs) ----------

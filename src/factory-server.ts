@@ -440,6 +440,7 @@ const poolCreateFee = sticky<number | null>(async () => {
   return Number(a.data.readBigUInt64LE(36)) / 1e9;
 }, null);
 
+const balanceCache = new Map<string, { at: number; data: { network: string; xnt: number } }>();
 async function get(url: URL) {
   if (url.pathname === "/api/nfts") return allNfts();
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
@@ -484,6 +485,16 @@ async function get(url: URL) {
   const lb = /^\/api\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (lb) return leaderboard(lb[1]);
   if (url.pathname === "/api/faucet") return faucetStatus(conn, cfg, url.searchParams.get("wallet") ?? undefined);
+  // A wallet's XNT on this site's network (the wrong-network hint in wallet.js). Cached 30 s.
+  const bal = /^\/api\/balance\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
+  if (bal) {
+    const hit = balanceCache.get(bal[1]);
+    if (hit && Date.now() - hit.at < 30_000) return hit.data;
+    const data = { network: cfg.network, xnt: (await conn.getBalance(new PublicKey(bal[1]))) / 1e9 };
+    balanceCache.set(bal[1], { at: Date.now(), data });
+    if (balanceCache.size > 5_000) balanceCache.clear();
+    return data;
+  }
   const wp = /^\/api\/passes\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (wp) return walletPasses(new PublicKey(wp[1]).toBase58());
   const wv = /^\/api\/wallet\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
