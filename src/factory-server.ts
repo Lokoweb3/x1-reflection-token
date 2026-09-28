@@ -238,6 +238,7 @@ function ownLaunch(body: Record<string, unknown>) {
 
 async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/launch/token") {
+    if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
     rateLimit("launch", ip, "launches started");
     const p = validateParams(body, quoteTokens.map((q) => q.symbol));
     if (f!.lockForeverOnly && p.lockDays !== null) throw new Error("Launches on this site lock their liquidity forever.");
@@ -418,6 +419,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
 async function curvePost(url: string, body: Record<string, unknown>, ip: string) {
   const c = curves!;
   if (url === "/api/curve/create") {
+    if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
     rateLimit("launch", ip, "launches started");
     const p = validateCurveParams(body);
     const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program);
@@ -616,7 +618,8 @@ async function getView(url: URL) {
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
       // Until the locker is made immutable, pages say so next to "locked forever" claims.
       lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
-      lockForeverOnly: !!f!.lockForeverOnly, curve: !!curves,
+      lockForeverOnly: !!f!.lockForeverOnly,
+      launchesPaused: f!.launchesPaused ? (f!.launchesPaused.message ?? "New launches are paused for a short while while we upgrade how the tax is held. Launches already started can still be finished below.") : null, curve: !!curves,
       creatorRewardMint: CREATOR_REWARD[cfg.network].rewardMint ?? null, creatorRewardPool: CREATOR_REWARD[cfg.network].swapPool ?? null,
       // Pair tokens a launch may choose besides XNT, with their price (XNT per whole token) for the form.
       quoteTokens: await Promise.all(quoteTokens.map(async (q) => ({

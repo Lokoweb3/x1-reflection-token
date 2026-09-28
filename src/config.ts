@@ -64,6 +64,8 @@ export interface Config {
     otherNetwork?: { network: "mainnet" | "testnet"; url: string };
     /** Only allow forever LP locks (no timed locks) for new launches. */
     lockForeverOnly?: boolean;
+    /** Pause new launches (step 1 and curve creation); unfinished launches can still be completed. */
+    launchesPaused?: { message?: string };
     theme?: "receipt" | "arcade" | "lunchbag" | "notebook"; // site look (default receipt); preview with ?theme=arcade
     /**
      * Bonding-curve launches (docs/bonding-curve-spec.md). Without it the Curve pages and

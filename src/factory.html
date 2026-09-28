@@ -208,6 +208,7 @@ table.list img { border: 1px solid var(--line); }
 form .row[hidden], .hint[hidden] { display: none; }
 .lc-edit .socials { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 860px) { header > .sub { display: none; } }
+.paused-note { border: 2px dashed var(--line, #999); padding: 18px; margin: 8px 0 16px; font-size: 16px; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -914,6 +915,12 @@ async function loadTokens() {
   try {
     info = await api("/api/info");
     document.getElementById("network").textContent = info.network;
+    // Launches paused: show why instead of the form (unfinished launches below still work).
+    if (info.launchesPaused) {
+      const form = document.getElementById("launchForm");
+      form.hidden = true;
+      form.insertAdjacentElement("beforebegin", Object.assign(document.createElement("div"), { className: "paused-note", textContent: info.launchesPaused }));
+    }
     if (info.lockForeverOnly) {
       for (const n of document.querySelectorAll("[data-forever]")) n.textContent = n.dataset.forever;
       const sel = form.querySelector('select[name="lock"]');
