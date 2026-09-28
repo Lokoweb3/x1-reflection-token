@@ -456,7 +456,9 @@ function drawPayouts(series, W, opts = {}) {
   for (let i = 0; i <= 3; i++) {
     const v = nice * i / 3;
     svg.append(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1, "stroke-opacity": .5 }));
-    const tx = svgEl("text", { x: L - 8, y: y(v) + 4, "text-anchor": "end" }); tx.textContent = fmtNum(v); svg.append(tx);
+    const tx = svgEl("text", { x: L - 8, y: y(v) + 4, "text-anchor": "end" });
+    // Short axis labels (13.3M) so big token counts fit the margin.
+    tx.textContent = v >= 10_000 ? v.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 }) : fmtNum(v); svg.append(tx);
   }
   let d = `M${x(t0)},${y(0)}`;
   for (const p of pts) d += ` H${x(p.t)} V${y(p.v)}`;
