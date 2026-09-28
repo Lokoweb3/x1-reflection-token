@@ -286,17 +286,25 @@ function renderTokenStats(d, s, host) {
   const me = W.state.address;
   const metric = (k, v, n, cls = "") => el("div", { class: `panel metric ${cls}` }, el("div", { class: "k", text: k }), v instanceof Node ? v : el("div", { class: "v", text: v }), n ? el("div", { class: "n", text: n }) : null);
 
-  // Price, with the change since the launch price.
+  // Price, with the change since the launch price. A JACK-paired token is priced in JACK
+  // (its pool's pair), with the XNT value at the JACK/XNT pool price.
+  const pairQ = s.quote && s.quote !== "XNT" ? s.quote : null;
+  const pNow = pairQ ? s.priceQuote : s.priceXnt, pLaunch = pairQ ? s.launchPriceQuote : s.launchPriceXnt, pUnit = pairQ ?? "XNT";
   let chg = null;
-  if (s.priceXnt != null && s.launchPriceXnt) {
-    const c = (s.priceXnt / s.launchPriceXnt - 1) * 100;
-    chg = el("span", { class: `chg ${c >= 0 ? "up" : "down"}`, text: `${c >= 0 ? "+" : ""}${c.toFixed(1)}% since launch`, title: `Launch price ${fmtPrice(s.launchPriceXnt)} XNT` });
+  if (pNow != null && pLaunch) {
+    const c = (pNow / pLaunch - 1) * 100;
+    chg = el("span", { class: `chg ${c >= 0 ? "up" : "down"}`, text: `${c >= 0 ? "+" : ""}${c.toFixed(1)}% since launch`, title: `Launch price ${pairQ && pLaunch < 1e-6 ? pLaunch.toPrecision(3) : fmtPrice(pLaunch)} ${pUnit}` });
   }
-  const priceV = el("div", { class: "v" }, s.priceXnt == null ? "–" : `${fmtPrice(s.priceXnt)} XNT`, chg);
+  // JACK prices of a small token run to many zeros; keep them to 3 significant digits so they fit.
+  const fmtP = (v) => (pairQ && v < 1e-6 ? v.toPrecision(3) : fmtPrice(v));
+  const priceV = el("div", { class: "v" }, pNow == null ? "–" : `${fmtP(pNow)} ${pUnit}`, chg);
   const hero = el("div", { class: "hero-row" },
-    metric(`${s.symbol} price`, priceV, s.priceXnt != null ? `1 XNT ≈ ${Number(1 / s.priceXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 })} ${s.symbol}` : "no pool price", "price"),
+    metric(`${s.symbol} price`, priceV, pairQ
+      ? (s.priceXnt != null ? `≈ ${fmtPrice(s.priceXnt)} XNT (1 ${pairQ} ≈ ${Number(s.pairXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 })} XNT)` : "no pool price")
+      : (s.priceXnt != null ? `1 XNT ≈ ${Number(1 / s.priceXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 })} ${s.symbol}` : "no pool price"), "price"),
     metric("Market cap", s.marketCapXnt ? `≈ ${xntOf(s.marketCapXnt, 2)}` : "–", "supply × price"),
-    metric("Pool liquidity", s.poolXnt ? `≈ ${xntOf(s.poolXnt, 2)}` : "–", "both sides, in XNT"),
+    metric("Pool liquidity", s.poolXnt ? `≈ ${xntOf(s.poolXnt, 2)}` : "–",
+      pairQ && s.poolQuote ? `both sides: ≈ ${fmtUnits(s.poolQuote, 9, 6)} ${pairQ}, in XNT at the ${pairQ} price` : "both sides, in XNT"),
     metric("Supply", tokC(s.supply), BigInt(s.burned) > 0n ? `${tok(s.supply, 2)} of ${tokC(s.originalSupply)}; fixed, can't be minted` : "fixed, can't be minted"));
 
   // Your position, when the connected wallet holds or was paid.
@@ -520,7 +528,9 @@ function withdrawCard(d) {
   if (f) {
     rows.push(el("div", { class: "wd-row" },
       el("div", { class: "what" }, el("div", {}, "Trading fees ", el("span", { class: "amt", text: `≈ ${fmtUnits(f.worth, 9)} XNT` })),
-        el("div", { class: "muted", text: `${fmtUnits(f.xnt, 9)} XNT + ${fmtUnits(f.tokens, 9, 4)} ${d.symbol}, from this NFT's share of pool trading` }),
+        el("div", { class: "muted", text: f.quote && f.quote !== "XNT"
+          ? `${fmtUnits(f.quoteAmount, 9)} ${f.quote} + ${fmtUnits(f.tokens, 9, 4)} ${d.symbol}, from this NFT's share of pool trading (valued in XNT at the ${f.quote} price)`
+          : `${fmtUnits(f.xnt, 9)} XNT + ${fmtUnits(f.tokens, 9, 4)} ${d.symbol}, from this NFT's share of pool trading` }),
         f.networkFee ? el("div", { class: "muted", text: `Network fee to collect ≈ ${fmtUnits(f.networkFee, 9)} XNT (charged by X1). `
           + (f.collectable ? "Collecting now nets ≈ " + fmtUnits(String(BigInt(f.worth) - BigInt(f.networkFee)), 9) + " XNT." : "Worth collecting once fees are above that.") }) : null),
       btn("Collect fees", f.collectable, f.collectable ? "" : f.networkFee && BigInt(f.worth) > 0n

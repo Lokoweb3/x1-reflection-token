@@ -210,7 +210,9 @@ function render(d) {
     el("td", {}, link(`${d.explorer}/address/${t.mint}`, t.symbol), el("span", { class: "muted", text: ` ${t.name}` })),
     el("td", { class: "num", text: bal(t.balance, t.decimals) }),
     el("td", { class: "num", text: `${t.pct < 0.01 && BigInt(t.balance) > 0n ? "<0.01" : t.pct.toFixed(2)}%` }),
-    el("td", { class: "num", text: BigInt(t.valueXnt) > 0n ? fmt(units(t.valueXnt), 4) : "–" }),
+    // A JACK-paired token's worth is its JACK value in XNT at the JACK/XNT price.
+    el("td", { class: "num", text: BigInt(t.valueXnt) > 0n ? fmt(units(t.valueXnt), 4) : "–",
+      title: t.quote && t.quote !== "XNT" ? `Paired with ${t.quote}: valued in XNT at today's ${t.quote}/XNT price` : "" }),
     el("td", { class: "num", text: BigInt(t.paidXnt) + BigInt(t.clickerXnt) > 0n ? fmt(units(t.paidXnt) + units(t.clickerXnt), 6) : "–" }),
     el("td", { class: "num", text: t.estPerDayXnt > 0 ? fmtSig(t.estPerDayXnt) : "–", title: t.yield ? `Yield ${fmtSig(t.yield.per1000PerDay)} XNT/day per 1,000 ${t.symbol}` : "" }),
     el("td", { class: "num", text: t.status === "earning" && t.yield?.aprPct != null ? `≈ ${fmtSig(t.yield.aprPct)}%` : "–" }),

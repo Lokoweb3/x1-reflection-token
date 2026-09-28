@@ -129,7 +129,8 @@ function card(t) {
   return el("article", { class: "tok" },
     el("div", { class: "tok-head" }, logo,
       el("div", {}, el("h2", {}, t.name, el("span", { class: "tag", text: t.symbol })),
-        el("div", { class: "sub" }, link(`${explorer}/address/${t.mint}`, short(t.mint)), t.createdAt ? ` · since ${new Date(t.createdAt).toLocaleDateString()}` : ""))),
+        el("div", { class: "sub" }, link(`${explorer}/address/${t.mint}`, short(t.mint)), t.createdAt ? ` · since ${new Date(t.createdAt).toLocaleDateString()}` : "",
+          t.quote && t.quote !== "XNT" ? ` · paired with ${t.quote}` : ""))),
     t.description ? el("div", { class: "sub", text: t.description.slice(0, 140) }) : null,
     el("div", {}, el("div", { class: "sub", text: `${t.taxPct}% tax on every trade, split:` }), bar,
       el("div", { class: "legend" }, ...SPLIT.filter(([k]) => t.split[k] > 0).map(([k, l, c]) => el("span", {}, el("i", { style: `background:${c}` }), `${l} ${t.split[k]}%`)))),
@@ -139,7 +140,13 @@ function card(t) {
       : el("div", { class: "yield muted", text: "No holder payouts in the last 7 days" }),
     el("dl", { class: "stats" },
       el("dt", { text: "Price" }), el("dt", { text: "Pool liquidity" }),
-      el("dd", { text: `${price(t.priceXnt)} XNT` }), el("dd", { text: t.liquidityXnt ? `≈ ${xnt(t.liquidityXnt)}` : "–" }),
+      // A JACK-paired token trades in JACK: show that first, with its XNT value.
+      t.quote && t.quote !== "XNT"
+        ? el("dd", {}, `${price(t.priceQuote)} ${t.quote}`, el("div", { class: "sub", text: `≈ ${price(t.priceXnt)} XNT` }))
+        : el("dd", { text: `${price(t.priceXnt)} XNT` }),
+      t.quote && t.quote !== "XNT"
+        ? el("dd", {}, t.liquidityQuote ? `${fmt(units(t.liquidityQuote), 6)} ${t.quote}` : "–", el("div", { class: "sub", text: t.liquidityXnt ? `≈ ${xnt(t.liquidityXnt)}` : "" }))
+        : el("dd", { text: t.liquidityXnt ? `≈ ${xnt(t.liquidityXnt)}` : "–" }),
       el("dt", { text: "Paid to holders" }), el("dt", { text: "Wallets paid" }),
       el("dd", { text: xnt(t.holdersXnt) }), el("dd", { text: String(t.walletsPaid) }),
       el("dt", { text: "Added to liquidity" }), el("dt", { text: "Creator rewards" }),

@@ -15,7 +15,7 @@ import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana
 import { CONFIG_PATH, Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, ROOT, STATE_DIR, loadKeypair, toBaseUnits } from "../config.js";
 import { BURN_OWNERS, eligibleBalances, scanTokenAccounts } from "../holders.js";
 import { poolAuthority } from "../xdex.js";
-import { snapshot } from "../xdex.js";
+import { snapshot, spotValue } from "../xdex.js";
 import { registeredLaunches } from "./launch.js";
 
 export const COOLDOWN_MS = 10 * 60_000;
@@ -30,6 +30,8 @@ export interface Target {
   distributor: string;
   configPath: string;
   stateDir: string;
+  /** Pair token when the pool isn't TOKEN/XNT (a JACK launch): symbol, mint and its XNT pool. */
+  quote?: { symbol: string; mint: string; xntPool: string };
 }
 
 /** Every token a holder can trigger: the main token plus registered factory launches. */
@@ -39,11 +41,13 @@ export function targets(cfg: Config): Target[] {
     out.push({
       mint: cfg.mint, symbol: cfg.token.symbol, name: cfg.token.name, pool: cfg.xdex.pool,
       distributor: loadKeypair(cfg.keypairs.distributor).publicKey.toBase58(), configPath: CONFIG_PATH, stateDir: STATE_DIR,
+      ...(cfg.xdex.quoteMint ? { quote: { symbol: cfg.xdex.quoteSymbol ?? "pair", mint: cfg.xdex.quoteMint, xntPool: cfg.xdex.quoteXntPool! } } : {}),
     });
   }
   for (const r of registeredLaunches()) {
     const dir = path.join(FACTORY_DIR, "launches", r.mint);
-    out.push({ mint: r.mint, symbol: r.symbol, name: r.name, pool: r.pool, distributor: r.distributor, configPath: path.join(dir, "config.json"), stateDir: path.join(dir, "state") });
+    out.push({ mint: r.mint, symbol: r.symbol, name: r.name, pool: r.pool, distributor: r.distributor, configPath: path.join(dir, "config.json"), stateDir: path.join(dir, "state"),
+      ...(r.quoteMint && r.quoteXntPool ? { quote: { symbol: r.quote ?? "pair", mint: r.quoteMint, xntPool: r.quoteXntPool } } : {}) });
   }
   return out;
 }
@@ -70,8 +74,11 @@ export async function readiness(conn: Connection, cfg: Config, t: Target) {
   const [rows, mintInfo] = await Promise.all([scanTokenAccounts(conn, mint), conn.getAccountInfo(mint, "confirmed")]);
   const m = unpackMint(mint, mintInfo, TOKEN_2022_PROGRAM_ID);
   const waiting = rows.reduce((a, r) => a + r.withheld, 0n) + (getTransferFeeConfig(m)?.withheldAmount ?? 0n);
-  const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), mint);
-  const worth = (waiting * snap.reserveXnt) / snap.reserveToken;
+  const xdex = new PublicKey(cfg.xdex.programId);
+  const snap = await snapshot(conn, xdex, new PublicKey(t.pool), mint, t.quote ? new PublicKey(t.quote.mint) : undefined);
+  let worth = spotValue(waiting, snap);
+  // A JACK pool: value the tax's JACK worth in XNT on JACK's own XNT pool.
+  if (t.quote) worth = spotValue(worth, await snapshot(conn, xdex, new PublicKey(t.quote.xntPool), new PublicKey(t.quote.mint)));
   // Same eligibility rules the distributor uses, from this token's own config.
   const dc = (JSON.parse(fs.readFileSync(t.configPath, "utf8")) as Config).distribution;
   const holders = eligibleBalances(rows, {
@@ -133,7 +140,7 @@ export function runCycle(t: Target, clicker?: string) {
   const keep = (d: Buffer) => {
     for (const line of d.toString().split("\n")) {
       // Keep the human-readable milestones for the page.
-      if (/^\[(withdraw|burn|sell|auto-lp|creator|clicker-reward|allocate|payout)\]|^(Payouts due|No holder|Tax waiting|Cycle failed)/.test(line)) {
+      if (/^\[(withdraw|burn|sell|auto-lp|quote-swap|creator|clicker-reward|allocate|payout)\]|^(Payouts due|No holder|Tax waiting|Cycle failed)/.test(line)) {
         entry.summary!.push(line.replace(/\s+[1-9A-HJ-NP-Za-km-z]{80,90}$/, ""));
       }
     }

@@ -79,10 +79,10 @@ async function loadChain() {
       const lpMinted = await conn.getTokenSupply(snap.pool.lpMint, "confirmed");
       const locked = snap.pool.lpSupply - BigInt(lpMinted.value.amount);
       pool = {
-        tokens: snap.reserveToken.toString(), xnt: snap.reserveXnt.toString(),
+        tokens: snap.reserveToken.toString(), xnt: snap.reserveQuote.toString(),
         lpSupply: snap.pool.lpSupply.toString(), lpLocked: (locked > 0n ? locked : 0n).toString(),
         lpDecimals: snap.pool.lpDecimals, lpMint: snap.pool.lpMint.toBase58(),
-        nftLocks: await nftLocks(snap.reserveToken, snap.reserveXnt, snap.pool.lpSupply),
+        nftLocks: await nftLocks(snap.reserveToken, snap.reserveQuote, snap.pool.lpSupply),
       };
     } catch (e) {
       pool = { error: e instanceof Error ? e.message : String(e) };

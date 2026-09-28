@@ -41,7 +41,7 @@ async function sendOrSimulate(ixs: TransactionInstruction[], extra: Keypair[] = 
 
 async function status() {
   const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint);
-  const sqrtK = isqrt(snap.reserveToken * snap.reserveXnt);
+  const sqrtK = isqrt(snap.reserveToken * snap.reserveQuote);
   const supply = snap.pool.lpSupply;
   const d = snap.pool.lpDecimals;
   const locks = await listLocks(conn, ids.programId, ids.pool);
@@ -53,8 +53,8 @@ async function status() {
     console.log(`\nLock ${l.address.toBase58()}`);
     console.log(`  NFT:            ${l.nftMint.toBase58()}  held by ${holder?.owner.toBase58() ?? "nobody (burned?)"}`);
     console.log(`  Locked:         ${fromBaseUnits(lp, d)} LP (${(Number(lp * 1_000_000n / supply) / 10_000).toFixed(2)}% of pool) since ${new Date(l.lockedAt * 1000).toISOString()}`);
-    console.log(`  Worth now:      ${xnt((snap.reserveXnt * lp) / supply)} + ${fromBaseUnits((snap.reserveToken * lp) / supply, 9)} tokens`);
-    console.log(`  Fees ready:     ${fromBaseUnits(fee, d)} LP ≈ ${xnt((snap.reserveXnt * fee) / supply)} + ${fromBaseUnits((snap.reserveToken * fee) / supply, 9)} tokens`);
+    console.log(`  Worth now:      ${xnt((snap.reserveQuote * lp) / supply)} + ${fromBaseUnits((snap.reserveToken * lp) / supply, 9)} tokens`);
+    console.log(`  Fees ready:     ${fromBaseUnits(fee, d)} LP ≈ ${xnt((snap.reserveQuote * fee) / supply)} + ${fromBaseUnits((snap.reserveToken * fee) / supply, 9)} tokens`);
     console.log(`  Fees collected: ${fromBaseUnits(l.feeLpCollected, d)} LP so far`);
     console.log(`  Unlocks:        ${l.unlockAt === null ? "never (locked forever)" : new Date(l.unlockAt * 1000).toISOString()}`);
   }

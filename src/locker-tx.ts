@@ -27,8 +27,12 @@ export const DUST_LAMPORTS = 10_000n;
 
 const meta = (pubkey: PublicKey, isSigner: boolean, isWritable: boolean) => ({ pubkey, isSigner, isWritable });
 
-/** Which pool/token to act on; defaults to the ones in config.json. */
-export interface Target { pool: PublicKey; mint: PublicKey; symbol: string }
+/**
+ * Which pool/token to act on; defaults to the ones in config.json. For a pool paired with
+ * another token than XNT (JACK), `quoteToXnt` values that token in XNT, so fee amounts and
+ * the dust check stay in XNT.
+ */
+export interface Target { pool: PublicKey; mint: PublicKey; symbol: string; quoteToXnt?: (amount: bigint) => bigint }
 
 export function lockerIds(cfg: Config, target?: Target) {
   if (!cfg.locker?.programId) throw new Error("Set locker.programId in config.json to the deployed lp_locker program.");
@@ -43,7 +47,7 @@ export function lockerIds(cfg: Config, target?: Target) {
 /** LP tokens `owner` holds in their wallet (the withdrawable kind). */
 export async function walletLp(conn: Connection, cfg: Config, owner: PublicKey) {
   const ids = lockerIds(cfg);
-  const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint);
+  const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint, null);
   const ata = getAssociatedTokenAddressSync(snap.pool.lpMint, owner, false, TOKEN_PROGRAM_ID);
   const info = await conn.getAccountInfo(ata, "confirmed");
   return { amount: info ? unpackAccount(ata, info, TOKEN_PROGRAM_ID).amount : 0n, decimals: snap.pool.lpDecimals, supply: snap.pool.lpSupply };
@@ -58,7 +62,8 @@ export async function buildLock(
   conn: Connection, cfg: Config, owner: PublicKey, amount: bigint | "all", unlockAt?: number, target?: Target,
 ) {
   const ids = lockerIds(cfg, target);
-  const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint);
+  // Any pair: the lock only needs the pool's LP mint and vaults.
+  const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint, null);
   const pool = snap.pool;
   const ownerLp = getAssociatedTokenAddressSync(pool.lpMint, owner, false, TOKEN_PROGRAM_ID);
   const lpInfo = await conn.getAccountInfo(ownerLp, "confirmed");
@@ -189,9 +194,10 @@ export async function buildCollect(conn: Connection, cfg: Config, holder: Public
   const nftAcc = await nftHolder(conn, target.nftMint);
   if (!nftAcc?.owner.equals(holder)) throw new Error(`That lock's NFT is held by ${nftAcc?.owner.toBase58() ?? "nobody"}, not this wallet.`);
 
-  const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint);
+  // The pool's other side is XNT for most tokens, or the pair token (JACK) it launched with.
+  const snap = await snapshot(conn, ids.xdex, ids.pool, ids.mint, null);
   const pool = snap.pool;
-  const reserves = snap.side === 0 ? [snap.reserveToken, snap.reserveXnt] : [snap.reserveXnt, snap.reserveToken];
+  const reserves = snap.side === 0 ? [snap.reserveToken, snap.reserveQuote] : [snap.reserveQuote, snap.reserveToken];
   const lp = await lockedLp(conn, ids.programId, target.address);
   const fee = pendingFeeLp(lp, target.principal, isqrt(reserves[0] * reserves[1]), pool.lpSupply);
 
@@ -202,17 +208,26 @@ export async function buildCollect(conn: Connection, cfg: Config, holder: Public
     const net = i === snap.side ? gross - calculateEpochFee(snap.feeCfg, snap.epoch, gross) : gross;
     return { net, min: (net * (10_000n - slip)) / 10_000n };
   });
-  const xntOut = outs[1 - snap.side].net, tokenOut = outs[snap.side].net;
-  const worth = xntOut + (tokenOut * snap.reserveXnt) / snap.reserveToken;
-  const summary = { lock: target.address, nftMint: target.nftMint, feeLp: fee, lpDecimals: pool.lpDecimals, xntOut, tokenOut, worth };
+  const native = snap.quoteMint.equals(NATIVE_MINT);
+  if (!native && !where?.quoteToXnt) throw new Error("This pool isn't paired with XNT; its pair token's XNT price is needed.");
+  const toXnt = native ? (v: bigint) => v : where!.quoteToXnt!;
+  const quoteOut = outs[1 - snap.side].net, tokenOut = outs[snap.side].net;
+  // xntOut and worth are in XNT (for a JACK pool, JACK valued at the JACK/XNT pool price).
+  const xntOut = toXnt(quoteOut);
+  const worth = xntOut + toXnt((tokenOut * snap.reserveQuote) / snap.reserveToken);
+  const summary = { lock: target.address, nftMint: target.nftMint, feeLp: fee, lpDecimals: pool.lpDecimals, xntOut, tokenOut, worth, quoteMint: snap.quoteMint, quoteOut };
   if (fee <= 0n || (worth < DUST_LAMPORTS && !force)) return { ixs: null, summary };
 
   const wxntProgram = pool.programs[1 - snap.side];
-  const temp = await PublicKey.createWithSeed(holder, LP_TEMP_SEED, wxntProgram);
-  if (await conn.getAccountInfo(temp)) throw new Error(`Temporary account ${temp.toBase58()} exists from an earlier attempt; close it first.`);
+  // XNT fees go through a temporary wrapped account (unwrapped at the end); a pair token
+  // such as JACK goes straight to the holder's own account for it.
+  const temp = native
+    ? await PublicKey.createWithSeed(holder, LP_TEMP_SEED, wxntProgram)
+    : getAssociatedTokenAddressSync(snap.quoteMint, holder, false, wxntProgram);
+  if (native && await conn.getAccountInfo(temp)) throw new Error(`Temporary account ${temp.toBase58()} exists from an earlier attempt; close it first.`);
   const tokenAta = getAssociatedTokenAddressSync(ids.mint, holder, false, TOKEN_2022_PROGRAM_ID);
   const dest = snap.side === 0 ? [tokenAta, temp] : [temp, tokenAta];
-  const rent = await conn.getMinimumBalanceForRentExemption(165);
+  const rent = native ? await conn.getMinimumBalanceForRentExemption(165) : 0;
 
   const data = Buffer.alloc(24);
   COLLECT_IX.copy(data, 0);
@@ -220,11 +235,13 @@ export async function buildCollect(conn: Connection, cfg: Config, holder: Public
   data.writeBigUInt64LE(outs[1].min, 16);
   const ixs = [
     createAssociatedTokenAccountIdempotentInstruction(holder, tokenAta, holder, ids.mint, TOKEN_2022_PROGRAM_ID),
-    SystemProgram.createAccountWithSeed({
-      fromPubkey: holder, newAccountPubkey: temp, basePubkey: holder,
-      seed: LP_TEMP_SEED, lamports: rent, space: 165, programId: wxntProgram,
-    }),
-    createInitializeAccount3Instruction(temp, NATIVE_MINT, holder, wxntProgram),
+    ...(native ? [
+      SystemProgram.createAccountWithSeed({
+        fromPubkey: holder, newAccountPubkey: temp, basePubkey: holder,
+        seed: LP_TEMP_SEED, lamports: rent, space: 165, programId: wxntProgram,
+      }),
+      createInitializeAccount3Instruction(temp, NATIVE_MINT, holder, wxntProgram),
+    ] : [createAssociatedTokenAccountIdempotentInstruction(holder, temp, holder, snap.quoteMint, wxntProgram)]),
     new TransactionInstruction({
       programId: ids.programId, data,
       keys: [
@@ -238,7 +255,7 @@ export async function buildCollect(conn: Connection, cfg: Config, holder: Public
       ],
     }),
     // Unwrap the XNT side straight into the wallet.
-    createCloseAccountInstruction(temp, holder, holder, [], wxntProgram),
+    ...(native ? [createCloseAccountInstruction(temp, holder, holder, [], wxntProgram)] : []),
   ];
   return { ixs, summary };
 }

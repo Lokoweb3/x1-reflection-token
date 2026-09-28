@@ -8,6 +8,10 @@
  * side, collected tokens still to be sold for the XNT side, and XNT already raised.
  * Withdraw, sell and deposit transactions are journaled in `inflight` the same way,
  * and their effect on `lp` is applied from the confirmed transaction.
+ *
+ * A token paired with JACK (not XNT) sells its tax for JACK: `quote` tracks the JACK set
+ * aside for auto-LP and the JACK raised for the creator, and the rest of the JACK is
+ * swapped to XNT ("quote-swap", journaled like the others) for gas and holders.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -21,7 +25,7 @@ export interface Batch {
 }
 
 export interface Inflight {
-  kind: "withdraw" | "sell" | "lp" | "burn" | "creator-swap" | "creator";
+  kind: "withdraw" | "sell" | "lp" | "burn" | "creator-swap" | "creator" | "quote-swap";
   signature: string;
   lastValidBlockHeight: number;
   amount?: string;        // withdraw: tokens withdrawn
@@ -32,7 +36,8 @@ export interface Inflight {
   creatorSellTokens?: string; // withdraw: tokens to sell for the creator; sell: creator's part of amountIn
   creatorXnt?: string;    // creator-swap / creator: XNT of the creator's share spent
   rewardAmount?: string;  // creator: reward tokens deposited into the vesting vault
-  amountIn?: string;      // sell
+  amountIn?: string;      // sell: tokens sold; quote-swap: pair tokens (JACK) swapped to XNT
+  creatorQuote?: string;  // quote-swap: the creator's part of amountIn
 }
 
 export interface State {
@@ -46,6 +51,11 @@ export interface State {
   /** Creator reward: tax tokens to sell for it, XNT raised for it, reward tokens (e.g. USDC) bought, total deposited. */
   creator: { sellTokens: string; xnt: string; rewardTokens: string; deposited: string };
   inflight: Inflight | null;
+  /**
+   * Pair-token (JACK) tokens only, in its base units: JACK set aside for the auto-LP pair
+   * side, and JACK raised for the creator that still has to be swapped to XNT.
+   */
+  quote?: { lp: string; creator: string };
   history: { at: string; kind: string; detail: string; signature?: string }[];
   /**
    * Holder passes (distribution.holderRewards = "claims"): each pass's cumulative reward
@@ -109,6 +119,13 @@ export function addCreator(s: State, key: keyof State["creator"], delta: bigint)
   s.creator[key] = (next > 0n ? next : 0n).toString();
 }
 
+/** Adjust a `quote` (pair-token) counter, flooring at zero. */
+export function addQuote(s: State, key: keyof NonNullable<State["quote"]>, delta: bigint) {
+  s.quote ??= { lp: "0", creator: "0" };
+  const next = BigInt(s.quote[key]) + delta;
+  s.quote[key] = (next > 0n ? next : 0n).toString();
+}
+
 /** Adjust an `lp` counter, flooring at zero. */
 export function addLp(s: State, key: keyof State["lp"], delta: bigint) {
   const next = BigInt(s.lp[key]) + delta;
@@ -129,7 +146,7 @@ export function addOwed(s: State, owner: string, lamports: bigint) {
  */
 export interface Event {
   at: string;
-  kind: "withdraw" | "sell" | "auto-lp" | "burn" | "creator-reward" | "clicker-reward" | "allocate" | "payout";
+  kind: "withdraw" | "sell" | "auto-lp" | "burn" | "creator-reward" | "clicker-reward" | "allocate" | "payout" | "quote-swap";
   signature?: string;
   [field: string]: unknown;
 }

@@ -247,8 +247,24 @@ transactions:
 1. **Token:** Token-2022 mint with the tax and **no fee authority** (the tax can never
    change), supply minted to the creator, **mint authority revoked**, the launch fee
    (`factory.feeUsdc` USDC to `factory.feeReceiver`; on testnet `factory.feeToken` can swap in another token such as XNM, and mainnet ignores it and always charges USDC.X) and the token distributor's gas.
-2. **Pool:** a TOKEN/XNT pool on XDEX with the creator's tokens and XNT.
+2. **Pool:** a TOKEN/XNT pool on XDEX with the creator's tokens and XNT (or, if the
+   creator picks another pair the site offers, e.g. JACK, a TOKEN/JACK pool with their
+   JACK; XDEX's pool fee is still XNT).
 3. **Lock:** all of the creator's LP locked in an NFT, which collects the trading fees.
+
+**Pairs other than XNT.** List them in `factory.quoteTokens` and the launch form shows
+"Pair with: XNT / JACK" (XNT stays the default; without the list the choice is hidden):
+
+```json
+"quoteTokens": [{ "mint": "54uAdhRHZmbGnD1tATH7F7Qp5us7xsXJQTf6MpMEdFbg", "symbol": "JACK", "xntPool": "wdLWfF28MtU6Tns7nix5xnfGPZufFKoME4FpFyaf3VW" }]
+```
+
+`xntPool` is that token's deep XNT pool on XDEX. Holders are still paid in XNT: the
+distributor sells the tax for JACK, keeps the auto-LP share as JACK for the TOKEN+JACK
+deposit, and swaps the rest to XNT on the JACK/XNT pool (price-impact capped) for gas,
+payouts and the creator reward. The site shows those tokens' prices in JACK with the XNT
+value, and their leaderboard costs in JACK. Only tokens without a transfer fee work as a
+pair. `scripts/mainnet-rehearsal-jack.ts` rehearses a JACK launch on a local validator.
 
 Then the launch is verified on-chain and registered. `factory:distribute` runs the same
 cycle as RFLT for every registered token, each with its **own distributor wallet**

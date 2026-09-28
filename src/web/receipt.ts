@@ -22,7 +22,10 @@ export interface ReceiptData {
   taxPct: number;
   split: { holders: number; liquidity: number; burn: number; creator: number } | null;
   poolTokens: string | null;
+  /** Pair-token amount the launch pool started with (XNT, or `quote` such as JACK). */
   poolXnt: string | null;
+  /** The pool's pair token: "XNT" or the launch's pair symbol (JACK). Not part of the receipt image. */
+  quote: string;
   lockedLp: string;
   lpSharePct: number;
   term: string;           // "FOREVER" or "UNTIL 2026-09-30 04:30 UTC"
@@ -48,7 +51,10 @@ export async function receiptData(conn: Connection, cfg: Config, nftMint: Public
   if (!lock) return null;
 
   const pool = decodePool(poolKey, await conn.getAccountInfo(poolKey, "confirmed"), new PublicKey(cfg.xdex.programId));
-  const tokenMint = pool.mints.find((m) => !m.equals(new PublicKey("So11111111111111111111111111111111111111112")))!;
+  // The launch's token; for a pool without a launch record, the side that isn't XNT or a pair token (JACK).
+  const byPool = listLaunches().find((r) => r.pool === poolKey.toBase58());
+  const pairMints = new Set(["So11111111111111111111111111111111111111112", ...(cfg.factory?.quoteTokens ?? []).map((q) => q.mint)]);
+  const tokenMint = byPool ? new PublicKey(byPool.mint) : (pool.mints.find((m) => !pairMints.has(m.toBase58())) ?? pool.mints[0]);
   const mintState = unpackMint(tokenMint, await conn.getAccountInfo(tokenMint, "confirmed"), TOKEN_2022_PROGRAM_ID);
   const meta = await getTokenMetadata(conn, tokenMint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null);
   const fee = getTransferFeeConfig(mintState);
@@ -69,7 +75,7 @@ export async function receiptData(conn: Connection, cfg: Config, nftMint: Public
     tokenName: meta?.name ?? launch?.name ?? "Token", symbol: meta?.symbol ?? launch?.symbol ?? "?",
     tokenMint: tokenMint.toBase58(), pool: poolKey.toBase58(), supply: group(fromBaseUnits(mintState.supply, mintState.decimals)),
     taxPct: fee ? fee.newerTransferFee.transferFeeBasisPoints / 100 : 0, split,
-    poolTokens: launch ? group(launch.poolTokens) : null, poolXnt: launch ? group(launch.poolXnt) : null,
+    poolTokens: launch ? group(launch.poolTokens) : null, poolXnt: launch ? group(launch.poolXnt) : null, quote: launch?.quote ?? "XNT",
     lockedLp: group(fromBaseUnits(lp, pool.lpDecimals)),
     lpSharePct: pool.lpSupply > 0n ? Number((lp * 1_000_000n) / pool.lpSupply) / 10_000 : 0,
     unlockAt: lock.unlockAt,

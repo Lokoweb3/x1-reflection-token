@@ -11,6 +11,11 @@
  *   5. allocate new XNT pro-rata to eligible holders
  *   6. pay every holder whose accumulated share is at least minPayoutXnt
  *
+ * A token paired with JACK instead of XNT (xdex.quoteMint) sells its tax for JACK on its
+ * TOKEN/JACK pool, keeps the auto-LP share as JACK for the deposit, and swaps the rest of
+ * the JACK to XNT on the JACK/XNT pool (xdex.quoteXntPool, impact-capped; any leftover
+ * waits for the next cycle). Gas, holder payouts and the creator reward stay in XNT.
+ *
  *   npm run distribute                 # dry run: shows what would happen
  *   npm run distribute -- --execute    # send transactions
  *   npm run distribute -- --execute --loop 60   # repeat every 60 minutes
@@ -26,11 +31,11 @@ import {
 } from "./config.js";
 import { BURN_OWNERS, allocate, clickerReward, eligibleBalances, scanTokenAccounts, splitTax } from "./holders.js";
 import {
-  Inflight, State, acquireLock, addCreator, addLp, addOwed, loadState, logEvent, record, reservedXnt, saveState, totalOwed,
+  Inflight, State, acquireLock, addCreator, addLp, addOwed, addQuote, loadState, logEvent, record, reservedXnt, saveState, totalOwed,
 } from "./state.js";
 import { outcome, run, sendAndConfirm, sign, simulate, withPriority } from "./tx.js";
 import {
-  buildBuy, buildDepositAndBurn, buildSell, lpKeepForBalance, poolAuthority, quoteBuy, quoteDeposit, quoteSell, snapshot,
+  buildBuy, buildDepositAndBurn, buildSell, lpKeepForBalance, poolAuthority, quoteBuy, quoteDeposit, quoteSell, snapshot, spotValue,
 } from "./xdex.js";
 import { buildDepositReward } from "./locker-tx.js";
 import { nftHolder } from "./locker.js";
@@ -63,10 +68,40 @@ interface Ctx {
   distributor: Keypair;
   execute: boolean;
   decimals: number;
-  /** Dry run only: tokens and XNT a real run would have collected or raised by this point. */
-  projected: { tokens: bigint; xnt: bigint };
+  /** Dry run only: tokens, XNT and pair tokens a real run would have collected or raised by this point. */
+  projected: { tokens: bigint; xnt: bigint; quote: bigint };
   /** Wallet that triggered this run with "Distribute now" (earns the clicker reward). */
   clicker?: PublicKey;
+  /** The pair token (JACK) when the pool isn't TOKEN/XNT; null for XNT. */
+  quote: null | { mint: PublicKey; symbol: string; decimals: number; program: PublicKey; xntPool: PublicKey };
+}
+
+/** Pair-token amount for logs, e.g. "0.0012 JACK". */
+const fmtQuote = (ctx: Ctx, v: bigint) => `${fromBaseUnits(v, ctx.quote!.decimals)} ${ctx.quote!.symbol}`;
+
+/** The distributor's own account for the pair token. */
+const quoteAta = (ctx: Ctx) => getAssociatedTokenAddressSync(ctx.quote!.mint, ctx.distributor.publicKey, false, ctx.quote!.program);
+
+/** Pair tokens (JACK) valued in XNT at the spot price of their XNT pool. */
+async function quoteToXnt(ctx: Ctx, amount: bigint) {
+  if (amount === 0n) return 0n;
+  const q = ctx.quote!;
+  return spotValue(amount, await snapshot(ctx.conn, new PublicKey(ctx.cfg.xdex.programId), q.xntPool, q.mint));
+}
+
+/** Pair tokens in the distributor's account (plus, in a dry run, those it would have raised). */
+async function heldQuote(ctx: Ctx) {
+  const ata = quoteAta(ctx);
+  const info = await ctx.conn.getAccountInfo(ata);
+  return (info ? unpackAccount(ata, info, ctx.quote!.program).amount : 0n) + ctx.projected.quote;
+}
+
+/** Change of `account`'s token balance in a confirmed transaction. */
+function tokenDelta(keys: PublicKey[], meta: { preTokenBalances?: { accountIndex: number; uiTokenAmount: { amount: string } }[] | null;
+  postTokenBalances?: { accountIndex: number; uiTokenAmount: { amount: string } }[] | null }, account: PublicKey) {
+  const i = keys.findIndex((k) => k.equals(account));
+  const bal = (list: typeof meta.preTokenBalances) => BigInt(list?.find((b) => b.accountIndex === i)?.uiTokenAmount.amount ?? "0");
+  return bal(meta.postTokenBalances) - bal(meta.preTokenBalances);
 }
 
 async function resolvePending(ctx: Ctx, s: State): Promise<boolean> {
@@ -184,6 +219,30 @@ async function reconcile(ctx: Ctx, s: State): Promise<"done" | "dropped" | "wait
     addCreator(s, "deposited", amount);
     logEvent({ kind: "creator-reward", signature: f.signature, amount: amount.toString(), rewardMint: ctx.cfg.creatorReward?.rewardMint ?? "XNT" });
     record(s, "creator", `deposited ${amount} reward base units into the creator's 7-day vesting vault`, f.signature);
+  } else if (f.kind === "sell" && ctx.quote) {
+    // Sold for the pair token (JACK): split what arrived the same way as XNT proceeds.
+    const amountIn = BigInt(f.amountIn ?? "0");
+    const got = tokenDelta(keys, meta, quoteAta(ctx));
+    const lpPart = BigInt(f.lpSellTokens ?? "0");
+    const lpQuote = amountIn > 0n ? (got * lpPart) / amountIn : 0n;
+    addQuote(s, "lp", lpQuote);
+    addLp(s, "sellTokens", -lpPart);
+    const creatorPart = BigInt(f.creatorSellTokens ?? "0");
+    const creatorQuote = amountIn > 0n ? (got * creatorPart) / amountIn : 0n;
+    addQuote(s, "creator", creatorQuote);
+    addCreator(s, "sellTokens", -creatorPart);
+    logEvent({ kind: "sell", signature: f.signature, tokens: amountIn.toString(), quote: got.toString(), quoteMint: ctx.quote.mint.toBase58(), lpQuote: lpQuote.toString() });
+    record(s, "sell", `${fromBaseUnits(amountIn, d)} tokens for ${fmtQuote(ctx, got)} (${fmtQuote(ctx, lpQuote)} to auto-LP)`, f.signature);
+  } else if (f.kind === "quote-swap") {
+    // Pair token (JACK) swapped to XNT: the creator's part of the XNT is set aside for them;
+    // the rest is free XNT (gas, then holders).
+    const amountIn = BigInt(f.amountIn ?? "0");
+    const creatorPart = BigInt(f.creatorQuote ?? "0");
+    const creatorXnt = amountIn > 0n ? (xntDelta * creatorPart) / amountIn : 0n;
+    addCreator(s, "xnt", creatorXnt);
+    addQuote(s, "creator", -creatorPart);
+    logEvent({ kind: "quote-swap", signature: f.signature, quote: amountIn.toString(), quoteMint: ctx.quote?.mint.toBase58(), xnt: xntDelta.toString(), creatorXnt: creatorXnt.toString() });
+    record(s, "quote-swap", `${ctx.quote ? fmtQuote(ctx, amountIn) : amountIn} for ${xnt(xntDelta)} (${xnt(creatorXnt)} for the creator)`, f.signature);
   } else if (f.kind === "sell") {
     const amountIn = BigInt(f.amountIn ?? "0");
     const lpPart = BigInt(f.lpSellTokens ?? "0");
@@ -196,6 +255,17 @@ async function reconcile(ctx: Ctx, s: State): Promise<"done" | "dropped" | "wait
     addCreator(s, "sellTokens", -creatorPart);
     logEvent({ kind: "sell", signature: f.signature, tokens: amountIn.toString(), xnt: xntDelta.toString(), lpXnt: lpXnt.toString() });
     record(s, "sell", `${fromBaseUnits(amountIn, d)} tokens for ${xnt(xntDelta)} (${xnt(lpXnt)} to auto-LP)`, f.signature);
+  } else if (ctx.quote) {
+    // Auto-LP with the pair token (JACK) from the distributor's own account.
+    const tokensUsed = -tokenDelta(keys, meta, getAssociatedTokenAddressSync(mint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID));
+    const quoteUsed = -tokenDelta(keys, meta, quoteAta(ctx));
+    addLp(s, "tokens", -tokensUsed);
+    addQuote(s, "lp", -quoteUsed); // anything left over is rebalanced next cycle
+    // The event's `xnt` is the pair side's XNT value now, so the site's "XNT added to liquidity" totals stay in XNT.
+    const xntValue = await quoteToXnt(ctx, quoteUsed).catch(() => 0n);
+    logEvent({ kind: "auto-lp", signature: f.signature, tokens: tokensUsed.toString(), xnt: xntValue.toString(),
+      quote: quoteUsed.toString(), quoteMint: ctx.quote.mint.toBase58(), lp: f.lp ?? "0" });
+    record(s, "auto-lp", `added ${fromBaseUnits(tokensUsed, d)} tokens + ${fmtQuote(ctx, quoteUsed)} (≈ ${xnt(xntValue)}) and burned the LP tokens`, f.signature);
   } else {
     const ata = getAssociatedTokenAddressSync(mint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID);
     const i = keys.findIndex((k) => k.equals(ata));
@@ -223,8 +293,9 @@ async function harvest(ctx: Ctx, s: State) {
   const mintNow = unpackMint(mint, await conn.getAccountInfo(mint), TOKEN_2022_PROGRAM_ID);
   const waiting = heldTotal + (getTransferFeeConfig(mintNow)?.withheldAmount ?? 0n);
   if (cfg.xdex.pool && waiting > 0n) {
-    const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(cfg.xdex.pool), mint);
-    const worth = (waiting * snap.reserveXnt) / snap.reserveToken;
+    const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(cfg.xdex.pool), mint, ctx.quote?.mint);
+    const inPair = spotValue(waiting, snap);
+    const worth = ctx.quote ? await quoteToXnt(ctx, inPair) : inPair;
     const min = toBaseUnits(cfg.distribution.minHarvestXnt ?? DEFAULT_MIN_HARVEST_XNT, XNT_DECIMALS);
     if (worth < min) {
       console.log(`Tax waiting is worth ~${xnt(worth)}, under minHarvestXnt (${xnt(min)}); collecting later.`);
@@ -279,13 +350,15 @@ async function balanceLp(ctx: Ctx, s: State) {
   const { conn, mint, cfg } = ctx;
   const total = BigInt(s.lp.tokens) + BigInt(s.lp.sellTokens);
   if (!cfg.xdex.pool || total === 0n) return;
-  const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(cfg.xdex.pool), mint);
-  const keep = lpKeepForBalance(total, BigInt(s.lp.xnt), snap.reserveToken, snap.reserveXnt,
+  const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(cfg.xdex.pool), mint, ctx.quote?.mint);
+  // The pair side already set aside: XNT, or the pair token (JACK) for a JACK pool.
+  const aside = ctx.quote ? BigInt(s.quote?.lp ?? "0") : BigInt(s.lp.xnt);
+  const keep = lpKeepForBalance(total, aside, snap.reserveToken, snap.reserveQuote,
     BigInt(getEpochFee(snap.feeCfg, snap.epoch).transferFeeBasisPoints), snap.tradeFeeRate);
   if (keep.toString() === s.lp.tokens) return;
   const d = ctx.decimals;
   console.log(`Auto-LP balance: keep ${fromBaseUnits(keep, d)} tokens, sell ${fromBaseUnits(total - keep, d)} `
-    + `to pair with ${xnt(BigInt(s.lp.xnt))} already set aside`);
+    + `to pair with ${ctx.quote ? fmtQuote(ctx, aside) : xnt(aside)} already set aside`);
   s.lp.tokens = keep.toString();
   s.lp.sellTokens = (total - keep).toString();
   if (ctx.execute) saveState(s);
@@ -333,10 +406,13 @@ async function sell(ctx: Ctx, s: State) {
   const programId = new PublicKey(cfg.xdex.programId);
   const q = await quoteSell(conn, programId, new PublicKey(cfg.xdex.pool), mint, balance, {
     maxImpactBps: cfg.distribution.maxPriceImpactBps, slippageBps: cfg.distribution.slippageBps,
-  });
+  }, ctx.quote?.mint);
   if (!q) { console.log("Pool too shallow to sell within the price-impact limit."); return; }
-  if (q.expectedOut < toBaseUnits(cfg.distribution.minSellXnt ?? DEFAULT_MIN_SELL_XNT, XNT_DECIMALS)) {
-    console.log(`Tokens to sell are worth only ~${xnt(q.expectedOut)}; selling later.`);
+  // Proceeds in XNT, or in the pair token (JACK) valued in XNT for the dust check.
+  const outXnt = ctx.quote ? await quoteToXnt(ctx, q.expectedOut) : q.expectedOut;
+  const out = (v: bigint) => (ctx.quote ? `${fmtQuote(ctx, v)}` : xnt(v));
+  if (outXnt < toBaseUnits(cfg.distribution.minSellXnt ?? DEFAULT_MIN_SELL_XNT, XNT_DECIMALS)) {
+    console.log(`Tokens to sell are worth only ~${xnt(outXnt)}; selling later.`);
     return;
   }
   // The auto-LP and creator shares of this sale, pro-rata to their share of everything awaiting sale.
@@ -345,18 +421,25 @@ async function sell(ctx: Ctx, s: State) {
   const creatorSell = BigInt(s.creator.sellTokens);
   const creatorPart = ((creatorSell < sellable ? creatorSell : sellable) * q.amountIn) / sellable;
   const d = ctx.decimals;
-  console.log(`Sell ${fromBaseUnits(q.amountIn, d)} (of ${fromBaseUnits(sellable, d)}) -> ~${xnt(q.expectedOut)}`
-    + ` (min ${xnt(q.minimumOut)}, impact ${Number(q.priceImpactBps) / 100}%, transfer fee ${fromBaseUnits(q.transferFee, d)})`
+  console.log(`Sell ${fromBaseUnits(q.amountIn, d)} (of ${fromBaseUnits(sellable, d)}) -> ~${out(q.expectedOut)}`
+    + (ctx.quote ? ` (≈ ${xnt(outXnt)})` : "")
+    + ` (min ${out(q.minimumOut)}, impact ${Number(q.priceImpactBps) / 100}%, transfer fee ${fromBaseUnits(q.transferFee, d)})`
     + (lpPart > 0n ? `; ${fromBaseUnits(lpPart, d)} of it for auto-LP` : "")
     + (creatorPart > 0n ? `; ${fromBaseUnits(creatorPart, d)} for the creator` : ""));
 
   if (!ctx.execute) {
-    addLp(s, "xnt", (q.expectedOut * lpPart) / q.amountIn);
+    if (ctx.quote) {
+      addQuote(s, "lp", (q.expectedOut * lpPart) / q.amountIn);
+      addQuote(s, "creator", (q.expectedOut * creatorPart) / q.amountIn);
+      ctx.projected.quote += q.expectedOut;
+    } else {
+      addLp(s, "xnt", (q.expectedOut * lpPart) / q.amountIn);
+      addCreator(s, "xnt", (q.expectedOut * creatorPart) / q.amountIn);
+      ctx.projected.xnt += q.expectedOut;
+    }
     addLp(s, "sellTokens", -lpPart);
-    addCreator(s, "xnt", (q.expectedOut * creatorPart) / q.amountIn);
     addCreator(s, "sellTokens", -creatorPart);
     ctx.projected.tokens -= q.amountIn;
-    ctx.projected.xnt += q.expectedOut;
     return;
   }
   await sendJournaled(ctx, s, await buildSell(conn, programId, distributor, mint, q), 250_000,
@@ -407,29 +490,73 @@ async function creatorReward(ctx: Ctx, s: State) {
 async function autoLp(ctx: Ctx, s: State) {
   const { conn, mint, distributor, cfg } = ctx;
   const tokens = BigInt(s.lp.tokens);
-  const lpXnt = BigInt(s.lp.xnt);
+  // The pair side: XNT, or the pair token (JACK) for a JACK pool, then valued in XNT.
+  const lpXnt = ctx.quote ? BigInt(s.quote?.lp ?? "0") : BigInt(s.lp.xnt);
   if (!cfg.xdex.pool || (tokens === 0n && lpXnt === 0n)) return;
   const d = ctx.decimals;
-  const waiting = `${fromBaseUnits(tokens, d)} tokens + ${xnt(lpXnt)}`;
-  if (tokens === 0n || lpXnt < toBaseUnits(cfg.distribution.minCycleXnt, XNT_DECIMALS)) {
-    console.log(`Auto-LP: holding ${waiting} until both sides are ready (at least minCycleXnt of XNT).`);
+  const side = (v: bigint) => (ctx.quote ? fmtQuote(ctx, v) : xnt(v));
+  const waiting = `${fromBaseUnits(tokens, d)} tokens + ${side(lpXnt)}`;
+  const pairXnt = ctx.quote ? await quoteToXnt(ctx, lpXnt) : lpXnt;
+  if (tokens === 0n || pairXnt < toBaseUnits(cfg.distribution.minCycleXnt, XNT_DECIMALS)) {
+    console.log(`Auto-LP: holding ${waiting} until both sides are ready (at least minCycleXnt of XNT${ctx.quote ? " in value" : ""}).`);
     return;
   }
   const held = await heldTokens(ctx);
+  const heldPair = ctx.quote ? await heldQuote(ctx) : lpXnt;
   const programId = new PublicKey(cfg.xdex.programId);
   const q = await quoteDeposit(conn, programId, new PublicKey(cfg.xdex.pool), mint,
-    tokens < held ? tokens : held, lpXnt, cfg.distribution.slippageBps);
+    tokens < held ? tokens : held, lpXnt < heldPair ? lpXnt : heldPair, cfg.distribution.slippageBps, ctx.quote?.mint);
   if (!q) { console.log(`Auto-LP: ${waiting} is too small to deposit yet.`); return; }
-  console.log(`Auto-LP: deposit ~${fromBaseUnits(q.tokenIn, d)} tokens + ~${xnt(q.xntIn)} (of ${waiting}), `
+  console.log(`Auto-LP: deposit ~${fromBaseUnits(q.tokenIn, d)} tokens + ~${side(q.quoteIn)} (of ${waiting}), `
     + `mint and burn ${fromBaseUnits(q.lp, q.pool.lpDecimals)} LP tokens`);
 
   if (!ctx.execute) {
-    addLp(s, "tokens", -q.tokenIn); addLp(s, "xnt", -q.xntIn);
+    addLp(s, "tokens", -q.tokenIn);
+    if (ctx.quote) { addQuote(s, "lp", -q.quoteIn); ctx.projected.quote -= q.quoteIn; }
+    else { addLp(s, "xnt", -q.quoteIn); ctx.projected.xnt -= q.quoteIn; }
     ctx.projected.tokens -= q.tokenIn;
-    ctx.projected.xnt -= q.xntIn;
     return;
   }
   await sendJournaled(ctx, s, await buildDepositAndBurn(conn, programId, distributor, mint, q), 300_000, { kind: "lp", lp: q.lp.toString() });
+}
+
+/**
+ * Pair-token tokens only: swap the JACK not set aside for auto-LP to XNT on the JACK/XNT
+ * pool, price-impact capped (what doesn't fit waits for the next cycle). The creator's
+ * share of the XNT is set aside for their reward; the rest is gas and holder payouts.
+ */
+async function swapQuote(ctx: Ctx, s: State) {
+  const { conn, cfg, distributor } = ctx;
+  const pair = ctx.quote;
+  if (!pair) return;
+  const held = await heldQuote(ctx);
+  const aside = BigInt(s.quote?.lp ?? "0");
+  const swappable = held > aside ? held - aside : 0n;
+  if (swappable === 0n) return;
+  const programId = new PublicKey(cfg.xdex.programId);
+  const q = await quoteSell(conn, programId, pair.xntPool, pair.mint, swappable, {
+    maxImpactBps: cfg.distribution.maxPriceImpactBps, slippageBps: cfg.distribution.slippageBps,
+  });
+  if (!q) { console.log(`${pair.symbol}/XNT pool too shallow to swap within the price-impact limit; ${fmtQuote(ctx, swappable)} waits.`); return; }
+  if (q.expectedOut < toBaseUnits(cfg.distribution.minSellXnt ?? DEFAULT_MIN_SELL_XNT, XNT_DECIMALS)) {
+    console.log(`${fmtQuote(ctx, swappable)} to swap is worth only ~${xnt(q.expectedOut)}; swapping later.`);
+    return;
+  }
+  // The creator's part of this swap, pro-rata to their share of the JACK awaiting it.
+  const creatorQuote = BigInt(s.quote?.creator ?? "0");
+  const creatorPart = ((creatorQuote < swappable ? creatorQuote : swappable) * q.amountIn) / swappable;
+  console.log(`Swap ${fmtQuote(ctx, q.amountIn)} (of ${fmtQuote(ctx, swappable)}) -> ~${xnt(q.expectedOut)} on the ${pair.symbol}/XNT pool`
+    + ` (min ${xnt(q.minimumOut)}, impact ${Number(q.priceImpactBps) / 100}%)`
+    + (creatorPart > 0n ? `; ${fmtQuote(ctx, creatorPart)} of it for the creator` : ""));
+  if (!ctx.execute) {
+    addCreator(s, "xnt", (q.expectedOut * creatorPart) / q.amountIn);
+    addQuote(s, "creator", -creatorPart);
+    ctx.projected.quote -= q.amountIn;
+    ctx.projected.xnt += q.expectedOut;
+    return;
+  }
+  await sendJournaled(ctx, s, await buildSell(conn, programId, distributor, pair.mint, q), 250_000,
+    { kind: "quote-swap", amountIn: q.amountIn.toString(), creatorQuote: creatorPart.toString() });
 }
 
 async function allocateNew(ctx: Ctx, s: State) {
@@ -545,7 +672,7 @@ async function sendPayouts(ctx: Ctx, s: State) {
 
 async function cycle(ctx: Ctx) {
   const s = loadState(ctx.mint.toBase58());
-  ctx.projected = { tokens: 0n, xnt: 0n };
+  ctx.projected = { tokens: 0n, xnt: 0n, quote: 0n };
   console.log(`\n=== Reflection cycle ${new Date().toISOString()} (${ctx.execute ? "EXECUTE" : "dry run"}) ===`);
   if (!(await resolvePending(ctx, s))) return;
   if ((await reconcile(ctx, s)) === "wait") return;
@@ -568,6 +695,12 @@ async function cycle(ctx: Ctx) {
   } catch (e) {
     if (s.inflight) throw e; // unresolved deposit: stop until it is reconciled
     console.error(`Auto-LP skipped this cycle: ${e instanceof Error ? e.message : e}`);
+  }
+  try {
+    await swapQuote(ctx, s);
+  } catch (e) {
+    if (s.inflight) throw e;
+    console.error(`${ctx.quote?.symbol} swap to XNT skipped this cycle: ${e instanceof Error ? e.message : e}`);
   }
   try {
     await creatorReward(ctx, s);
@@ -597,7 +730,16 @@ async function main() {
   const loopIdx = process.argv.indexOf("--loop");
   const loopMinutes = loopIdx > 0 ? Number(process.argv[loopIdx + 1]) : 0;
   if (loopIdx > 0 && !(loopMinutes >= 1)) throw new Error("--loop needs a number of minutes >= 1");
-  const ctx: Ctx = { cfg, conn, mint, distributor, execute, decimals, projected: { tokens: 0n, xnt: 0n }, clicker };
+  // A token paired with another token than XNT (JACK): read the pair's decimals and program once.
+  let quote: Ctx["quote"] = null;
+  if (cfg.xdex.quoteMint) {
+    const qMint = new PublicKey(cfg.xdex.quoteMint);
+    const info = await conn.getAccountInfo(qMint);
+    if (!info) throw new Error(`Pair token ${cfg.xdex.quoteMint} not found`);
+    quote = { mint: qMint, symbol: cfg.xdex.quoteSymbol ?? "pair token", decimals: unpackMint(qMint, info, info.owner).decimals,
+      program: info.owner, xntPool: new PublicKey(cfg.xdex.quoteXntPool!) };
+  }
+  const ctx: Ctx = { cfg, conn, mint, distributor, execute, decimals, projected: { tokens: 0n, xnt: 0n, quote: 0n }, clicker, quote };
 
   // The lock is held only while a cycle runs, so a holder-triggered run ("Distribute
   // now") can happen between scheduled cycles without the two ever overlapping.

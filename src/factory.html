@@ -205,6 +205,7 @@ table.list img { border: 1px solid var(--line); }
 @media (max-width: 760px) { .socials { grid-template-columns: minmax(0, 1fr); } }
 .lc-edit { display: grid; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
 .lc-edit[hidden] { display: none; }
+form .row[hidden], .hint[hidden] { display: none; }
 .lc-edit .socials { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 860px) { header > .sub { display: none; } }
 </style>
@@ -284,10 +285,17 @@ table.list img { border: 1px solid var(--line); }
         </fieldset>
         <fieldset>
           <legend>Launch liquidity (XDEX pool)</legend>
+          <div class="row" id="pairRow" hidden>
+            <label>Pair with
+              <select name="quote"><option value="XNT" selected>XNT</option></select>
+              <span class="hint" id="pairHint">The token your pool pairs with. Holders are paid in XNT either way.</span>
+            </label>
+          </div>
           <div class="row">
             <label>Tokens into the pool <output class="fixed-pct">100% of supply</output>
               <span class="hint">Always the whole supply. You start with no tokens, so there's no dev bag.</span></label>
-            <label>XNT into the pool <input name="poolXnt" inputmode="decimal" value="10" required></label>
+            <label><span id="poolAmtLabel">XNT into the pool</span> <input name="poolXnt" inputmode="decimal" value="10" required>
+              <span class="hint" id="poolAmtHint" hidden></span></label>
           </div>
           <div class="row">
             <label>Lock the LP
@@ -314,7 +322,7 @@ table.list img { border: 1px solid var(--line); }
       <h2>Launch progress</h2>
       <ol class="steps" id="steps">
         <li data-step="token"><span class="dot">1</span><div><div class="t">Create the token</div><div class="muted">Tax fixed forever, supply fixed, launch fee paid</div></div></li>
-        <li data-step="pool"><span class="dot">2</span><div><div class="t">Create the XDEX pool</div><div class="muted">Your tokens + XNT become the starting liquidity</div></div></li>
+        <li data-step="pool"><span class="dot">2</span><div><div class="t">Create the XDEX pool</div><div class="muted" id="poolStepNote">Your tokens + XNT become the starting liquidity</div></div></li>
         <li data-step="lock"><span class="dot">3</span><div><div class="t">Lock the LP in an NFT</div><div class="muted">You get the NFT, which collects the pool's trading fees</div></div></li>
         <li data-step="registered"><span class="dot">4</span><div><div class="t">Start distributions</div><div class="muted">The tax is collected and paid to holders in XNT</div></div></li>
       </ol>
@@ -435,7 +443,18 @@ function readForm() {
     website: String(v.website ?? "").trim(), twitter: String(v.twitter ?? "").trim(), telegram: String(v.telegram ?? "").trim(),
     supply, taxBps: Math.round(Number(v.tax) * 100), autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
     poolTokens, poolXnt: String(v.poolXnt).trim(), lockDays: v.lock === "forever" ? null : Number(v.lock),
+    quote: String(v.quote ?? "XNT"),
   };
+}
+/** The chosen pair token: XNT, or one the site offers (info.quoteTokens) with its XNT price. */
+function pairOf(symbol) {
+  const q = (info?.quoteTokens ?? []).find((t) => t.symbol === symbol);
+  return q ? { symbol: q.symbol, priceXnt: q.priceXnt } : { symbol: "XNT", priceXnt: 1 };
+}
+/** "0.0118 JACK (≈ 10 XNT)", or just "10 XNT". */
+function pairAmount(amount, pair) {
+  const a = `${fmt(amount || 0, 9)} ${pair.symbol}`;
+  return pair.symbol === "XNT" ? a : `${a}${pair.priceXnt ? ` (≈ ${fmt(Number(amount || 0) * pair.priceXnt, 4)} XNT)` : ""}`;
 }
 function renderForm() {
   const p = readForm();
@@ -450,13 +469,22 @@ function renderForm() {
     ? `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax; ${creatorPct}% goes to you and holders always keep at least 35%.`
     : `Every transfer pays ${fmt(tax, 2)}%: about ${fmt(tax - lp - burn - creator, 2)}% goes to holders in XNT, ${fmt(lp, 2)}% is added to the pool's liquidity (LP burned)` +
       (burn > 0 ? `, ${fmt(burn, 2)}% of the tokens are burned` : "") + `, and ${fmt(creator, 2)}% is your creator reward.`;
+  const pair = pairOf(p.quote);
   const price = Number(p.poolXnt) / Number(p.poolTokens || 0);
+  const sig = (n) => n.toLocaleString(undefined, { maximumSignificantDigits: 3 });
   document.getElementById("priceNote").textContent = isFinite(price) && price > 0
-    ? `Starting price ≈ ${price.toLocaleString(undefined, { maximumSignificantDigits: 3 })} XNT per token` : "";
+    ? `Starting price ≈ ${sig(price)} ${pair.symbol} per token` + (pair.symbol !== "XNT" && pair.priceXnt ? ` (≈ ${sig(price * pair.priceXnt)} XNT)` : "") : "";
+  document.getElementById("poolAmtLabel").textContent = `${pair.symbol} into the pool`;
+  document.getElementById("poolStepNote").textContent = `Your tokens + ${pair.symbol} become the starting liquidity`;
+  const amtHint = document.getElementById("poolAmtHint");
+  amtHint.hidden = pair.symbol === "XNT";
+  amtHint.textContent = pair.symbol === "XNT" ? "" : pair.priceXnt
+    ? `≈ ${fmt(Number(p.poolXnt || 0) * pair.priceXnt, 4)} XNT at today's ${pair.symbol} price (1 ${pair.symbol} ≈ ${fmt(pair.priceXnt, 2)} XNT). Comes from your ${pair.symbol}.`
+    : `Comes from your ${pair.symbol}.`;
   const costs = document.getElementById("costs");
   const rows = [
     ["Launch fee", info ? `${info.feeAmount} ${info.feeSymbol}` : "…"],
-    ["XNT into the pool", `${fmt(p.poolXnt || 0)} XNT`],
+    [`${pair.symbol} into the pool`, pairAmount(p.poolXnt, pair)],
     ["XDEX pool creation fee", info?.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "…"],
     ["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"],
     ["Account rent and network fees", "≈ 0.03 XNT"],
@@ -477,6 +505,13 @@ function clampSplit(changed) {
 }
 form.addEventListener("input", (ev) => { clampSplit(ev.target); renderForm(); });
 form.addEventListener("change", (ev) => { clampSplit(ev.target); renderForm(); });
+// Switching the pair resets the pool amount to about 10 XNT's worth of the new pair token,
+// so a JACK pool never starts from the XNT default (10 JACK is thousands of XNT).
+form.elements.quote.addEventListener("change", () => {
+  const pair = pairOf(form.elements.quote.value);
+  form.elements.poolXnt.value = pair.symbol === "XNT" || !pair.priceXnt ? "10" : String(Number((10 / pair.priceXnt).toPrecision(2)));
+  renderForm();
+});
 
 // ---------- Launch flow ----------
 let running = false;
@@ -537,7 +572,8 @@ form.addEventListener("submit", async (ev) => {
   const p = readForm();
   const lock = p.lockDays === null ? "locked FOREVER" : `locked for ${p.lockDays} days`;
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax.`); return; }
-  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${p.poolXnt} XNT, LP ${lock}\n• Launch fee ${info.feeAmount} ${info.feeSymbol}\n• Your creator reward: ${(info.creatorBps ?? 1000) / 100}% of the tax, paid in ${info.creatorRewardSymbol ?? "USDC"}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain).`);
+  const pair = pairOf(p.quote);
+  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${pairAmount(p.poolXnt, pair)}, LP ${lock}${pair.symbol !== "XNT" ? `\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT` : ""}\n• Launch fee ${info.feeAmount} ${info.feeSymbol}\n• Your creator reward: ${(info.creatorBps ?? 1000) / 100}% of the tax, paid in ${info.creatorRewardSymbol ?? "USDC"}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain).`);
   if (!ok) return;
   running = true; renderWallet();
   document.getElementById("launchResult").replaceChildren();
@@ -690,7 +726,9 @@ function launchCard(l) {
   if (fe) {
     const mineNft = !!fe.holder && fe.holder === W.state.address;
     const netFee = fe.networkFee ? Number(fe.networkFee) / 1e9 : null;
-    rows.push(row("Trading fees", [`${fmt(Number(fe.worth) / 1e9, 6)} XNT ready`, mineNft ? null : el("span", { class: "muted", text: ` · only the NFT holder (${short(fe.holder)}) can collect` }),
+    // A JACK pool's fees are tokens + JACK; worth is their XNT value.
+    const pairFees = fe.quote && fe.quote !== "XNT";
+    rows.push(row("Trading fees", [`${pairFees ? "≈ " : ""}${fmt(Number(fe.worth) / 1e9, 6)} XNT ready${pairFees ? ` (paid as ${l.symbol} + ${fe.quote})` : ""}`, mineNft ? null : el("span", { class: "muted", text: ` · only the NFT holder (${short(fe.holder)}) can collect` }),
       netFee !== null ? el("div", { class: "muted", text: `Network fee to collect ≈ ${fmt(netFee, 6)} XNT` }) : null],
       mineNft ? btn("Collect fees", "primary", () => collectFees(l.lockNft), !fe.collectable,
         fe.collectable ? "" : netFee !== null && Number(fe.worth) > 0 ? "Fees ready are less than the network fee to collect them; wait for more trading" : "Nothing worth collecting yet; fees grow as people trade") : null));
@@ -885,6 +923,14 @@ async function loadTokens() {
       renderForm();
     }
     if (info.lockerUpgradeable) document.getElementById("lockerNoteLi").hidden = false;
+    // Pair choice: only when the site offers pair tokens besides XNT.
+    if (info.quoteTokens?.length) {
+      const sel = form.elements.quote;
+      for (const q of info.quoteTokens) sel.append(el("option", { value: q.symbol, text: q.symbol }));
+      document.getElementById("pairRow").hidden = false;
+      document.getElementById("pairHint").textContent = `Pair your token with XNT or ${info.quoteTokens.map((q) => q.symbol).join(" or ")}. `
+        + "A pair other than XNT goes into the pool from your wallet; XDEX's pool fee and the distributor's gas are still XNT, and holders are paid in XNT.";
+    }
     document.getElementById("creatorShare").textContent = `${(info.creatorBps ?? 1000) / 100}%`;
     document.getElementById("creatorHint").textContent =
       `Fixed. Paid in ${info.creatorRewardSymbol}, vests 7 days, claimed with your LP-lock NFT (whoever holds it can claim).`;

@@ -5,7 +5,9 @@
  *              token's own distributor wallet), mint the supply to the creator, revoke
  *              the mint authority, pay the launch fee in USDC and pre-fund the
  *              distributor's gas
- *   2. pool    create the TOKEN/XNT pool on XDEX with the creator's tokens and XNT
+ *   2. pool    create the TOKEN/XNT pool on XDEX with the creator's tokens and XNT (or,
+ *              when the creator picks another allowed pair such as JACK, the TOKEN/JACK
+ *              pool with their JACK; XDEX's pool fee is still paid in XNT)
  *   3. lock    lock all the creator's LP in an lp_locker NFT (forever or until a date)
  *
  * Each launch is recorded under factory/launches/<mint>/. The distributor keypair is
@@ -15,6 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { NATIVE_MINT } from "@solana/spl-token";
 import {
   AuthorityType, ExtensionType, LENGTH_SIZE, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TYPE_SIZE,
   createAssociatedTokenAccountIdempotentInstruction, createInitializeMetadataPointerInstruction,
@@ -96,11 +99,34 @@ export interface LaunchParams {
   autoLpBps: number;     // 0..5000 share of the tax that goes to auto-LP
   burnBps: number;       // 0..5000 share of the tax that is burned (auto-LP + burn <= 65%)
   poolTokens: string;    // whole tokens seeded into the pool; always the whole supply
-  poolXnt: string;       // XNT seeded into the pool
+  /**
+   * Amount of the pair token seeded into the pool: XNT, or e.g. JACK for a JACK pair. The
+   * name stays poolXnt so existing launch records keep working.
+   */
+  poolXnt: string;
   lockDays: number | null; // null = forever
+  /** Pair token symbol: "XNT" (default) or one of factory.quoteTokens. */
+  quote?: string;
+}
+
+/** A launch's pair token: XNT, or an entry of factory.quoteTokens (JACK). */
+export interface Pair { symbol: string; mint: PublicKey; xntPool: PublicKey | null }
+export const XNT_PAIR: Pair = { symbol: "XNT", mint: NATIVE_MINT, xntPool: null };
+
+/** The pair token a launch (or launch request) uses; records without `quote` are XNT. */
+export function pairOf(cfg: Config, r: { quote?: string; quoteMint?: string; quoteXntPool?: string }): Pair {
+  if (!r.quote || r.quote === "XNT") return XNT_PAIR;
+  // A recorded launch keeps its own pair even if the allowlist changes later.
+  if (r.quoteMint && r.quoteXntPool) return { symbol: r.quote, mint: new PublicKey(r.quoteMint), xntPool: new PublicKey(r.quoteXntPool) };
+  const q = (cfg.factory?.quoteTokens ?? []).find((t) => t.symbol === r.quote);
+  if (!q) throw new Error(`${r.quote} isn't a pair offered on this site`);
+  return { symbol: q.symbol, mint: new PublicKey(q.mint), xntPool: new PublicKey(q.xntPool) };
 }
 
 export interface LaunchRecord extends LaunchParams {
+  /** Pair token (non-XNT pairs only): its mint and its XNT pool, fixed at launch. */
+  quoteMint?: string;
+  quoteXntPool?: string;
   mint: string;
   distributor: string;
   pool: string;
@@ -122,8 +148,11 @@ export const creatorExcluded = (r: Pick<LaunchParams, "poolTokens" | "supply"> &
   // A curve's creator can't buy on it and gets no tokens, so there's no bag to exclude.
   r.kind === "curve" ? false : BigInt(r.poolTokens) < BigInt(r.supply);
 
-/** Validate and normalise untrusted launch input. */
-export function validateParams(raw: Record<string, unknown>): LaunchParams {
+/**
+ * Validate and normalise untrusted launch input. `quoteSymbols` are the pair tokens the
+ * site offers besides XNT (factory.quoteTokens); anything else is refused.
+ */
+export function validateParams(raw: Record<string, unknown>, quoteSymbols: string[] = []): LaunchParams {
   const str = (k: string, max: number, re?: RegExp) => {
     const v = String(raw[k] ?? "").trim();
     if (!v || v.length > max || (re && !re.test(v))) throw new Error(`Invalid ${k}`);
@@ -161,8 +190,15 @@ export function validateParams(raw: Record<string, unknown>): LaunchParams {
   // The whole supply always goes into the pool: creators start with no tokens.
   const poolTokens = whole("poolTokens", 1n, BigInt(supply));
   if (poolTokens !== supply) throw new Error("The whole supply must go into the pool (100%)");
+  const quote = String(raw.quote ?? "XNT").trim() || "XNT";
+  if (quote !== "XNT" && !quoteSymbols.includes(quote)) throw new Error(`${quote.slice(0, 20)} isn't a pair offered on this site`);
   const poolXnt = String(raw.poolXnt ?? "").trim();
-  if (!/^\d+(\.\d{1,9})?$/.test(poolXnt) || !(Number(poolXnt) >= 0.01)) throw new Error("Pool XNT must be at least 0.01");
+  if (quote === "XNT") {
+    if (!/^\d+(\.\d{1,9})?$/.test(poolXnt) || !(Number(poolXnt) >= 0.01)) throw new Error("Pool XNT must be at least 0.01");
+  } else if (!/^\d+(\.\d{1,9})?$/.test(poolXnt) || !(Number(poolXnt) > 0)) {
+    // Its XNT value is checked by the server (at least 0.01 XNT at the pair's price).
+    throw new Error(`Pool ${quote} must be a positive amount (up to 9 decimals)`);
+  }
   const int = (k: string, min: number, max: number) => {
     const v = Number(raw[k]);
     if (!Number.isInteger(v) || v < min || v > max) throw new Error(`Invalid ${k}`);
@@ -176,7 +212,7 @@ export function validateParams(raw: Record<string, unknown>): LaunchParams {
     throw new Error("Liquidity + burn can't exceed 55% of the tax (10% goes to the creator; holders keep at least 35%)");
   }
   const lockDays = raw.lockDays === null || raw.lockDays === "forever" ? null : int("lockDays", 1, 3650);
-  return { creator, name, symbol, description, image, website, twitter, telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays };
+  return { creator, name, symbol, description, image, website, twitter, telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, quote };
 }
 
 const launchDir = (mint: string) => path.join(FACTORY_DIR, "launches", mint);
@@ -193,7 +229,8 @@ export const readLaunch = (mint: string): LaunchRecord | null => {
 export async function buildMetadataUpdate(conn: Connection, cfg: Config, r: LaunchRecord, raw: Record<string, unknown>, publicUrl: string) {
   if (!ipfsEnabled(cfg)) throw new Error("Metadata updates need IPFS uploads set up on this site.");
   // poolTokens: a curve launch records the pool's share, but the shared checks want the whole supply.
-  const p = validateParams({ ...r, poolTokens: r.supply, image: raw.image, description: raw.description, website: raw.website, twitter: raw.twitter, telegram: raw.telegram });
+  const p = validateParams({ ...r, poolTokens: r.supply, image: raw.image, description: raw.description, website: raw.website, twitter: raw.twitter, telegram: raw.telegram },
+    r.quote ? [r.quote] : []);
   const next = { image: p.image, description: p.description, website: p.website, twitter: p.twitter, telegram: p.telegram };
   const mint = new PublicKey(r.mint);
   const creator = new PublicKey(r.creator);
@@ -303,10 +340,14 @@ function saveNewLaunch(record: LaunchRecord, distributor: Keypair) {
 
 /** Step 1: new mint + distributor wallet; returns the instructions and the mint keypair to co-sign. */
 export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string) {
+  const pair = pairOf(cfg, p);
   const { ixs, mintKp, distributor } = await buildMintSetup(conn, cfg, p, publicUrl, () => null);
   const mint = mintKp.publicKey;
-  const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint).pool;
-  const record: LaunchRecord = { ...p, mint: mint.toBase58(), distributor: distributor.publicKey.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString() };
+  const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint, pair.mint).pool;
+  const record: LaunchRecord = {
+    ...p, ...(pair.xntPool ? { quoteMint: pair.mint.toBase58(), quoteXntPool: pair.xntPool.toBase58() } : {}),
+    mint: mint.toBase58(), distributor: distributor.publicKey.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
+  };
   saveNewLaunch(record, distributor);
   return { ixs, signers: [mintKp], record };
 }
@@ -316,7 +357,7 @@ export function validateCurveParams(raw: Record<string, unknown>): LaunchParams 
   // The pool fields are fixed for a curve (the program seeds the pool at graduation), so
   // fill them in before the shared checks.
   const supply = String(raw.supply ?? "").trim();
-  const p = validateParams({ ...raw, poolTokens: supply, poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null });
+  const p = validateParams({ ...raw, poolTokens: supply, poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null, quote: "XNT" });
   if (BigInt(p.supply) > CURVE_SUPPLY_MAX) throw new Error(`Supply must be a whole number from 1,000 to ${CURVE_SUPPLY_MAX.toLocaleString("en-US")}`);
   return p;
 }
@@ -342,10 +383,18 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
   return { ixs, signers: [mintKp], record };
 }
 
-/** Step 2: create the XDEX pool with the creator's tokens and XNT. */
-export function buildPoolStep(cfg: Config, r: LaunchRecord) {
+/** Step 2: create the XDEX pool with the creator's tokens and XNT (or their pair token, e.g. JACK). */
+export async function buildPoolStep(conn: Connection, cfg: Config, r: LaunchRecord) {
+  const pair = pairOf(cfg, r);
+  if (!pair.xntPool) {
+    return buildCreatePool(new PublicKey(cfg.xdex.programId), cfg.network, new PublicKey(r.creator), new PublicKey(r.mint),
+      toBaseUnits(r.poolTokens, DECIMALS), toBaseUnits(r.poolXnt, 9));
+  }
+  const info = await conn.getAccountInfo(pair.mint, "confirmed");
+  if (!info) throw new Error(`${pair.symbol} not found on this network`);
+  const decimals = unpackMint(pair.mint, info, info.owner).decimals;
   return buildCreatePool(new PublicKey(cfg.xdex.programId), cfg.network, new PublicKey(r.creator), new PublicKey(r.mint),
-    toBaseUnits(r.poolTokens, DECIMALS), toBaseUnits(r.poolXnt, 9));
+    toBaseUnits(r.poolTokens, DECIMALS), toBaseUnits(r.poolXnt, decimals), pair.mint, info.owner);
 }
 
 /** Step 3: lock all the creator's LP for this pool in an lp_locker NFT. */
@@ -434,12 +483,15 @@ async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
 /** The token's own distributor config (factory/launches/<mint>/config.json); marks the launch registered. */
 function writeTokenConfig(cfg: Config, r: LaunchRecord, lockNft: string) {
   const dir = launchDir(r.mint);
+  const pair = pairOf(cfg, r);
   const tokenCfg: Config = {
     ...cfg,
     token: { name: r.name, symbol: r.symbol, uri: "", decimals: DECIMALS, supply: r.supply, feeBps: r.taxBps, launchGrace: false },
     mint: r.mint,
     keypairs: { ...cfg.keypairs, distributor: path.relative(ROOT, path.join(dir, "distributor.json")) },
-    xdex: { ...cfg.xdex, pool: r.pool },
+    // A JACK pair tells the distributor to sell for JACK and swap it to XNT on JACK's XNT pool.
+    xdex: { ...cfg.xdex, pool: r.pool,
+      ...(pair.xntPool ? { quoteMint: pair.mint.toBase58(), quoteSymbol: pair.symbol, quoteXntPool: pair.xntPool.toBase58() } : {}) },
     distribution: {
       ...cfg.distribution, autoLpBps: r.autoLpBps, burnBps: r.burnBps ?? 0, creatorBps: CREATOR_BPS,
       minHoldingTokens: minHoldingFor(r.supply),

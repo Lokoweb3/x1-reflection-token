@@ -23,7 +23,13 @@ export interface Config {
     supply: string; feeBps: number; launchGrace: boolean;
   };
   mint: string;
-  xdex: { programId: string; pool: string };
+  /**
+   * The token's XDEX pool. A token paired with another token than XNT (a factory launch
+   * paired with JACK) also names that pair token (`quoteMint`, `quoteSymbol`) and its deep
+   * XNT pool (`quoteXntPool`): the distributor sells tax for the pair token and swaps it
+   * to XNT there. Without `quoteMint` the pool is TOKEN/XNT.
+   */
+  xdex: { programId: string; pool: string; quoteMint?: string; quoteSymbol?: string; quoteXntPool?: string };
   /** lp_locker program (LP locked forever behind a fee-claiming NFT). */
   locker?: { programId: string; nftUri?: string };
   /**
@@ -65,6 +71,13 @@ export interface Config {
      * buyers' tokens (pays the fees, earns the graduation reward); no crank without it.
      */
     curve?: { programId: string; crankKeypair?: string };
+    /**
+     * Tokens a launch may pair with instead of XNT (XNT is always offered and the default).
+     * `xntPool` is that token's deep XNT pool on XDEX: the distributor swaps it to XNT there
+     * for gas, holder payouts and the creator reward, and the site prices it in XNT. Only
+     * tokens without a transfer fee work as a pair.
+     */
+    quoteTokens?: { mint: string; symbol: string; xntPool: string }[];
   };
   distribution: {
     minHoldingTokens: string;
@@ -123,6 +136,10 @@ export function loadConfig(): Config {
   if (!Number.isInteger(creator) || creator < 0 || creator > 10_000) throw new Error("distribution.creatorBps must be 0..10000");
   if (lp + burn + creator > 10_000) throw new Error("distribution.autoLpBps + burnBps + creatorBps can't exceed 10000 (100% of the tax)");
   if (creator > 0 && !cfg.creatorReward?.nftMint) throw new Error("creatorBps needs creatorReward.nftMint (the lock NFT that claims it)");
+  if (cfg.xdex.quoteMint && !cfg.xdex.quoteXntPool) throw new Error("xdex.quoteMint needs xdex.quoteXntPool (its XNT pool, where it is swapped to XNT)");
+  for (const q of cfg.factory?.quoteTokens ?? []) {
+    if (!q.mint || !q.symbol || !q.xntPool || q.symbol.toUpperCase() === "XNT") throw new Error("factory.quoteTokens entries need mint, symbol (not XNT) and xntPool");
+  }
   return cfg;
 }
 

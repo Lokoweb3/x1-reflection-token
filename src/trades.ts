@@ -10,6 +10,10 @@
  *
  * Positions use the average-cost method: a buy adds its XNT to the cost; a sell removes
  * cost in proportion to the tokens sold and books realized profit.
+ *
+ * A token paired with JACK is priced in JACK instead: each trade's `xnt` field then holds
+ * the signer's JACK change (the leaderboard labels it), since a JACK/XNT price at the time
+ * of each old trade isn't available.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -29,8 +33,11 @@ function loadIndex(stateDir: string): Index {
   return JSON.parse(fs.readFileSync(f, "utf8"));
 }
 
-/** The signer's token and XNT change in one swap, or null if it isn't a swap. */
-export function parseSwap(tx: VersionedTransactionResponse, mint: string): Omit<Trade, "sig" | "at"> | null {
+/**
+ * The signer's token and XNT change in one swap, or null if it isn't a swap. With a
+ * `quoteMint` other than XNT (JACK) the second amount is the signer's JACK change.
+ */
+export function parseSwap(tx: VersionedTransactionResponse, mint: string, quoteMint?: string): Omit<Trade, "sig" | "at"> | null {
   if (!tx.meta || tx.meta.err) return null;
   const logs = tx.meta.logMessages ?? [];
   if (!logs.some((l) => /Instruction: Swap(BaseInput|BaseOutput)/.test(l))) return null;
@@ -40,6 +47,13 @@ export function parseSwap(tx: VersionedTransactionResponse, mint: string): Omit<
     (arr ?? []).filter((b) => b.owner === wallet && b.mint === m).reduce((a, b) => a + BigInt(b.uiTokenAmount.amount), 0n);
   const tokens = sum(tx.meta.postTokenBalances, mint) - sum(tx.meta.preTokenBalances, mint);
   if (tokens === 0n) return null;
+  if (quoteMint && quoteMint !== NATIVE_MINT.toBase58()) {
+    const quote = sum(tx.meta.postTokenBalances, quoteMint) - sum(tx.meta.preTokenBalances, quoteMint);
+    // No JACK moved: routed through another pool in the same transaction, so the price is
+    // unknown; leave it out (those tokens count as "cost unknown").
+    if (quote === 0n) return null;
+    return { wallet, tokens: tokens.toString(), xnt: quote.toString() };
+  }
   // XNT: lamports (plus any wrapped XNT) changed, ignoring the network fee and rent for
   // token accounts the swap opened for this wallet.
   let xnt = BigInt(tx.meta.postBalances[0] - tx.meta.preBalances[0] + tx.meta.fee)
@@ -50,7 +64,7 @@ export function parseSwap(tx: VersionedTransactionResponse, mint: string): Omit<
 }
 
 /** Read swaps newer than the last refresh and add them to the index. */
-export async function refreshTrades(conn: Connection, pool: PublicKey, mint: string, stateDir: string) {
+export async function refreshTrades(conn: Connection, pool: PublicKey, mint: string, stateDir: string, quoteMint?: string) {
   const idx = loadIndex(stateDir);
   const fresh: { signature: string; blockTime?: number | null; err: unknown }[] = [];
   // RPCs drop old history, so the last-seen signature can vanish; then `until` fails and
@@ -80,7 +94,7 @@ export async function refreshTrades(conn: Connection, pool: PublicKey, mint: str
     const batch = ok.slice(i, i + 50);
     const txs = await conn.getTransactions(batch.map((s) => s.signature), { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
     txs.forEach((tx, j) => {
-      const t = tx && parseSwap(tx, mint);
+      const t = tx && parseSwap(tx, mint, quoteMint);
       if (t) idx.trades.push({ sig: batch[j].signature, at: tx!.blockTime ?? batch[j].blockTime ?? 0, ...t });
     });
   }

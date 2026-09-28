@@ -22,7 +22,7 @@ import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
 import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
-  CREATOR_BPS, CREATOR_REWARD, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
+  CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch,
   registeredLaunches, validateParams,
 } from "./factory/launch.js";
@@ -31,14 +31,14 @@ import { readRewardVault, rewardSummary } from "./locker.js";
 import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, receiptImage } from "./locker-tx.js";
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
-import { snapshot } from "./xdex.js";
+import { snapshot, spotValue } from "./xdex.js";
 import { positions, refreshTrades } from "./trades.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
 import { MAX_LOGO_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
-import { TOKEN_2022_PROGRAM_ID, getTokenMetadata } from "@solana/spl-token";
+import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, getTokenMetadata, getTransferFeeConfig, unpackAccount } from "@solana/spl-token";
 import { findTarget, readiness, runCycle, targets, tipInstruction, verifyTip } from "./factory/trigger.js";
-import { Config, toBaseUnits } from "./config.js";
+import { Config, fromBaseUnits, toBaseUnits } from "./config.js";
 import { BURN_OWNERS, eligibleBalances, scanTokenAccounts } from "./holders.js";
 import { poolAuthority } from "./xdex.js";
 import { unpackMint } from "@solana/spl-token";
@@ -106,6 +106,69 @@ async function creatorRewards(lockNft: string | null | undefined) {
     nextAmount: s.nextAmount.toString(), symbol: rewardSymbol, decimals: rewardDecimals };
 }
 
+// ---------- Pair tokens (launches paired with JACK instead of XNT) ----------
+
+/** Pair tokens a launch may choose besides XNT (factory.quoteTokens). */
+const quoteTokens = f.quoteTokens ?? [];
+const xdexId = new PublicKey(cfg.xdex.programId);
+
+/** A token's pair: from its launch record, or config.json for the main token; XNT otherwise. */
+function pairForMint(mint: string): Pair {
+  let r = null;
+  try { r = readLaunch(mint); } catch { /* not a launch */ }
+  if (r) return pairOf(cfg, r);
+  if (cfg.mint === mint && cfg.xdex.quoteMint) {
+    return { symbol: cfg.xdex.quoteSymbol ?? "pair", mint: new PublicKey(cfg.xdex.quoteMint), xntPool: new PublicKey(cfg.xdex.quoteXntPool!) };
+  }
+  return XNT_PAIR;
+}
+
+/**
+ * Values a pair token in XNT at its XNT pool's spot price (cached 30 s). For XNT itself
+ * the identity. `xntPer` is XNT per whole pair token.
+ */
+const pairPriceCache = new Map<string, { at: number; snap: Promise<{ reserveToken: bigint; reserveQuote: bigint; decimals: number }> }>();
+async function pairValue(pair: Pair) {
+  if (!pair.xntPool) return { symbol: "XNT", toXnt: (v: bigint) => v, xntPer: 1 };
+  const key = pair.xntPool.toBase58();
+  let hit = pairPriceCache.get(key);
+  if (!hit || Date.now() - hit.at > 30_000) {
+    const snap = Promise.all([snapshot(conn, xdexId, pair.xntPool, pair.mint), conn.getAccountInfo(pair.mint)]).then(([sn, info]) => ({
+      reserveToken: sn.reserveToken, reserveQuote: sn.reserveQuote, decimals: unpackMint(pair.mint, info, info!.owner).decimals,
+    }));
+    hit = { at: Date.now(), snap };
+    snap.catch(() => pairPriceCache.delete(key));
+    pairPriceCache.set(key, hit);
+  }
+  const sn = await hit.snap;
+  return {
+    symbol: pair.symbol, toXnt: (v: bigint) => spotValue(v, sn),
+    xntPer: (Number(sn.reserveQuote) / 1e9) / (Number(sn.reserveToken) / 10 ** sn.decimals),
+  };
+}
+
+/** Which pool/token buildCollect acts on, with the pair valued in XNT for non-XNT pools. */
+async function whereFor(pool: string, mint: string, symbol: string) {
+  const pair = pairForMint(mint);
+  const base = { pool: new PublicKey(pool), mint: new PublicKey(mint), symbol, quoteSymbol: pair.symbol };
+  return pair.xntPool ? { ...base, quoteToXnt: (await pairValue(pair)).toXnt } : base;
+}
+
+/** Refuse early, in plain words, when a wallet holds less than `amount` of the pair token. */
+async function requirePairTokens(wallet: PublicKey, pair: Pair, amount: string, what: string) {
+  const info = await conn.getAccountInfo(pair.mint);
+  if (!info) throw new Error(`${pair.symbol} not found on this network`);
+  const m = unpackMint(pair.mint, info, info.owner);
+  // Pool maths and the distributor assume the pair token arrives in full.
+  if (getTransferFeeConfig(m)) throw new Error(`${pair.symbol} has a transfer fee, so it can't be used as a pair.`);
+  const ata = getAssociatedTokenAddressSync(pair.mint, wallet, false, info.owner);
+  const acc = await conn.getAccountInfo(ata);
+  const have = acc ? unpackAccount(ata, acc, info.owner).amount : 0n;
+  if (have < toBaseUnits(amount, m.decimals)) {
+    throw new Error(`${what} needs ${amount} ${pair.symbol} in this wallet; it has ${fromBaseUnits(have, m.decimals)}. Get ${pair.symbol} first (it trades on XDEX), or use less for the pool.`);
+  }
+}
+
 /** Metadata updates waiting for their on-chain transaction (applied by /api/launch/metadata/confirm). */
 const pendingMeta = new Map<string, { uri: string; next: Record<string, unknown>; at: number }>();
 /**
@@ -155,11 +218,13 @@ async function requireNftHolder(nft: PublicKey, wallet: PublicKey) {
 }
 
 /** Refuse early, in plain words, when a wallet can't cover `need` XNT (pool, XDEX's fee, gas and network fees). */
-async function requireXnt(wallet: PublicKey, need: number, what: string) {
+async function requireXnt(wallet: PublicKey, need: number, what: string, forWhat?: string) {
   const have = (await conn.getBalance(wallet)) / 1e9;
   if (have < need) {
     const f2 = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 });
-    throw new Error(`${what} needs about ${f2(need)} XNT in this wallet (the pool's XNT, XDEX's pool fee and network fees); it has ${f2(have)}. Add XNT, or use less XNT for the pool.`);
+    throw new Error(forWhat
+      ? `${what} needs about ${f2(need)} XNT in this wallet (${forWhat}); it has ${f2(have)}. Add XNT.`
+      : `${what} needs about ${f2(need)} XNT in this wallet (the pool's XNT, XDEX's pool fee and network fees); it has ${f2(have)}. Add XNT, or use less XNT for the pool.`);
   }
 }
 
@@ -174,12 +239,22 @@ function ownLaunch(body: Record<string, unknown>) {
 async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/launch/token") {
     rateLimit("launch", ip, "launches started");
-    const p = validateParams(body);
+    const p = validateParams(body, quoteTokens.map((q) => q.symbol));
     if (f!.lockForeverOnly && p.lockDays !== null) throw new Error("Launches on this site lock their liquidity forever.");
     // Check the wallet can afford the whole launch before step 1 charges the fee: otherwise
     // a creator pays the launch fee and then gets stuck at the pool step.
-    await requireXnt(new PublicKey(p.creator), Number(p.poolXnt) + ((await poolCreateFee()) ?? 0.1) + Number(f!.gasXnt ?? "0.05") + 0.05,
-      `Launching with ${p.poolXnt} XNT in the pool`);
+    const pair = pairOf(cfg, p);
+    if (!pair.xntPool) {
+      await requireXnt(new PublicKey(p.creator), Number(p.poolXnt) + ((await poolCreateFee()) ?? 0.1) + Number(f!.gasXnt ?? "0.05") + 0.05,
+        `Launching with ${p.poolXnt} XNT in the pool`);
+    } else {
+      // A JACK pair: the pool's JACK from the creator's JACK, everything else (XDEX's pool fee, gas, fees) in XNT.
+      const worth = Number(p.poolXnt) * (await pairValue(pair)).xntPer;
+      if (!(worth >= 0.01)) throw new Error(`Pool ${pair.symbol} must be worth at least 0.01 XNT (${p.poolXnt} ${pair.symbol} ≈ ${worth.toPrecision(3)} XNT).`);
+      await requirePairTokens(new PublicKey(p.creator), pair, p.poolXnt, `Launching with ${p.poolXnt} ${pair.symbol} in the pool`);
+      await requireXnt(new PublicKey(p.creator), ((await poolCreateFee()) ?? 0.1) + Number(f!.gasXnt ?? "0.05") + 0.05,
+        `Launching with a ${pair.symbol} pool`, `XDEX's pool fee, the distributor's gas and network fees`);
+    }
     const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
@@ -189,8 +264,14 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const s = await launchStatus(conn, cfg, r);
     if (!s.token) throw new Error("Step 1 (token) hasn't confirmed yet.");
     if (s.pool) throw new Error("The pool already exists.");
-    await requireXnt(new PublicKey(r.creator), Number(r.poolXnt) + ((await poolCreateFee()) ?? 0.1) + 0.03, `Creating the pool with ${r.poolXnt} XNT`);
-    const { ixs } = buildPoolStep(cfg, r);
+    const pair = pairOf(cfg, r);
+    if (!pair.xntPool) {
+      await requireXnt(new PublicKey(r.creator), Number(r.poolXnt) + ((await poolCreateFee()) ?? 0.1) + 0.03, `Creating the pool with ${r.poolXnt} XNT`);
+    } else {
+      await requirePairTokens(new PublicKey(r.creator), pair, r.poolXnt, `Creating the pool with ${r.poolXnt} ${pair.symbol}`);
+      await requireXnt(new PublicKey(r.creator), ((await poolCreateFee()) ?? 0.1) + 0.03, `Creating the ${pair.symbol} pool`, `XDEX's pool fee and network fees`);
+    }
+    const { ixs } = await buildPoolStep(conn, cfg, r);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], opts) };
   }
   if (url === "/api/launch/lock") {
@@ -269,7 +350,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     }
     const d = await receiptData(conn, cfg, nft);
     if (!d) throw new Error("That isn't an LP-lock NFT from this locker.");
-    const { ixs, summary } = await buildCollect(conn, cfg, holder, nft, false, nftTarget(d));
+    const { ixs, summary } = await buildCollect(conn, cfg, holder, nft, false, await nftTarget(d));
     if (!ixs) throw new Error(summary.feeLp > 0n ? "Fees ready are still dust; wait for more trading." : "No trading fees to collect yet.");
     return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
   }
@@ -360,7 +441,7 @@ async function nftView(mintStr: string) {
   ]);
   const onChain = meta ? receiptImage(meta.uri) : null;
   // Trading fees this NFT's liquidity has earned, as its current holder would collect them.
-  const fees = holder ? await collectQuote(holder.owner, nft, nftTarget(d)).catch(() => null) : null;
+  const fees = holder ? await collectQuote(holder.owner, nft, await nftTarget(d)).catch(() => null) : null;
   return {
     fees, rewards: await creatorRewards(mintStr),
     ...d, explorer, name: meta?.name ?? `${d.symbol} LP Lock`,
@@ -397,7 +478,7 @@ function allNfts() {
 
 /** What X1 charges to collect LP fees. Every collect has the same shape, so quote once per 10 minutes. */
 let collectFeeCache: { at: number; fee: bigint | null } | null = null;
-async function collectFeeEstimate(sample: { holder: PublicKey; nft: PublicKey; where: { pool: PublicKey; mint: PublicKey; symbol: string } }) {
+async function collectFeeEstimate(sample: { holder: PublicKey; nft: PublicKey; where: Where }) {
   if (collectFeeCache && Date.now() - collectFeeCache.at < 600_000) return collectFeeCache.fee;
   const q = await collectQuote(sample.holder, sample.nft, sample.where).catch(() => null);
   collectFeeCache = { at: Date.now(), fee: q?.networkFee ? BigInt(q.networkFee) : null };
@@ -408,14 +489,16 @@ async function buildNfts() {
   const programId = new PublicKey(cfg.locker!.programId);
   // Every token, and every lock within it, is read in parallel.
   const perToken = await Promise.all(targets(cfg).map(async (t) => {
-    const [snap, locks] = await Promise.all([
-      snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint)),
+    const pair = pairForMint(t.mint);
+    const [snap, locks, value, where] = await Promise.all([
+      snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint), pair.mint),
       listLocks(conn, programId, new PublicKey(t.pool)),
+      pairValue(pair), whereFor(t.pool, t.mint, t.symbol),
     ]);
     const supply = snap.pool.lpSupply;
-    const lpXnt = (lp: bigint) => (supply > 0n ? (lp * 2n * snap.reserveXnt) / supply : 0n);
-    const sqrtK = isqrt(snap.reserveToken * snap.reserveXnt);
-    const where = { pool: new PublicKey(t.pool), mint: new PublicKey(t.mint), symbol: t.symbol };
+    // In XNT: a JACK pool's JACK side is valued at the JACK/XNT pool price.
+    const lpXnt = (lp: bigint) => (supply > 0n ? value.toXnt((lp * 2n * snap.reserveQuote) / supply) : 0n);
+    const sqrtK = isqrt(snap.reserveToken * snap.reserveQuote);
     return Promise.all(locks.map(async (l) => {
       const [lp, holder, meta, rw] = await Promise.all([
         lockedLp(conn, programId, l.address), nftHolder(conn, l.nftMint),
@@ -445,18 +528,20 @@ async function buildNfts() {
  * Trading fees an NFT's holder could collect now, the network fee to collect them, and
  * whether collecting is worth it (fees ready > network fee).
  */
-async function collectQuote(holder: PublicKey, nft: PublicKey, where: { pool: PublicKey; mint: PublicKey; symbol: string }) {
+type Where = Awaited<ReturnType<typeof whereFor>>;
+async function collectQuote(holder: PublicKey, nft: PublicKey, where: Where) {
   const { ixs, summary: s } = await buildCollect(conn, cfg, holder, nft, true, where);
   const fee = ixs ? await networkFee(conn, holder, ixs, opts).catch(() => null) : null;
   return {
+    // For a JACK pool: `quoteAmount` is the JACK side, and `xnt` / `worth` are XNT values.
     xnt: s.xntOut.toString(), tokens: s.tokenOut.toString(), worth: s.worth.toString(),
+    quote: where.quoteSymbol, quoteAmount: s.quoteOut.toString(),
     networkFee: fee === null ? null : fee.toString(),
     collectable: s.feeLp > 0n && s.worth >= DUST_LAMPORTS && (fee === null || s.worth > fee),
   };
 }
 
-const nftTarget = (d: { pool: string; tokenMint: string; symbol: string }) =>
-  ({ pool: new PublicKey(d.pool), mint: new PublicKey(d.tokenMint), symbol: d.symbol });
+const nftTarget = (d: { pool: string; tokenMint: string; symbol: string }) => whereFor(d.pool, d.tokenMint, d.symbol);
 
 /**
  * A chain read that rarely changes, cached for an hour. If a refresh fails (public RPCs
@@ -533,6 +618,11 @@ async function getView(url: URL) {
       lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
       lockForeverOnly: !!f!.lockForeverOnly, curve: !!curves,
       creatorRewardMint: CREATOR_REWARD[cfg.network].rewardMint ?? null, creatorRewardPool: CREATOR_REWARD[cfg.network].swapPool ?? null,
+      // Pair tokens a launch may choose besides XNT, with their price (XNT per whole token) for the form.
+      quoteTokens: await Promise.all(quoteTokens.map(async (q) => ({
+        symbol: q.symbol, mint: q.mint, xntPool: q.xntPool,
+        priceXnt: (await pairValue({ symbol: q.symbol, mint: new PublicKey(q.mint), xntPool: new PublicKey(q.xntPool) }).catch(() => null))?.xntPer ?? null,
+      }))),
       sourceUrl: "https://github.com/Lokoweb3/x1-reflection-token",
     };
   }
@@ -549,7 +639,7 @@ async function getView(url: URL) {
         const holder = await nftHolder(conn, new PublicKey(nft));
         nftHolderAddr = holder?.owner.toBase58() ?? null;
         if (holder) {
-          const q = await collectQuote(holder.owner, new PublicKey(nft), { pool: new PublicKey(r.pool), mint: new PublicKey(r.mint), symbol: r.symbol }).catch(() => null);
+          const q = await collectQuote(holder.owner, new PublicKey(nft), await whereFor(r.pool, r.mint, r.symbol)).catch(() => null);
           if (q) fees = { ...q, holder: holder.owner.toBase58() };
         }
       }
@@ -714,13 +804,19 @@ function tokenList() {
   if (tokenListCache && Date.now() - tokenListCache.at < 30_000) return tokenListCache.data;
   const data = Promise.all(targets(cfg).map(async (t) => {
     const info = targetInfo(t);
-    const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint)).catch(() => null);
+    const pair = pairForMint(t.mint);
+    const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint), pair.mint).catch(() => null);
+    const value = await pairValue(pair).catch(() => null);
     const e = eventTotals(tokenEvents(t.stateDir));
     const st = await (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null);
+    const priceQuote = snap && snap.reserveToken > 0n ? Number(snap.reserveQuote) / Number(snap.reserveToken) : null;
     return {
       mint: t.mint, symbol: t.symbol, name: t.name, pool: t.pool, ...info, yield: st?.yield ?? null, holderPass: claimsOn(t),
-      priceXnt: snap && snap.reserveToken > 0n ? Number(snap.reserveXnt) / Number(snap.reserveToken) : null,
-      liquidityXnt: snap ? (2n * snap.reserveXnt).toString() : null,
+      // Price and pool depth in XNT (a JACK pool's JACK valued at the JACK/XNT price), plus
+      // the same in the pair token for JACK pools.
+      quote: pair.symbol, priceQuote, liquidityQuote: snap ? (2n * snap.reserveQuote).toString() : null,
+      priceXnt: priceQuote !== null && value ? priceQuote * value.xntPer : null,
+      liquidityXnt: snap && value ? value.toXnt(2n * snap.reserveQuote).toString() : null,
       holdersXnt: e.holdersXnt.toString(), liquidityAddedXnt: e.liquidityXnt.toString(), creatorXnt: e.creatorXnt.toString(),
       burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun,
     };
@@ -812,8 +908,12 @@ function tokenStats(mintStr: string) {
     const mint = new PublicKey(t.mint);
     const info = targetInfo(t);
     const dc = (JSON.parse(fs.readFileSync(t.configPath, "utf8")) as Config).distribution;
-    const [rows, mintInfo, snap] = await Promise.all([scanTokenAccounts(conn, mint), conn.getAccountInfo(mint, "confirmed"),
-      snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), mint).catch(() => null)]);
+    const pair = pairForMint(t.mint);
+    const [rows, mintInfo, snap, value] = await Promise.all([scanTokenAccounts(conn, mint), conn.getAccountInfo(mint, "confirmed"),
+      snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), mint, pair.mint).catch(() => null),
+      pairValue(pair).catch(() => null)]);
+    // XNT values; a JACK pool's JACK is valued at the JACK/XNT pool price.
+    const toXnt = (v: bigint) => (value ? value.toXnt(v) : 0n);
     const m = unpackMint(mint, mintInfo, TOKEN_2022_PROGRAM_ID);
     const events = tokenEvents(t.stateDir);
     const e = eventTotals(events);
@@ -837,7 +937,7 @@ function tokenStats(mintStr: string) {
     for (const w of paid.keys()) if (!perOwner.has(w)) perOwner.set(w, 0n); // sold out, but was paid
     let earningTotal = 0n;
     for (const b of earning.values()) earningTotal += b;
-    const valueOf = (bal: bigint) => (snap && snap.reserveToken > 0n ? (bal * snap.reserveXnt) / snap.reserveToken : 0n);
+    const valueOf = (bal: bigint) => (snap && snap.reserveToken > 0n ? toXnt((bal * snap.reserveQuote) / snap.reserveToken) : 0n);
     const holders = [...perOwner.entries()].map(([owner, bal]) => {
       const offCurve = !PublicKey.isOnCurve(new PublicKey(owner).toBytes());
       const status = earning.has(owner) ? "earning"
@@ -853,7 +953,8 @@ function tokenStats(mintStr: string) {
     }).sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : BigInt(b.balance) < BigInt(a.balance) ? -1 : 0));
 
     const original = toBaseUnits(info.supply, m.decimals);
-    const priceXnt = snap && snap.reserveToken > 0n ? Number(snap.reserveXnt) / Number(snap.reserveToken) : null;
+    const priceQuote = snap && snap.reserveToken > 0n ? Number(snap.reserveQuote) / Number(snap.reserveToken) : null;
+    const priceXnt = priceQuote !== null && value ? priceQuote * value.xntPer : null;
     const yieldInfo = holderYield(events, earningTotal, m.decimals, priceXnt, info.createdAt);
     const poolTokens = perOwner.get(pool) ?? 0n;
     const payoutSeries = events.filter((x) => x.kind === "payout" && x.at).map((x) => ({ at: x.at, xnt: String(x.total ?? 0) }))
@@ -864,9 +965,12 @@ function tokenStats(mintStr: string) {
       supply: m.supply.toString(), originalSupply: original.toString(),
       // Spot price from the pool reserves (XNT per whole token), market cap and pool depth.
       priceXnt, yield: yieldInfo,
-      marketCapXnt: snap && snap.reserveToken > 0n ? ((m.supply * snap.reserveXnt) / snap.reserveToken).toString() : null,
-      poolXnt: snap ? (2n * snap.reserveXnt).toString() : null,
-      launchPriceXnt: launch && Number(launch.poolTokens) > 0 ? Number(launch.poolXnt) / Number(launch.poolTokens) : null,
+      marketCapXnt: snap && snap.reserveToken > 0n && value ? toXnt((m.supply * snap.reserveQuote) / snap.reserveToken).toString() : null,
+      poolXnt: snap && value ? toXnt(2n * snap.reserveQuote).toString() : null,
+      // The pair token (XNT or JACK); for JACK the pool and prices in JACK too (priceQuote per whole token).
+      quote: pair.symbol, priceQuote, poolQuote: snap ? (2n * snap.reserveQuote).toString() : null, pairXnt: value?.xntPer ?? null,
+      launchPriceXnt: launch && !pair.xntPool && Number(launch.poolTokens) > 0 ? Number(launch.poolXnt) / Number(launch.poolTokens) : null,
+      launchPriceQuote: launch && Number(launch.poolTokens) > 0 ? Number(launch.poolXnt) / Number(launch.poolTokens) : null,
       // Where the original supply sits now.
       breakdown: {
         pool: poolTokens.toString(), earning: earningTotal.toString(),
@@ -901,7 +1005,7 @@ async function walletView(addr: string) {
     tokens.push({
       mint: t.mint, symbol: t.symbol, name: t.name, lockNft: targetInfo(t).lockNft, decimals: s.decimals,
       balance: h.balance, pct: h.pct, valueXnt: h.valueXnt, paidXnt: h.paidXnt, clickerXnt: h.clickerXnt, status: h.status,
-      payoutSharePct: h.payoutSharePct, priceXnt: s.priceXnt, yield: s.yield, minHolding: s.minHolding,
+      payoutSharePct: h.payoutSharePct, priceXnt: s.priceXnt, quote: s.quote, priceQuote: s.priceQuote, yield: s.yield, minHolding: s.minHolding,
       estPerDayXnt: h.status === "earning" && s.yield ? (s.yield.per1000PerDay / 1000) * bal : 0,
     });
   }
@@ -911,8 +1015,13 @@ async function walletView(addr: string) {
 
 /**
  * Holder leaderboard for one token: every holder's average cost (XNT per token) from
- * their swaps, what their holding is worth now, and profit/loss. Trades are indexed
+ * their swaps, what their holding is worth now, profit/loss, and the XNT rewards each
+ * wallet has received (holder payouts plus "Distribute now" rewards). Trades are indexed
  * incrementally; results are cached for a minute.
+ *
+ * A JACK-paired token's trades are in JACK, so its prices, costs and profit/loss are in
+ * JACK (`quote` says so); rewards are always XNT, and `returnXnt` values the JACK profit
+ * at today's JACK/XNT price before adding them.
  */
 const boardCache = new Map<string, { at: number; data: Promise<unknown> }>();
 function leaderboard(mintStr: string) {
@@ -920,17 +1029,31 @@ function leaderboard(mintStr: string) {
   if (hit && Date.now() - hit.at < 60_000) return hit.data;
   const data = (async () => {
     const t = findTarget(cfg, mintStr);
-    const [idx, st] = await Promise.all([
-      refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir),
+    const pair = pairForMint(t.mint);
+    const [idx, st, pairVal] = await Promise.all([
+      refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir, pair.xntPool ? pair.mint.toBase58() : undefined),
       tokenStats(t.mint) as Promise<any>,
+      pairValue(pair).catch(() => null),
     ]);
+    // XNT each wallet received: holder payouts plus "Distribute now" clicker rewards.
+    const rewards = new Map<string, bigint>();
+    for (const e of tokenEvents(t.stateDir)) {
+      if (e.kind === "payout") for (const [w, amt] of e.payments ?? []) rewards.set(w, (rewards.get(w) ?? 0n) + BigInt(amt));
+      else if (e.kind === "clicker-reward" && e.wallet) rewards.set(e.wallet, (rewards.get(e.wallet) ?? 0n) + BigInt(e.xnt ?? 0));
+    }
+    const rewardOf = (w: string) => Number(rewards.get(w) ?? 0n) / 1e9;
+    // Profit in the price unit (XNT, or JACK) to XNT, for the total return.
+    const perUnitXnt = pair.xntPool ? pairVal?.xntPer ?? null : 1;
+    const totalReturn = (pnl: number | null, realized: number, rewardsXnt: number) =>
+      pnl !== null && perUnitXnt !== null ? (pnl + realized) * perUnitXnt + rewardsXnt : null;
     // Not holders in the leaderboard's sense: the pool, burn address, distributor, and
     // wallets the token's settings exclude from rewards (excludeOwners).
     const skip = new Set([t.distributor, poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58(), ...BURN_OWNERS,
       ...(tokenConfig(t).distribution.excludeOwners ?? [])]);
     const pos = positions(idx.trades, skip);
     const dec = 10 ** st.decimals;
-    const price: number | null = st.priceXnt;
+    // Price per whole token in the unit trades are recorded in: XNT, or JACK for a JACK pool.
+    const price: number | null = pair.xntPool ? st.priceQuote : st.priceXnt;
     const x = (v: bigint) => Number(v) / 1e9;
     const rows: any[] = [];
     const seen = new Set<string>();
@@ -944,9 +1067,11 @@ function leaderboard(mintStr: string) {
       const costKnown = avg !== null ? avg * heldFromBuys : 0;
       const value = price !== null ? bal * price : null;
       const pnl = value !== null && avg !== null && price !== null ? price * heldFromBuys - costKnown : null;
+      const rewardsXnt = rewardOf(h.owner);
       rows.push({
         wallet: h.owner, label: h.label, status: h.status, balance: bal, pctSupply: h.pct,
         avgCost: avg, value, costBasis: costKnown, pnl, pnlPct: pnl !== null && costKnown > 0 ? (pnl / costKnown) * 100 : null,
+        rewardsXnt, returnXnt: totalReturn(pnl, p ? x(p.realized) : 0, rewardsXnt),
         unknownCost: bal - heldFromBuys > 1e-9 ? bal - heldFromBuys : 0,
         bought: p ? Number(p.bought) / dec : 0, sold: p ? Number(p.sold) / dec : 0,
         spent: p ? x(p.spent) : 0, received: p ? x(p.received) : 0, realized: p ? x(p.realized) : 0,
@@ -958,6 +1083,8 @@ function leaderboard(mintStr: string) {
       if (seen.has(p.wallet)) continue;
       rows.push({
         wallet: p.wallet, label: null, status: "sold", balance: 0, pctSupply: 0, avgCost: null, value: 0, costBasis: 0, pnl: null, pnlPct: null, unknownCost: 0,
+        // Sold out: nothing left to value, so the result is realized profit plus rewards.
+        rewardsXnt: rewardOf(p.wallet), returnXnt: totalReturn(0, x(p.realized), rewardOf(p.wallet)),
         bought: Number(p.bought) / dec, sold: Number(p.sold) / dec, spent: x(p.spent), received: x(p.received), realized: x(p.realized),
         trades: p.trades, firstAt: p.firstAt, lastAt: p.lastAt,
       });
@@ -966,8 +1093,9 @@ function leaderboard(mintStr: string) {
     const tokensKnown = priced.reduce((a, r) => a + (r.balance - r.unknownCost), 0);
     const costKnown = priced.reduce((a, r) => a + r.costBasis, 0);
     return {
-      mint: t.mint, symbol: t.symbol, name: t.name, price,
+      mint: t.mint, symbol: t.symbol, name: t.name, price, quote: pair.symbol, quoteXnt: perUnitXnt,
       summary: {
+        rewardsPaid: rows.reduce((a, r) => a + r.rewardsXnt, 0),
         holders: rows.filter((r) => r.balance > 0).length, traders: pos.size, trades: idx.trades.length, trackedSince: idx.since ?? null,
         avgCost: tokensKnown > 0 ? costKnown / tokensKnown : null,
         inProfit: priced.filter((r) => (r.pnl ?? 0) > 0).length, inLoss: priced.filter((r) => (r.pnl ?? 0) < 0).length,
@@ -983,14 +1111,17 @@ function leaderboard(mintStr: string) {
 
 /** Headline numbers for the landing page, across every launched token. */
 let statsCache: { at: number; data: unknown } | null = null;
-function stats() {
+async function stats() {
   if (statsCache && Date.now() - statsCache.at < 30_000) return statsCache.data;
   const tokens = registeredLaunches();
   let xntPaid = 0n, xntToLiquidity = 0n, launchXnt = 0, wallets = 0, payouts = 0;
   for (const t of tokens) {
     const p = tokenPayouts(t.mint);
     xntPaid += BigInt(p.xntPaid); xntToLiquidity += BigInt(p.xntToLiquidity);
-    wallets += p.wallets; payouts += p.payouts; launchXnt += Number(t.poolXnt);
+    wallets += p.wallets; payouts += p.payouts;
+    // A JACK launch's pool amount is JACK: count its XNT value at today's JACK price.
+    const pair = pairOf(cfg, t);
+    launchXnt += Number(t.poolXnt) * (pair.xntPool ? (await pairValue(pair).catch(() => null))?.xntPer ?? 0 : 1);
   }
   const data = {
     tokens: tokens.length, xntPaid: xntPaid.toString(), xntToLiquidity: xntToLiquidity.toString(),
@@ -1006,7 +1137,9 @@ function publicView(r: ReturnType<typeof listLaunches>[number]) {
   const { mint, name, symbol, description, image, supply, taxBps, autoLpBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor } = r;
   const burnBps = r.burnBps ?? 0;
   return { mint, name, symbol, description, image, website: r.website, twitter: r.twitter, telegram: r.telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor,
-    lockNft: r.lockNft ?? null, creatorExcluded: creatorExcluded(r), kind: r.kind ?? "launch" };
+    lockNft: r.lockNft ?? null, creatorExcluded: creatorExcluded(r), kind: r.kind ?? "launch",
+    // The pair token the pool was seeded with (poolXnt is that token's amount).
+    quote: r.quote ?? "XNT", quoteMint: r.quoteMint ?? null };
 }
 
 const send = (res: http.ServerResponse, code: number, body: unknown, type = "application/json") =>
@@ -1118,7 +1251,7 @@ server.on("error", (e: NodeJS.ErrnoException) => {
 // history, so trades have to be saved before they age out (the leaderboard needs them).
 async function indexAllTrades() {
   for (const t of targets(cfg)) {
-    await refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir)
+    await refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir, t.quote?.mint)
       .catch((e) => console.error(`Trade index for ${t.symbol} failed: ${e instanceof Error ? e.message : e}`));
   }
 }
