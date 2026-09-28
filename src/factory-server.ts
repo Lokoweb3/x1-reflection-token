@@ -154,6 +154,15 @@ async function requireNftHolder(nft: PublicKey, wallet: PublicKey) {
   if (!h || !h.owner.equals(wallet)) throw new Error(`Only the wallet holding this LP-lock NFT${h ? ` (${h.owner.toBase58().slice(0, 4)}…${h.owner.toBase58().slice(-4)})` : ""} can collect or claim.`);
 }
 
+/** Refuse early, in plain words, when a wallet can't cover `need` XNT (pool, XDEX's fee, gas and network fees). */
+async function requireXnt(wallet: PublicKey, need: number, what: string) {
+  const have = (await conn.getBalance(wallet)) / 1e9;
+  if (have < need) {
+    const f2 = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 });
+    throw new Error(`${what} needs about ${f2(need)} XNT in this wallet (the pool's XNT, XDEX's pool fee and network fees); it has ${f2(have)}. Add XNT, or use less XNT for the pool.`);
+  }
+}
+
 /** The launch record for `mint`, checked to belong to `creator`. */
 function ownLaunch(body: Record<string, unknown>) {
   const r = readLaunch(String(body.mint));
@@ -167,6 +176,10 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     rateLimit("launch", ip, "launches started");
     const p = validateParams(body);
     if (f!.lockForeverOnly && p.lockDays !== null) throw new Error("Launches on this site lock their liquidity forever.");
+    // Check the wallet can afford the whole launch before step 1 charges the fee: otherwise
+    // a creator pays the launch fee and then gets stuck at the pool step.
+    await requireXnt(new PublicKey(p.creator), Number(p.poolXnt) + ((await poolCreateFee()) ?? 0.1) + Number(f!.gasXnt ?? "0.05") + 0.05,
+      `Launching with ${p.poolXnt} XNT in the pool`);
     const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
@@ -176,6 +189,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const s = await launchStatus(conn, cfg, r);
     if (!s.token) throw new Error("Step 1 (token) hasn't confirmed yet.");
     if (s.pool) throw new Error("The pool already exists.");
+    await requireXnt(new PublicKey(r.creator), Number(r.poolXnt) + ((await poolCreateFee()) ?? 0.1) + 0.03, `Creating the pool with ${r.poolXnt} XNT`);
     const { ixs } = buildPoolStep(cfg, r);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], opts) };
   }
