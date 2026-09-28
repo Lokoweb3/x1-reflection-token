@@ -444,6 +444,8 @@ async function get(url: URL) {
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
       // Until the locker is made immutable, pages say so next to "locked forever" claims.
       lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
+      creatorRewardMint: CREATOR_REWARD[cfg.network].rewardMint ?? null, creatorRewardPool: CREATOR_REWARD[cfg.network].swapPool ?? null,
+      sourceUrl: "https://github.com/Lokoweb3/x1-reflection-token",
     };
   }
   if (url.pathname === "/api/launches") {

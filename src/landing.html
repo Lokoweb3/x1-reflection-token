@@ -227,6 +227,15 @@ body.gated { overflow: hidden; }
   .logo svg { width: 66px; height: 36px; }
   .final .big-tag { display: none; }
 }
+#contracts .contracts { padding: 6px 16px; }
+#contracts table { width: 100%; border-collapse: collapse; }
+#contracts td { padding: 10px 8px; border-bottom: 1px dashed color-mix(in srgb, currentColor 25%, transparent); vertical-align: top; }
+#contracts tr:last-child td { border-bottom: 0; }
+#contracts td:first-child { width: 38%; }
+#contracts .what { font-weight: 700; }
+#contracts .note { display: block; font-size: 12px; opacity: .75; font-weight: 400; }
+#contracts .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 640px) { #contracts td { display: block; width: auto !important; padding: 4px 0; border: 0; } #contracts tr { display: block; padding: 8px 0; border-bottom: 1px dashed color-mix(in srgb, currentColor 25%, transparent); } }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -353,6 +362,12 @@ body.gated { overflow: hidden; }
     </div>
   </section>
 
+  <section id="contracts">
+    <h2>The contracts</h2>
+    <p class="section-lede">Every address this site uses on <span id="contractsNet">X1</span>, so you can check them yourself on the explorer. Each launched token also gets its own mint, pool, distributor wallet and LP-lock NFT; they're listed on its page.</p>
+    <div class="chunk contracts"><table id="contractsTable"><tr><td>Loading…</td></tr></table></div>
+  </section>
+
   <section id="costs">
     <h2>What it costs</h2>
     <div class="receipt-wrap">
@@ -451,6 +466,26 @@ function renderSplit() {
 for (const id of ["tax", "lp", "burn", "vol"]) $(id).addEventListener("input", renderSplit);
 renderSplit();
 
+/** The on-chain addresses this site uses, each linked to the explorer. */
+function renderContracts(info, net) {
+  $("contractsNet").textContent = net;
+  const addr = (a) => el("a", { class: "addr", href: `${info.explorer}/address/${a}`, target: "_blank", rel: "noopener", text: a });
+  const rows = [
+    ["LP locker program", info.lockerUpgradeable
+      ? `Locks launch liquidity in NFTs and holds creator rewards. Still upgradeable by ${info.lockerAuthority ? info.lockerAuthority.slice(0, 4) + "…" + info.lockerAuthority.slice(-4) : "the team"} until its audit.`
+      : "Locks launch liquidity in NFTs and holds creator rewards. Immutable: no one can change it.", info.lockerProgram],
+    ["XDEX program", "The DEX every token's pool lives on (not run by 99 + Tax).", info.xdexProgram],
+    [`Launch fee token (${info.feeSymbol})`, `The ${info.feeAmount} ${info.feeSymbol} launch fee is paid in this token.`, info.feeMint],
+    ["Launch fee receiver", "The 99 + Tax wallet that receives launch fees.", info.feeReceiver],
+  ];
+  if (info.creatorRewardMint) rows.push([`Creator reward token (${info.creatorRewardSymbol})`, "Creator rewards are swapped into this and vest in the locker.", info.creatorRewardMint]);
+  if (info.creatorRewardPool) rows.push(["Creator reward swap pool", `The XDEX pool used to swap XNT into ${info.creatorRewardSymbol}.`, info.creatorRewardPool]);
+  const trs = rows.filter((r) => r[2]).map(([what, note, a]) => el("tr", {}, el("td", {}, el("span", { class: "what", text: what }), el("span", { class: "note", text: note })), el("td", {}, addr(a))));
+  if (info.sourceUrl) trs.push(el("tr", {}, el("td", {}, el("span", { class: "what", text: "Source code" }), el("span", { class: "note", text: "The site, distributor and locker program." })),
+    el("td", {}, el("a", { href: info.sourceUrl, target: "_blank", rel: "noopener", text: info.sourceUrl.replace(/^https:\/\//, "") }))));
+  $("contractsTable").replaceChildren(...trs);
+}
+
 async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); return r.json(); }
 
 (async () => {
@@ -458,6 +493,7 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
     const info = await getJson("/api/info");
     const net = info.network === "mainnet" ? "X1 mainnet" : "X1 testnet";
     if (info.lockerUpgradeable) $("lockerNoteFaq").hidden = false;
+    renderContracts(info, net);
     $("netLabel").textContent = `Live on ${net}`;
     $("footNet").textContent = net;
     const fee = Number(info.feeAmount), feeSym = info.feeSymbol;
