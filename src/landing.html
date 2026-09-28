@@ -335,7 +335,7 @@ body.gated { overflow: hidden; }
     <div class="steps">
       <div class="chunk step"><h3>Create the token</h3><p>Name, logo, supply and tax. The tax is fixed forever and the supply can never grow.</p></div>
       <div class="chunk step"><h3>Open the pool</h3><p>The whole supply plus your XNT become the starting liquidity on XDEX. You start with no tokens, so there's no dev bag.</p></div>
-      <div class="chunk step"><h3>Lock the liquidity</h3><p>The LP goes into an NFT, forever or until a date you pick. The NFT earns the pool's trading fees and your 10% creator reward.</p></div>
+      <div class="chunk step"><h3>Lock the liquidity</h3><p><span data-forever="The LP goes into an NFT, locked forever.">The LP goes into an NFT, forever or until a date you pick.</span> The NFT earns the pool's trading fees and your 10% creator reward.</p></div>
     </div>
     <div class="chunk loop">
       <b>Then every 15 minutes:</b>
@@ -351,11 +351,11 @@ body.gated { overflow: hidden; }
 
   <section id="checks">
     <h2>Don't trust us. Check the chain.</h2>
-    <p class="section-lede">Every one of these is a setting on the token or the lock that anyone can look up on an explorer. Two honest notes: timed locks end on their unlock date, and the lock program hasn't had an independent audit yet.</p>
+    <p class="section-lede">Every one of these is a setting on the token or the lock that anyone can look up on an explorer. <span data-forever="One honest note: the lock program hasn't had an independent audit yet.">Two honest notes: timed locks end on their unlock date, and the lock program hasn't had an independent audit yet.</span></p>
     <div class="checks">
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">%</span><div><h3>The tax can never change</h3><p>The token has no fee authority, so no one can raise the tax later. Not the creator, not us.</p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">∑</span><div><h3>The supply is fixed</h3><p>The mint authority is revoked at launch. No one can ever print more tokens.</p></div></div>
-      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span><div><h3>Liquidity is locked in an NFT</h3><p>Forever, or until the date shown. The lock program has no way to release it early.</p></div></div>
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span><div><h3>Liquidity is locked in an NFT</h3><p><span data-forever="Forever. The lock program has no way to release it.">Forever, or until the date shown. The lock program has no way to release it early.</span></p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">↻</span><div><h3>The tax goes where the token says</h3><p>Each token has its own distributor wallet, the only one that can collect its tax. It splits it the same way every time: holders (at least 35%), liquidity, burn and the creator's 10%.</p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">0</span><div><h3>No dev bag</h3><p>The whole supply goes into the pool at launch. The creator's wallet starts with zero tokens, and you can see it on the explorer.</p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">7d</span><div><h3>Creator rewards vest</h3><p>The creator's 10% sits in an on-chain vault and unlocks 7 days after each deposit. Only the LP-lock NFT's holder can claim it.</p></div></div>
@@ -401,7 +401,7 @@ body.gated { overflow: hidden; }
     <details class="chunk"><summary>How do creators earn?</summary><p>Creators start with no tokens, so instead every token pays its creator 10% of its tax. It's sold and swapped to USDC (XNT on testnet), then held in an on-chain vault tied to the launch's LP-lock NFT. Each deposit vests for 7 days, then whoever holds the NFT can claim it. Sell the NFT and you sell the income with it.</p></details>
     <details class="chunk"><summary>What does the LP NFT do?</summary><p>It holds the launch liquidity. Whoever owns the NFT collects the trading fees that liquidity earns and the token's creator rewards, and can sell or transfer both, but can't withdraw the liquidity itself. With a timed lock, the NFT holder can take the LP back after the date and keeps the NFT for the rewards.</p></details>
     <details class="chunk" id="lockerNoteFaq" hidden><summary>Is the lock permanent today?</summary><p>Until its security audit is done, the 99 + Tax team can still upgrade the lock program (it isn't immutable yet). After the audit it will be made permanent; this notice disappears automatically when it is.</p></details>
-    <details class="chunk"><summary>Can the creator rug?</summary><p>They can't change the tax, print tokens or pull locked liquidity. They also start with no tokens: every launch puts 100% of the supply into the pool, so there's no dev bag to dump. What's left to check is whether the lock is forever or timed.</p></details>
+    <details class="chunk"><summary>Can the creator rug?</summary><p>They can't change the tax, print tokens or pull locked liquidity. They also start with no tokens: every launch puts 100% of the supply into the pool, so there's no dev bag to dump. <span data-forever="Every launch here locks its liquidity forever.">What's left to check is whether the lock is forever or timed.</span></p></details>
     <details class="chunk"><summary>Is it audited?</summary><p>Not yet. The code is open source and has been tested on X1 testnet and against attack cases, but the lock program hasn't had an independent audit. Only use what you can afford to lose.</p></details>
   </section>
 
@@ -493,6 +493,8 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
     const info = await getJson("/api/info");
     const net = info.network === "mainnet" ? "X1 mainnet" : "X1 testnet";
     if (info.lockerUpgradeable) $("lockerNoteFaq").hidden = false;
+    // Sites that only allow forever locks (mainnet) drop the "or until a date" wording.
+    if (info.lockForeverOnly) for (const n of document.querySelectorAll("[data-forever]")) n.textContent = n.dataset.forever;
     renderContracts(info, net);
     $("netLabel").textContent = `Live on ${net}`;
     $("footNet").textContent = net;

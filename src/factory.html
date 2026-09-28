@@ -868,6 +868,13 @@ async function loadTokens() {
   try {
     info = await api("/api/info");
     document.getElementById("network").textContent = info.network;
+    if (info.lockForeverOnly) {
+      const sel = form.querySelector('select[name="lock"]');
+      for (const o of [...sel.options]) if (o.value !== "forever") o.remove();
+      sel.value = "forever"; sel.title = "Every launch on this site locks its liquidity forever";
+      sel.insertAdjacentElement("afterend", Object.assign(document.createElement("span"), { className: "hint", textContent: "Always forever on this site: the LP can never be withdrawn, only its fees." }));
+      renderForm();
+    }
     if (info.lockerUpgradeable) document.getElementById("lockerNoteLi").hidden = false;
     document.getElementById("creatorShare").textContent = `${(info.creatorBps ?? 1000) / 100}%`;
     document.getElementById("creatorHint").textContent =

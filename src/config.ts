@@ -56,6 +56,8 @@ export interface Config {
     hosts?: string[];        // extra Host headers to accept, e.g. ["launch.example.com"]
     /** The same site on the other network, for the header's Mainnet / Testnet toggle. */
     otherNetwork?: { network: "mainnet" | "testnet"; url: string };
+    /** Only allow forever LP locks (no timed locks) for new launches. */
+    lockForeverOnly?: boolean;
     theme?: "receipt" | "arcade" | "lunchbag" | "notebook"; // site look (default receipt); preview with ?theme=arcade
   };
   distribution: {

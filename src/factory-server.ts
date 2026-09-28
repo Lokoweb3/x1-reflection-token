@@ -158,6 +158,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/launch/token") {
     rateLimit("launch", ip, "launches started");
     const p = validateParams(body);
+    if (f!.lockForeverOnly && p.lockDays !== null) throw new Error("Launches on this site lock their liquidity forever.");
     const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
@@ -444,6 +445,7 @@ async function get(url: URL) {
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
       // Until the locker is made immutable, pages say so next to "locked forever" claims.
       lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
+      lockForeverOnly: !!f!.lockForeverOnly,
       creatorRewardMint: CREATOR_REWARD[cfg.network].rewardMint ?? null, creatorRewardPool: CREATOR_REWARD[cfg.network].swapPool ?? null,
       sourceUrl: "https://github.com/Lokoweb3/x1-reflection-token",
     };
