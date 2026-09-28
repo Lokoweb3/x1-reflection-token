@@ -1,19 +1,65 @@
-# X1 Reflection Token (pays holders in XNT)
+# 99 + Tax: tax tokens on X1 that pay holders in XNT
 
-A reflection token for X1. Every transfer, including XDEX buys and sells, withholds a
-**5% fee**. A distributor bot periodically collects those fees. With `autoLpBps: 4000`,
-**40%** of them are added to the XDEX pool as permanently locked liquidity (auto-LP), and
-the other **60%** are sold for **XNT** and paid to holders in proportion to their balance.
+**99 + Tax** is a launchpad for tax tokens on the X1 blockchain. Every trade of a 99 + Tax
+token pays a small tax (1–10%), and a distributor turns that tax into:
 
-X1 runs on the Solana VM, so SafeMoon-style "balances grow by themselves" contracts
-don't carry over: balances live in separate token accounts, and a custom ledger would
-not work with wallets or XDEX. This project instead uses standard, audited pieces:
+- **XNT paid straight to holders' wallets**, in proportion to their balance (at least 35%
+  of the tax),
+- **permanent liquidity**: tokens + XNT added to the pool, with the LP tokens burned,
+- **burned tokens**, so the supply only goes down,
+- a **10% creator reward**, paid in USDC (XNT on testnet) and vesting over 7 days.
+
+Anyone can launch one in three wallet approvals. The whole supply goes into the pool
+(no dev bag), the launch liquidity is locked forever in an NFT, and the tax can never be
+changed.
+
+| | |
+|---|---|
+| **Mainnet** | https://99tax.vercel.app |
+| **Testnet** | https://99tax-testnet.vercel.app (faucet, bonding curve) |
+
+> Estimates only; nothing on the site is financial advice. The programs have **not** had
+> an independent audit yet, and the LP locker is still upgradeable until it has; the site
+> says so wherever "forever" appears, and the notice disappears once it's immutable.
+
+## How it fits together
+
+Pools are **real XDEX pools**, created by XDEX's own program; this project adds a locker,
+a bonding curve (testnet) and an off-chain distributor around them.
 
 | Piece | What it does |
 |---|---|
-| **Token-2022 mint** with the *TransferFee* and *Metadata* extensions | Wallets, explorers and XDEX handle it natively. Token-2022 enforces the fee on every transfer. |
-| **Distributor wallet** (withdraw-withheld authority) | Harvests fees into the mint, withdraws them, sells them for XNT and pays holders. |
-| **XDEX TOKEN/XNT pool** | Where the collected fees are sold. XDEX supports Token-2022 transfer-fee tokens. |
+| **Token-2022 mint** (TransferFee + Metadata extensions) | The token. Token-2022 withholds the tax on every transfer; no fee-config authority, so the rate can never change; mint authority revoked. |
+| **XDEX pool** (TOKEN/XNT, or TOKEN/JACK) | Where the token trades and where the tax is sold. |
+| **`lp_locker`** (Anchor, `lp-locker/programs/lp_locker`) | Locks the pool's LP behind a 1-of-1 NFT (forever or timed). The NFT holder collects the LP's trading fees and claims the creator reward from a 7-day vesting vault. Also Holder Passes (built, not deployed). |
+| **`bonding_curve`** (Anchor, `lp-locker/programs/bonding_curve`, testnet) | Curve launches with no starting liquidity; at graduation it creates the XDEX pool and locks the LP through `lp_locker`. See [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). |
+| **Distributor** (`src/distribute.ts`, one wallet per token) | Each cycle: collect the tax, burn, sell for XNT, add liquidity (LP burned), fund the creator reward, pay holders. Crash-safe journal. |
+| **Site** (`src/factory-server.ts`) | Landing page, launch app and all the public pages below; builds transactions for the visitor's wallet to sign (it never holds their keys). |
+
+**Program ids**
+
+| Program | Mainnet | Testnet |
+|---|---|---|
+| `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` |
+| `bonding_curve` | – | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` |
+| XDEX | `sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN` | `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf` |
+
+The home page's **Contracts** section lists every address the live site uses.
+
+**Site pages:** `/` (how it works, on-chain checks, contracts, costs, FAQ) · `/launch`
+(launch app, your launches, Distribute now) · `/tokens` · `/nft` and `/nft/<mint>` (lock
+NFTs, withdraw, full token stats incl. burns) · `/leaderboard/<mint>` (holders' average
+cost, rewards earned, total return) · `/wallet/<address>` (My earnings) · `/analytics` ·
+`/curve` (testnet) · `/faucet` (testnet). A Mainnet/Testnet toggle and a theme picker
+(Notebook by default) sit in every header.
+
+## The original single token (RFLT)
+
+The project started as one reflection token, **RFLT** (testnet), run from `config.json`
+with its own distributor. The sections below cover that single-token setup, then the
+launchpad that grew out of it. X1 runs on the Solana VM, so SafeMoon-style "balances grow
+by themselves" contracts don't carry over: balances live in separate token accounts, and
+a custom ledger would not work with wallets or XDEX. So payouts are real XNT transfers.
 
 ## Setup
 
@@ -241,11 +287,13 @@ The site runs at `http://127.0.0.1:8124` (launch app at `/launch`). The creator 
 supply, tax (1–10%), the share of the tax that goes to liquidity (0–50%), the share that
 is burned (0–50%; liquidity + burn at most 55%, because 10% is the creator's reward and
 holders keep at least 35%), the starting
-liquidity, and the lock (forever, 7, 30, 90 days or 1 year). Their wallet approves three
-transactions:
+liquidity, and the lock (forever, 7, 30, 90 days or 1 year; mainnet offers **forever
+only**, via `factory.lockForeverOnly`). Before step 1 charges anything, the site checks
+the wallet can afford the whole launch. Their wallet approves three transactions:
 
 1. **Token:** Token-2022 mint with the tax and **no fee authority** (the tax can never
-   change), supply minted to the creator, **mint authority revoked**, the launch fee
+   change), the supply minted to the creator only to be put into the pool in step 2
+   (100% of it; the creator keeps none), **mint authority revoked**, the launch fee
    (`factory.feeUsdc` USDC to `factory.feeReceiver`; on testnet `factory.feeToken` can swap in another token such as XNM, and mainnet ignores it and always charges USDC.X) and the token distributor's gas.
 2. **Pool:** a TOKEN/XNT pool on XDEX with the creator's tokens and XNT (or, if the
    creator picks another pair the site offers, e.g. JACK, a TOKEN/JACK pool with their
@@ -326,10 +374,54 @@ tip becomes the distributor's gas; nobody can change who gets paid. Guardrails: 
 minutes between triggered runs per token, never overlapping a running cycle (the lock
 is held only during each cycle), and not while the waiting tax is dust.
 
+## Bonding curve (testnet)
+
+The **Curve** tab launches a token with no starting liquidity. Buyers fill a price curve
+with XNT; when **20 XNT** is raised the curve **graduates**: it creates the XDEX pool with
+that XNT and the last 20% of the supply, locks all the LP forever through `lp_locker`
+(the NFT goes to the creator), and delivers every buyer's tokens to their wallet.
+
+- **Tokens are created at graduation.** During the curve, balances live in the curve, so
+  no tax applies; the tax is live from the first XDEX trade after graduation.
+- 80% of the supply sells on the curve, priced so its last price equals the pool's
+  opening price. 1% fee on curve trades. The creator can't buy their own curve. For the
+  first 2 minutes one buy can take at most 1% of the supply.
+- Graduation and delivery are permissionless; the site's crank (`factory.curve.crankKeypair`)
+  does them automatically and earns the 0.01 XNT graduation reward.
+- Spec: [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). Tests:
+  `scripts/local-curve-test.ts` (program end to end) and `scripts/curve-rehearsal.ts`
+  (site + program + crank + distributor). Enabled by `factory.curve.programId`; off on mainnet
+  until audited.
+
+## Leaderboard, burns and earnings
+
+- **Holder leaderboard** (`/leaderboard/<mint>`): every holder's balance, average cost,
+  cost, worth now, profit/loss, **rewards earned (XNT)** and **total return** (profit/loss +
+  realized + rewards), built from their XDEX swaps (average-cost method, `src/trades.ts`).
+  Click a wallet to open its My earnings page. Public RPCs keep only about a day of history,
+  so trades are indexed every 10 minutes.
+- **Burns** (token stats on `/nft/<mint>`): every tax burn with its transaction, a running
+  total chart and the share of launch supply burned.
+- **My earnings** (`/wallet/<address>`): XNT in the wallet, XNT received, earnings per day,
+  holdings and lock NFTs with fees and rewards ready.
+
+## RPC and rate limits
+
+X1 has one public RPC per network, and mainnet's rate-limits hard. So every connection
+spaces its requests (`REFLECT_RPC_GAP_MS`, default 150 ms) and waits out "429 Too Many
+Requests" for up to ~45 s; transactions are confirmed by polling rather than the
+websocket; and the site's read-only views serve their last good answer while refreshing
+in the background (warmed every 5 minutes). A dedicated RPC endpoint is still
+recommended as usage grows: set `rpcUrl` (or `REFLECT_RPC_URL`).
+
 ## Running on a VPS
 
 See [deploy/README.md](deploy/README.md): one setup script, systemd services that
-restart on crash and boot, HTTPS via Caddy, a firewall, and daily encrypted backups.
+restart on crash and boot, HTTPS via Caddy (or a Vercel front door), a firewall, and daily
+encrypted backups. The live setup runs both networks on one server: the testnet site and
+distributors from the app folder, and the mainnet site and distributor (`reflect-mainnet-*`
+services) from `mainnet/` with its own config, launches and keys; each Vercel project
+forwards to its site over a secret path.
 
 ## Dashboard
 
@@ -353,36 +445,39 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # allocation, eligibility, CPMM and price-impact math, decimal handling
+npm test          # 46 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, holder-pass tree
 npm run typecheck
 ```
 
+Full rehearsals on a local validator loaded with copies of the real chain (see each
+script's header for the validator command):
+
+| Script | Proves |
+|---|---|
+| `scripts/mainnet-rehearsal.ts` | A mainnet launch through the site (USDC fee, pool, lock), trades, a distributor cycle (burn, sell, auto-LP, USDC creator reward, payouts), fee collection |
+| `scripts/mainnet-rehearsal-jack.ts` | The same for a TOKEN/JACK launch, incl. the JACK→XNT swap for payouts |
+| `scripts/local-curve-test.ts`, `scripts/curve-rehearsal.ts` | The bonding curve, alone and with the site, crank and distributor |
+| `scripts/local-holder-pass-test.ts`, `scripts/local-claims-cycle-test.ts` | Holder passes |
+
 ## Verified vs. not yet verified
 
-**Verified on X1 testnet** (XDEX program `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf`):
-the full distribution cycle ran for real several times (harvest → withdraw → sell →
-auto-LP deposit and LP burn → allocate → pay), both by hand and from the background
-loop, and the payouts, the LP burn and the locked-liquidity maths were checked on-chain.
-The `lp_locker` program is deployed there, and a forever lock is live.
+**Live on mainnet:** the launchpad and the `lp_locker` program (deployed from a build
+checked byte-for-byte against the rehearsed one). The first real launch ("Test", paired
+with XNT) completed all four steps and its distributor has been paying holders, burning
+and adding liquidity every cycle; the site's figures were checked against the chain.
 
-**Verified on a local validator** loaded with a copy of the real testnet XDEX program and
-pool: lock, fee collection, NFT transfer (the new holder collects, the old one can't),
-timed lock and unlock, and refusal of these attacks: collecting without the NFT, draining
-the vault, a fake XDEX program, a freezable NFT mint, unlocking early, and unlocking a
-forever lock. The dashboard's wallet buttons were driven in real Chromium with a mock
-Wallet Standard wallet.
+**Live on testnet:** RFLT and CUP with real distribution cycles (payouts, LP burn,
+locked-liquidity maths checked on-chain), a creator's collect-fees and metadata updates
+with a real wallet, the faucet, and the `bonding_curve` program.
 
-**Burn:** verified on a local validator (the supply dropped by exactly the amount
-burned) and running live on testnet for RFLT (50% holders / 25% liquidity / 25% burn).
+**Rehearsed on local copies of the chain:** every launch path (XNT, JACK, bonding curve),
+the locker's attack cases (collecting without the NFT, draining the vault, a fake XDEX
+program, a freezable NFT mint, unlocking early or a forever lock), crash recovery of the
+distributor's journal, and program upgrades against the real lock accounts.
 
-**Token factory:** a full launch through the page (token, pool, LP lock, registration)
-and a factory distribution cycle ran on a local validator with a copy of the real
-testnet XDEX program. The pool-creation instruction matches a real testnet XDEX
-`Initialize` account for account. No launch has been done on testnet itself yet.
-
-**Not yet verified:** anything on mainnet; the dashboard and launchpad with a real wallet
-extension; a factory launch on testnet; long-running operation. The `lp_locker` program
-has **not** had an independent audit.
+**Not yet:** an independent audit of `lp_locker` and `bonding_curve` (both still
+upgradeable by the team); a JACK-paired launch on mainnet itself; Holder Passes on a
+public network; the bonding curve on mainnet.
 
 ## Things to know before launching
 
@@ -399,8 +494,8 @@ has **not** had an independent audit.
   `minHoldingTokens` or running cycles at unpredictable times helps.
 - **Fee-on-transfer tokens** confuse some aggregators, bridges and CEXs. The fee also
   applies to plain wallet-to-wallet transfers.
-- **Scaling:** holders are found with `getProgramAccounts`. That's fine for thousands of
-  holders on the public RPC. Beyond that, use a dedicated RPC.
+- **Scaling:** holders are found with `getProgramAccounts`, and mainnet's public RPC is
+  heavily rate-limited (see "RPC and rate limits"). Use a dedicated RPC as usage grows.
 - **Key safety:** the distributor key can withdraw all collected fees, and the creator
   key controls the fee until you run `lock-fee`. Keep both off shared machines.
 - Paying holders from trading fees can create securities or tax obligations in some
