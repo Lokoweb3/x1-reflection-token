@@ -478,15 +478,16 @@ function renderGallery() {
         el("div", { class: "line muted", text: `Liquidity locked ≈ ${xntFmt(n.valueXnt)}` })));
     return a;
   });
-  $("out").replaceChildren(
+  $("out").replaceChildren(...[
     el("div", { class: "gal-head" }, el("div", {}, el("h1", { text: "Locked NFTs" }),
       el("div", { class: "muted", text: "Every LP-lock NFT and what it has earned: trading fees from its locked liquidity, plus creator rewards. Values in XNT at current pool prices, estimates only." })), seg),
-    el("div", { class: "tiles" },
+    // No totals row on an empty site: the empty state below says it better than three zeros.
+    !list.length && !mineOnly ? null : el("div", { class: "tiles" },
       el("div", { class: "tile" }, el("div", { class: "k", text: mineOnly ? "Your NFTs" : "Locked NFTs" }), el("div", { class: "v", text: String(list.length) })),
       el("div", { class: "tile" }, el("div", { class: "k", text: "Total earned" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.earned.totalXnt))}` })),
       el("div", { class: "tile" }, el("div", { class: "k", text: "Liquidity locked" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.valueXnt))}` }))),
     list.length ? el("div", { class: "grid" }, ...cards)
-      : mineOnly ? el("p", { class: "muted", text: "This wallet doesn't hold any LP-lock NFTs." }) : siteEmpty("No LP-lock NFTs yet: every launch creates one."));
+      : mineOnly ? el("p", { class: "muted", text: "This wallet doesn't hold any LP-lock NFTs." }) : siteEmpty("No LP-lock NFTs yet: every launch creates one.")].filter(Boolean));
 }
 
 // ---------- Withdraw (the NFT holder's wallet signs) ----------
