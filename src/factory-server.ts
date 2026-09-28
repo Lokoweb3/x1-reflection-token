@@ -412,36 +412,44 @@ const nftTarget = (d: { pool: string; tokenMint: string; symbol: string }) =>
   ({ pool: new PublicKey(d.pool), mint: new PublicKey(d.tokenMint), symbol: d.symbol });
 
 /**
- * Who can still upgrade the lp_locker program, read from its program-data account (null
- * once it's immutable). Cached 10 minutes. On a read error it assumes upgradeable, so the
- * site never claims more permanence than it can show.
+ * A chain read that rarely changes, cached for an hour. If a refresh fails (public RPCs
+ * rate-limit), the last good value is kept, so pages like /launch never break on it.
  */
-let lockerAuthCache: { at: number; value: Promise<string | null> } | null = null;
-function lockerUpgradeAuthority(): Promise<string | null> {
-  if (lockerAuthCache && Date.now() - lockerAuthCache.at < 600_000) return lockerAuthCache.value;
-  const value = (async () => {
-    const prog = await conn.getAccountInfo(new PublicKey(cfg.locker!.programId));
-    if (!prog || prog.data.length < 36) return "unknown";
-    const pd = await conn.getAccountInfo(new PublicKey(prog.data.subarray(4, 36)));
-    if (!pd || pd.data.length < 45) return "unknown";
-    return pd.data[12] === 1 ? new PublicKey(pd.data.subarray(13, 45)).toBase58() : null;
-  })().catch(() => "unknown");
-  lockerAuthCache = { at: Date.now(), value };
-  return value;
+function sticky<T>(read: () => Promise<T>, fallback: T, ttlMs = 3_600_000) {
+  let value: T | undefined, at = 0, pending: Promise<T> | null = null;
+  return (): Promise<T> => {
+    if (value !== undefined && Date.now() - at < ttlMs) return Promise.resolve(value);
+    pending ??= read().then((v) => { value = v; at = Date.now(); return v; })
+      .catch(() => { at = Date.now() - ttlMs + 60_000; return value ?? fallback; }) // retry in a minute
+      .finally(() => { pending = null; });
+    return value !== undefined ? Promise.resolve(value) : pending;
+  };
 }
+/** Who can still upgrade lp_locker (null once immutable); "unknown" if never read, so the site never claims more permanence than it can show. */
+const lockerUpgradeAuthority = sticky<string | null>(async () => {
+  const prog = await conn.getAccountInfo(new PublicKey(cfg.locker!.programId));
+  if (!prog || prog.data.length < 36) throw new Error("locker program not found");
+  const pd = await conn.getAccountInfo(new PublicKey(prog.data.subarray(4, 36)));
+  if (!pd || pd.data.length < 45) throw new Error("program data not found");
+  return pd.data[12] === 1 ? new PublicKey(pd.data.subarray(13, 45)).toBase58() : null;
+}, "unknown");
+/** XDEX's pool-creation fee in XNT, from its AmmConfig account. */
+const poolCreateFee = sticky<number | null>(async () => {
+  const a = await conn.getAccountInfo(new PublicKey(XDEX_CREATE[cfg.network].ammConfig));
+  if (!a) throw new Error("amm config not found");
+  return Number(a.data.readBigUInt64LE(36)) / 1e9;
+}, null);
 
 async function get(url: URL) {
   if (url.pathname === "/api/nfts") return allNfts();
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (nftApi) return nftView(nftApi[1]);
   if (url.pathname === "/api/info") {
-    const [ammInfo, lockerAuthority] = await Promise.all([
-      conn.getAccountInfo(new PublicKey(XDEX_CREATE[cfg.network].ammConfig)), lockerUpgradeAuthority(),
-    ]);
+    const [poolCreateFeeXnt, lockerAuthority] = await Promise.all([poolCreateFee(), lockerUpgradeAuthority()]);
     return {
       logoUpload: ipfsEnabled(cfg), maxLogoBytes: MAX_LOGO_BYTES, network: cfg.network, explorer, feeAmount: launchFee(cfg).amount, feeSymbol: launchFee(cfg).symbol, feeMint: launchFee(cfg).mint, feeReceiver: f!.feeReceiver,
       creatorBps: CREATOR_BPS, creatorRewardSymbol: rewardSymbol,
-      gasXnt: f!.gasXnt ?? "0.05", poolCreateFeeXnt: ammInfo ? Number(ammInfo.data.readBigUInt64LE(36)) / 1e9 : null,
+      gasXnt: f!.gasXnt ?? "0.05", poolCreateFeeXnt,
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
       // Until the locker is made immutable, pages say so next to "locked forever" claims.
       lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
@@ -1028,5 +1036,5 @@ setInterval(() => indexAllTrades(), 10 * 60_000).unref();
 
 // Keep the Locked NFTs list warm so visitors never wait for its chain reads.
 setTimeout(() => allNfts().catch(() => undefined), 2_000);
-setInterval(() => allNfts().catch(() => undefined), 60_000).unref();
+setInterval(() => allNfts().catch(() => undefined), 180_000).unref(); // every 3 min: public RPCs rate-limit
 server.listen(port, bind, () => console.log(`Token factory (${cfg.network}): http://${bind}:${port}  (metadata URIs use ${publicUrl})`));

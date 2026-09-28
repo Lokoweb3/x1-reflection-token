@@ -236,6 +236,8 @@ body.gated { overflow: hidden; }
 #contracts .note { display: block; font-size: 12px; opacity: .75; font-weight: 400; }
 #contracts .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 640px) { #contracts td { display: block; width: auto !important; padding: 4px 0; border: 0; } #contracts tr { display: block; padding: 8px 0; border-bottom: 1px dashed color-mix(in srgb, currentColor 25%, transparent); } }
+.stats-empty { grid-column: 1 / -1; text-align: center; }
+.stats-empty .l { font-size: 17px; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -322,7 +324,7 @@ body.gated { overflow: hidden; }
     </div>
   </header>
 
-  <div class="stats" aria-label="Live totals">
+  <div class="stats" id="statsRow" aria-label="Live totals">
     <div class="stat"><span class="hole"></span><div class="v" id="sTokens">–</div><div class="l">tokens launched</div></div>
     <div class="stat"><span class="hole"></span><div class="v" id="sPaid">–</div><div class="l">XNT paid to holders</div></div>
     <div class="stat"><span class="hole"></span><div class="v" id="sWallets">–</div><div class="l">holder payouts sent</div></div>
@@ -514,6 +516,12 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
   }
   try {
     const s = await getJson("/api/stats");
+    // A brand-new site: one friendly line instead of four zeros.
+    if (!s.tokens) {
+      $("statsRow").replaceChildren(el("div", { class: "stat stats-empty" }, el("span", { class: "hole" }),
+        el("div", { class: "l" }, "Brand new: no tokens launched yet. ", el("a", { href: "/launch", text: "Be the first →" }))));
+      return;
+    }
     $("sTokens").textContent = fmt(s.tokens, 0);
     $("sPaid").textContent = compact(xnt(s.xntPaid));
     $("sWallets").textContent = fmt(s.walletsPaid, 0);

@@ -123,6 +123,23 @@
     document.addEventListener("click", (ev) => { if (d.open && !ev.composedPath().includes(d)) d.open = false; });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && d.open) { d.open = false; s.focus(); } });
   }
-  const mount = () => { brandLogo(); netToggle(); build(); };
+  // ---------- phone menu ----------
+  // Under 860px the header's links collapse behind a Menu button (CSS in theme-base.css);
+  // the page's main button (Launch a token) stays visible.
+  function phoneMenu() {
+    const host = document.querySelector("header nav") || document.querySelector("nav .links") || document.querySelector(".mainnav");
+    if (!host || document.getElementById("mnavBtn")) return;
+    host.id ||= "mainMenu";
+    host.classList.add("mnav-host");
+    host.parentElement.classList.add("has-mnav");
+    const b = document.createElement("button");
+    b.type = "button"; b.id = "mnavBtn"; b.className = "mnav-btn";
+    b.setAttribute("aria-controls", host.id); b.setAttribute("aria-expanded", "false");
+    b.innerHTML = '<span aria-hidden="true">☰</span> Menu';
+    b.onclick = () => { const open = host.classList.toggle("open"); b.setAttribute("aria-expanded", String(open)); b.firstChild.textContent = open ? "✕" : "☰"; };
+    host.before(b);
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && host.classList.contains("open")) b.click(); });
+  }
+  const mount = () => { brandLogo(); netToggle(); build(); phoneMenu(); };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
 })();

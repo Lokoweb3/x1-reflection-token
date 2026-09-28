@@ -25,6 +25,8 @@ body::after {
 :where(body *:not(svg):not(svg *)) { font-family: var(--mono) !important; }
 /* Text inside headings, buttons and labels takes their font, not the body font. */
 :is(h1, h2, h3, legend, summary, .brand, a.logo, .btn, th, .lbl, .chip, .badge) * { font-family: inherit !important; }
+/* Inline bits inside intro text (a fee, a note) follow their paragraph's font instead of switching mid-sentence. */
+:is(.lede, .section-lede, .ts-sub, .fine, .why) :is(span, b, strong, em, a) { font-family: inherit !important; font-size: inherit !important; }
 h1, h2, h3, legend, summary, .display, .logo-word, .t { color: var(--ink) !important; font-weight: 700 !important; letter-spacing: .02em; }
 h1 { text-transform: uppercase; letter-spacing: .01em; }
 h2 { text-transform: uppercase; }
@@ -191,6 +193,21 @@ h1 .line { white-space: normal !important; }
 header nav { flex-wrap: wrap !important; row-gap: 8px !important; }
 
 /* ---------- theme picker (src/web/theme.js) ---------- */
+/* ---------- phone menu (src/web/theme.js) ---------- */
+.mnav-btn { display: none; }
+@media (max-width: 860px) {
+  .has-mnav { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 10px !important; }
+  .mnav-btn { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; order: 2; padding: 7px 12px; font: inherit; font-size: 14px !important; font-weight: 700;
+    background: transparent; color: var(--ink); border: 1.5px solid var(--ink); cursor: pointer; }
+  .mnav-host { order: 3; margin-left: 0 !important; }
+  .mnav-host:not(.open) > :not(.btn.primary):not(.wallet) { display: none !important; }
+  .mnav-host.open { flex-basis: 100%; display: flex !important; flex-direction: column; align-items: stretch !important; gap: 2px !important; padding: 8px 0 4px; border-top: 1.5px dashed var(--rule); }
+  .mnav-host.open > a:not(.btn) { display: block !important; padding: 10px 4px !important; border-bottom: 1px solid color-mix(in srgb, var(--rule) 60%, transparent); }
+  .mnav-host.open > .btn, .mnav-host.open > .net-toggle, .mnav-host.open > .theme-picker { align-self: flex-start; margin-top: 8px; }
+  .has-mnav > .brand, .has-mnav > a.logo, .has-mnav > .has-logo { order: 1; }
+  .has-mnav > :not(.mnav-btn):not(.mnav-host):not(.brand):not(.logo):not(.has-logo) { order: 4; }
+}
+
 /* ---------- Mainnet / Testnet toggle (src/web/theme.js) ---------- */
 .net-toggle { display: inline-flex; border: 1.5px solid var(--rule); font-size: 13px; line-height: 1.2; white-space: nowrap; }
 /* header nav a:not(.btn) rules in the themes are stronger than a plain class, so match them. */

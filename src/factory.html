@@ -206,6 +206,7 @@ table.list img { border: 1px solid var(--line); }
 .lc-edit { display: grid; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
 .lc-edit[hidden] { display: none; }
 .lc-edit .socials { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 860px) { header > .sub { display: none; } }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -323,7 +324,7 @@ table.list img { border: 1px solid var(--line); }
         <li>The tax can never be changed (no fee authority).</li>
         <li>The supply is fixed (mint authority revoked).</li>
         <li>The whole supply goes into the pool; the creator starts with no tokens.</li>
-        <li>The launch liquidity is locked in an NFT, forever or until the date shown.</li>
+        <li data-forever="The launch liquidity is locked in an NFT forever.">The launch liquidity is locked in an NFT, forever or until the date shown.</li>
         <li id="lockerNoteLi" hidden><b>For now:</b> Until its security audit is done, the 99 + Tax team can still upgrade the lock program (it isn't immutable yet). After the audit it will be made permanent; this notice disappears automatically when it is.</li>
         <li>Only the token's own distributor wallet can collect its tax, and it splits it the same way every time.</li>
         <li>The creator's 10% vests 7 days in an on-chain vault; only the LP NFT's holder can claim it.</li>
@@ -869,6 +870,7 @@ async function loadTokens() {
     info = await api("/api/info");
     document.getElementById("network").textContent = info.network;
     if (info.lockForeverOnly) {
+      for (const n of document.querySelectorAll("[data-forever]")) n.textContent = n.dataset.forever;
       const sel = form.querySelector('select[name="lock"]');
       for (const o of [...sel.options]) if (o.value !== "forever") o.remove();
       sel.value = "forever"; sel.title = "Every launch on this site locks its liquidity forever";
