@@ -33,12 +33,28 @@ export async function simulate(conn: Connection, tx: Transaction) {
 
 /** Send a signed transaction and wait until it is confirmed or its blockhash expires. */
 export async function sendAndConfirm(conn: Connection, s: Signed): Promise<void> {
-  await conn.sendRawTransaction(s.tx.serialize(), { preflightCommitment: "confirmed", maxRetries: 5 });
-  const res = await conn.confirmTransaction(
-    { signature: s.signature, blockhash: s.tx.recentBlockhash!, lastValidBlockHeight: s.lastValidBlockHeight },
-    "confirmed",
-  );
-  if (res.value.err) throw new Error(`Transaction ${s.signature} failed: ${JSON.stringify(res.value.err)}`);
+  const raw = s.tx.serialize();
+  await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 5 });
+  await confirmByPolling(conn, raw, s.signature, s.lastValidBlockHeight);
+}
+
+/**
+ * Wait for `signature` by polling its status over HTTP (public RPCs often refuse the
+ * websocket that confirmTransaction relies on), re-sending the transaction now and then
+ * until it confirms, fails, or its blockhash expires.
+ */
+export async function confirmByPolling(conn: Connection, raw: Buffer | Uint8Array, signature: string, lastValidBlockHeight: number) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; ; i++) {
+    await sleep(1500);
+    const st = (await conn.getSignatureStatuses([signature])).value[0];
+    if (st?.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(st.err)}`);
+    if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return;
+    if (i % 4 === 3) {
+      if ((await conn.getBlockHeight("confirmed")) > lastValidBlockHeight) throw new Error(`Transaction ${signature} expired before it confirmed`);
+      await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => undefined);
+    }
+  }
 }
 
 export async function run(conn: Connection, ixs: TransactionInstruction[], payer: Keypair, extra: Keypair[] = []) {

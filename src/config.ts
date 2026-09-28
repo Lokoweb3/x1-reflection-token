@@ -139,8 +139,30 @@ export function loadKeypair(file: string): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(secret));
 }
 
+/**
+ * RPC connection that is gentle with rate-limited public endpoints: requests from this
+ * process are spaced out (REFLECT_RPC_GAP_MS, default 150 ms), and a "429 Too Many
+ * Requests" waits (the server's Retry-After, or 1.5 s doubling) and retries for up to
+ * about 45 s instead of failing a payout cycle halfway.
+ */
 export function connection(cfg: Config) {
-  return new Connection(process.env.REFLECT_RPC_URL ?? cfg.rpcUrl, "confirmed");
+  return new Connection(process.env.REFLECT_RPC_URL ?? cfg.rpcUrl, { commitment: "confirmed", fetch: patientFetch, disableRetryOnRateLimit: true });
+}
+const RPC_GAP_MS = Number(process.env.REFLECT_RPC_GAP_MS ?? 150);
+let nextSlot = 0;
+async function patientFetch(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  for (let attempt = 0; ; attempt++) {
+    const now = Date.now(), at = Math.max(now, nextSlot);
+    nextSlot = at + RPC_GAP_MS;
+    if (at > now) await sleep(at - now);
+    const res = await fetch(input, init);
+    if (res.status !== 429 || attempt >= 5) return res;
+    const hint = Number(res.headers.get("retry-after"));
+    const wait = Number.isFinite(hint) && hint > 0 ? Math.min(hint * 1000, 30_000) : 1500 * 2 ** attempt;
+    nextSlot = Math.max(nextSlot, Date.now() + wait); // everyone in this process backs off together
+    await sleep(wait);
+  }
 }
 
 export function requireMint(cfg: Config): PublicKey {

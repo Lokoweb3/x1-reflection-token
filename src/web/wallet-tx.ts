@@ -4,6 +4,7 @@
  * and later broadcast the bytes the wallet signed. The server never holds the
  * wallet's key.
  */
+import { confirmByPolling } from "../tx.js";
 import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 
 /**
@@ -78,9 +79,6 @@ export async function sendSigned(conn: Connection, b64: string) {
   const other = tx.instructions.find((ix) => !RELAY_PROGRAMS.has(ix.programId.toBase58()));
   if (other) throw new Error(`This site only sends its own transactions (unexpected program ${other.programId.toBase58()})`);
   const signature = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 5 });
-  const res = await conn.confirmTransaction(
-    { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: tx.lastValidBlockHeight ?? (await conn.getBlockHeight()) + 150 },
-    "confirmed");
-  if (res.value.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(res.value.err)}`);
+  await confirmByPolling(conn, raw, signature, tx.lastValidBlockHeight ?? (await conn.getBlockHeight()) + 150);
   return signature;
 }
