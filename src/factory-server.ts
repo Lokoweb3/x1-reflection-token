@@ -488,7 +488,34 @@ const poolCreateFee = sticky<number | null>(async () => {
 }, null);
 
 const balanceCache = new Map<string, { at: number; data: { network: string; xnt: number } }>();
+/**
+ * Stale-while-revalidate for read-only views. Public RPCs rate-limit (mainnet's hard), so
+ * a view that answered once keeps its last good answer: after `freshMs` it's refreshed in
+ * the background and the old answer is served meanwhile, and if the refresh fails the old
+ * answer stays. Only a view that has never succeeded can return an error.
+ */
+const swrStore = new Map<string, { at: number; val: unknown; pending: Promise<unknown> | null }>();
+function swr(key: string, freshMs: number, fn: () => Promise<unknown>): Promise<unknown> {
+  let e = swrStore.get(key);
+  if (!e) { if (swrStore.size > 3_000) swrStore.clear(); e = { at: 0, val: undefined, pending: null }; swrStore.set(key, e); }
+  const entry = e;
+  const refresh = () => (entry.pending ??= fn()
+    .then((v) => { entry.val = v; entry.at = Date.now(); return v; })
+    .finally(() => { entry.pending = null; }));
+  if (entry.val !== undefined) {
+    if (Date.now() - entry.at > freshMs) refresh().catch((err) => console.error(`refresh ${key}: ${err instanceof Error ? err.message.slice(0, 120) : err}`));
+    return Promise.resolve(entry.val);
+  }
+  return refresh();
+}
+// Read-only views served through swr() (not per-action flows like launches, curves or the faucet).
+const SWR_ROUTES = /^\/api\/(nft\/|nfts$|token\/|token-list$|analytics$|wallet\/|leaderboard\/|stats$|tokens$)/;
+
 async function get(url: URL) {
+  if (SWR_ROUTES.test(url.pathname)) return swr(url.pathname + url.search, 30_000, () => getView(url));
+  return getView(url);
+}
+async function getView(url: URL) {
   if (url.pathname === "/api/nfts") return allNfts();
   if (url.pathname === "/api/curves") return curves ? curves.list() : null;
   const cv = /^\/api\/curve\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
