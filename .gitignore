@@ -14,5 +14,5 @@ test-ledger/
 logo-options/
 
 # Vercel front door: generated config holds the backend secret
-.vercel-site/
+.vercel-site*/
 .vercel/

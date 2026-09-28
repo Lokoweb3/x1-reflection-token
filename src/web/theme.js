@@ -51,6 +51,31 @@
     }
   }
 
+  // ---------- Mainnet / Testnet toggle ----------
+  // The same site runs on both networks at different addresses (factory.otherNetwork);
+  // switching keeps you on the same page, minus any token or NFT address (they differ
+  // between networks). Wallet addresses are the same on both, so /wallet/<addr> is kept.
+  function netToggle() {
+    const net = typeof SITE_NET === "object" && SITE_NET ? SITE_NET : null;
+    const host = document.querySelector("header nav") || document.querySelector("nav .links") || document.querySelector(".mainnav");
+    if (!net || !host || document.getElementById("netToggle")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "net-toggle"; wrap.id = "netToggle"; wrap.setAttribute("role", "group"); wrap.setAttribute("aria-label", "Network");
+    const path = location.pathname.replace(/^\/(nft|leaderboard)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
+    for (const id of ["mainnet", "testnet"]) {
+      const here = id === net.network;
+      const url = here ? null : net.other && net.other.network === id ? net.other.url.replace(/\/$/, "") + path : null;
+      const el = document.createElement(url ? "a" : "span");
+      el.textContent = id === "mainnet" ? "Mainnet" : "Testnet";
+      el.className = `net-${id}`;
+      if (here) el.setAttribute("aria-current", "true");
+      if (url) { el.href = url; el.title = `Open the ${id} site`; }
+      else if (!here) { el.setAttribute("aria-disabled", "true"); el.title = `No ${id} site linked`; }
+      wrap.append(el);
+    }
+    host.append(wrap);
+  }
+
   // ---------- the menu ----------
   function build() {
     const host = document.querySelector("header nav") || document.querySelector("nav .links") || document.querySelector(".mainnav");
@@ -96,5 +121,6 @@
     document.addEventListener("click", (ev) => { if (d.open && !ev.composedPath().includes(d)) d.open = false; });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && d.open) { d.open = false; s.focus(); } });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => { brandLogo(); build(); }); else { brandLogo(); build(); }
+  const mount = () => { brandLogo(); netToggle(); build(); };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
 })();

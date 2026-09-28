@@ -54,6 +54,8 @@ export interface Config {
     port?: number;
     bind?: string;           // listen address; 127.0.0.1 unless you put it behind a proxy
     hosts?: string[];        // extra Host headers to accept, e.g. ["launch.example.com"]
+    /** The same site on the other network, for the header's Mainnet / Testnet toggle. */
+    otherNetwork?: { network: "mainnet" | "testnet"; url: string };
     theme?: "receipt" | "arcade" | "lunchbag" | "notebook"; // site look (default receipt); preview with ?theme=arcade
   };
   distribution: {

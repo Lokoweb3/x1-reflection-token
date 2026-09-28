@@ -972,7 +972,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/faucet") { send(res, 200, page(FAUCET_PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/launch") { send(res, 200, page(PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/theme.js") {
-      send(res, 200, `const SITE_THEME = ${JSON.stringify(f!.theme ?? "receipt")};\n` + fs.readFileSync(path.join(ROOT, "src", "web", "theme.js"), "utf8"), "text/javascript; charset=utf-8");
+      send(res, 200, `const SITE_THEME = ${JSON.stringify(f!.theme ?? "receipt")};\n`
+        + `const SITE_NET = ${JSON.stringify({ network: cfg.network, other: f!.otherNetwork ?? null })};\n` + fs.readFileSync(path.join(ROOT, "src", "web", "theme.js"), "utf8"), "text/javascript; charset=utf-8");
       return;
     }
     const themeReq = /^\/theme(?:-(\w+))?\.css$/.exec(url.pathname);

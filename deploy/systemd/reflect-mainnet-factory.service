@@ -1,0 +1,22 @@
+[Unit]
+Description=99 + Tax MAINNET: launch site (landing page, launch app, Distribute now)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=reflect
+WorkingDirectory=/opt/x1-reflection-token
+Environment=REFLECT_CONFIG=/opt/x1-reflection-token/mainnet/config.json
+Environment=REFLECT_FACTORY_DIR=/opt/x1-reflection-token/mainnet/factory
+Environment=REFLECT_STATE_DIR=/opt/x1-reflection-token/mainnet/state
+ExecStart=/usr/bin/node node_modules/tsx/dist/cli.mjs src/factory-server.ts
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/x1-reflection-token/mainnet
+
+[Install]
+WantedBy=multi-user.target

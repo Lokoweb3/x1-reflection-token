@@ -191,6 +191,13 @@ h1 .line { white-space: normal !important; }
 header nav { flex-wrap: wrap !important; row-gap: 8px !important; }
 
 /* ---------- theme picker (src/web/theme.js) ---------- */
+/* ---------- Mainnet / Testnet toggle (src/web/theme.js) ---------- */
+.net-toggle { display: inline-flex; border: 1.5px solid var(--rule); font-size: 13px; line-height: 1.2; white-space: nowrap; }
+.net-toggle > * { padding: 6px 10px; color: var(--ink-3) !important; text-decoration: none !important; font-weight: 600; }
+.net-toggle > a:hover { color: var(--ink) !important; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.net-toggle > [aria-current] { color: var(--paper) !important; background: var(--ink); }
+.net-toggle > .net-testnet[aria-current] { background: var(--red); }
+.net-toggle > [aria-disabled] { opacity: .45; }
 .theme-picker { position: relative; }
 .theme-picker summary {
   list-style: none; cursor: pointer; display: inline-flex !important; align-items: center; gap: 6px; padding: 6px 10px !important;

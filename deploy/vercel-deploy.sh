@@ -10,7 +10,7 @@ set -euo pipefail
 : "${SECRET:?Set SECRET (cat /root/.reflect-vercel-secret on the server)}"
 PROJECT=${PROJECT:-99tax}
 cd "$(dirname "$0")/.."
-DIR=.vercel-site
+DIR=${DIR:-.vercel-site}   # a second front door (e.g. testnet) uses its own DIR
 mkdir -p "$DIR/public"
 : > "$DIR/public/.keep"
 cat > "$DIR/vercel.json" <<JSON

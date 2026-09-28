@@ -9,7 +9,8 @@ PASS=${BACKUP_PASSFILE:-/root/.reflect-backup-pass}
 [[ -s $PASS ]] || { echo "Missing passphrase file $PASS (put a long random passphrase in it, chmod 600)"; exit 1; }
 mkdir -p "$DEST" && chmod 700 "$DEST"
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-tar -C "$APP" -czf - config.json distributor.keypair.json faucet.keypair.json state factory 2>/dev/null \
+# mainnet/ holds the mainnet site's config, launches and distributor keys (when that site runs here).
+tar -C "$APP" -czf - config.json distributor.keypair.json faucet.keypair.json state factory $( [[ -d $APP/mainnet ]] && echo mainnet ) 2>/dev/null \
   | gpg --batch --yes --pinentry-mode loopback --passphrase-file "$PASS" --symmetric --cipher-algo AES256 \
     -o "$DEST/reflect-$stamp.tar.gz.gpg"
 chmod 600 "$DEST/reflect-$stamp.tar.gz.gpg"
