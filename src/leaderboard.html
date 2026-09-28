@@ -43,6 +43,8 @@ tr.me td { background: rgb(200 16 46 / .07); }
 #sortM { display: none; }
 @media (max-width: 640px) { #sortM { display: block; flex: 1 1 100%; } }
 @media (max-width: 860px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } header nav { margin-left: 0; } }
+a.ext { text-decoration: none; opacity: .6; font-size: 12px; }
+a.ext:hover { opacity: 1; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -133,7 +135,9 @@ function render() {
   }));
   const body = rows.map((r, i) => el("tr", { class: me && r.wallet === me ? "me" : "" },
     el("td", { class: "muted", text: String(i + 1) }),
-    el("td", {}, el("a", { href: `${explorer}/address/${r.wallet}`, target: "_blank", rel: "noopener", class: "mono", text: short(r.wallet) }),
+    // The wallet opens its earnings page on this site; ↗ goes to the explorer.
+    el("td", {}, el("a", { href: `/wallet/${r.wallet}`, class: "mono", title: "Balances, rewards and NFTs for this wallet", text: short(r.wallet) }),
+      el("a", { href: `${explorer}/address/${r.wallet}`, target: "_blank", rel: "noopener", class: "ext", title: "View on the explorer", "aria-label": "View on the explorer", text: " ↗" }),
       r.label ? el("span", { class: "lbl", text: r.label }) : null, me && r.wallet === me ? el("span", { class: "lbl", text: "You" }) : null,
       r.status === "sold" ? el("span", { class: "lbl", text: "Sold out" }) : null),
     el("td", { class: "num", text: amt(r.balance), title: r.unknownCost > 0 ? `${amt(r.unknownCost)} of these weren't bought on the pool (no known cost)` : "" }),

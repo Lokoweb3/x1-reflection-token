@@ -44,7 +44,7 @@ h2 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-siz
 .search { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
 .search input { flex: 1; min-width: 200px; background: rgb(0 0 0 / .35); border: 1.5px solid var(--line); border-radius: 10px; padding: 9px 12px; color: var(--text-primary); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .search input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 12px rgb(34 228 255 / .35); }
-.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .tile { background: var(--surface-1); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
 .tile .k { color: var(--text-muted); font-size: 12px; }
 .tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
@@ -201,6 +201,7 @@ function render(d) {
 
   const tile = (k, v, n, cls = "") => el("div", { class: `tile ${cls}` }, el("div", { class: "k", text: k }), el("div", { class: "v", text: v }), n ? el("div", { class: "n", text: n }) : null);
   const tiles = el("div", { class: "tiles" },
+    tile("XNT in wallet", d.xntBalance == null ? "–" : `${fmt(d.xntBalance, 4)} XNT`, "spendable balance right now"),
     tile("XNT received", `${fmt(received + clicker, 6)} XNT`, clicker > 0 ? `incl. ${fmt(clicker, 6)} XNT “Distribute now” rewards` : "from holder payouts", "hl"),
     tile("Earning now", perDay > 0 ? `≈ ${fmtSig(perDay)} XNT/day` : "–", perDay > 0 ? `≈ ${fmtSig(perDay * 365)} XNT a year at the current yield` : "no earning holdings"),
     tile("Holdings worth", `≈ ${fmt(worth, 4)} XNT`, `${d.tokens.filter((t) => BigInt(t.balance) > 0n).length} token${d.tokens.length === 1 ? "" : "s"} at pool prices`),

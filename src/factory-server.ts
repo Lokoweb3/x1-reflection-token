@@ -1010,7 +1010,8 @@ async function walletView(addr: string) {
     });
   }
   const nfts = ((await allNfts()) as any[]).filter((n) => n.holder === owner);
-  return { wallet: owner, explorer, tokens, nfts };
+  const xntBalance = await conn.getBalance(new PublicKey(owner)).then((l) => l / 1e9).catch(() => null);
+  return { wallet: owner, explorer, xntBalance, tokens, nfts };
 }
 
 /**
