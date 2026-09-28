@@ -538,7 +538,7 @@ async function getView(url: URL) {
   }
   if (url.pathname === "/api/launches") {
     const creator = new PublicKey(url.searchParams.get("creator") ?? "").toBase58();
-    const mine = listLaunches().filter((r) => r.creator === creator).slice(0, 20);
+    const mine = listLaunches().filter((r) => r.creator === creator && !(r as { hidden?: boolean }).hidden).slice(0, 20);
     return Promise.all(mine.map(async (r) => {
       const status = await launchStatus(conn, cfg, r);
       const nft = r.lockNft ?? status.lockNft;
