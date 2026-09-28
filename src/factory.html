@@ -233,7 +233,7 @@ table.list img { border: 1px solid var(--line); }
     <a class="brand" href="/" aria-label="99 + Tax home"><svg viewBox="0 0 140 76" role="img" aria-label="99¢ + TAX neon price tag"><defs><filter id="neonGlow" x="-40%" y="-60%" width="180%" height="220%"><feGaussianBlur stdDeviation="2.4" result="b1"/><feGaussianBlur stdDeviation="6" result="b2"/><feMerge><feMergeNode in="b2"/><feMergeNode in="b1"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g filter="url(#neonGlow)" class="neon-sign"><path d="M26 5 H129 a6 6 0 0 1 6 6 V65 a6 6 0 0 1 -6 6 H26 L5 38 Z" fill="rgb(255 62 165 / .08)" stroke="#ff3ea5" stroke-width="3.5" stroke-linejoin="round"/><circle cx="24" cy="38" r="5.5" fill="none" stroke="#22e4ff" stroke-width="3"/><text x="80" y="46" text-anchor="middle" font-family="Tilt Neon, system-ui, sans-serif" font-size="33" fill="#22e4ff">99¢</text><text x="80" y="63" text-anchor="middle" font-family="Tilt Neon, system-ui, sans-serif" font-size="13" fill="#b6ff3b" letter-spacing="2">+ TAX</text></g></svg><h1>99 + Tax</h1></a>
     <span class="badge" id="network">…</span>
     <span class="sub">Tax tokens that pay holders in XNT, with the launch liquidity locked in an NFT</span>
-    <nav class="mainnav" aria-label="Main"><a href="/tokens">Tokens</a><a href="/nft">NFTs</a><a href="/analytics">Analytics</a><a href="/leaderboard">Leaderboard</a><a href="/wallet">My earnings</a><a href="/faucet">Faucet</a></nav>
+    <nav class="mainnav" aria-label="Main"><a href="/tokens">Tokens</a><a href="/curve">Curve</a><a href="/nft">NFTs</a><a href="/analytics">Analytics</a><a href="/leaderboard">Leaderboard</a><a href="/wallet">My earnings</a><a href="/faucet">Faucet</a></nav>
     <div class="wallet" id="walletArea"></div>
   </header>
 
@@ -673,10 +673,17 @@ function launchCard(l) {
   const rows = [];
 
   // Launch progress (and the next step if it isn't finished).
-  const cont = s.token && !s.registered
-    ? btn("Continue", "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })
-    : null;
-  rows.push(row("Status", s.registered ? "Live" : !s.token ? "Not started (step 1 was not sent)" : `${done} of 4 steps done`, cont));
+  if (l.kind === "curve") {
+    // Curve tokens graduate on their own (the curve creates the pool and the lock); nothing to continue here.
+    const curveStatus = ["On the curve", "Graduating", "Graduating", "Delivering tokens", "Live"][s.curveStatus ?? -1] ?? "Not started (the create transaction was not sent)";
+    const open = el("a", { class: "btn small", href: `/curve/${l.mint}`, text: "Open curve" });
+    rows.push(row("Status", s.registered ? "Live" : curveStatus, s.token ? open : null));
+  } else {
+    const cont = s.token && !s.registered
+      ? btn("Continue", "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })
+      : null;
+    rows.push(row("Status", s.registered ? "Live" : !s.token ? "Not started (step 1 was not sent)" : `${done} of 4 steps done`, cont));
+  }
 
   // Trading fees: the NFT holder can collect them any time they're worth a transaction.
   const fe = l.fees;

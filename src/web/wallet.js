@@ -91,7 +91,7 @@ window.X1Wallet = (() => {
     const msg = document.createElement("span"); msg.textContent = text; bar.append(msg);
     if (net?.other?.url) {
       const a = document.createElement("a");
-      a.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
+      a.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard|curve)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
       a.textContent = `Open the ${net.other.network} site →`;
       bar.append(" ", a);
     }

@@ -59,6 +59,12 @@ export interface Config {
     /** Only allow forever LP locks (no timed locks) for new launches. */
     lockForeverOnly?: boolean;
     theme?: "receipt" | "arcade" | "lunchbag" | "notebook"; // site look (default receipt); preview with ?theme=arcade
+    /**
+     * Bonding-curve launches (docs/bonding-curve-spec.md). Without it the Curve pages and
+     * routes are off. `crankKeypair`: a wallet that graduates finished curves and delivers
+     * buyers' tokens (pays the fees, earns the graduation reward); no crank without it.
+     */
+    curve?: { programId: string; crankKeypair?: string };
   };
   distribution: {
     minHoldingTokens: string;

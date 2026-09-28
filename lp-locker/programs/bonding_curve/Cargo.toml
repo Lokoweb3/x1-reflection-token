@@ -1,0 +1,31 @@
+[package]
+name = "bonding_curve"
+version = "0.1.0"
+description = "99 + Tax launchpad bonding curve: sells 80% of a Token-2022 tax token, then graduates to an XDEX pool whose LP is locked forever in lp_locker"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "bonding_curve"
+
+[features]
+default = []
+# Build with --features testnet for X1 testnet's XDEX program and pool config.
+testnet = []
+# Local testing only: the anti-snipe window lasts 5 seconds instead of 120.
+short-windows = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+anchor-spl = "0.32.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

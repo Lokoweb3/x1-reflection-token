@@ -28,6 +28,9 @@ import { buildCreatePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
+import {
+  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, TARGET_XNT as CURVE_TARGET_XNT, authPda, createCurveIx, curvePda, curveSetup, decodeCurve,
+} from "../curve.js";
 
 const U64_MAX = 2n ** 64n - 1n;
 export const DECIMALS = 9;
@@ -105,13 +108,19 @@ export interface LaunchRecord extends LaunchParams {
   lockNft?: string;
   createdAt: string;
   registeredAt?: string;
+  /** "curve": sold on the bonding curve first; the program creates the pool and lock at graduation. */
+  kind?: "curve";
+  /** The curve account (curve launches). */
+  curve?: string;
 }
 
 /**
  * A creator who keeps part of the supply (puts less than 100% into the pool) doesn't
  * also earn holder rewards: their wallet is excluded from that token's payouts.
  */
-export const creatorExcluded = (r: Pick<LaunchParams, "poolTokens" | "supply">) => BigInt(r.poolTokens) < BigInt(r.supply);
+export const creatorExcluded = (r: Pick<LaunchParams, "poolTokens" | "supply"> & { kind?: string }) =>
+  // A curve's creator can't buy on it and gets no tokens, so there's no bag to exclude.
+  r.kind === "curve" ? false : BigInt(r.poolTokens) < BigInt(r.supply);
 
 /** Validate and normalise untrusted launch input. */
 export function validateParams(raw: Record<string, unknown>): LaunchParams {
@@ -183,7 +192,8 @@ export const readLaunch = (mint: string): LaunchRecord | null => {
  */
 export async function buildMetadataUpdate(conn: Connection, cfg: Config, r: LaunchRecord, raw: Record<string, unknown>, publicUrl: string) {
   if (!ipfsEnabled(cfg)) throw new Error("Metadata updates need IPFS uploads set up on this site.");
-  const p = validateParams({ ...r, image: raw.image, description: raw.description, website: raw.website, twitter: raw.twitter, telegram: raw.telegram });
+  // poolTokens: a curve launch records the pool's share, but the shared checks want the whole supply.
+  const p = validateParams({ ...r, poolTokens: r.supply, image: raw.image, description: raw.description, website: raw.website, twitter: raw.twitter, telegram: raw.telegram });
   const next = { image: p.image, description: p.description, website: p.website, twitter: p.twitter, telegram: p.telegram };
   const mint = new PublicKey(r.mint);
   const creator = new PublicKey(r.creator);
@@ -217,14 +227,24 @@ export function listLaunches(): LaunchRecord[] {
 }
 export const registeredLaunches = () => listLaunches().filter((r) => r.registeredAt);
 
-/** Step 1: new mint + distributor wallet; returns the instructions and the mint keypair to co-sign. */
-export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string) {
+/**
+ * The Token-2022 mint every launch starts with (tax fixed forever, withdraw authority =
+ * the token's own distributor wallet, metadata pinned to IPFS or served by the site),
+ * plus the launch fee and the distributor's gas. The creator is the mint authority at
+ * first (Token-2022 needs the mint authority to sign the metadata); `mintAuthority`
+ * says what happens to it next:
+ *   null       mint the whole supply to the creator, then revoke minting (normal launch)
+ *   a PDA      mint nothing and hand minting to that address (a bonding curve's auth PDA,
+ *              which depends on the new mint's address, hence a function of it)
+ */
+async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, authorityFor: (mint: PublicKey) => PublicKey | null) {
   const f = cfg.factory;
   if (!f?.feeReceiver) throw new Error("factory.feeReceiver is not set in config.json");
   const creator = new PublicKey(p.creator);
   const mintKp = Keypair.generate();
   const distributor = Keypair.generate();
   const mint = mintKp.publicKey;
+  const mintAuthority = authorityFor(mint);
 
   // Metadata on IPFS when uploads are set up (the token then doesn't depend on this
   // server); otherwise served by the site from the launch record.
@@ -263,18 +283,62 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
       programId: TOKEN_2022_PROGRAM_ID, metadata: mint, updateAuthority: creator, mint, mintAuthority: creator,
       name: p.name, symbol: p.symbol, uri,
     }),
-    createAssociatedTokenAccountIdempotentInstruction(creator, creatorAta, creator, mint, TOKEN_2022_PROGRAM_ID),
-    createMintToCheckedInstruction(mint, creatorAta, creator, supply, DECIMALS, [], TOKEN_2022_PROGRAM_ID),
-    createSetAuthorityInstruction(mint, creator, AuthorityType.MintTokens, null, [], TOKEN_2022_PROGRAM_ID),
+    ...(mintAuthority === null ? [
+      createAssociatedTokenAccountIdempotentInstruction(creator, creatorAta, creator, mint, TOKEN_2022_PROGRAM_ID),
+      createMintToCheckedInstruction(mint, creatorAta, creator, supply, DECIMALS, [], TOKEN_2022_PROGRAM_ID),
+    ] : []),
+    createSetAuthorityInstruction(mint, creator, AuthorityType.MintTokens, mintAuthority, [], TOKEN_2022_PROGRAM_ID),
     createAssociatedTokenAccountIdempotentInstruction(creator, toUsdc, receiver, usdc, usdcProgram),
     createTransferCheckedInstruction(fromUsdc, usdc, toUsdc, creator, fee, usdcMint.decimals, [], usdcProgram),
     SystemProgram.transfer({ fromPubkey: creator, toPubkey: distributor.publicKey, lamports: toBaseUnits(f.gasXnt ?? "0.05", 9) }),
   ];
+  return { ixs, mintKp, distributor };
+}
 
-  const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint).pool;
-  const record: LaunchRecord = { ...p, mint: mint.toBase58(), distributor: distributor.publicKey.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString() };
+/** Save a new launch record and its distributor key (factory/launches/<mint>/). */
+function saveNewLaunch(record: LaunchRecord, distributor: Keypair) {
   writeLaunch(record);
   fs.writeFileSync(path.join(launchDir(record.mint), "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)), { mode: 0o600 });
+}
+
+/** Step 1: new mint + distributor wallet; returns the instructions and the mint keypair to co-sign. */
+export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string) {
+  const { ixs, mintKp, distributor } = await buildMintSetup(conn, cfg, p, publicUrl, () => null);
+  const mint = mintKp.publicKey;
+  const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint).pool;
+  const record: LaunchRecord = { ...p, mint: mint.toBase58(), distributor: distributor.publicKey.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString() };
+  saveNewLaunch(record, distributor);
+  return { ixs, signers: [mintKp], record };
+}
+
+/** Curve launches: the same token checks as a normal launch, with the curve's own supply range. */
+export function validateCurveParams(raw: Record<string, unknown>): LaunchParams {
+  // The pool fields are fixed for a curve (the program seeds the pool at graduation), so
+  // fill them in before the shared checks.
+  const supply = String(raw.supply ?? "").trim();
+  const p = validateParams({ ...raw, poolTokens: supply, poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null });
+  if (BigInt(p.supply) > CURVE_SUPPLY_MAX) throw new Error(`Supply must be a whole number from 1,000 to ${CURVE_SUPPLY_MAX.toLocaleString("en-US")}`);
+  return p;
+}
+
+/**
+ * A bonding-curve launch: the same mint (tax, metadata, launch fee, distributor) with
+ * minting handed to the curve's auth PDA and nothing minted, then create_curve. The
+ * program checks the mint and holds the creator's 0.3 XNT graduation deposit.
+ */
+export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, curveProgram: PublicKey) {
+  const { ixs, mintKp, distributor } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint));
+  const mint = mintKp.publicKey;
+  ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply)));
+  const setup = curveSetup(BigInt(p.supply), p.taxBps);
+  const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint).pool;
+  const record: LaunchRecord = {
+    ...p, kind: "curve", curve: curvePda(curveProgram, mint).toBase58(),
+    // What the program puts into the pool at graduation (tokens before the transfer fee).
+    poolTokens: fromBaseUnits(setup.Pg, DECIMALS), poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null,
+    mint: mint.toBase58(), distributor: distributor.publicKey.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
+  };
+  saveNewLaunch(record, distributor);
   return { ixs, signers: [mintKp], record };
 }
 
@@ -291,8 +355,24 @@ export async function buildLockStep(conn: Connection, cfg: Config, r: LaunchReco
     { pool: new PublicKey(r.pool), mint: new PublicKey(r.mint), symbol: r.symbol });
 }
 
+/** A curve launch's curve account, or null (not created yet, or the curve feature is off). */
+export async function readCurveOf(conn: Connection, cfg: Config, r: LaunchRecord) {
+  const id = cfg.factory?.curve?.programId;
+  if (r.kind !== "curve" || !id) return null;
+  const addr = curvePda(new PublicKey(id), new PublicKey(r.mint));
+  const info = await conn.getAccountInfo(addr, "confirmed");
+  return info ? decodeCurve(addr, info.data) : null;
+}
+
 /** Which steps are done, read from the chain. */
 export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecord) {
+  if (r.kind === "curve") {
+    // The curve program does the pool and the lock itself at graduation.
+    const c = await readCurveOf(conn, cfg, r);
+    const graduated = !!c && c.status >= CurveStatus.Graduated;
+    return { token: !!c, pool: !!c && c.status >= CurveStatus.PoolCreated, lock: graduated,
+      lockNft: graduated ? c!.lockNft.toBase58() : null, registered: !!r.registeredAt, curveStatus: c?.status ?? null };
+  }
   const [mintInfo, poolInfo] = await conn.getMultipleAccountsInfo([new PublicKey(r.mint), new PublicKey(r.pool)], "confirmed");
   const token = !!mintInfo;
   const pool = !!poolInfo && poolInfo.owner.equals(new PublicKey(cfg.xdex.programId));
@@ -311,6 +391,7 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
  * supply fixed, pool live, LP locked) and register it with the factory distributor.
  */
 export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRecord) {
+  if (r.kind === "curve") return registerCurve(conn, cfg, r);
   const s = await launchStatus(conn, cfg, r);
   if (!s.token || !s.pool || !s.lock) throw new Error("Launch is not complete yet (token, pool and LP lock are all required).");
   const mint = unpackMint(new PublicKey(r.mint), await conn.getAccountInfo(new PublicKey(r.mint), "confirmed"), TOKEN_2022_PROGRAM_ID);
@@ -320,6 +401,38 @@ export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRec
     throw new Error("Token does not match the factory launch (fee authorities or mint authority differ).");
   }
   if (r.registeredAt) return r;
+  return writeTokenConfig(cfg, r, s.lockNft!);
+}
+
+/**
+ * Register a graduated curve token with the factory distributor. The checks differ from a
+ * normal launch: the LP lock is owned by the curve's auth PDA (its NFT went to the
+ * creator), the pool is the one the curve recorded, and the mint authority stays with
+ * the auth PDA until the last buyer's tokens are delivered (the program then removes it).
+ */
+async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
+  const id = cfg.factory?.curve?.programId;
+  if (!id) throw new Error("The bonding curve isn't enabled on this site.");
+  const program = new PublicKey(id);
+  const mintKey = new PublicKey(r.mint);
+  const c = await readCurveOf(conn, cfg, r);
+  if (!c || c.status < CurveStatus.Graduated) throw new Error("This curve hasn't graduated yet.");
+  const auth = authPda(program, mintKey);
+  const locks = await listLocks(conn, LOCKER_PROGRAM_ID, c.pool);
+  const lock = locks.find((l) => l.nftMint.equals(c.lockNft) && l.locker.equals(auth));
+  if (!lock) throw new Error("The curve's LP lock wasn't found.");
+  const mint = unpackMint(mintKey, await conn.getAccountInfo(mintKey, "confirmed"), TOKEN_2022_PROGRAM_ID);
+  const fee = getTransferFeeConfig(mint);
+  if (!fee || !fee.withdrawWithheldAuthority.equals(new PublicKey(r.distributor)) || !fee.transferFeeConfigAuthority.equals(PublicKey.default)
+      || !(mint.mintAuthority === null || mint.mintAuthority.equals(auth))) {
+    throw new Error("Token does not match the curve launch (fee authorities or mint authority differ).");
+  }
+  if (r.registeredAt) return r;
+  return writeTokenConfig(cfg, { ...r, pool: c.pool.toBase58() }, c.lockNft.toBase58());
+}
+
+/** The token's own distributor config (factory/launches/<mint>/config.json); marks the launch registered. */
+function writeTokenConfig(cfg: Config, r: LaunchRecord, lockNft: string) {
   const dir = launchDir(r.mint);
   const tokenCfg: Config = {
     ...cfg,
@@ -333,12 +446,12 @@ export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRec
       excludeOwners: creatorExcluded(r) ? [r.creator] : [],
     },
     // The creator's share goes to the vesting vault of their launch lock NFT.
-    creatorReward: { nftMint: s.lockNft!, ...CREATOR_REWARD[cfg.network] },
+    creatorReward: { nftMint: lockNft, ...CREATOR_REWARD[cfg.network] },
   };
   delete (tokenCfg as Partial<Config>).factory;
   fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(tokenCfg, null, 2) + "\n", { mode: 0o600 });
   fs.mkdirSync(path.join(dir, "state"), { recursive: true, mode: 0o700 });
-  const done = { ...r, lockNft: s.lockNft!, registeredAt: new Date().toISOString() };
+  const done = { ...r, lockNft, registeredAt: new Date().toISOString() };
   writeLaunch(done);
   return done;
 }

@@ -61,11 +61,11 @@
     if (!net || !host || document.getElementById("netToggle")) return;
     const wrap = document.createElement("div");
     wrap.className = "net-toggle"; wrap.id = "netToggle"; wrap.setAttribute("role", "group"); wrap.setAttribute("aria-label", "Network");
-    const path = location.pathname.replace(/^\/(nft|leaderboard)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
+    const path = location.pathname.replace(/^\/(nft|leaderboard|curve)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
     for (const id of ["mainnet", "testnet"]) {
       const here = id === net.network;
-      // The faucet only exists on testnet.
-      const to = id === "mainnet" && path === "/faucet" ? "/" : path;
+      // The faucet and (for now) bonding curves only exist on testnet.
+      const to = id === "mainnet" && /^\/(faucet|curve)$/.test(path) ? "/" : path;
       const url = here ? null : net.other && net.other.network === id ? net.other.url.replace(/\/$/, "") + to : null;
       const el = document.createElement(url ? "a" : "span");
       el.textContent = id === "mainnet" ? "Mainnet" : "Testnet";
@@ -126,16 +126,17 @@
   // ---------- shared empty state ----------
   // A friendly "nothing here yet" block for list pages: a launch link, and on mainnet a
   // link to the same page on testnet, where there's something to look at.
-  window.siteEmpty = (message) => {
+  // `action` swaps the launch link for another ({ href, text }), e.g. the curve form.
+  window.siteEmpty = (message, action) => {
     const net = typeof SITE_NET === "object" && SITE_NET ? SITE_NET : null;
     const box = document.createElement("div"); box.className = "site-empty";
     const p = document.createElement("p"); p.textContent = message; box.append(p);
     const row = document.createElement("div"); row.className = "site-empty-actions";
-    const launch = document.createElement("a"); launch.className = "btn primary"; launch.href = "/launch"; launch.textContent = "Launch the first one →";
+    const launch = document.createElement("a"); launch.className = "btn primary"; launch.href = action?.href ?? "/launch"; launch.textContent = action?.text ?? "Launch the first one →";
     row.append(launch);
     if (net?.network === "mainnet" && net.other?.url) {
       const t = document.createElement("a"); t.className = "btn"; t.textContent = "Try it free on testnet →";
-      t.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
+      t.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard|curve)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
       row.append(t);
       const n = document.createElement("p"); n.className = "site-empty-note";
       n.textContent = "Testnet has live example tokens, NFTs and payouts, plus a faucet for free test XNT.";

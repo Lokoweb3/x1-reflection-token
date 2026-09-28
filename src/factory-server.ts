@@ -42,6 +42,8 @@ import { Config, toBaseUnits } from "./config.js";
 import { BURN_OWNERS, eligibleBalances, scanTokenAccounts } from "./holders.js";
 import { poolAuthority } from "./xdex.js";
 import { unpackMint } from "@solana/spl-token";
+import { buildCurveStep, validateCurveParams } from "./factory/launch.js";
+import { curveService } from "./factory/curve.js";
 
 
 const cfg = loadConfig();
@@ -66,11 +68,17 @@ const ANALYTICS_PAGE = path.join(ROOT, "src", "analytics.html");
 const WALLET_PAGE = path.join(ROOT, "src", "wallet.html");
 const FAUCET_PAGE = path.join(ROOT, "src", "faucet.html");
 const LEADERBOARD_PAGE = path.join(ROOT, "src", "leaderboard.html");
-/** Serve a page; without a faucet (e.g. mainnet), leave its "Faucet" tab out. */
+const CURVE_PAGE = path.join(ROOT, "src", "curve.html");
+/** Serve a page; without a faucet (e.g. mainnet), leave its "Faucet" tab out, and the "Curve" tab without the curve program. */
 function page(file: string) {
-  const html = fs.readFileSync(file, "utf8");
-  return faucetOn() ? html : html.replace(/\s*<a href="\/faucet"[^>]*>Faucet<\/a>/g, "");
+  let html = fs.readFileSync(file, "utf8");
+  if (!faucetOn()) html = html.replace(/\s*<a href="\/faucet"[^>]*>Faucet<\/a>/g, "");
+  if (!curves) html = html.replace(/\s*<a href="\/curve"[^>]*>Curve<\/a>/g, "");
+  return html;
 }
+/** Bonding-curve launches: on only when factory.curve.programId is set. */
+const curves = f.curve?.programId ? curveService(conn, cfg, { microLamports: cfg.distribution.priorityMicroLamports }) : null;
+if (curves) allowRelayProgram(curves.program.toBase58());
 const faucetOn = () => cfg.network === "testnet" && !!cfg.factory?.faucet && !!cfg.factory?.feeToken
   && fs.existsSync(path.isAbsolute(cfg.factory.faucet.keypair) ? cfg.factory.faucet.keypair : path.join(ROOT, cfg.factory.faucet.keypair));
 /** Site themes: each file holds its fonts and colour tokens, then (after the AFTER BASE marker) extras. */
@@ -164,6 +172,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   }
   if (url === "/api/launch/pool") {
     const r = ownLaunch(body);
+    if (r.kind === "curve") throw new Error("A curve token's pool is created by the curve when it graduates.");
     const s = await launchStatus(conn, cfg, r);
     if (!s.token) throw new Error("Step 1 (token) hasn't confirmed yet.");
     if (s.pool) throw new Error("The pool already exists.");
@@ -172,6 +181,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   }
   if (url === "/api/launch/lock") {
     const r = ownLaunch(body);
+    if (r.kind === "curve") throw new Error("A curve token's LP is locked by the curve when it graduates.");
     const s = await launchStatus(conn, cfg, r);
     if (!s.pool) throw new Error("Step 2 (pool) hasn't confirmed yet.");
     if (s.lock) throw new Error("The LP is already locked.");
@@ -298,8 +308,31 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     readinessCache.delete(t.mint);
     return { started: true };
   }
+  if (url.startsWith("/api/curve/")) return curves ? curvePost(url, body, ip) : null;
   if (url === "/api/send") rateLimit("send", ip, "transactions");
-  if (url === "/api/send") return { signature: await sendSigned(conn, String(body.tx)) };
+  if (url === "/api/send") {
+    const signature = await sendSigned(conn, String(body.tx));
+    // A curve trade: show it on the next page load instead of after the cache expires.
+    if (curves && typeof body.curveMint === "string") { try { curves.invalidate(new PublicKey(body.curveMint).toBase58()); } catch { /* ignore */ } }
+    return { signature };
+  }
+  return null;
+}
+
+/** Curve launches, buys and sells: unsigned transactions for the viewer's wallet. */
+async function curvePost(url: string, body: Record<string, unknown>, ip: string) {
+  const c = curves!;
+  if (url === "/api/curve/create") {
+    rateLimit("launch", ip, "launches started");
+    const p = validateCurveParams(body);
+    const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program);
+    c.invalidate();
+    return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
+  }
+  if (url === "/api/curve/buy" || url === "/api/curve/sell") {
+    const { ixs, payer, quote } = await (url === "/api/curve/buy" ? c.buildBuy(body) : c.buildSell(body));
+    return { tx: await unsignedTx(conn, payer, ixs, [], { ...opts, units: 200_000 }), quote };
+  }
   return null;
 }
 
@@ -443,6 +476,9 @@ const poolCreateFee = sticky<number | null>(async () => {
 const balanceCache = new Map<string, { at: number; data: { network: string; xnt: number } }>();
 async function get(url: URL) {
   if (url.pathname === "/api/nfts") return allNfts();
+  if (url.pathname === "/api/curves") return curves ? curves.list() : null;
+  const cv = /^\/api\/curve\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
+  if (cv) return curves ? curves.view(cv[1], url.searchParams.get("wallet")) : null;
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (nftApi) return nftView(nftApi[1]);
   if (url.pathname === "/api/info") {
@@ -454,7 +490,7 @@ async function get(url: URL) {
       lockerProgram: cfg.locker!.programId, xdexProgram: cfg.xdex.programId,
       // Until the locker is made immutable, pages say so next to "locked forever" claims.
       lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
-      lockForeverOnly: !!f!.lockForeverOnly,
+      lockForeverOnly: !!f!.lockForeverOnly, curve: !!curves,
       creatorRewardMint: CREATOR_REWARD[cfg.network].rewardMint ?? null, creatorRewardPool: CREATOR_REWARD[cfg.network].swapPool ?? null,
       sourceUrl: "https://github.com/Lokoweb3/x1-reflection-token",
     };
@@ -929,7 +965,7 @@ function publicView(r: ReturnType<typeof listLaunches>[number]) {
   const { mint, name, symbol, description, image, supply, taxBps, autoLpBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor } = r;
   const burnBps = r.burnBps ?? 0;
   return { mint, name, symbol, description, image, website: r.website, twitter: r.twitter, telegram: r.telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, pool, creator, createdAt, registeredAt, distributor,
-    lockNft: r.lockNft ?? null, creatorExcluded: creatorExcluded(r) };
+    lockNft: r.lockNft ?? null, creatorExcluded: creatorExcluded(r), kind: r.kind ?? "launch" };
 }
 
 const send = (res: http.ServerResponse, code: number, body: unknown, type = "application/json") =>
@@ -993,6 +1029,9 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, page(LEADERBOARD_PAGE), "text/html; charset=utf-8"); return;
     }
     if (url.pathname === "/faucet") { send(res, 200, page(FAUCET_PAGE), "text/html; charset=utf-8"); return; }
+    if (curves && (url.pathname === "/curve" || /^\/curve\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname))) {
+      send(res, 200, page(CURVE_PAGE), "text/html; charset=utf-8"); return;
+    }
     if (url.pathname === "/launch") { send(res, 200, page(PAGE), "text/html; charset=utf-8"); return; }
     if (url.pathname === "/theme.js") {
       send(res, 200, `const SITE_THEME = ${JSON.stringify(f!.theme ?? "receipt")};\n`
@@ -1048,4 +1087,11 @@ setInterval(() => indexAllTrades(), 10 * 60_000).unref();
 // Keep the Locked NFTs list warm so visitors never wait for its chain reads.
 setTimeout(() => allNfts().catch(() => undefined), 2_000);
 setInterval(() => allNfts().catch(() => undefined), 180_000).unref(); // every 3 min: public RPCs rate-limit
+// Curve crank: graduate complete curves, deliver buyers' tokens, register graduated
+// tokens with the distributor. Transactions only go out with factory.curve.crankKeypair.
+if (curves) {
+  if (!curves.crankOn()) console.log("Curve crank: no factory.curve.crankKeypair, so curves are not graduated or delivered by this server.");
+  setTimeout(() => curves.crankOnce().catch(() => undefined), 8_000);
+  setInterval(() => curves.crankOnce().catch(() => undefined), 20_000).unref();
+}
 server.listen(port, bind, () => console.log(`Token factory (${cfg.network}): http://${bind}:${port}  (metadata URIs use ${publicUrl})`));

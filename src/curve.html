@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Curve · 99 + Tax</title>
+<style>
+:root { --bg: #fbf8ef; --surface-1: #fbf8ef; --line: rgb(29 27 22 / .18); --text-primary: #1d1b16; --text-secondary: #45413a; --text-muted: #6b665a; --link: #1d1b16; --critical: #c8102e; --good: #2f7d32; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary); font: 15px/1.5 system-ui, sans-serif; }
+.topbar { font-size: 13px; text-align: center; padding: 7px 16px; }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 60px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-size: 24px; text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.wallet { display: flex; align-items: center; gap: 8px; position: relative; }
+.wallet-menu { position: absolute; right: 0; top: calc(100% + 6px); padding: 6px; z-index: 5; display: grid; min-width: 180px; }
+.wallet-menu button { background: none; border: 0; padding: 8px 12px; text-align: left; cursor: pointer; display: flex; gap: 8px; align-items: center; color: inherit; font: inherit; }
+.wallet-menu img { width: 18px; height: 18px; }
+h1 { margin: 0 0 6px; font-size: 34px; }
+h2 { margin: 0 0 10px; font-size: 20px; }
+.lede { color: var(--text-secondary); margin: 0 0 20px; max-width: 760px; }
+.card { border: 1px solid var(--line); padding: 18px; margin-bottom: 18px; min-width: 0; }
+.muted { color: var(--text-muted); font-size: 13px; }
+.btn { font: 700 14px system-ui, sans-serif; padding: 9px 15px; cursor: pointer; border: 2px solid; background: none; color: inherit; text-decoration: none; display: inline-block; }
+.btn.sm { padding: 5px 10px; font-size: 13px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.addr, .mono { font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.error { color: var(--critical); }
+.toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 560px; margin: 0 auto; padding: 10px 14px; z-index: 10; }
+.toast[hidden] { display: none; }
+.tag { font-size: 11px; font-weight: 700; padding: 2px 8px; border: 1px solid var(--line); margin-left: 6px; vertical-align: 2px; white-space: nowrap; }
+
+/* list */
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.toolbar input { flex: 1; min-width: 180px; padding: 9px 10px; font: inherit; }
+.seg { display: inline-flex; flex-wrap: wrap; }
+.seg button { padding: 8px 12px; font: inherit; font-size: 13px; cursor: pointer; background: none; color: inherit; border: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-bottom: 26px; }
+.ccard { display: flex; flex-direction: column; gap: 10px; text-decoration: none !important; color: inherit; margin: 0; }
+.chead { display: flex; gap: 12px; align-items: center; min-width: 0; }
+.chead h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.logo { width: 46px; height: 46px; flex: none; display: grid; place-items: center; overflow: hidden; font-weight: 700; }
+.logo img { width: 100%; height: 100%; object-fit: cover; }
+.logo.big { width: 64px; height: 64px; font-size: 20px; }
+.prog { height: 12px; background: var(--rule-soft, rgb(0 0 0 / .1)); position: relative; overflow: hidden; }
+.prog > div { position: absolute; inset: 0 auto 0 0; background: var(--red, #c8102e); }
+.prog-label { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; margin-top: 4px; }
+.kv { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 12px; margin: 0; }
+.kv dt { font-size: 12px; }
+.kv dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* create form */
+form label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; }
+form input, form textarea, form select { padding: 8px 10px; font: inherit; font-weight: 400; width: 100%; }
+form textarea { min-height: 70px; resize: vertical; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.row.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.hint { font-size: 12px; font-weight: 400; color: var(--text-muted); }
+fieldset { margin: 0 0 14px; padding: 12px; min-width: 0; }
+.logo-row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.logo-row .logo { width: 64px; height: 64px; font-size: 12px; text-align: center; }
+.logo-row > div { flex: 1; display: grid; gap: 6px; min-width: 0; }
+.costs { width: 100%; border-collapse: collapse; margin: 6px 0 12px; }
+.costs td { padding: 6px 4px; white-space: normal; }
+.costs td:last-child { text-align: right; white-space: nowrap; }
+.callout { border: 1.5px dashed var(--red, #c8102e); padding: 10px 12px; margin: 0 0 12px; font-size: 14px; }
+
+/* detail */
+.dhead { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.dhead h1 { font-size: 28px; overflow-wrap: anywhere; }
+.banner { padding: 12px 14px; margin-bottom: 16px; border: 2px solid var(--ink, #1d1b16); }
+.banner.live { border-color: var(--good); }
+.banner b { display: block; margin-bottom: 2px; }
+.cols { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.chart { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.chart .axis { stroke: var(--rule, rgb(0 0 0 / .4)); stroke-width: 1; }
+.chart .grid-l { stroke: var(--rule-soft, rgb(0 0 0 / .12)); stroke-width: 1; }
+.chart .curve-l { fill: none; stroke: var(--red, #c8102e); stroke-width: 2; }
+.chart .done-l { fill: none; stroke: var(--red, #c8102e); stroke-width: 4; stroke-linecap: round; }
+.chart .now { fill: var(--red, #c8102e); stroke: var(--paper, #fff); stroke-width: 2; }
+.chart .cross { stroke: var(--ink-3, #666); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart text { font-size: 11px; fill: var(--ink-3, #666); }
+.chart-wrap { position: relative; }
+.ctip { position: absolute; pointer-events: none; padding: 6px 8px; font-size: 12px; white-space: nowrap; z-index: 3; }
+.ctip[hidden] { display: none; }
+.seg.tabs { width: 100%; margin-bottom: 12px; }
+.seg.tabs button { flex: 1; font-weight: 700; }
+.trade label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.trade .inrow { display: flex; gap: 8px; }
+.trade input, .trade select { padding: 9px 10px; font: inherit; width: 100%; min-width: 0; }
+.quote { font-size: 14px; margin: 4px 0 12px; min-height: 42px; }
+.quote b { font-size: 17px; }
+.trade .go { width: 100%; padding: 12px; font-size: 15px; }
+.bal { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; margin-top: 12px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+th { font-size: 12px; color: var(--text-muted); }
+.num { text-align: right; }
+.buy { color: var(--good); font-weight: 700; }
+.sell { color: var(--critical); font-weight: 700; }
+tr.me td { background: rgb(200 16 46 / .07); }
+@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } header nav { margin-left: 0; } }
+@media (max-width: 560px) {
+  .row, .row.three { grid-template-columns: 1fr; }
+  .kv { grid-template-columns: 1fr 1fr; }
+  .grid { grid-template-columns: 1fr; }
+  h1 { font-size: 28px; }
+}
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note"><b>Heads up:</b> curve prices move with every trade and nothing is guaranteed. Not financial advice.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens">Tokens</a>
+      <a href="/curve" aria-current="page">Curve</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/leaderboard">Leaderboard</a>
+      <a href="/wallet">My earnings</a>
+      <a href="/faucet">Faucet</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+  <div id="out"><p class="muted">Loading…</p></div>
+</main>
+<div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+<script src="/wallet.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const W = window.X1Wallet;
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const SVGNS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs = {}, ...kids) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopener", text, ...(cls ? { class: cls } : {}) });
+const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+const units = (v, dec = 9) => Number(BigInt(v ?? 0)) / 10 ** dec;
+const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
+/** Small prices (curve tokens are often fractions of a millionth of an XNT) keep 3 significant digits. */
+const sig = (v) => !isFinite(v) ? "–" : v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(14, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 3 : 0 });
+const compact = (v) => Number(v).toLocaleString(undefined, { notation: v >= 1e6 ? "compact" : "standard", maximumFractionDigits: v >= 1e6 ? 2 : 2 });
+function ago(unix) {
+  const s = Math.max(0, Date.now() / 1000 - unix);
+  if (s < 60) return `${Math.floor(s)}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+function logoFor(c, big) {
+  const box = el("div", { class: big ? "logo big" : "logo" });
+  if (c.image && /^https:\/\//.test(c.image)) box.append(el("img", { src: c.image, alt: "", loading: "lazy" })); else box.textContent = (c.symbol || "?").slice(0, 3);
+  return box;
+}
+const STATUS_TEXT = { trading: "On the curve", complete: "Graduating", "pool-created": "Graduating", graduated: "Delivering", finished: "Graduated" };
+
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+let toastTimer;
+function toast(kind, ...parts) {
+  const t = $("toast"); t.className = `toast ${kind}`; t.replaceChildren(...parts); t.hidden = false;
+  clearTimeout(toastTimer); if (kind !== "info") toastTimer = setTimeout(() => { t.hidden = true; }, 12000);
+}
+async function signAndSend(label, build, curveMint) {
+  toast("info", `${label}: preparing and simulating…`);
+  const { tx, ...rest } = await build();
+  toast("info", `${label}: approve it in your wallet…`);
+  const signed = await W.sign(W.b64ToBytes(tx));
+  toast("info", `${label}: sending…`);
+  const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), curveMint });
+  toast("success", `${label} confirmed. `, link(`${info.explorer}/tx/${signature}`, "View transaction ↗"));
+  return { signature, ...rest };
+}
+
+// ---------- curve maths (mirrors src/curve.ts and the on-chain program exactly) ----------
+const BPS = 10000n;
+const ceilDiv = (a, b) => (a + b - 1n) / b;
+function big(state) {
+  const o = {};
+  for (const k of ["supply", "curveTokens", "virtualXnt", "virtualTokens", "tokensSold", "raisedXnt", "x0", "y0", "targetXnt", "poolTokensNet"]) o[k] = BigInt(state[k]);
+  o.createdAt = state.createdAt; o.k0 = o.x0 * o.y0;
+  return o;
+}
+function quoteBuy(c, xntIn, now, feeBps, snipe) {
+  const x = c.virtualXnt, y = c.virtualTokens;
+  let fee = ceilDiv(xntIn * feeBps, BPS), net = xntIn - fee;
+  let out = y - ceilDiv(c.k0, x + net), complete = false;
+  if (c.tokensSold + out >= c.curveTokens) {
+    out = c.curveTokens - c.tokensSold;
+    net = ceilDiv(c.k0, y - out) - x;
+    xntIn = ceilDiv(net * BPS, BPS - feeBps);
+    fee = xntIn - net; complete = true;
+  }
+  const maxEarly = (c.supply * BigInt(snipe.maxBps)) / BPS;
+  const early = now < c.createdAt + snipe.secs;
+  return { xntIn, fee, net, out, complete, tooBigEarly: early && out > maxEarly, zero: out <= 0n, maxEarly, early };
+}
+function quoteSell(c, tokensIn, feeBps) {
+  const x1 = ceilDiv(c.k0, c.virtualTokens + tokensIn);
+  const gross = c.virtualXnt - x1;
+  const fee = ceilDiv(gross * feeBps, BPS);
+  return { gross, fee, out: gross - fee };
+}
+/** Decimal text ("1.5") to base units, like the server's toBaseUnits; null if it isn't a number. */
+function toUnits(text, dec = 9) {
+  const m = /^(\d*)(?:\.(\d*))?$/.exec(String(text).trim().replace(/,/g, ""));
+  if (!m || (!m[1] && !m[2])) return null;
+  const frac = (m[2] ?? "").slice(0, dec).padEnd(dec, "0");
+  return BigInt(m[1] || "0") * 10n ** BigInt(dec) + BigInt(frac || "0");
+}
+
+let info = null;
+const detailMint = (/^\/curve\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(location.pathname) ?? [])[1] ?? null;
+
+// ================= list view =================
+let listData = null, filter = "all";
+function progressBlock(c) {
+  // The bar follows the XNT raised, like its label (tokens sold run a little ahead: the price rises as it fills).
+  const pct = Math.min(100, (Number(BigInt(c.raisedXnt) * 10000n / BigInt(c.targetXnt)) / 100) || 0);
+  const bar = el("div", { class: "prog", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": pct.toFixed(1), "aria-label": "Progress to graduation" },
+    el("div", { style: `width:${pct}%` }));
+  const label = c.statusCode >= 3 ? `${fmt(units(c.raisedXnt), 2)} XNT raised: graduated to XDEX`
+    : c.statusCode >= 1 ? `${fmt(units(c.raisedXnt), 2)} XNT raised: graduating`
+    : `${fmt(units(c.raisedXnt), 2)} / ${fmt(units(c.targetXnt), 0)} XNT to graduation`;
+  return el("div", {}, bar, el("div", { class: "prog-label" },
+    el("span", { text: label }),
+    el("span", { class: "muted", text: `${fmt(pct, 1)}%` })));
+}
+function curveCard(c) {
+  return el("a", { class: "card ccard", href: `/curve/${c.mint}` },
+    el("div", { class: "chead" }, logoFor(c),
+      el("div", { style: "min-width:0" }, el("h3", {}, c.name, el("span", { class: "tag", text: c.symbol })),
+        el("div", { class: "muted", text: `${STATUS_TEXT[c.status] ?? c.status} · ${ago(c.createdAt)}` }))),
+    progressBlock(c),
+    el("dl", { class: "kv" },
+      el("div", {}, el("dt", { class: "muted", text: "Price" }), el("dd", { text: `${sig(c.priceXnt)} XNT` })),
+      el("div", {}, el("dt", { class: "muted", text: "Market cap" }), el("dd", { text: `${compact(units(c.marketCapXnt))} XNT` })),
+      el("div", {}, el("dt", { class: "muted", text: "Tax after" }), el("dd", { text: `${c.taxBps / 100}%` }))));
+}
+function renderList() {
+  const q = ($("q")?.value ?? "").trim().toLowerCase();
+  let list = listData.curves.filter((c) => !q || [c.name, c.symbol, c.mint].some((s) => String(s).toLowerCase().includes(q)));
+  if (filter === "soon") list = list.filter((c) => c.status === "trading").sort((a, b) => b.progress - a.progress);
+  else if (filter === "new") list = list.filter((c) => c.status === "trading").sort((a, b) => b.createdAt - a.createdAt);
+  else if (filter === "graduated") list = list.filter((c) => c.statusCode >= 1);
+  const host = $("list");
+  if (list.length) host.replaceChildren(el("div", { class: "grid" }, ...list.map(curveCard)));
+  else if (!listData.curves.length) host.replaceChildren(siteEmpty("No curve tokens yet on this network.", { href: "#create", text: "Create the first one →" }));
+  else host.replaceChildren(el("p", { class: "muted", text: q ? "No curve token matches that search." : "Nothing here yet." }));
+  for (const b of document.querySelectorAll("#filters button")) b.setAttribute("aria-pressed", String(b.dataset.f === filter));
+}
+
+function listView() {
+  const seg = el("div", { class: "seg", id: "filters", role: "group", "aria-label": "Filter curves" },
+    ...[["all", "All"], ["soon", "About to graduate"], ["new", "New"], ["graduated", "Graduated"]].map(([f, t]) => {
+      const b = el("button", { type: "button", "data-f": f, text: t, "aria-pressed": String(f === filter) });
+      b.onclick = () => { filter = f; renderList(); };
+      return b;
+    }));
+  const search = el("input", { id: "q", type: "search", placeholder: "Search by name, symbol or address", "aria-label": "Search curve tokens" });
+  search.addEventListener("input", renderList);
+  $("out").replaceChildren(
+    el("h1", { text: "Bonding curve" }),
+    el("p", { class: "lede" }, "Launch with no starting liquidity. Buyers fill a price curve with XNT; when ",
+      el("b", { text: `${fmt(units(listData.params.targetXnt), 0)} XNT` }),
+      " is raised, the curve graduates: it creates the XDEX pool with that XNT, locks the liquidity forever, and every buyer receives their tokens. From then on it's a normal 99 + Tax token paying its holders."),
+    el("div", { class: "toolbar" }, seg, search),
+    el("div", { id: "list" }),
+    createForm());
+  renderList();
+  setupLogo();
+  renderCosts();
+}
+
+// ---------- create form ----------
+const MAX_LP_PLUS_BURN = 55; // 10% goes to the creator; holders keep at least 35%
+function createForm() {
+  const p = listData.params;
+  const f = el("form", { id: "createForm", autocomplete: "off" },
+    el("div", { class: "row" },
+      el("label", {}, "Name", el("input", { name: "name", maxlength: "32", required: "", placeholder: "My Token" })),
+      el("label", {}, "Symbol", el("input", { name: "symbol", maxlength: "10", required: "", placeholder: "MYT", pattern: "[A-Za-z0-9$._\\-]+" }))),
+    el("div", { class: "logo-row" }, el("div", { class: "logo", id: "logoPreview", "aria-live": "polite", text: "No logo" }),
+      el("div", {},
+        el("label", { class: "btn sm", id: "logoUploadBtn", hidden: "" }, "Upload image",
+          el("input", { type: "file", id: "logoFile", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: "" })),
+        el("label", {}, "…or paste a link", el("input", { name: "image", placeholder: "https://… or ipfs://…" })),
+        el("span", { class: "hint", id: "logoHint", text: "Square PNG, 512×512 recommended (JPG, WebP or GIF also work; no SVG)." }))),
+    el("label", { style: "margin-bottom:12px" }, "Description", el("textarea", { name: "description", maxlength: "500", placeholder: "What is this token?" })),
+    el("div", { class: "row three" },
+      el("label", {}, "Website ", el("span", { class: "hint", text: "(optional)" }), el("input", { name: "website", type: "url", placeholder: "https://…", maxlength: "200" })),
+      el("label", {}, "X (Twitter) ", el("span", { class: "hint", text: "(optional)" }), el("input", { name: "twitter", type: "url", placeholder: "https://x.com/…", maxlength: "200" })),
+      el("label", {}, "Telegram ", el("span", { class: "hint", text: "(optional)" }), el("input", { name: "telegram", type: "url", placeholder: "https://t.me/…", maxlength: "200" }))),
+    el("fieldset", {}, el("legend", { text: "Supply and tax" }),
+      el("div", { class: "row" },
+        el("label", {}, "Total supply", el("input", { name: "supply", inputmode: "numeric", value: "1000000000", required: "" }),
+          el("span", { class: "hint", text: `Whole tokens, ${Number(p.supplyMin).toLocaleString()} to ${Number(p.supplyMax).toLocaleString()}. ${p.curveBps / 100}% is sold on the curve; the rest goes into the pool.` })),
+        el("label", {}, "Tax on every transfer after graduation (%)", el("input", { name: "tax", type: "number", min: "1", max: "10", step: "0.5", value: "5", required: "" }))),
+      el("div", { class: "row" },
+        el("label", {}, "Share of the tax added to liquidity (%)", el("input", { name: "autoLp", type: "number", min: "0", max: "50", step: "5", value: "25", required: "" })),
+        el("label", {}, "Share of the tax burned (%)", el("input", { name: "burn", type: "number", min: "0", max: "50", step: "5", value: "25", required: "" }))),
+      el("p", { class: "hint", id: "splitNote", style: "margin:0" })),
+    el("p", { class: "callout", text: "No tax while on the curve; the tax starts at graduation. Tokens arrive in your wallet at graduation." }),
+    el("table", { class: "costs", id: "costs" }),
+    el("p", { class: "muted", text: "You can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward." }),
+    el("button", { class: "btn primary go", id: "createBtn", type: "submit", disabled: "" }, "Connect a wallet to create"));
+  f.addEventListener("input", (ev) => { clampSplit(ev.target); renderCosts(); });
+  f.addEventListener("submit", createCurve);
+  return el("section", { class: "card", id: "create" }, el("h2", { text: "Create a curve token" }), f);
+}
+function readForm() {
+  const f = $("createForm"), v = Object.fromEntries(new FormData(f));
+  return {
+    name: String(v.name).trim(), symbol: String(v.symbol).trim(), image: String(v.image).trim(), description: String(v.description).trim(),
+    website: String(v.website ?? "").trim(), twitter: String(v.twitter ?? "").trim(), telegram: String(v.telegram ?? "").trim(),
+    supply: String(v.supply).replace(/[,_\s]/g, ""), taxBps: Math.round(Number(v.tax) * 100),
+    autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
+  };
+}
+function clampSplit(changed) {
+  const f = $("createForm"); if (!f) return;
+  const lp = f.elements.autoLp, burn = f.elements.burn;
+  if (changed !== lp && changed !== burn) return;
+  const val = (e) => Math.min(50, Math.max(0, Number(e.value) || 0));
+  const other = changed === lp ? burn : lp, mine = val(changed);
+  if (String(mine) !== changed.value && changed.value !== "") changed.value = mine;
+  if (mine + val(other) > MAX_LP_PLUS_BURN) other.value = MAX_LP_PLUS_BURN - mine;
+}
+function renderCosts() {
+  if (!$("costs")) return;
+  const p = readForm();
+  const creatorPct = (info?.creatorBps ?? 1000) / 100;
+  const tax = p.taxBps / 100, lp = tax * p.autoLpBps / 10000, burn = tax * p.burnBps / 10000, creator = tax * creatorPct / 100;
+  $("splitNote").textContent = `After graduation every transfer pays ${fmt(tax, 2)}%: about ${fmt(Math.max(0, tax - lp - burn - creator), 2)}% goes to holders in XNT, ${fmt(lp, 2)}% is added to liquidity`
+    + (burn > 0 ? `, ${fmt(burn, 2)}% of the tokens are burned` : "") + `, and ${fmt(creator, 2)}% is your creator reward.`;
+  const dep = units(listData.params.depositXnt);
+  const rows = [
+    ["Launch fee", info ? `${info.feeAmount} ${info.feeSymbol}` : "…"],
+    [`Graduation deposit (pays for the pool and lock at graduation; the rest is refunded to you when the curve finishes)`, `${fmt(dep, 3)} XNT`],
+    ["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"],
+    ["Account rent and network fees", "≈ 0.01 XNT"],
+  ];
+  $("costs").replaceChildren(...rows.map(([a, b]) => el("tr", {}, el("td", { text: a }), el("td", { text: b }))));
+  const btn = $("createBtn");
+  btn.disabled = !W.state.address || creating;
+  btn.textContent = !W.state.address ? "Connect a wallet to create" : creating ? "Creating…" : "Create curve token";
+}
+function setupLogo() {
+  const input = $("createForm").elements.image, file = $("logoFile"), btn = $("logoUploadBtn");
+  btn.hidden = !info?.logoUpload;
+  if (!info?.logoUpload) $("logoHint").textContent = "A square image (PNG, JPG, WebP or GIF) hosted anywhere public.";
+  const preview = (u) => { const b = $("logoPreview"); if (u && /^https:\/\//.test(u)) b.replaceChildren(el("img", { src: u, alt: "Logo preview" })); else b.replaceChildren(u ? "Link set" : "No logo"); };
+  input.addEventListener("change", () => {
+    const v = input.value.trim();
+    if (/\.svgz?(?:[?#].*)?$/i.test(v)) { input.setCustomValidity("Use a PNG, JPG, WebP or GIF, not an SVG."); $("logoPreview").replaceChildren("SVG not allowed"); return; }
+    input.setCustomValidity(""); preview(v);
+  });
+  file.addEventListener("change", async () => {
+    const fl = file.files?.[0]; file.value = "";
+    if (!fl) return;
+    const max = info?.maxLogoBytes ?? 500000;
+    if (fl.size > max) { toast("error", `That image is ${Math.round(fl.size / 1000)} KB; the limit is ${max / 1000} KB.`); return; }
+    const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = fail; r.readAsDataURL(fl); });
+    btn.firstChild.textContent = "Uploading…";
+    try { const r = await api("/api/upload-logo", { name: fl.name.replace(/\.[^.]+$/, ""), data }); input.value = r.url; preview(r.url); toast("success", "Logo uploaded to IPFS."); }
+    catch (e) { toast("error", `Upload failed: ${e.message || e}`); }
+    btn.firstChild.textContent = "Upload image";
+  });
+}
+let creating = false;
+async function createCurve(ev) {
+  ev.preventDefault();
+  if (creating || !W.state.address) return;
+  const p = readForm();
+  if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax.`); return; }
+  const target = fmt(units(listData.params.targetXnt), 0);
+  const ok = confirm(`Create ${p.name} (${p.symbol}) on the bonding curve?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed); ${listData.params.curveBps / 100}% sold on the curve\n• Tax ${p.taxBps / 100}% on every transfer once it graduates (can never change)\n• Graduates at ${target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee ${info.feeAmount} ${info.feeSymbol}, plus a ${fmt(units(listData.params.depositXnt), 3)} XNT graduation deposit (the rest comes back when it finishes)\n\nYou can't buy on your own curve. Your wallet will ask you to approve 1 transaction.`);
+  if (!ok) return;
+  creating = true; renderCosts();
+  try {
+    const { mint } = await signAndSend("Create curve token", () => api("/api/curve/create", { ...p, creator: W.state.address }));
+    location.href = `/curve/${mint}`;
+  } catch (e) { toast("error", `Create failed: ${e.message || e}`); }
+  creating = false; renderCosts();
+}
+
+// ================= detail view =================
+let view = null, tab = "buy", tradeBusy = false, fetchedAt = 0;
+const chainNow = () => (view ? view.params.now + Math.floor((Date.now() - fetchedAt) / 1000) : Math.floor(Date.now() / 1000));
+
+function banner(v) {
+  const pool = v.pool ? link(`${info.explorer}/address/${v.pool}`, "XDEX pool ↗") : null;
+  const nft = v.lockNft ? el("a", { href: `/nft/${v.lockNft}`, text: "LP lock NFT" }) : null;
+  const links = (...a) => el("div", { class: "muted", style: "margin-top:4px;display:flex;gap:14px;flex-wrap:wrap" }, ...a.filter(Boolean));
+  if (v.statusCode === 0) {
+    const left = v.createdAt + v.params.snipeWindowSecs - chainNow();
+    return left > 0 ? el("div", { class: "banner" }, el("b", { text: "Just launched" }), `For the next ${Math.ceil(left / 60)} min, one buy can take at most ${v.params.snipeMaxBps / 100}% of the supply.`) : null;
+  }
+  if (v.statusCode === 1 || v.statusCode === 2) {
+    return el("div", { class: "banner" }, el("b", { text: "Graduating…" }), "The curve is full. Its XDEX pool and the forever LP lock are being created; buyers' tokens are delivered right after.", links(pool));
+  }
+  if (v.statusCode === 3) {
+    return el("div", { class: "banner live" }, el("b", { text: "Delivering tokens…" }), `The pool is live and its liquidity locked forever. Buyers' tokens are being sent to their wallets (${v.state.positions} left).`, links(pool, nft));
+  }
+  return el("div", { class: "banner live" }, el("b", { text: "Graduated" }), "Every buyer has their tokens. It now trades on XDEX, and its tax pays holders in XNT.",
+    links(pool, nft, el("a", { href: `/leaderboard/${v.mint}`, text: "Leaderboard" }), el("a", { href: "/tokens", text: "All tokens" })));
+}
+
+/** Price vs XNT raised, drawn from the curve: at raised r, x = x0 + r and price = x² / k0. */
+function chart(v) {
+  const c = big(v.state);
+  // Phones get a narrower drawing, so its text isn't scaled down to nothing.
+  const narrow = innerWidth < 560;
+  const W0 = narrow ? 360 : 600, H0 = narrow ? 240 : 260, L = 64, R = 12, T = 26, B = 34;
+  // Curve prices are tiny fractions of an XNT: axis labels use exponents to stay short.
+  const axis = (p) => p === 0 ? "0" : p < 0.001 ? p.toExponential(2) : sig(p);
+  const target = Number(c.targetXnt);
+  const x0 = Number(c.x0), k0 = Number(c.k0);
+  const price = (r) => ((x0 + r) * (x0 + r)) / k0;
+  const pMax = price(target) * 1.04;
+  const X = (r) => L + (r / target) * (W0 - L - R);
+  const Y = (p) => T + (1 - p / pMax) * (H0 - T - B);
+  const pts = [], N = 80;
+  for (let i = 0; i <= N; i++) { const r = (target * i) / N; pts.push(`${X(r).toFixed(1)},${Y(price(r)).toFixed(1)}`); }
+  const raised = Math.min(Number(c.raisedXnt), target);
+  const donePts = pts.filter((_, i) => (target * i) / N <= raised).concat(`${X(raised).toFixed(1)},${Y(price(raised)).toFixed(1)}`);
+  const s = svg("svg", { viewBox: `0 0 ${W0} ${H0}`, class: "chart", role: "img", "aria-label": `Price rises from ${sig(price(0))} to ${sig(price(target))} XNT per token as ${fmt(target / 1e9, 0)} XNT is raised; now ${sig(price(raised))} XNT at ${fmt(raised / 1e9, 2)} XNT raised.` });
+  for (const f of [0, 0.5, 1]) {
+    const p = pMax * f / 1.04 * (f === 0 ? 0 : 1);
+    s.append(svg("line", { class: "grid-l", x1: L, x2: W0 - R, y1: Y(p), y2: Y(p) }), svg("text", { x: L - 6, y: Y(p) + 4, "text-anchor": "end", text: axis(p) }));
+  }
+  s.append(svg("line", { class: "axis", x1: L, x2: W0 - R, y1: H0 - B, y2: H0 - B }));
+  for (const f of narrow ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1]) s.append(svg("text", { x: X(target * f), y: H0 - B + 16, "text-anchor": f === 0 ? "start" : f === 1 ? "end" : "middle", text: fmt(target * f / 1e9, 1) }));
+  s.append(svg("text", { x: (L + W0 - R) / 2, y: H0 - 3, "text-anchor": "middle", text: "XNT raised" }));
+  s.append(svg("text", { x: 4, y: 12, text: "XNT per token", "text-anchor": "start" }));
+  s.append(svg("polyline", { class: "curve-l", points: pts.join(" "), opacity: ".45" }));
+  if (raised > 0) s.append(svg("polyline", { class: "done-l", points: donePts.join(" ") }));
+  s.append(svg("circle", { class: "now", cx: X(raised), cy: Y(price(raised)), r: 6 }));
+  // Hover: crosshair and a tooltip with the price at that point of the curve.
+  const cross = svg("line", { class: "cross", y1: T, y2: H0 - B, visibility: "hidden" });
+  const dot = svg("circle", { class: "now", r: 4, visibility: "hidden" });
+  const hit = svg("rect", { x: L, y: T, width: W0 - L - R, height: H0 - T - B, fill: "transparent" });
+  s.append(cross, dot, hit);
+  const tip = el("div", { class: "ctip", hidden: "" });
+  const move = (ev) => {
+    const box = s.getBoundingClientRect();
+    const px = ((ev.clientX - box.left) / box.width) * W0;
+    const r = Math.max(0, Math.min(target, ((px - L) / (W0 - L - R)) * target));
+    const cx = X(r), cy = Y(price(r));
+    cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("visibility", "visible");
+    tip.hidden = false;
+    tip.textContent = `${fmt(r / 1e9, 2)} XNT raised · ${sig(price(r))} XNT per token`;
+    const left = (cx / W0) * box.width;
+    tip.style.left = `${Math.max(0, Math.min(box.width - tip.offsetWidth, left - tip.offsetWidth / 2))}px`;
+    tip.style.top = `${Math.max(0, (cy / H0) * box.height - 40)}px`;
+  };
+  const leave = () => { cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); tip.hidden = true; };
+  hit.addEventListener("pointermove", move); hit.addEventListener("pointerdown", move); hit.addEventListener("pointerleave", leave);
+  return el("div", { class: "chart-wrap" }, s, tip);
+}
+
+/** DOM append() would print null as "null"; this skips the parts left out. */
+const put = (node, ...kids) => node.append(...kids.filter((k) => k != null));
+function tradeBox(v) {
+  const trading = v.statusCode === 0;
+  const c = big(v.state);
+  const feeBps = BigInt(v.params.feeBps);
+  const snipe = { secs: v.params.snipeWindowSecs, maxBps: v.params.snipeMaxBps };
+  const me = W.state.address;
+  const isCreator = me && me === v.creator;
+  const balance = v.wallet && v.wallet.address === me ? BigInt(v.wallet.balance) : 0n;
+  const tabs = el("div", { class: "seg tabs", role: "group", "aria-label": "Buy or sell" },
+    ...[["buy", "Buy"], ["sell", "Sell"]].map(([t, label]) => {
+      const b = el("button", { type: "button", text: label, "aria-pressed": String(tab === t) });
+      b.onclick = () => { tab = t; renderDetail(); };
+      return b;
+    }));
+  const amount = el("input", { id: "amt", inputmode: "decimal", placeholder: tab === "buy" ? "0.0 XNT" : `0.0 ${v.symbol}`, "aria-label": tab === "buy" ? "XNT to spend" : "Tokens to sell", autocomplete: "off" });
+  amount.value = tradeInputs[tab] ?? "";
+  const slip = el("select", { id: "slip", "aria-label": "Slippage" }, ...[[50, "0.5%"], [100, "1%"], [200, "2%"], [500, "5%"]].map(([bps, t]) => el("option", { value: String(bps), text: t })));
+  slip.value = String(tradeInputs.slip ?? 100);
+  const maxBtn = tab === "sell" ? el("button", { type: "button", class: "btn sm", text: "Max" }) : null;
+  const quote = el("div", { class: "quote", "aria-live": "polite" });
+  const go = el("button", { type: "button", class: "btn primary go" });
+
+  function update() {
+    tradeInputs[tab] = amount.value; tradeInputs.slip = Number(slip.value);
+    let why = null, ready = false;
+    const units9 = toUnits(amount.value);
+    quote.replaceChildren();
+    if (!trading) why = v.statusCode >= 3 ? "The curve has graduated; trade on XDEX." : "The curve is full; it's graduating.";
+    else if (isCreator) why = "The creator can't buy on their own curve.";
+    else if (units9 === null || units9 <= 0n) why = tab === "buy" ? "Enter how much XNT to spend." : "Enter how many tokens to sell.";
+    else if (tab === "buy") {
+      const q = quoteBuy(c, units9, chainNow(), feeBps, snipe);
+      const min = (q.out * (10000n - BigInt(slip.value))) / 10000n;
+      if (q.zero) why = "That amount is too small to buy any tokens.";
+      else if (q.tooBigEarly) why = `For the first ${snipe.secs / 60} minutes one buy can take at most ${snipe.maxBps / 100}% of the supply (${compact(units(q.maxEarly))} ${v.symbol}). Try a smaller amount.`;
+      else {
+        ready = true;
+        put(quote, el("div", {}, "You get ≈ ", el("b", { text: `${fmt(units(q.out), 2)} ${v.symbol}` })),
+          el("div", { class: "muted", text: `Pay ${fmt(units(q.xntIn), 6)} XNT incl. ${v.params.feeBps / 100}% fee (${fmt(units(q.fee), 6)} XNT). At least ${fmt(units(min), 2)} ${v.symbol} or it cancels.` }),
+          q.complete ? el("div", { class: "muted", text: "This buy fills the curve: you only pay for what's left, and it graduates." }) : null,
+          v.wallet && !v.wallet.hasPosition && v.firstBuyExtraXnt ? el("div", { class: "muted", text: `First buy: about ${fmt(units(v.firstBuyExtraXnt), 4)} XNT more for your curve balance and a token-account deposit (the unused deposit is refunded at delivery).` }) : null);
+      }
+    } else {
+      if (units9 > balance) why = `That's more than your curve balance (${fmt(units(balance), 2)} ${v.symbol}).`;
+      else {
+        const q = quoteSell(c, units9, feeBps);
+        const min = (q.out * (10000n - BigInt(slip.value))) / 10000n;
+        if (q.out <= 0n) why = "That amount is too small to sell.";
+        else {
+          ready = true;
+          put(quote, el("div", {}, "You get ≈ ", el("b", { text: `${fmt(units(q.out), 6)} XNT` })),
+            el("div", { class: "muted", text: `After the ${v.params.feeBps / 100}% fee (${fmt(units(q.fee), 6)} XNT). At least ${fmt(units(min), 6)} XNT or it cancels.` }));
+        }
+      }
+    }
+    if (why) quote.append(el("div", { class: "muted", text: why }));
+    go.disabled = tradeBusy || (!!me && !ready) || !trading || isCreator;
+    go.textContent = !me ? "Connect wallet" : tradeBusy ? "Working…" : tab === "buy" ? `Buy ${v.symbol}` : `Sell ${v.symbol}`;
+  }
+  amount.addEventListener("input", update);
+  slip.addEventListener("change", update);
+  if (maxBtn) maxBtn.onclick = () => { amount.value = (Number(balance) / 1e9).toString(); tradeInputs.sellAll = true; update(); };
+  amount.addEventListener("input", () => { tradeInputs.sellAll = false; });
+  go.onclick = async (ev) => {
+    if (!me) { openWalletMenu(ev); return; }
+    tradeBusy = true; update();
+    try {
+      const body = { wallet: me, mint: v.mint, slippageBps: Number(slip.value) };
+      if (tab === "buy") await signAndSend("Buy", () => api("/api/curve/buy", { ...body, xnt: amount.value.trim() }), v.mint);
+      else await signAndSend("Sell", () => api("/api/curve/sell", { ...body, tokens: tradeInputs.sellAll ? "all" : amount.value.trim() }), v.mint);
+      tradeInputs[tab] = ""; tradeInputs.sellAll = false;
+    } catch (e) { toast("error", `${tab === "buy" ? "Buy" : "Sell"} failed: ${e.message || e}`); }
+    tradeBusy = false;
+    await loadDetail();
+  };
+  update();
+  const inputRow = el("div", { class: "inrow" }, amount, maxBtn);
+  return el("section", { class: "card trade" },
+    el("h2", { text: "Trade on the curve" }), tabs,
+    el("label", {}, tab === "buy" ? "XNT to spend" : `${v.symbol} to sell`, inputRow),
+    el("label", {}, "Slippage", slip),
+    quote, go,
+    el("div", { class: "bal" }, el("span", { class: "muted", text: "Your curve balance" }),
+      el("b", { text: me ? `${fmt(units(balance), 2)} ${v.symbol}` : "–" })),
+    el("p", { class: "muted", style: "margin:8px 0 0", text: "Balances stay on the curve until it graduates; then the tokens are sent to your wallet automatically. No tax on the curve." }));
+}
+const tradeInputs = {};
+
+function tradesTable(v) {
+  if (!v.trades.length) return el("p", { class: "muted", text: "No trades yet." });
+  return el("div", { class: "table-wrap" }, el("table", {},
+    el("tr", {}, ...["Time", "Side", "Wallet", "XNT", "Tokens", "Price"].map((h, i) => el("th", { class: i >= 3 ? "num" : "", text: h }))),
+    ...v.trades.map((t) => el("tr", { class: t.trader === W.state.address ? "me" : "" },
+      el("td", {}, link(`${info.explorer}/tx/${t.sig}`, ago(t.ts))),
+      el("td", { class: t.isBuy ? "buy" : "sell", text: t.isBuy ? "Buy" : "Sell" }),
+      el("td", {}, el("a", { href: `/wallet/${t.trader}`, class: "mono", text: short(t.trader) })),
+      el("td", { class: "num", text: fmt(units(t.xnt), 4) }),
+      el("td", { class: "num", text: compact(units(t.tokens)) }),
+      el("td", { class: "num", text: sig(t.priceAfter) })))));
+}
+function holdersTable(v) {
+  if (!v.holders.length) return el("p", { class: "muted", text: v.statusCode >= 4 ? "Every balance has been delivered; see the token's holders on its leaderboard." : "No buyers yet." });
+  return el("div", { class: "table-wrap" }, el("table", {},
+    el("tr", {}, el("th", { text: "#" }), el("th", { text: "Wallet" }), el("th", { class: "num", text: "Tokens" }), el("th", { class: "num", text: "% of supply" })),
+    ...v.holders.slice(0, 100).map((h, i) => el("tr", { class: h.owner === W.state.address ? "me" : "" },
+      el("td", { text: String(i + 1) }),
+      el("td", {}, el("a", { href: `/wallet/${h.owner}`, class: "mono", text: short(h.owner) })),
+      el("td", { class: "num", text: compact(units(h.balance)) }),
+      el("td", { class: "num", text: `${fmt(h.pctSupply, 2)}%` })))));
+}
+
+function renderDetail() {
+  const v = view;
+  const focused = document.activeElement?.id === "amt";
+  const out = $("out");
+  const parts = [
+    el("p", { style: "margin:0 0 10px" }, el("a", { href: "/curve", text: "← All curve tokens" })),
+    el("div", { class: "dhead" }, logoFor(v, true),
+      el("div", { style: "min-width:0" }, el("h1", {}, v.name, el("span", { class: "tag", text: v.symbol }), el("span", { class: "tag", text: STATUS_TEXT[v.status] ?? v.status })),
+        el("div", { class: "muted" }, link(`${info.explorer}/address/${v.mint}`, short(v.mint), "mono"), ` · created ${ago(v.createdAt)} · by `,
+          el("a", { href: `/wallet/${v.creator}`, class: "mono", text: short(v.creator) })))),
+    v.description ? el("p", { class: "lede", text: v.description }) : null,
+    banner(v),
+    el("div", { class: "card" }, progressBlock(v),
+      el("dl", { class: "kv", style: "margin-top:12px" },
+        el("div", {}, el("dt", { class: "muted", text: "Price" }), el("dd", { text: `${sig(v.priceXnt)} XNT` })),
+        el("div", {}, el("dt", { class: "muted", text: "Market cap" }), el("dd", { text: `${compact(units(v.marketCapXnt))} XNT` })),
+        el("div", {}, el("dt", { class: "muted", text: "Tax after graduation" }), el("dd", { text: `${v.taxBps / 100}%` })),
+        el("div", {}, el("dt", { class: "muted", text: "Sold" }), el("dd", { text: `${compact(units(v.tokensSold))} / ${compact(units(v.curveTokens))}` })),
+        el("div", {}, el("dt", { class: "muted", text: "Pool opening price" }), el("dd", { text: `${sig(Number(v.state.targetXnt) / Number(v.state.poolTokensNet))} XNT` })),
+        el("div", {}, el("dt", { class: "muted", text: "Buyers" }), el("dd", { text: String(v.holderCount) }))),
+      el("div", { class: "muted", style: "margin-top:8px;display:flex;gap:14px;flex-wrap:wrap" },
+        ...[["website", "Website"], ["twitter", "X"], ["telegram", "Telegram"]].filter(([k]) => v.links?.[k]).map(([k, l]) => link(v.links[k], `${l} ↗`)))),
+    el("div", { class: "cols" },
+      el("section", { class: "card" }, el("h2", { text: "Price curve" }),
+        el("p", { class: "muted", style: "margin:-4px 0 8px", text: "The price rises as XNT comes in. At the end of the curve it matches the XDEX pool's opening price." }),
+        chart(v)),
+      tradeBox(v)),
+    el("section", { class: "card" }, el("h2", { text: "Recent trades" }), tradesTable(v)),
+    el("section", { class: "card" }, el("h2", { text: "Curve balances" }), holdersTable(v))];
+  out.replaceChildren(...parts.filter(Boolean)); // no banner or description: leave them out, not "null"
+  if (focused) { const a = $("amt"); a?.focus(); a?.setSelectionRange(a.value.length, a.value.length); }
+}
+
+async function loadDetail() {
+  try {
+    const v = await api(`/api/curve/${detailMint}${W.state.address ? `?wallet=${W.state.address}` : ""}`);
+    view = v; fetchedAt = Date.now();
+    document.title = `${v.name} (${v.symbol}) · Curve · 99 + Tax`;
+    if (!tradeBusy) renderDetail();
+  } catch (e) {
+    if (!view) $("out").replaceChildren(el("p", {}, el("a", { href: "/curve", text: "← All curve tokens" })), el("p", { class: "error", text: `Couldn't load this curve: ${e.message || e}` }));
+  }
+}
+
+// ---------- wallet ----------
+function renderWallet() {
+  const area = $("walletArea");
+  if (W.state.address) {
+    const b = el("button", { class: "btn", type: "button", text: "Disconnect" });
+    b.onclick = () => W.disconnect();
+    area.replaceChildren(el("span", { class: "addr", text: short(W.state.address) }), b);
+  } else {
+    const b = el("button", { class: "btn primary", type: "button", text: "Connect wallet" });
+    b.onclick = openWalletMenu;
+    area.replaceChildren(b);
+  }
+}
+function openWalletMenu(ev) {
+  ev?.stopPropagation();
+  $("walletMenu")?.remove();
+  const choices = W.choices();
+  const go = (c) => W.connect(c).catch((e) => toast("error", "Wallet connection failed: " + (e.message || e)));
+  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  if (choices.length === 1) { go(choices[0]); return; }
+  const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
+  for (const c of choices) {
+    const b = el("button", { type: "button" });
+    if (typeof c.icon === "string" && c.icon.startsWith("data:image/")) b.append(el("img", { src: c.icon, alt: "" }));
+    b.append(c.name);
+    b.onclick = () => { menu.remove(); go(c); };
+    menu.append(b);
+  }
+  $("walletArea").append(menu);
+}
+document.addEventListener("click", () => $("walletMenu")?.remove());
+W.onChange(() => { renderWallet(); if (detailMint) loadDetail(); else renderCosts(); });
+renderWallet();
+
+(async () => {
+  try { info = await api("/api/info"); } catch { info = { explorer: "" }; }
+  if (detailMint) {
+    await loadDetail();
+    setInterval(() => { if (!document.hidden && !tradeBusy) loadDetail(); }, 15000);
+    return;
+  }
+  try {
+    listData = await api("/api/curves");
+    listView();
+    if (location.hash === "#create") $("create")?.scrollIntoView();
+    setInterval(async () => {
+      if (document.hidden) return;
+      try { listData = { ...listData, curves: (await api("/api/curves")).curves }; renderList(); } catch { /* keep the last list */ }
+    }, 20000);
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load curve tokens: ${e.message || e}` })); }
+})();
+</script>
+</body>
+</html>
