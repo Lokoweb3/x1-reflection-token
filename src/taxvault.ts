@@ -1,0 +1,451 @@
+/**
+ * Client for the `tax_vault` program (docs/tax-vault-spec.md is the contract): constants,
+ * PDAs, the Vault and PaidRecord decoders, instruction builders in the spec's account
+ * order, the rewards-list Merkle tree, and a parser for the program's events.
+ *
+ * The vault's `auth` PDA is the token's withdraw-withheld authority: the program collects
+ * the tax, burns, sells, adds liquidity and funds the creator itself. Holders are paid
+ * against a published list of cumulative totals, which can only divide the XNT the program
+ * set aside for them.
+ *
+ * Nothing here signs or sends.
+ */
+import crypto from "node:crypto";
+import { PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
+import { XDEX_PROGRAM_IDS } from "./config.js";
+import { MEMO_PROGRAM_ID, lockPda, rewardTokensPda, rewardVaultPda } from "./locker.js";
+import { merkleTree, verifyProof } from "./holder-pass.js";
+import { poolAddresses, poolAuthority, type Pool } from "./xdex.js";
+
+const disc = (s: string) => crypto.createHash("sha256").update(s).digest().subarray(0, 8);
+
+// ---------- constants (mirror the Rust `pub const`s) ----------
+/** The deployed tax_vault program (lp-locker/programs/tax_vault); the site reads factory.taxVault.programId. */
+export const TAX_VAULT_PROGRAM_ID = new PublicKey("D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW");
+export const LOCKER_PROGRAM_ID = new PublicKey("5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C");
+export const MAX_IMPACT_BPS = 300n;
+/**
+ * A sale's price-impact cap for a token with `taxBps` tax: min(300, tax/2) bps, so a
+ * sandwich around the vault's sale costs the attacker more in tax than it can take.
+ */
+export const sellImpactBps = (taxBps: number) => Math.min(Number(MAX_IMPACT_BPS), Math.floor(taxBps / 2));
+/** A wallet holding 0 lamports must receive at least this (rent-exempt minimum of an empty account). */
+export const RENT_EXEMPT_EMPTY = 890_880n;
+export const OUT_TOLERANCE_BPS = 50n;
+export const CRANK_REWARD_BPS = 100n;
+export const CRANK_REWARD_CAP = 50_000_000n;
+/** 600 s on a normal build; the program's `short-windows` feature (local tests) uses 5. */
+export const LIST_DELAY_SECS = 600;
+/** A `sell` whose expected output is under this fails with TooSmall. */
+export const MIN_SELL_XNT = 2_000_000n;
+/** `add_liquidity` needs at least this much XNT set aside. */
+export const MIN_LP_XNT = 10_000_000n;
+export const CREATOR_BPS = 1000;
+export const MAX_BURN_BPS = 5000;
+export const MAX_LP_BPS = 5000;
+export const MAX_BURN_PLUS_LP_BPS = 5500;
+
+export const xdexProgramFor = (network: "mainnet" | "testnet") => new PublicKey(XDEX_PROGRAM_IDS[network]);
+
+/** Whether a burn/liquidity split is one the program accepts (holders keep at least 35%). */
+export const validSplit = (burnBps: number, lpBps: number) =>
+  Number.isInteger(burnBps) && Number.isInteger(lpBps) && burnBps >= 0 && lpBps >= 0
+  && burnBps <= MAX_BURN_BPS && lpBps <= MAX_LP_BPS && burnBps + lpBps <= MAX_BURN_PLUS_LP_BPS;
+
+// ---------- discriminators ----------
+export const IX = {
+  initVault: disc("global:init_vault"),
+  collect: disc("global:collect"),
+  sell: disc("global:sell"),
+  addLiquidity: disc("global:add_liquidity"),
+  fundCreator: disc("global:fund_creator"),
+  publishList: disc("global:publish_list"),
+  cancelList: disc("global:cancel_list"),
+  pay: disc("global:pay"),
+};
+export const VAULT_DISC = disc("account:Vault");
+export const PAID_RECORD_DISC = disc("account:PaidRecord");
+export const EVENT = {
+  Collected: disc("event:Collected"),
+  Sold: disc("event:Sold"),
+  LiquidityAdded: disc("event:LiquidityAdded"),
+  CreatorFunded: disc("event:CreatorFunded"),
+  ListPublished: disc("event:ListPublished"),
+  ListCancelled: disc("event:ListCancelled"),
+  Paid: disc("event:Paid"),
+};
+/** Anchor numbers custom errors from 6000 in declaration order. */
+export const ERRORS = [
+  "BadMint", "BadAuthority", "BadPool", "BadLock", "BadSplit", "NotPublisher", "NotGuardian", "StaleEpoch",
+  "TotalDecreased", "OverFunded", "NoPendingList", "BadProof", "NothingToCollect", "NothingToPay",
+  "TooSmall", "Insolvent", "MathOverflow", "WrongAccount", "OneSellPerSlot",
+] as const;
+export const errorName = (code: number) => ERRORS[code - 6000] ?? null;
+/** The program's error name in a simulation/transaction error ({"Custom":6012} etc.), or null. */
+export function errorOf(message: string): string | null {
+  const m = /"Custom":(\d+)|custom program error: 0x([0-9a-f]+)/i.exec(message);
+  if (!m) return null;
+  return errorName(m[1] ? Number(m[1]) : parseInt(m[2], 16));
+}
+
+// ---------- PDAs ----------
+const pda = (programId: PublicKey, ...seeds: Buffer[]) => PublicKey.findProgramAddressSync(seeds, programId)[0];
+export const vaultPda = (programId: PublicKey, mint: PublicKey) => pda(programId, Buffer.from("vault"), mint.toBuffer());
+/** The token's withdraw-withheld authority: a system-owned PDA that holds the vault's accounts and XNT. */
+export const vaultAuthPda = (programId: PublicKey, mint: PublicKey) => pda(programId, Buffer.from("auth"), mint.toBuffer());
+export const paidRecordPda = (programId: PublicKey, vault: PublicKey, wallet: PublicKey) =>
+  pda(programId, Buffer.from("paid"), vault.toBuffer(), wallet.toBuffer());
+
+/** The auth PDA's token accounts: the tax token (Token-2022), wrapped XNT and LP (SPL Token). */
+export const authTokenAccount = (auth: PublicKey, mint: PublicKey) => getAssociatedTokenAddressSync(mint, auth, true, TOKEN_2022_PROGRAM_ID);
+export const authWxntAccount = (auth: PublicKey) => getAssociatedTokenAddressSync(NATIVE_MINT, auth, true, TOKEN_PROGRAM_ID);
+export const authLpAccount = (auth: PublicKey, lpMint: PublicKey) => getAssociatedTokenAddressSync(lpMint, auth, true, TOKEN_PROGRAM_ID);
+
+// ---------- accounts ----------
+export interface Vault {
+  address: PublicKey;
+  mint: PublicKey;
+  pool: PublicKey;
+  creatorNft: PublicKey;
+  rewardMint: PublicKey;
+  rewardSwapPool: PublicKey;
+  publisher: PublicKey;
+  guardian: PublicKey;
+  burnBps: number;
+  lpBps: number;
+  creatorBps: number;
+  pendingTokens: bigint;
+  lpTokens: bigint;
+  sellLp: bigint;
+  sellCreator: bigint;
+  sellHolders: bigint;
+  xntLp: bigint;
+  xntCreator: bigint;
+  holdersFunded: bigint;
+  holdersPaid: bigint;
+  listEpoch: bigint;
+  listRoot: Buffer;
+  listTotal: bigint;
+  pendingEpoch: bigint;
+  pendingRoot: Buffer;
+  pendingTotal: bigint;
+  pendingActiveAt: number;
+  totalCollected: bigint;
+  totalBurned: bigint;
+  totalLpTokens: bigint;
+  totalLpXnt: bigint;
+  totalCreatorXnt: bigint;
+  totalCrankRewards: bigint;
+  createdAt: number;
+  bump: number;
+  authBump: number;
+  /** Slot of the last sale (one sale per slot). */
+  lastSellSlot: bigint;
+}
+const VAULT_KEYS = ["mint", "pool", "creatorNft", "rewardMint", "rewardSwapPool", "publisher", "guardian"] as const;
+const VAULT_U64S_A = ["pendingTokens", "lpTokens", "sellLp", "sellCreator", "sellHolders", "xntLp", "xntCreator", "holdersFunded", "holdersPaid", "listEpoch"] as const;
+const VAULT_TOTALS = ["totalCollected", "totalBurned", "totalLpTokens", "totalLpXnt", "totalCreatorXnt", "totalCrankRewards"] as const;
+/** Discriminator + fields, packed (Anchor borsh). */
+export const VAULT_LEN = 8 + 32 * 7 + 2 * 3 + 8 * 10 + 32 + 8 + 8 + 32 + 8 + 8 + 8 * 6 + 8 + 1 + 1 + 8;
+export const PAID_RECORD_LEN = 8 + 32 + 32 + 8 + 1;
+
+export function decodeVault(address: PublicKey, d: Buffer): Vault {
+  if (d.length < VAULT_LEN || !d.subarray(0, 8).equals(VAULT_DISC)) throw new Error("Not a Vault account");
+  let o = 8;
+  const key = () => { const k = new PublicKey(d.subarray(o, o + 32)); o += 32; return k; };
+  const u16 = () => { const v = d.readUInt16LE(o); o += 2; return v; };
+  const u64 = () => { const v = d.readBigUInt64LE(o); o += 8; return v; };
+  const i64 = () => { const v = Number(d.readBigInt64LE(o)); o += 8; return v; };
+  const bytes32 = () => { const b = Buffer.from(d.subarray(o, o + 32)); o += 32; return b; };
+  const v: Record<string, unknown> = { address };
+  for (const k of VAULT_KEYS) v[k] = key();
+  v.burnBps = u16(); v.lpBps = u16(); v.creatorBps = u16();
+  for (const k of VAULT_U64S_A) v[k] = u64();
+  v.listRoot = bytes32(); v.listTotal = u64();
+  v.pendingEpoch = u64(); v.pendingRoot = bytes32(); v.pendingTotal = u64(); v.pendingActiveAt = i64();
+  for (const k of VAULT_TOTALS) v[k] = u64();
+  v.createdAt = i64(); v.bump = d[o]; v.authBump = d[o + 1]; o += 2;
+  v.lastSellSlot = u64();
+  return v as unknown as Vault;
+}
+
+/** The inverse of decodeVault (tests and local fixtures). */
+export function encodeVault(v: Omit<Vault, "address">): Buffer {
+  const d = Buffer.alloc(VAULT_LEN);
+  VAULT_DISC.copy(d, 0);
+  let o = 8;
+  const key = (k: PublicKey) => { k.toBuffer().copy(d, o); o += 32; };
+  const u16 = (x: number) => { d.writeUInt16LE(x, o); o += 2; };
+  const u64 = (x: bigint) => { d.writeBigUInt64LE(x, o); o += 8; };
+  const i64 = (x: number) => { d.writeBigInt64LE(BigInt(x), o); o += 8; };
+  const bytes32 = (b: Buffer) => { b.copy(d, o, 0, 32); o += 32; };
+  for (const k of VAULT_KEYS) key(v[k]);
+  u16(v.burnBps); u16(v.lpBps); u16(v.creatorBps);
+  for (const k of VAULT_U64S_A) u64(v[k]);
+  bytes32(v.listRoot); u64(v.listTotal);
+  u64(v.pendingEpoch); bytes32(v.pendingRoot); u64(v.pendingTotal); i64(v.pendingActiveAt);
+  for (const k of VAULT_TOTALS) u64(v[k]);
+  i64(v.createdAt); d[o] = v.bump; d[o + 1] = v.authBump; o += 2;
+  u64(v.lastSellSlot);
+  return d;
+}
+
+export interface PaidRecord { address: PublicKey; vault: PublicKey; wallet: PublicKey; paid: bigint; bump: number }
+export function decodePaidRecord(address: PublicKey, d: Buffer): PaidRecord {
+  if (d.length < PAID_RECORD_LEN || !d.subarray(0, 8).equals(PAID_RECORD_DISC)) throw new Error("Not a PaidRecord account");
+  return { address, vault: new PublicKey(d.subarray(8, 40)), wallet: new PublicKey(d.subarray(40, 72)), paid: d.readBigUInt64LE(72), bump: d[80] };
+}
+export function encodePaidRecord(r: Omit<PaidRecord, "address">): Buffer {
+  const d = Buffer.alloc(PAID_RECORD_LEN);
+  PAID_RECORD_DISC.copy(d, 0); r.vault.toBuffer().copy(d, 8); r.wallet.toBuffer().copy(d, 40); d.writeBigUInt64LE(r.paid, 72); d[80] = r.bump;
+  return d;
+}
+
+/** XNT the holders are owed but not yet paid (the program keeps at least this in auth). */
+export const holdersOwed = (v: Pick<Vault, "holdersFunded" | "holdersPaid">) => v.holdersFunded - v.holdersPaid;
+/** Tokens waiting to be sold. */
+export const sellBuckets = (v: Pick<Vault, "sellLp" | "sellCreator" | "sellHolders">) => v.sellLp + v.sellCreator + v.sellHolders;
+
+/**
+ * The list `pay` verifies against at `nowSec`: a pending list whose time has come becomes
+ * the active one inside `pay`, so proofs must be built for it. Null when no list exists.
+ */
+export function effectiveList(v: Vault, nowSec: number) {
+  if (v.pendingEpoch > 0n && nowSec >= v.pendingActiveAt) return { epoch: v.pendingEpoch, root: v.pendingRoot, total: v.pendingTotal, pending: true };
+  if (v.listEpoch > 0n) return { epoch: v.listEpoch, root: v.listRoot, total: v.listTotal, pending: false };
+  return null;
+}
+
+// ---------- XDEX accounts the vault's sell and add_liquidity need ----------
+export interface VaultPoolAccounts {
+  xdexProgram: PublicKey;
+  pool: PublicKey;
+  ammConfig: PublicKey;
+  tokenVault: PublicKey;
+  wxntVault: PublicKey;
+  observation: PublicKey;
+  lpMint: PublicKey;
+}
+/** From a decoded pool (src/xdex.ts decodePool): the vaults on the token's side and the wXNT side. */
+export function poolAccountsFrom(xdexProgram: PublicKey, pool: Pool, mint: PublicKey): VaultPoolAccounts {
+  const side = pool.mints.findIndex((m) => m.equals(mint));
+  if (side < 0 || !pool.mints[1 - side].equals(NATIVE_MINT)) throw new Error("Pool is not a TOKEN/XNT pool for this mint");
+  return {
+    xdexProgram, pool: pool.address, ammConfig: pool.ammConfig, tokenVault: pool.vaults[side], wxntVault: pool.vaults[1 - side],
+    observation: pool.observation, lpMint: pool.lpMint,
+  };
+}
+/** Derived without reading the chain (the pool XDEX creates for mint + wXNT under ammConfig). */
+export function derivePoolAccounts(xdexProgram: PublicKey, ammConfig: PublicKey, mint: PublicKey): VaultPoolAccounts {
+  const a = poolAddresses(xdexProgram, ammConfig, mint, NATIVE_MINT);
+  const tokenIs0 = a.mint0.equals(mint);
+  return {
+    xdexProgram, pool: a.pool, ammConfig, tokenVault: tokenIs0 ? a.vault0 : a.vault1, wxntVault: tokenIs0 ? a.vault1 : a.vault0,
+    observation: a.observation, lpMint: a.lpMint,
+  };
+}
+
+// ---------- instructions (account order exactly as the spec) ----------
+const m = (pubkey: PublicKey, isSigner: boolean, isWritable: boolean) => ({ pubkey, isSigner, isWritable });
+
+/**
+ * Create a token's vault. The program accepts it only when `payer` is the mint's metadata
+ * update authority (the creator), or when an earlier instruction of the same transaction
+ * hands the withdraw authority to auth (migration). The payer also tops auth up to its
+ * rent-exempt minimum.
+ */
+export function initVaultIx(programId: PublicKey, a: {
+  payer: PublicKey; mint: PublicKey; pool: PublicKey; creatorNft: PublicKey; burnBps: number; lpBps: number; publisher: PublicKey; guardian: PublicKey;
+}) {
+  const data = Buffer.alloc(8 + 2 + 2 + 32 + 32);
+  IX.initVault.copy(data, 0);
+  data.writeUInt16LE(a.burnBps, 8); data.writeUInt16LE(a.lpBps, 10);
+  a.publisher.toBuffer().copy(data, 12); a.guardian.toBuffer().copy(data, 44);
+  return new TransactionInstruction({
+    programId, data,
+    keys: [
+      m(a.payer, true, true), m(a.mint, false, false), m(vaultPda(programId, a.mint), false, true), m(vaultAuthPda(programId, a.mint), false, true),
+      m(a.pool, false, false), m(lockPda(LOCKER_PROGRAM_ID, a.creatorNft), false, false), m(a.creatorNft, false, false),
+      m(SystemProgram.programId, false, false), m(SYSVAR_INSTRUCTIONS_PUBKEY, false, false),
+    ],
+  });
+}
+
+/** Harvest `harvest` (token accounts holding withheld tax) into the mint, withdraw, split and burn. */
+export function collectIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, harvest: PublicKey[] = []) {
+  const auth = vaultAuthPda(programId, mint);
+  return new TransactionInstruction({
+    programId, data: Buffer.from(IX.collect),
+    keys: [
+      m(caller, true, true), m(vaultPda(programId, mint), false, true), m(auth, false, true), m(mint, false, true),
+      m(authTokenAccount(auth, mint), false, true), m(TOKEN_2022_PROGRAM_ID, false, false), m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false),
+      m(SystemProgram.programId, false, false),
+      ...harvest.map((h) => m(h, false, true)),
+    ],
+  });
+}
+
+export function sellIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, p: VaultPoolAccounts, maxTokens: bigint) {
+  const auth = vaultAuthPda(programId, mint);
+  const data = Buffer.alloc(16);
+  IX.sell.copy(data, 0); data.writeBigUInt64LE(maxTokens, 8);
+  return new TransactionInstruction({
+    programId, data,
+    keys: [
+      m(caller, true, true), m(vaultPda(programId, mint), false, true), m(auth, false, true), m(mint, false, false),
+      m(authTokenAccount(auth, mint), false, true), m(authWxntAccount(auth), false, true),
+      m(p.pool, false, true), m(p.ammConfig, false, false), m(poolAuthority(p.xdexProgram), false, false),
+      m(p.tokenVault, false, true), m(p.wxntVault, false, true), m(p.observation, false, true),
+      m(p.xdexProgram, false, false), m(TOKEN_PROGRAM_ID, false, false), m(TOKEN_2022_PROGRAM_ID, false, false),
+      m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false), m(SystemProgram.programId, false, false), m(NATIVE_MINT, false, false),
+    ],
+  });
+}
+
+export function addLiquidityIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, p: VaultPoolAccounts) {
+  const auth = vaultAuthPda(programId, mint);
+  return new TransactionInstruction({
+    programId, data: Buffer.from(IX.addLiquidity),
+    keys: [
+      m(caller, true, true), m(vaultPda(programId, mint), false, true), m(auth, false, true), m(mint, false, false),
+      m(authTokenAccount(auth, mint), false, true), m(authWxntAccount(auth), false, true), m(authLpAccount(auth, p.lpMint), false, true),
+      m(p.pool, false, true), m(poolAuthority(p.xdexProgram), false, false), m(p.tokenVault, false, true), m(p.wxntVault, false, true),
+      m(p.lpMint, false, true), m(p.xdexProgram, false, false), m(TOKEN_PROGRAM_ID, false, false), m(TOKEN_2022_PROGRAM_ID, false, false),
+      m(MEMO_PROGRAM_ID, false, false), m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false), m(SystemProgram.programId, false, false),
+      m(NATIVE_MINT, false, false),
+    ],
+  });
+}
+
+/** Deposit the creator's XNT into the lock NFT's 7-day vesting vault on lp_locker. */
+export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, creatorNft: PublicKey, rewardMint: PublicKey = NATIVE_MINT) {
+  const auth = vaultAuthPda(programId, mint);
+  const rewardVault = rewardVaultPda(LOCKER_PROGRAM_ID, creatorNft, rewardMint);
+  return new TransactionInstruction({
+    programId, data: Buffer.from(IX.fundCreator),
+    keys: [
+      m(caller, true, true), m(vaultPda(programId, mint), false, true), m(auth, false, true), m(authWxntAccount(auth), false, true),
+      m(creatorNft, false, false), m(rewardMint, false, false), m(rewardVault, false, true),
+      m(rewardTokensPda(LOCKER_PROGRAM_ID, rewardVault), false, true), m(LOCKER_PROGRAM_ID, false, false),
+      m(TOKEN_PROGRAM_ID, false, false), m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false), m(SystemProgram.programId, false, false),
+      // lp_locker's init_reward_vault (first deposit) needs the lock and Token-2022.
+      m(lockPda(LOCKER_PROGRAM_ID, creatorNft), false, false), m(TOKEN_2022_PROGRAM_ID, false, false),
+    ],
+  });
+}
+
+export function publishListIx(programId: PublicKey, publisher: PublicKey, mint: PublicKey, root: Buffer, epoch: bigint, total: bigint) {
+  if (root.length !== 32) throw new Error("root must be 32 bytes");
+  const data = Buffer.alloc(8 + 32 + 8 + 8);
+  IX.publishList.copy(data, 0); root.copy(data, 8); data.writeBigUInt64LE(epoch, 40); data.writeBigUInt64LE(total, 48);
+  return new TransactionInstruction({ programId, data, keys: [m(publisher, true, false), m(vaultPda(programId, mint), false, true)] });
+}
+
+export function cancelListIx(programId: PublicKey, guardian: PublicKey, mint: PublicKey) {
+  return new TransactionInstruction({
+    programId, data: Buffer.from(IX.cancelList), keys: [m(guardian, true, false), m(vaultPda(programId, mint), false, true)],
+  });
+}
+
+/** Pay `wallet` up to its `cumulative` total (proved against the list); `payer` creates its PaidRecord if needed. */
+export function payIx(programId: PublicKey, payer: PublicKey, mint: PublicKey, wallet: PublicKey, cumulative: bigint, proof: Buffer[]) {
+  const vault = vaultPda(programId, mint);
+  const data = Buffer.alloc(8 + 8 + 4 + 32 * proof.length);
+  IX.pay.copy(data, 0); data.writeBigUInt64LE(cumulative, 8); data.writeUInt32LE(proof.length, 16);
+  proof.forEach((p, i) => p.copy(data, 20 + 32 * i));
+  return new TransactionInstruction({
+    programId, data,
+    keys: [
+      m(payer, true, true), m(vault, false, true), m(vaultAuthPda(programId, mint), false, true), m(wallet, false, true),
+      m(paidRecordPda(programId, vault, wallet), false, true), m(SystemProgram.programId, false, false),
+    ],
+  });
+}
+
+// ---------- rewards list (Merkle tree) ----------
+const sha = (...parts: Buffer[]) => crypto.createHash("sha256").update(Buffer.concat(parts)).digest();
+export function vaultLeaf(vault: PublicKey, wallet: PublicKey, cumulative: bigint) {
+  const amt = Buffer.alloc(8); amt.writeBigUInt64LE(cumulative);
+  return sha(Buffer.from("99tax-vault"), vault.toBuffer(), wallet.toBuffer(), amt);
+}
+/** Root and proofs for every (wallet, cumulative) entry of a vault's list; empty gives an all-zero root. */
+export function buildVaultTree(vault: PublicKey, entries: Record<string, bigint | string>) {
+  return merkleTree(Object.entries(entries).map(([w, cum]) => ({ key: w, leaf: vaultLeaf(vault, new PublicKey(w), BigInt(cum)) })));
+}
+export const verifyVaultProof = (proof: Buffer[], root: Buffer, vault: PublicKey, wallet: PublicKey, cumulative: bigint) =>
+  verifyProof(proof, root, vaultLeaf(vault, wallet, cumulative));
+
+// ---------- events ----------
+export type VaultEvent =
+  | { name: "Collected"; vault: string; got: bigint; burned: bigint }
+  | { name: "Sold"; vault: string; tokensIn: bigint; xntOut: bigint; toLp: bigint; toCreator: bigint; toHolders: bigint; crankReward: bigint }
+  | { name: "LiquidityAdded"; vault: string; tokens: bigint; xnt: bigint; lpBurned: bigint }
+  | { name: "CreatorFunded"; vault: string; amount: bigint }
+  | { name: "ListPublished"; vault: string; epoch: bigint; root: string; total: bigint; activeAt: number }
+  | { name: "ListCancelled"; vault: string; epoch: bigint }
+  | { name: "Paid"; vault: string; wallet: string; amount: bigint; cumulative: bigint };
+
+/** Decode one event's bytes (discriminator first); null for anything else. */
+export function decodeEvent(d: Buffer): VaultEvent | null {
+  if (d.length < 8) return null;
+  const tag = d.subarray(0, 8);
+  let o = 8;
+  const key = () => { const k = new PublicKey(d.subarray(o, o + 32)).toBase58(); o += 32; return k; };
+  const u64 = () => { const v = d.readBigUInt64LE(o); o += 8; return v; };
+  const i64 = () => { const v = Number(d.readBigInt64LE(o)); o += 8; return v; };
+  try {
+    if (tag.equals(EVENT.Collected)) return { name: "Collected", vault: key(), got: u64(), burned: u64() };
+    if (tag.equals(EVENT.Sold)) {
+      return { name: "Sold", vault: key(), tokensIn: u64(), xntOut: u64(), toLp: u64(), toCreator: u64(), toHolders: u64(), crankReward: u64() };
+    }
+    if (tag.equals(EVENT.LiquidityAdded)) return { name: "LiquidityAdded", vault: key(), tokens: u64(), xnt: u64(), lpBurned: u64() };
+    if (tag.equals(EVENT.CreatorFunded)) return { name: "CreatorFunded", vault: key(), amount: u64() };
+    if (tag.equals(EVENT.ListPublished)) {
+      const vault = key(), epoch = u64();
+      if (d.length < o + 32) return null;
+      const root = d.subarray(o, o + 32).toString("hex"); o += 32;
+      return { name: "ListPublished", vault, epoch, root, total: u64(), activeAt: i64() };
+    }
+    if (tag.equals(EVENT.ListCancelled)) return { name: "ListCancelled", vault: key(), epoch: u64() };
+    if (tag.equals(EVENT.Paid)) return { name: "Paid", vault: key(), wallet: key(), amount: u64(), cumulative: u64() };
+  } catch { /* truncated: not ours */ }
+  return null;
+}
+
+/** Every vault event in a transaction's logs ("Program data: <base64>" lines from emit!). */
+export function parseEvents(logs: readonly string[]): VaultEvent[] {
+  const out: VaultEvent[] = [];
+  for (const l of logs) {
+    const mm = /^Program data: (.+)$/.exec(l);
+    if (!mm) continue;
+    const e = decodeEvent(Buffer.from(mm[1], "base64"));
+    if (e) out.push(e);
+  }
+  return out;
+}
+
+/** The vault as plain JSON (amounts as strings) for the site. */
+export function vaultJson(v: Vault) {
+  const s = (x: bigint) => x.toString();
+  return {
+    address: v.address.toBase58(), mint: v.mint.toBase58(), pool: v.pool.toBase58(), creatorNft: v.creatorNft.toBase58(),
+    rewardMint: v.rewardMint.toBase58(), publisher: v.publisher.toBase58(), guardian: v.guardian.toBase58(),
+    burnBps: v.burnBps, lpBps: v.lpBps, creatorBps: v.creatorBps,
+    buckets: {
+      lpTokens: s(v.lpTokens), sellLp: s(v.sellLp), sellCreator: s(v.sellCreator), sellHolders: s(v.sellHolders),
+      xntLp: s(v.xntLp), xntCreator: s(v.xntCreator),
+    },
+    holdersFunded: s(v.holdersFunded), holdersPaid: s(v.holdersPaid), holdersOwed: s(holdersOwed(v)),
+    lastSellSlot: s(v.lastSellSlot),
+    list: v.listEpoch > 0n ? { epoch: s(v.listEpoch), root: v.listRoot.toString("hex"), total: s(v.listTotal) } : null,
+    pending: v.pendingEpoch > 0n ? { epoch: s(v.pendingEpoch), root: v.pendingRoot.toString("hex"), total: s(v.pendingTotal), activeAt: v.pendingActiveAt } : null,
+    totals: {
+      collected: s(v.totalCollected), burned: s(v.totalBurned), lpTokens: s(v.totalLpTokens), lpXnt: s(v.totalLpXnt),
+      creatorXnt: s(v.totalCreatorXnt), crankRewards: s(v.totalCrankRewards),
+    },
+    createdAt: v.createdAt,
+  };
+}

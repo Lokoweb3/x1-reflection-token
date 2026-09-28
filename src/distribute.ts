@@ -716,6 +716,8 @@ async function cycle(ctx: Ctx) {
 
 async function main() {
   const cfg = loadConfig();
+  // A Tax Vault token's tax can only be withdrawn by the vault program (the site's vault crank runs it).
+  if (cfg.taxVault) throw new Error("This token's tax is held by the Tax Vault program; the hot-wallet distributor doesn't run it.");
   const conn = connection(cfg);
   const mint = requireMint(cfg);
   const distributor = loadKeypair(cfg.keypairs.distributor);

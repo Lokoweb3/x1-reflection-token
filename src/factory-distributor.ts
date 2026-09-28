@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { FACTORY_DIR, ROOT } from "./config.js";
-import { registeredLaunches } from "./factory/launch.js";
+import { registeredLaunches, vaultManaged } from "./factory/launch.js";
 
 const args = process.argv.slice(2);
 const unknown = args.filter((a, i) => a !== "--execute" && a !== "--loop" && args[i - 1] !== "--loop");
@@ -41,7 +41,8 @@ function runToken(mint: string, symbol: string): Promise<number> {
 }
 
 async function once() {
-  const tokens = registeredLaunches();
+  // Tax Vault tokens are served by the vault program and the site's vault crank, not a hot wallet.
+  const tokens = registeredLaunches().filter((r) => !vaultManaged(r));
   console.log(`\n=== Factory cycle ${new Date().toISOString()} (${execute ? "EXECUTE" : "dry run"}): ${tokens.length} token(s) ===`);
   for (const t of tokens) {
     const code = await runToken(t.mint, t.symbol);

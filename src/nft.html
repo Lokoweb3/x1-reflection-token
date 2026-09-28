@@ -165,6 +165,9 @@ header nav a[aria-current="page"] { color: var(--text-primary); text-decoration:
 table.burns { width: 100%; border-collapse: collapse; margin-top: 10px; font-variant-numeric: tabular-nums; }
 table.burns th, table.burns td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 table.burns .num { text-align: right; }
+.vault-row { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 13px; }
+.vault-badge { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 3px 10px; border: 1px solid var(--lime); color: var(--lime); background: rgb(182 255 59 / .06); cursor: help; white-space: nowrap; }
+.vault-row { margin: -8px 0 16px; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -282,6 +285,15 @@ async function loadTokenStats(d, host) {
   } catch (e) {
     host.replaceChildren(el("p", { class: "muted", text: `Token stats aren't available: ${e.message || e}` }));
   }
+}
+const VAULT_TIP = "Only the Tax Vault program can withdraw this token's tax. It burns, adds liquidity and funds the creator on-chain, and pays holders from a public rewards list that can only share out the holders' part. No team wallet holds the tax.";
+/** Tax Vault tokens: the badge, the public rewards list, and when the next list starts paying. */
+function vaultRow(v) {
+  if (!v) return null;
+  return el("div", { class: "vault-row" },
+    el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: "✓ Tax enforced by program" }),
+    el("a", { href: v.listUrl, target: "_blank", rel: "noopener", text: "Latest rewards list ↗" }),
+    v.nextListAt ? el("span", { class: "muted", text: `Next rewards list pays at ${new Date(v.nextListAt * 1000).toLocaleString()}` }) : null);
 }
 function renderTokenStats(d, s, host) {
   const tok = (v, max = 4) => `${fmtUnits(v, s.decimals, max)} ${s.symbol}`;
@@ -416,7 +428,7 @@ function renderTokenStats(d, s, host) {
   host.replaceChildren(
     el("div", { class: "ts-head" }, el("h2", { text: `${s.name} (${s.symbol})` }), link(`${d.explorer}/address/${s.mint}`, "Token on explorer ↗")),
     el("div", { class: "ts-sub", text: `Live token stats${s.lastRun ? ` · last distribution ${new Date(s.lastRun).toLocaleString()}` : ""}. Values in XNT use the current pool price and are estimates.` }),
-    ...[hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel, burnPanel,
+    ...[vaultRow(s.vault), hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel, burnPanel,
     el("div", { class: "hold-head" }, el("h2", { text: "Holders" }),
       el("div", { class: "chips" },
         el("span", { class: "chip" }, el("b", { text: String(s.holders.length) }), " addresses"),

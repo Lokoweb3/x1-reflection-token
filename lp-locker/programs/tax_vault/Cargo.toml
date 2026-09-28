@@ -1,0 +1,33 @@
+[package]
+name = "tax_vault"
+version = "0.1.0"
+description = "99 + Tax tax vault: the tax token's withdraw-withheld authority; collects the tax and enforces its split (burn, auto-LP, creator reward, holders' Merkle list)"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "tax_vault"
+
+[features]
+default = []
+# Build with --features testnet for X1 testnet's XDEX program.
+testnet = []
+# Local testing only: a published list activates after 5 seconds instead of 600.
+short-windows = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+anchor-spl = "0.32.1"
+# SHA-256 for the rewards-list Merkle tree (already a dependency of anchor-lang).
+solana-sha256-hasher = "2.3"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

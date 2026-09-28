@@ -23,6 +23,8 @@ export interface Config {
     supply: string; feeBps: number; launchGrace: boolean;
   };
   mint: string;
+  /** Per-launch config only: the tax is held by the Tax Vault program (the hot-wallet distributor skips it). */
+  taxVault?: boolean;
   /**
    * The token's XDEX pool. A token paired with another token than XNT (a factory launch
    * paired with JACK) also names that pair token (`quoteMint`, `quoteSymbol`) and its deep
@@ -73,6 +75,13 @@ export interface Config {
      * buyers' tokens (pays the fees, earns the graduation reward); no crank without it.
      */
     curve?: { programId: string; crankKeypair?: string };
+    /**
+     * Tax Vault (docs/tax-vault-spec.md), testnet first. Without it nothing changes. With
+     * `programId` the site shows vault state; with `publisherKeypair` too, the server runs
+     * the vault crank (it pays the fees, publishes rewards lists, earns the crank reward)
+     * and new XNT-paired testnet launches hand their tax to the vault instead of a hot wallet.
+     */
+    taxVault?: { programId: string; publisherKeypair?: string };
     /**
      * Tokens a launch may pair with instead of XNT (XNT is always offered and the default).
      * `xntPool` is that token's deep XNT pool on XDEX: the distributor swaps it to XNT there

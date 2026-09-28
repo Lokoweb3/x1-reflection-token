@@ -81,9 +81,15 @@ const node = (a: Buffer, b: Buffer) => (Buffer.compare(a, b) <= 0 ? sha(a, b) : 
 
 /** Root and proofs for every (pass, cumulative) entry. Empty input gives an all-zero root. */
 export function buildTree(entries: Record<string, bigint | string>) {
-  const leaves = Object.entries(entries)
-    .map(([pass, cum]) => ({ pass, leaf: passLeaf(new PublicKey(pass), BigInt(cum)) }))
-    .sort((x, y) => Buffer.compare(x.leaf, y.leaf));
+  return merkleTree(Object.entries(entries).map(([pass, cum]) => ({ key: pass, leaf: passLeaf(new PublicKey(pass), BigInt(cum)) })));
+}
+
+/**
+ * Sorted-pair Merkle tree over ready-made leaves (the Holder Pass tree and the Tax Vault's
+ * rewards list use the same shape, only the leaf differs). Proofs are keyed by `key`.
+ */
+export function merkleTree(items: { key: string; leaf: Buffer }[]) {
+  const leaves = items.map((l) => ({ pass: l.key, leaf: l.leaf })).sort((x, y) => Buffer.compare(x.leaf, y.leaf));
   if (leaves.length === 0) return { root: Buffer.alloc(32), proofs: {} as Record<string, Buffer[]> };
   const proofs: Record<string, Buffer[]> = {};
   let level: Buffer[] = leaves.map((l) => l.leaf);

@@ -44,6 +44,8 @@ import { poolAuthority } from "./xdex.js";
 import { unpackMint } from "@solana/spl-token";
 import { buildCurveStep, validateCurveParams } from "./factory/launch.js";
 import { curveService } from "./factory/curve.js";
+import { vaultService } from "./factory/vault.js";
+import { buildVaultStep, isVaultLaunch } from "./factory/launch.js";
 
 
 const cfg = loadConfig();
@@ -91,6 +93,11 @@ const WALLET_JS = path.join(ROOT, "src", "web", "wallet.js");
 const COUNTDOWN_JS = path.join(ROOT, "src", "web", "countdown.js");
 const WEB3_BUNDLE = path.join(ROOT, "node_modules", "@solana", "web3.js", "lib", "index.iife.min.js");
 const opts = { microLamports: cfg.distribution.priorityMicroLamports };
+/** Tax Vault: on only when factory.taxVault.programId is set (the crank also needs publisherKeypair). */
+const vaults = f.taxVault?.programId ? vaultService(conn, cfg, opts) : null;
+if (vaults) allowRelayProgram(vaults.program.toBase58());
+/** The vault's auth PDA for a vault token (holds its collected tax; never a holder), else null. */
+const vaultAuthFor = (mint: string) => (vaults?.isVaultMint(mint) ? vaults.authOf(mint).toBase58() : null);
 
 const rewardMint = new PublicKey(CREATOR_REWARD[cfg.network].rewardMint ?? NATIVE_MINT);
 const rewardSymbol = CREATOR_REWARD[cfg.network].rewardMint ? "USDC" : "XNT";
@@ -246,7 +253,9 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     // a creator pays the launch fee and then gets stuck at the pool step.
     const pair = pairOf(cfg, p);
     if (!pair.xntPool) {
-      await requireXnt(new PublicKey(p.creator), Number(p.poolXnt) + ((await poolCreateFee()) ?? 0.1) + Number(f!.gasXnt ?? "0.05") + 0.05,
+      // A Tax Vault launch has no distributor wallet to pre-fund.
+      const gas = isVaultLaunch(cfg, pair) ? 0 : Number(f!.gasXnt ?? "0.05");
+      await requireXnt(new PublicKey(p.creator), Number(p.poolXnt) + ((await poolCreateFee()) ?? 0.1) + gas + 0.05,
         `Launching with ${p.poolXnt} XNT in the pool`);
     } else {
       // A JACK pair: the pool's JACK from the creator's JACK, everything else (XDEX's pool fee, gas, fees) in XNT.
@@ -283,6 +292,14 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     if (s.lock) throw new Error("The LP is already locked.");
     const { ixs, signers } = await buildLockStep(conn, cfg, r);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, signers, opts) };
+  }
+  if (url === "/api/launch/vault") {
+    // Tax Vault launches, after the lock: the creator starts the vault (init_vault).
+    const r = ownLaunch(body);
+    const s = await launchStatus(conn, cfg, r);
+    if (!s.lock || !s.lockNft) throw new Error("Step 3 (LP lock) hasn't confirmed yet.");
+    const ixs = await buildVaultStep(conn, cfg, r, s.lockNft);
+    return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, units: 200_000 }) };
   }
   if (url === "/api/launch/receipt") {
     // Write the lock receipt (JSON + SVG) into the NFT's on-chain metadata.
@@ -390,6 +407,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   }
   if (url === "/api/distribute/tip") {
     const t = findTarget(cfg, String(body.mint));
+    if (vaultAuthFor(t.mint)) throw new Error("This token's tax is handled by the Tax Vault program; its crank runs on its own, no tip needed.");
     const r = await readiness(conn, cfg, t);
     if (!r.ready) throw new Error(r.reason ?? "Not ready");
     const payer = new PublicKey(String(body.payer));
@@ -397,6 +415,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   }
   if (url === "/api/distribute/run") {
     const t = findTarget(cfg, String(body.mint));
+    if (vaultAuthFor(t.mint)) throw new Error("This token's tax is handled by the Tax Vault program; its crank runs on its own.");
     const clicker = await verifyTip(conn, t, String(body.signature), tipLamports);
     const r = await readiness(conn, cfg, t);
     if (r.reason && !/Not enough tax/.test(r.reason)) throw new Error(`${r.reason} Your tip was added to this token's gas.`);
@@ -596,7 +615,7 @@ function swr(key: string, freshMs: number, fn: () => Promise<unknown>): Promise<
   return refresh();
 }
 // Read-only views served through swr() (not per-action flows like launches, curves or the faucet).
-const SWR_ROUTES = /^\/api\/(nft\/|nfts$|token\/|token-list$|analytics$|wallet\/|leaderboard\/|stats$|tokens$)/;
+const SWR_ROUTES = /^\/api\/(nft\/|nfts$|token\/|token-list$|analytics$|wallet\/|leaderboard\/|stats$|tokens$|vault\/)/;
 
 async function get(url: URL) {
   if (SWR_ROUTES.test(url.pathname)) return swr(url.pathname + url.search, 30_000, () => getView(url));
@@ -609,6 +628,8 @@ async function getView(url: URL) {
   if (cv) return curves ? curves.view(cv[1], url.searchParams.get("wallet")) : null;
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (nftApi) return nftView(nftApi[1]);
+  const va = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})(\/list)?$/.exec(url.pathname);
+  if (va) return vaults ? (va[2] ? vaults.listView(va[1]) : vaults.view(va[1])) : null;
   if (url.pathname === "/api/info") {
     const [poolCreateFeeXnt, lockerAuthority] = await Promise.all([poolCreateFee(), lockerUpgradeAuthority()]);
     return {
@@ -627,6 +648,8 @@ async function getView(url: URL) {
         priceXnt: (await pairValue({ symbol: q.symbol, mint: new PublicKey(q.mint), xntPool: new PublicKey(q.xntPool) }).catch(() => null))?.xntPer ?? null,
       }))),
       sourceUrl: "https://github.com/Lokoweb3/x1-reflection-token",
+      // New XNT launches hand their tax to the Tax Vault program (no distributor gas to pre-fund).
+      ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR) } } : {}),
     };
   }
   if (url.pathname === "/api/launches") {
@@ -673,7 +696,8 @@ async function getView(url: URL) {
   if (ts) return tokenStats(ts[1]);
   if (url.pathname === "/api/analytics") return analytics();
   if (url.pathname === "/api/distribute/list") {
-    const list = await Promise.all(targets(cfg).map((t) => cachedReadiness(t.mint)));
+    // Tax Vault tokens run on the vault crank, not "Distribute now".
+    const list = await Promise.all(targets(cfg).filter((t) => !vaultAuthFor(t.mint)).map((t) => cachedReadiness(t.mint)));
     return { tipXnt, rewardPct: (cfg.distribution.clickerRewardBps ?? 100) / 100, rewardCapXnt: cfg.distribution.clickerRewardCapXnt ?? "0.05", cooldownMinutes: 10, tokens: list };
   }
   if (url.pathname === "/api/distribute/status") {
@@ -812,6 +836,7 @@ function tokenList() {
     const value = await pairValue(pair).catch(() => null);
     const e = eventTotals(tokenEvents(t.stateDir));
     const st = await (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null);
+    const vault = vaults ? await vaults.badge(t.mint).catch(() => null) : null;
     const priceQuote = snap && snap.reserveToken > 0n ? Number(snap.reserveQuote) / Number(snap.reserveToken) : null;
     return {
       mint: t.mint, symbol: t.symbol, name: t.name, pool: t.pool, ...info, yield: st?.yield ?? null, holderPass: claimsOn(t),
@@ -822,6 +847,7 @@ function tokenList() {
       liquidityXnt: snap && value ? value.toXnt(2n * snap.reserveQuote).toString() : null,
       holdersXnt: e.holdersXnt.toString(), liquidityAddedXnt: e.liquidityXnt.toString(), creatorXnt: e.creatorXnt.toString(),
       burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun,
+      ...(vault ? { vault } : {}),
     };
   }));
   data.catch(() => { tokenListCache = null; });
@@ -932,6 +958,10 @@ function tokenStats(mintStr: string) {
     const labels = new Map<string, string>([[pool, "XDEX pool"], [t.distributor, "Distributor"], ...BURN_OWNERS.map((b) => [b, "Burn address"] as [string, string])]);
     if (launch) labels.set(launch.creator, "Creator");
     const excluded = new Set([...dc.excludeOwners, ...BURN_OWNERS, t.distributor, pool]);
+    // A vault token's collected tax sits with the vault's auth PDA: never a holder.
+    const vaultAuth = vaultAuthFor(t.mint);
+    if (vaultAuth) { labels.set(vaultAuth, "Tax vault"); excluded.add(vaultAuth); }
+    const vault = vaults ? await vaults.badge(t.mint).catch(() => null) : null;
     const minHolding = toBaseUnits(dc.minHoldingTokens, m.decimals);
     const earning = eligibleBalances(rows, { excluded, excludeOffCurve: dc.excludeOffCurveOwners, minHolding });
 
@@ -987,6 +1017,7 @@ function tokenStats(mintStr: string) {
       liquidityXnt: e.liquidityXnt.toString(), holdersXnt: e.holdersXnt.toString(), creatorXnt: e.creatorXnt.toString(),
       payouts: e.payouts, walletsPaid: e.wallets.size, earning: earning.size, minHolding: dc.minHoldingTokens, lastRun: e.lastRun,
       holders,
+      ...(vault ? { vault } : {}),
     };
   })();
   data.catch(() => tokenStatsCache.delete(mintStr));
@@ -1057,6 +1088,8 @@ function leaderboard(mintStr: string) {
     // wallets the token's settings exclude from rewards (excludeOwners).
     const skip = new Set([t.distributor, poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58(), ...BURN_OWNERS,
       ...(tokenConfig(t).distribution.excludeOwners ?? [])]);
+    const vaultAuth = vaultAuthFor(t.mint);
+    if (vaultAuth) skip.add(vaultAuth);
     const pos = positions(idx.trades, skip);
     const dec = 10 ** st.decimals;
     // Price per whole token in the unit trades are recorded in: XNT, or JACK for a JACK pool.
@@ -1287,5 +1320,14 @@ if (curves) {
   if (!curves.crankOn()) console.log("Curve crank: no factory.curve.crankKeypair, so curves are not graduated or delivered by this server.");
   setTimeout(() => curves.crankOnce().catch(() => undefined), 8_000);
   setInterval(() => curves.crankOnce().catch(() => undefined), 20_000).unref();
+}
+// Tax Vault crank: collect, sell, add liquidity, fund creators, publish rewards lists and
+// pay holders for every vault token. Transactions only go out with factory.taxVault.publisherKeypair.
+if (vaults) {
+  if (!vaults.crankOn()) console.log("Tax vault crank: no factory.taxVault.publisherKeypair, so vault tokens are not cranked by this server.");
+  else {
+    setTimeout(() => vaults.crankOnce().catch(() => undefined), 12_000);
+    setInterval(() => vaults.crankOnce().catch(() => undefined), vaults.passMs).unref();
+  }
 }
 server.listen(port, bind, () => console.log(`Token factory (${cfg.network}): http://${bind}:${port}  (metadata URIs use ${publicUrl})`));

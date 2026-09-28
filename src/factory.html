@@ -487,7 +487,8 @@ function renderForm() {
     ["Launch fee", info ? `${info.feeAmount} ${info.feeSymbol}` : "…"],
     [`${pair.symbol} into the pool`, pairAmount(p.poolXnt, pair)],
     ["XDEX pool creation fee", info?.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "…"],
-    ["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"],
+    // A Tax Vault launch (XNT pair) has no distributor wallet: the vault crank pays its own fees.
+    ...(info?.taxVault?.launches && pair.symbol === "XNT" ? [] : [["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"]]),
     ["Account rent and network fees", "≈ 0.03 XNT"],
   ];
   costs.replaceChildren(...rows.map(([a, b]) => el("tr", {}, el("td", { text: a }), el("td", { text: b }))));
@@ -516,7 +517,19 @@ form.elements.quote.addEventListener("change", () => {
 
 // ---------- Launch flow ----------
 let running = false;
+/** Tax Vault launches have one more step after the lock; add or remove it and renumber. */
+function vaultStepShown(on) {
+  const list = document.getElementById("steps");
+  let li = list.querySelector('li[data-step="vault"]');
+  if (on && !li) {
+    li = el("li", { "data-step": "vault" }, el("span", { class: "dot", text: "4" }),
+      el("div", {}, el("div", { class: "t", text: "Start the tax vault" }), el("div", { class: "muted", text: "The vault program, not a wallet, holds and splits the tax" })));
+    list.insertBefore(li, list.querySelector('li[data-step="registered"]'));
+  } else if (!on && li) li.remove();
+  list.querySelector('li[data-step="registered"] .dot').textContent = on ? "5" : "4";
+}
 function setSteps(status, active, errorStep) {
+  vaultStepShown(!!status?.taxVault);
   for (const li of document.querySelectorAll("#steps li")) {
     const s = li.dataset.step;
     li.className = status?.[s] ? "done" : s === errorStep ? "error" : s === active ? "active" : "";
@@ -552,6 +565,12 @@ async function continueLaunch(mint) {
       status = { ...status, lock: true };
       await printReceipt(mint).catch((e) => toast("info", `Receipt not printed (${e.message || e}). You can print it later from “Your launches”.`));
     }
+    if (status.taxVault && !status.vault) {
+      // Only the creator can start the vault, so nobody else can set who publishes its lists.
+      step = "vault"; setSteps(status, "vault");
+      await signAndSend("Start the tax vault", () => api("/api/launch/vault", { mint, creator }));
+      status = { ...status, vault: true };
+    }
     step = "registered"; setSteps(status, "registered");
     await api("/api/launch/register", { mint, creator });
     status = { ...status, registered: true };
@@ -574,7 +593,7 @@ form.addEventListener("submit", async (ev) => {
   const lock = p.lockDays === null ? "locked FOREVER" : `locked for ${p.lockDays} days`;
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax.`); return; }
   const pair = pairOf(p.quote);
-  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${pairAmount(p.poolXnt, pair)}, LP ${lock}${pair.symbol !== "XNT" ? `\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT` : ""}\n• Launch fee ${info.feeAmount} ${info.feeSymbol}\n• Your creator reward: ${(info.creatorBps ?? 1000) / 100}% of the tax, paid in ${info.creatorRewardSymbol ?? "USDC"}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain).`);
+  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${pairAmount(p.poolXnt, pair)}, LP ${lock}${pair.symbol !== "XNT" ? `\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT` : ""}\n• Launch fee ${info.feeAmount} ${info.feeSymbol}\n• Your creator reward: ${(info.creatorBps ?? 1000) / 100}% of the tax, paid in ${info.creatorRewardSymbol ?? "USDC"}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n${info.taxVault?.launches && pair.symbol === "XNT" ? "The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault." : "Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain)."}`);
   if (!ok) return;
   running = true; renderWallet();
   document.getElementById("launchResult").replaceChildren();
@@ -702,7 +721,8 @@ async function loadMine() {
 }
 function launchCard(l) {
   const s = l.status;
-  const done = [s.token, s.pool, s.lock, s.registered].filter(Boolean).length;
+  // Tax Vault launches have a 5th step (start the vault).
+  const done = [s.token, s.pool, s.lock, ...(s.taxVault ? [s.vault] : []), s.registered].filter(Boolean).length;
   const btn = (text, cls, fn, disabled, title) => { const b = el("button", { class: `btn small ${cls}`, type: "button", text }); b.disabled = !!disabled || running; if (title) b.title = title; b.onclick = fn; return b; };
   const row = (label, value, ...buttons) => el("div", { class: "lc-row" },
     el("div", {}, el("div", { class: "lc-k", text: label }), el("div", { class: "lc-v" }, ...[].concat(value))),
@@ -719,7 +739,7 @@ function launchCard(l) {
     const cont = s.token && !s.registered
       ? btn("Continue", "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })
       : null;
-    rows.push(row("Status", s.registered ? "Live" : !s.token ? "Not started (step 1 was not sent)" : `${done} of 4 steps done`, cont));
+    rows.push(row("Status", s.registered ? "Live" : !s.token ? "Not started (step 1 was not sent)" : `${done} of ${s.taxVault ? 5 : 4} steps done`, cont));
   }
 
   // Trading fees: the NFT holder can collect them any time they're worth a transaction.

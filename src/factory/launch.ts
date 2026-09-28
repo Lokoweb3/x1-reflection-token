@@ -13,6 +13,13 @@
  * Each launch is recorded under factory/launches/<mint>/. The distributor keypair is
  * generated here and never leaves the server; once all three steps are verified
  * on-chain the launch is registered and the factory distributor starts serving it.
+ *
+ * Tax Vault launches (testnet, XNT pair, factory.taxVault with a publisher key): the
+ * withdraw authority is the vault program's `auth` PDA for the new mint instead of a
+ * distributor wallet, so there is no distributor key and no gas to pre-fund. After the lock
+ * the creator signs one more transaction, init_vault (step 4, "Start the tax vault");
+ * registration checks the vault and the server's vault crank serves the token. Curve
+ * launches keep a distributor wallet (the creator isn't there to sign at graduation).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -26,7 +33,8 @@ import {
   getTokenMetadata, getTransferFeeConfig, unpackMint,
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
-import { Config, FACTORY_DIR, ROOT, fromBaseUnits, toBaseUnits } from "../config.js";
+import { Config, FACTORY_DIR, ROOT, fromBaseUnits, loadKeypair, toBaseUnits } from "../config.js";
+import { decodeVault, initVaultIx, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
 import { buildCreatePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
@@ -138,6 +146,26 @@ export interface LaunchRecord extends LaunchParams {
   kind?: "curve";
   /** The curve account (curve launches). */
   curve?: string;
+  /**
+   * The tax is held by the Tax Vault program (withdraw authority = its auth PDA). For a new
+   * vault launch `distributor` is that auth PDA; a migrated token keeps its old distributor.
+   */
+  taxVault?: boolean;
+}
+
+/** New XNT-paired launches use the Tax Vault: testnet only, and only with a program and a publisher key to create the vault. */
+export function vaultLaunches(cfg: Config) {
+  const tv = cfg.factory?.taxVault;
+  return cfg.network === "testnet" && !!tv?.programId && !!tv.publisherKeypair;
+}
+/** Whether a launch with this pair would be a vault launch. */
+export const isVaultLaunch = (cfg: Config, pair: Pair) => vaultLaunches(cfg) && !pair.xntPool;
+
+/** Whether the vault program handles this launch's tax: its record or its per-launch config says so. */
+export function vaultManaged(r: Pick<LaunchRecord, "mint" | "taxVault">) {
+  if (r.taxVault) return true;
+  const f = path.join(launchDir(new PublicKey(r.mint).toBase58()), "config.json");
+  try { return fs.existsSync(f) && (JSON.parse(fs.readFileSync(f, "utf8")) as Config).taxVault === true; } catch { return false; }
 }
 
 /**
@@ -274,13 +302,16 @@ export const registeredLaunches = () => listLaunches().filter((r) => r.registere
  *   a PDA      mint nothing and hand minting to that address (a bonding curve's auth PDA,
  *              which depends on the new mint's address, hence a function of it)
  */
-async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, authorityFor: (mint: PublicKey) => PublicKey | null) {
+async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, authorityFor: (mint: PublicKey) => PublicKey | null, vault = false) {
   const f = cfg.factory;
   if (!f?.feeReceiver) throw new Error("factory.feeReceiver is not set in config.json");
   const creator = new PublicKey(p.creator);
   const mintKp = Keypair.generate();
-  const distributor = Keypair.generate();
   const mint = mintKp.publicKey;
+  // A vault launch has no distributor wallet: the vault's auth PDA (from the new mint's
+  // address) withdraws the tax, and the vault crank pays its own fees.
+  const distributor = vault ? null : Keypair.generate();
+  const withdrawAuthority = distributor ? distributor.publicKey : vaultAuthPda(new PublicKey(f.taxVault!.programId), mint);
   const mintAuthority = authorityFor(mint);
 
   // Metadata on IPFS when uploads are set up (the token then doesn't depend on this
@@ -313,8 +344,9 @@ async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, pu
     SystemProgram.createAccount({ fromPubkey: creator, newAccountPubkey: mint, space: mintLen, lamports, programId: TOKEN_2022_PROGRAM_ID }),
     createInitializeMetadataPointerInstruction(mint, creator, mint, TOKEN_2022_PROGRAM_ID),
     // No fee-config authority: the tax can never be changed. The token's distributor
-    // wallet is the only one that can withdraw collected tax.
-    createInitializeTransferFeeConfigInstruction(mint, null, distributor.publicKey, p.taxBps, U64_MAX, TOKEN_2022_PROGRAM_ID),
+    // wallet (or, for a vault launch, the vault program) is the only one that can withdraw
+    // collected tax.
+    createInitializeTransferFeeConfigInstruction(mint, null, withdrawAuthority, p.taxBps, U64_MAX, TOKEN_2022_PROGRAM_ID),
     createInitializeMintInstruction(mint, DECIMALS, creator, null, TOKEN_2022_PROGRAM_ID),
     createInitializeInstruction({
       programId: TOKEN_2022_PROGRAM_ID, metadata: mint, updateAuthority: creator, mint, mintAuthority: creator,
@@ -327,26 +359,39 @@ async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, pu
     createSetAuthorityInstruction(mint, creator, AuthorityType.MintTokens, mintAuthority, [], TOKEN_2022_PROGRAM_ID),
     createAssociatedTokenAccountIdempotentInstruction(creator, toUsdc, receiver, usdc, usdcProgram),
     createTransferCheckedInstruction(fromUsdc, usdc, toUsdc, creator, fee, usdcMint.decimals, [], usdcProgram),
-    SystemProgram.transfer({ fromPubkey: creator, toPubkey: distributor.publicKey, lamports: toBaseUnits(f.gasXnt ?? "0.05", 9) }),
+    ...(distributor ? [SystemProgram.transfer({ fromPubkey: creator, toPubkey: distributor.publicKey, lamports: toBaseUnits(f.gasXnt ?? "0.05", 9) })] : []),
   ];
-  return { ixs, mintKp, distributor };
+  return { ixs, mintKp, distributor, withdrawAuthority };
 }
 
-/** Save a new launch record and its distributor key (factory/launches/<mint>/). */
-function saveNewLaunch(record: LaunchRecord, distributor: Keypair) {
+/** Save a new launch record and its distributor key (factory/launches/<mint>/); vault launches have none. */
+function saveNewLaunch(record: LaunchRecord, distributor: Keypair | null) {
   writeLaunch(record);
-  fs.writeFileSync(path.join(launchDir(record.mint), "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)), { mode: 0o600 });
+  if (distributor) fs.writeFileSync(path.join(launchDir(record.mint), "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)), { mode: 0o600 });
+}
+
+/** Mark a token as vault-managed in its launch record and per-launch config (the migration script). */
+export function markTaxVault(mint: string) {
+  const r = readLaunch(mint);
+  if (r) writeLaunch({ ...r, taxVault: true });
+  const f = path.join(launchDir(new PublicKey(mint).toBase58()), "config.json");
+  if (fs.existsSync(f)) {
+    const c = JSON.parse(fs.readFileSync(f, "utf8"));
+    fs.writeFileSync(f, JSON.stringify({ ...c, taxVault: true }, null, 2) + "\n", { mode: 0o600 });
+  }
 }
 
 /** Step 1: new mint + distributor wallet; returns the instructions and the mint keypair to co-sign. */
 export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string) {
   const pair = pairOf(cfg, p);
-  const { ixs, mintKp, distributor } = await buildMintSetup(conn, cfg, p, publicUrl, () => null);
+  const vault = isVaultLaunch(cfg, pair);
+  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, () => null, vault);
   const mint = mintKp.publicKey;
   const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint, pair.mint).pool;
   const record: LaunchRecord = {
     ...p, ...(pair.xntPool ? { quoteMint: pair.mint.toBase58(), quoteXntPool: pair.xntPool.toBase58() } : {}),
-    mint: mint.toBase58(), distributor: distributor.publicKey.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
+    mint: mint.toBase58(), distributor: withdrawAuthority.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
+    ...(vault ? { taxVault: true } : {}),
   };
   saveNewLaunch(record, distributor);
   return { ixs, signers: [mintKp], record };
@@ -368,7 +413,9 @@ export function validateCurveParams(raw: Record<string, unknown>): LaunchParams 
  * program checks the mint and holds the creator's 0.3 XNT graduation deposit.
  */
 export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, curveProgram: PublicKey) {
-  const { ixs, mintKp, distributor } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint));
+  // Curve tokens keep a distributor wallet in v1: init_vault needs the creator's signature,
+  // and the creator isn't there when the curve graduates.
+  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint));
   const mint = mintKp.publicKey;
   ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply)));
   const setup = curveSetup(BigInt(p.supply), p.taxBps);
@@ -377,7 +424,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
     ...p, kind: "curve", curve: curvePda(curveProgram, mint).toBase58(),
     // What the program puts into the pool at graduation (tokens before the transfer fee).
     poolTokens: fromBaseUnits(setup.Pg, DECIMALS), poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null,
-    mint: mint.toBase58(), distributor: distributor.publicKey.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
+    mint: mint.toBase58(), distributor: withdrawAuthority.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
   };
   saveNewLaunch(record, distributor);
   return { ixs, signers: [mintKp], record };
@@ -432,7 +479,49 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
     lock = !!mine;
     lockNft = mine?.nftMint.toBase58() ?? null;
   }
+  // Vault launches have one more creator-signed step: starting the tax vault (init_vault).
+  if (r.taxVault) {
+    const id = cfg.factory?.taxVault?.programId;
+    const vault = !!id && !!(await conn.getAccountInfo(vaultPda(new PublicKey(id), new PublicKey(r.mint)), "confirmed"));
+    return { token, pool, lock, lockNft, taxVault: true, vault, registered: !!r.registeredAt };
+  }
   return { token, pool, lock, lockNft, registered: !!r.registeredAt };
+}
+
+/**
+ * Vault launches, after the lock: init_vault signed and paid by the creator (the program
+ * only takes the mint's metadata authority, so nobody can front-run it with their own
+ * publisher). It doesn't fit in the lock transaction (about 1,240–1,370 bytes together), so
+ * it's its own step. Publisher = this site's crank key, guardian = the creator.
+ */
+export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRecord, lockNft: string) {
+  const tv = cfg.factory?.taxVault;
+  if (!r.taxVault) throw new Error("This token doesn't use the Tax Vault.");
+  if (!tv?.programId || !tv.publisherKeypair) throw new Error("The Tax Vault isn't set up on this server right now; try again later.");
+  const program = new PublicKey(tv.programId);
+  const mint = new PublicKey(r.mint);
+  if (await conn.getAccountInfo(vaultPda(program, mint), "confirmed")) throw new Error("The tax vault is already started.");
+  const burnBps = r.burnBps ?? 0, lpBps = r.autoLpBps;
+  if (!validSplit(burnBps, lpBps)) throw new Error(`The tax vault can't take this split (burn ${burnBps / 100}%, liquidity ${lpBps / 100}%).`);
+  const publisher = loadKeypair(tv.publisherKeypair).publicKey;
+  const creator = new PublicKey(r.creator);
+  return [initVaultIx(program, { payer: creator, mint, pool: new PublicKey(r.pool), creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator })];
+}
+
+/** A vault launch's vault must exist with this site's publisher, the creator as guardian and the recorded split. */
+async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
+  const tv = cfg.factory?.taxVault;
+  if (!tv?.programId) throw new Error("This token uses the Tax Vault, which isn't set up on this server (factory.taxVault).");
+  const program = new PublicKey(tv.programId);
+  const addr = vaultPda(program, new PublicKey(r.mint));
+  const info = await conn.getAccountInfo(addr, "confirmed");
+  if (!info || !info.owner.equals(program)) throw new Error("Start the tax vault first (the step after the LP lock).");
+  const v = decodeVault(addr, info.data);
+  const publisher = tv.publisherKeypair ? loadKeypair(tv.publisherKeypair).publicKey : null;
+  if (!v.mint.equals(new PublicKey(r.mint)) || !v.guardian.equals(new PublicKey(r.creator)) || (publisher && !v.publisher.equals(publisher))
+      || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps) {
+    throw new Error("This token's tax vault doesn't match the launch (publisher, guardian or split differ).");
+  }
 }
 
 /**
@@ -445,12 +534,22 @@ export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRec
   if (!s.token || !s.pool || !s.lock) throw new Error("Launch is not complete yet (token, pool and LP lock are all required).");
   const mint = unpackMint(new PublicKey(r.mint), await conn.getAccountInfo(new PublicKey(r.mint), "confirmed"), TOKEN_2022_PROGRAM_ID);
   const fee = getTransferFeeConfig(mint);
-  if (!fee || !fee.withdrawWithheldAuthority.equals(new PublicKey(r.distributor)) || !fee.transferFeeConfigAuthority.equals(PublicKey.default)
+  if (!fee || !fee.withdrawWithheldAuthority.equals(withdrawAuthorityOf(cfg, r)) || !fee.transferFeeConfigAuthority.equals(PublicKey.default)
       || mint.mintAuthority !== null) {
     throw new Error("Token does not match the factory launch (fee authorities or mint authority differ).");
   }
+  // The creator starts the vault (its own step); registering only checks it, so it can be retried.
+  if (r.taxVault) await checkVault(conn, cfg, r);
   if (r.registeredAt) return r;
   return writeTokenConfig(cfg, r, s.lockNft!);
+}
+
+/** Who must be able to withdraw the tax: the vault's auth PDA for a vault token, else its distributor wallet. */
+function withdrawAuthorityOf(cfg: Config, r: LaunchRecord) {
+  if (!r.taxVault) return new PublicKey(r.distributor);
+  const id = cfg.factory?.taxVault?.programId;
+  if (!id) throw new Error("This token uses the Tax Vault, which isn't set up on this server (factory.taxVault).");
+  return vaultAuthPda(new PublicKey(id), new PublicKey(r.mint));
 }
 
 /**
@@ -472,7 +571,7 @@ async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
   if (!lock) throw new Error("The curve's LP lock wasn't found.");
   const mint = unpackMint(mintKey, await conn.getAccountInfo(mintKey, "confirmed"), TOKEN_2022_PROGRAM_ID);
   const fee = getTransferFeeConfig(mint);
-  if (!fee || !fee.withdrawWithheldAuthority.equals(new PublicKey(r.distributor)) || !fee.transferFeeConfigAuthority.equals(PublicKey.default)
+  if (!fee || !fee.withdrawWithheldAuthority.equals(withdrawAuthorityOf(cfg, r)) || !fee.transferFeeConfigAuthority.equals(PublicKey.default)
       || !(mint.mintAuthority === null || mint.mintAuthority.equals(auth))) {
     throw new Error("Token does not match the curve launch (fee authorities or mint authority differ).");
   }
@@ -499,6 +598,8 @@ function writeTokenConfig(cfg: Config, r: LaunchRecord, lockNft: string) {
     },
     // The creator's share goes to the vesting vault of their launch lock NFT.
     creatorReward: { nftMint: lockNft, ...CREATOR_REWARD[cfg.network] },
+    // The vault program holds the tax; the hot-wallet distributor leaves this token alone.
+    ...(r.taxVault ? { taxVault: true } : {}),
   };
   delete (tokenCfg as Partial<Config>).factory;
   fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(tokenCfg, null, 2) + "\n", { mode: 0o600 });
