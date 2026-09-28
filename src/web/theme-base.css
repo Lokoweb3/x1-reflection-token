@@ -193,7 +193,9 @@ header nav { flex-wrap: wrap !important; row-gap: 8px !important; }
 /* ---------- theme picker (src/web/theme.js) ---------- */
 /* ---------- Mainnet / Testnet toggle (src/web/theme.js) ---------- */
 .net-toggle { display: inline-flex; border: 1.5px solid var(--rule); font-size: 13px; line-height: 1.2; white-space: nowrap; }
-.net-toggle > * { padding: 6px 10px; color: var(--ink-3) !important; text-decoration: none !important; font: 600 13px/1.2 inherit !important; font-family: inherit !important; }
+/* header nav a:not(.btn) rules in the themes are stronger than a plain class, so match them. */
+.net-toggle > *, header nav .net-toggle > a:not(.btn), nav .links .net-toggle > a:not(.btn), .mainnav .net-toggle > a {
+  padding: 6px 10px; color: var(--ink-3) !important; text-decoration: none !important; font-size: 13px !important; font-weight: 600 !important; line-height: 1.2 !important; }
 .net-toggle > a:hover { color: var(--ink) !important; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .net-toggle > [aria-current] { color: var(--paper) !important; background: var(--ink); }
 .net-toggle > .net-testnet[aria-current] { background: var(--red); }
