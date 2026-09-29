@@ -8,6 +8,11 @@
  * against a published list of cumulative totals, which can only divide the XNT the program
  * set aside for them.
  *
+ * v2 (see the spec's "# v2"): the creator reward is swapped on-chain from XNT to the network's
+ * reward token (REWARD_MINT) before it goes into the lock NFT's vesting vault; vaults are
+ * 552 bytes (a 480-byte v1 vault is brought up to date by `upgrade_vault`); the guardian
+ * may cancel at most MAX_CANCELS_IN_ROW lists before one goes live.
+ *
  * Nothing here signs or sends.
  */
 import crypto from "node:crypto";
@@ -47,6 +52,42 @@ export const CREATOR_BPS = 1000;
 export const MAX_BURN_BPS = 5000;
 export const MAX_LP_BPS = 5000;
 export const MAX_BURN_PLUS_LP_BPS = 5500;
+/** v2: the reward swap (XNT -> REWARD_MINT) moves the reward pool's price at most this much... */
+export const REWARD_MAX_IMPACT_BPS = 300;
+/**
+ * ...and at most half the reward pool's trade fee (`trade_fee_rate` in millionths / 200):
+ * the pair has no transfer tax, so only the fee makes a sandwich unprofitable. About 15 bps
+ * on testnet and 14 on mainnet: a large creator bucket takes several fund_creator calls.
+ */
+export const rewardImpactBps = (tradeFeeRate: bigint | number) => Math.min(REWARD_MAX_IMPACT_BPS, Math.floor(Number(tradeFeeRate) / 200));
+/** v2: the guardian may cancel this many lists in a row; a list going live resets the count. */
+export const MAX_CANCELS_IN_ROW = 2;
+/** The Vault layout version `init_vault` and `upgrade_vault` write. */
+export const VAULT_VERSION = 2;
+
+/**
+ * v2: the creator reward is always paid in the network's reward token (the program's
+ * feature `testnet` picks the column), bought on its XNT pool. XNM and USDC.X are both
+ * Token-2022 mints without a transfer fee.
+ */
+export const REWARD_TOKEN: Record<"mainnet" | "testnet", { mint: PublicKey; pool: PublicKey; symbol: string; decimals: number }> = {
+  testnet: {
+    mint: new PublicKey("AvNDf423kEmWNP6AZHFV7DkNG4YRgt6qbdyyryjaa4PQ"), pool: new PublicKey("6XESNUXbGNT6x3zaB51Axk7Jh6Ba58LFJukkfPUzzSwA"),
+    symbol: "XNM", decimals: 9,
+  },
+  mainnet: {
+    mint: new PublicKey("B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq"), pool: new PublicKey("CAJeVEoSm1QQZccnCqYu9cnNF7TTD2fcUA3E5HQoxRvR"),
+    symbol: "USDC", decimals: 6,
+  },
+};
+export const REWARD_MINT = { testnet: REWARD_TOKEN.testnet.mint, mainnet: REWARD_TOKEN.mainnet.mint };
+export const REWARD_POOL = { testnet: REWARD_TOKEN.testnet.pool, mainnet: REWARD_TOKEN.mainnet.pool };
+/** Symbol and decimals of a creator-reward mint: the network's reward token or native XNT (v1 vaults); null otherwise. */
+export function rewardTokenInfo(network: "mainnet" | "testnet", mint: PublicKey) {
+  if (mint.equals(NATIVE_MINT)) return { mint, symbol: "XNT", decimals: 9 };
+  const r = REWARD_TOKEN[network];
+  return mint.equals(r.mint) ? { mint, symbol: r.symbol, decimals: r.decimals } : null;
+}
 
 export const xdexProgramFor = (network: "mainnet" | "testnet") => new PublicKey(XDEX_PROGRAM_IDS[network]);
 
@@ -65,6 +106,7 @@ export const IX = {
   publishList: disc("global:publish_list"),
   cancelList: disc("global:cancel_list"),
   pay: disc("global:pay"),
+  upgradeVault: disc("global:upgrade_vault"),
 };
 export const VAULT_DISC = disc("account:Vault");
 export const PAID_RECORD_DISC = disc("account:PaidRecord");
@@ -82,6 +124,8 @@ export const ERRORS = [
   "BadMint", "BadAuthority", "BadPool", "BadLock", "BadSplit", "NotPublisher", "NotGuardian", "StaleEpoch",
   "TotalDecreased", "OverFunded", "NoPendingList", "BadProof", "NothingToCollect", "NothingToPay",
   "TooSmall", "Insolvent", "MathOverflow", "WrongAccount", "OneSellPerSlot",
+  // v2
+  "WrongVersion", "TooManyCancels", "BadRewardMint",
 ] as const;
 export const errorName = (code: number) => ERRORS[code - 6000] ?? null;
 /** The program's error name in a simulation/transaction error ({"Custom":6012} etc.), or null. */
@@ -144,12 +188,24 @@ export interface Vault {
   authBump: number;
   /** Slot of the last sale (one sale per slot). */
   lastSellSlot: bigint;
+  /** 1 for a 480-byte vault not upgraded yet (the three fields below read as 0), else the stored version. */
+  version: number;
+  /** Guardian cancels since the last list went live (v2). */
+  cancelsInRow: number;
+  /** Reward tokens ever deposited for the creator, base units (v2). */
+  totalRewardOut: bigint;
+  /** Slot of the last reward swap in fund_creator (one per slot, v2). */
+  lastRewardSlot: bigint;
 }
 const VAULT_KEYS = ["mint", "pool", "creatorNft", "rewardMint", "rewardSwapPool", "publisher", "guardian"] as const;
 const VAULT_U64S_A = ["pendingTokens", "lpTokens", "sellLp", "sellCreator", "sellHolders", "xntLp", "xntCreator", "holdersFunded", "holdersPaid", "listEpoch"] as const;
 const VAULT_TOTALS = ["totalCollected", "totalBurned", "totalLpTokens", "totalLpXnt", "totalCreatorXnt", "totalCrankRewards"] as const;
-/** Discriminator + fields, packed (Anchor borsh). */
+/** Discriminator + fields, packed (Anchor borsh): the v1 size (480), also the smallest vault. */
 export const VAULT_LEN = 8 + 32 * 7 + 2 * 3 + 8 * 10 + 32 + 8 + 8 + 32 + 8 + 8 + 8 * 6 + 8 + 1 + 1 + 8;
+/** v2 appends version (u8), cancels_in_row (u8), total_reward_out (u64), last_reward_slot (u64) and 54 reserved bytes: 552. */
+export const VAULT_V2_LEN = VAULT_LEN + 1 + 1 + 8 + 8 + 54;
+/** Offsets of the v2 fields. */
+export const VAULT_V2_OFFSETS = { version: 480, cancelsInRow: 481, totalRewardOut: 482, lastRewardSlot: 490, reserved: 498 } as const;
 export const PAID_RECORD_LEN = 8 + 32 + 32 + 8 + 1;
 
 export function decodeVault(address: PublicKey, d: Buffer): Vault {
@@ -169,12 +225,19 @@ export function decodeVault(address: PublicKey, d: Buffer): Vault {
   for (const k of VAULT_TOTALS) v[k] = u64();
   v.createdAt = i64(); v.bump = d[o]; v.authBump = d[o + 1]; o += 2;
   v.lastSellSlot = u64();
+  if (d.length >= VAULT_V2_LEN) {
+    v.version = d[VAULT_V2_OFFSETS.version]; v.cancelsInRow = d[VAULT_V2_OFFSETS.cancelsInRow];
+    v.totalRewardOut = d.readBigUInt64LE(VAULT_V2_OFFSETS.totalRewardOut);
+    v.lastRewardSlot = d.readBigUInt64LE(VAULT_V2_OFFSETS.lastRewardSlot);
+  } else {
+    v.version = 1; v.cancelsInRow = 0; v.totalRewardOut = 0n; v.lastRewardSlot = 0n;
+  }
   return v as unknown as Vault;
 }
 
-/** The inverse of decodeVault (tests and local fixtures). */
+/** The inverse of decodeVault (tests and local fixtures): 480 bytes for version 1, else 552. */
 export function encodeVault(v: Omit<Vault, "address">): Buffer {
-  const d = Buffer.alloc(VAULT_LEN);
+  const d = Buffer.alloc(v.version >= 2 ? VAULT_V2_LEN : VAULT_LEN);
   VAULT_DISC.copy(d, 0);
   let o = 8;
   const key = (k: PublicKey) => { k.toBuffer().copy(d, o); o += 32; };
@@ -190,6 +253,11 @@ export function encodeVault(v: Omit<Vault, "address">): Buffer {
   for (const k of VAULT_TOTALS) u64(v[k]);
   i64(v.createdAt); d[o] = v.bump; d[o + 1] = v.authBump; o += 2;
   u64(v.lastSellSlot);
+  if (v.version >= 2) {
+    d[VAULT_V2_OFFSETS.version] = v.version; d[VAULT_V2_OFFSETS.cancelsInRow] = v.cancelsInRow;
+    d.writeBigUInt64LE(v.totalRewardOut, VAULT_V2_OFFSETS.totalRewardOut);
+    d.writeBigUInt64LE(v.lastRewardSlot, VAULT_V2_OFFSETS.lastRewardSlot);
+  }
   return d;
 }
 
@@ -206,6 +274,9 @@ export function encodePaidRecord(r: Omit<PaidRecord, "address">): Buffer {
 
 /** XNT the holders are owed but not yet paid (the program keeps at least this in auth). */
 export const holdersOwed = (v: Pick<Vault, "holdersFunded" | "holdersPaid">) => v.holdersFunded - v.holdersPaid;
+/** Lists the guardian may still cancel before one goes live; null for a v1 vault (no limit there). */
+export const cancelsLeft = (v: Pick<Vault, "version" | "cancelsInRow">) =>
+  (v.version >= 2 ? Math.max(0, MAX_CANCELS_IN_ROW - v.cancelsInRow) : null);
 /** Tokens waiting to be sold. */
 export const sellBuckets = (v: Pick<Vault, "sellLp" | "sellCreator" | "sellHolders">) => v.sellLp + v.sellCreator + v.sellHolders;
 
@@ -247,6 +318,41 @@ export function derivePoolAccounts(xdexProgram: PublicKey, ammConfig: PublicKey,
     observation: a.observation, lpMint: a.lpMint,
   };
 }
+
+/** v2: the reward pool (XNT/REWARD_MINT) accounts `fund_creator` swaps through. */
+export interface RewardPoolAccounts {
+  xdexProgram: PublicKey;
+  pool: PublicKey;
+  ammConfig: PublicKey;
+  /** The pool's vault of the reward token. */
+  rewardVault: PublicKey;
+  wxntVault: PublicKey;
+  observation: PublicKey;
+  rewardMint: PublicKey;
+  /** The reward mint's token program (Token-2022 for XNM and USDC.X). */
+  rewardTokenProgram: PublicKey;
+}
+/** From a decoded reward pool (src/xdex.ts decodePool). */
+export function rewardPoolAccountsFrom(xdexProgram: PublicKey, pool: Pool, rewardMint: PublicKey): RewardPoolAccounts {
+  const side = pool.mints.findIndex((m) => m.equals(rewardMint));
+  if (side < 0 || !pool.mints[1 - side].equals(NATIVE_MINT)) throw new Error("Pool is not an XNT pool for the reward token");
+  return {
+    xdexProgram, pool: pool.address, ammConfig: pool.ammConfig, rewardVault: pool.vaults[side], wxntVault: pool.vaults[1 - side],
+    observation: pool.observation, rewardMint, rewardTokenProgram: pool.programs[side],
+  };
+}
+/** Derived without reading the chain (the pool XDEX creates for rewardMint + wXNT under ammConfig). */
+export function deriveRewardPoolAccounts(xdexProgram: PublicKey, ammConfig: PublicKey, rewardMint: PublicKey, rewardTokenProgram = TOKEN_2022_PROGRAM_ID): RewardPoolAccounts {
+  const a = poolAddresses(xdexProgram, ammConfig, rewardMint, NATIVE_MINT);
+  const rewardIs0 = a.mint0.equals(rewardMint);
+  return {
+    xdexProgram, pool: a.pool, ammConfig, rewardVault: rewardIs0 ? a.vault0 : a.vault1, wxntVault: rewardIs0 ? a.vault1 : a.vault0,
+    observation: a.observation, rewardMint, rewardTokenProgram,
+  };
+}
+/** The auth PDA's account of the reward token (the swap's output, deposited from there). */
+export const authRewardAccount = (auth: PublicKey, rewardMint: PublicKey, rewardTokenProgram = TOKEN_2022_PROGRAM_ID) =>
+  getAssociatedTokenAddressSync(rewardMint, auth, true, rewardTokenProgram);
 
 // ---------- instructions (account order exactly as the spec) ----------
 const m = (pubkey: PublicKey, isSigner: boolean, isWritable: boolean) => ({ pubkey, isSigner, isWritable });
@@ -320,20 +426,37 @@ export function addLiquidityIx(programId: PublicKey, caller: PublicKey, mint: Pu
   });
 }
 
-/** Deposit the creator's XNT into the lock NFT's 7-day vesting vault on lp_locker. */
-export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, creatorNft: PublicKey, rewardMint: PublicKey = NATIVE_MINT) {
+/**
+ * v2: swap up to `xnt_creator` for the reward token on the reward pool (impact capped
+ * on-chain at rewardImpactBps of the pool's fee; one swap per slot) and deposit auth_reward's
+ * whole balance into the lock NFT's 7-day vesting vault on lp_locker. `r` must be the
+ * vault's reward_swap_pool for its reward_mint. Needs a compute limit of at least 250k.
+ */
+export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, creatorNft: PublicKey, r: RewardPoolAccounts) {
   const auth = vaultAuthPda(programId, mint);
-  const rewardVault = rewardVaultPda(LOCKER_PROGRAM_ID, creatorNft, rewardMint);
+  const rewardVault = rewardVaultPda(LOCKER_PROGRAM_ID, creatorNft, r.rewardMint);
   return new TransactionInstruction({
     programId, data: Buffer.from(IX.fundCreator),
     keys: [
       m(caller, true, true), m(vaultPda(programId, mint), false, true), m(auth, false, true), m(authWxntAccount(auth), false, true),
-      m(creatorNft, false, false), m(rewardMint, false, false), m(rewardVault, false, true),
+      m(creatorNft, false, false), m(r.rewardMint, false, false), m(rewardVault, false, true),
       m(rewardTokensPda(LOCKER_PROGRAM_ID, rewardVault), false, true), m(LOCKER_PROGRAM_ID, false, false),
       m(TOKEN_PROGRAM_ID, false, false), m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false), m(SystemProgram.programId, false, false),
       // lp_locker's init_reward_vault (first deposit) needs the lock and Token-2022.
       m(lockPda(LOCKER_PROGRAM_ID, creatorNft), false, false), m(TOKEN_2022_PROGRAM_ID, false, false),
+      // v2: the XNT -> reward token swap.
+      m(authRewardAccount(auth, r.rewardMint, r.rewardTokenProgram), false, true), m(r.pool, false, true), m(r.ammConfig, false, false),
+      m(poolAuthority(r.xdexProgram), false, false), m(r.rewardVault, false, true), m(r.wxntVault, false, true), m(r.observation, false, true),
+      m(r.xdexProgram, false, false), m(NATIVE_MINT, false, false), m(r.rewardTokenProgram, false, false),
     ],
+  });
+}
+
+/** v2: bring a 480-byte v1 vault up to the 552-byte layout (anyone; `payer` pays the extra rent). */
+export function upgradeVaultIx(programId: PublicKey, payer: PublicKey, mint: PublicKey) {
+  return new TransactionInstruction({
+    programId, data: Buffer.from(IX.upgradeVault),
+    keys: [m(payer, true, true), m(vaultPda(programId, mint), false, true), m(SystemProgram.programId, false, false)],
   });
 }
 
@@ -383,7 +506,8 @@ export type VaultEvent =
   | { name: "Collected"; vault: string; got: bigint; burned: bigint }
   | { name: "Sold"; vault: string; tokensIn: bigint; xntOut: bigint; toLp: bigint; toCreator: bigint; toHolders: bigint; crankReward: bigint }
   | { name: "LiquidityAdded"; vault: string; tokens: bigint; xnt: bigint; lpBurned: bigint }
-  | { name: "CreatorFunded"; vault: string; amount: bigint }
+  /** v2 `{ vault, xnt_in, reward_out, reward_mint }`; a v1 event `{ vault, amount }` reads as XNT in = out, reward mint native XNT. */
+  | { name: "CreatorFunded"; vault: string; xntIn: bigint; rewardOut: bigint; rewardMint: string }
   | { name: "ListPublished"; vault: string; epoch: bigint; root: string; total: bigint; activeAt: number }
   | { name: "ListCancelled"; vault: string; epoch: bigint }
   | { name: "Paid"; vault: string; wallet: string; amount: bigint; cumulative: bigint };
@@ -402,7 +526,11 @@ export function decodeEvent(d: Buffer): VaultEvent | null {
       return { name: "Sold", vault: key(), tokensIn: u64(), xntOut: u64(), toLp: u64(), toCreator: u64(), toHolders: u64(), crankReward: u64() };
     }
     if (tag.equals(EVENT.LiquidityAdded)) return { name: "LiquidityAdded", vault: key(), tokens: u64(), xnt: u64(), lpBurned: u64() };
-    if (tag.equals(EVENT.CreatorFunded)) return { name: "CreatorFunded", vault: key(), amount: u64() };
+    if (tag.equals(EVENT.CreatorFunded)) {
+      const vault = key();
+      if (d.length < 8 + 32 + 8 + 8 + 32) { const amount = u64(); return { name: "CreatorFunded", vault, xntIn: amount, rewardOut: amount, rewardMint: NATIVE_MINT.toBase58() }; }
+      return { name: "CreatorFunded", vault, xntIn: u64(), rewardOut: u64(), rewardMint: key() };
+    }
     if (tag.equals(EVENT.ListPublished)) {
       const vault = key(), epoch = u64();
       if (d.length < o + 32) return null;
@@ -432,19 +560,20 @@ export function vaultJson(v: Vault) {
   const s = (x: bigint) => x.toString();
   return {
     address: v.address.toBase58(), mint: v.mint.toBase58(), pool: v.pool.toBase58(), creatorNft: v.creatorNft.toBase58(),
-    rewardMint: v.rewardMint.toBase58(), publisher: v.publisher.toBase58(), guardian: v.guardian.toBase58(),
+    rewardMint: v.rewardMint.toBase58(), rewardSwapPool: v.rewardSwapPool.toBase58(), publisher: v.publisher.toBase58(), guardian: v.guardian.toBase58(),
+    version: v.version, cancelsInRow: v.cancelsInRow, cancelsLeft: cancelsLeft(v),
     burnBps: v.burnBps, lpBps: v.lpBps, creatorBps: v.creatorBps,
     buckets: {
       lpTokens: s(v.lpTokens), sellLp: s(v.sellLp), sellCreator: s(v.sellCreator), sellHolders: s(v.sellHolders),
       xntLp: s(v.xntLp), xntCreator: s(v.xntCreator),
     },
     holdersFunded: s(v.holdersFunded), holdersPaid: s(v.holdersPaid), holdersOwed: s(holdersOwed(v)),
-    lastSellSlot: s(v.lastSellSlot),
+    lastSellSlot: s(v.lastSellSlot), lastRewardSlot: s(v.lastRewardSlot),
     list: v.listEpoch > 0n ? { epoch: s(v.listEpoch), root: v.listRoot.toString("hex"), total: s(v.listTotal) } : null,
     pending: v.pendingEpoch > 0n ? { epoch: s(v.pendingEpoch), root: v.pendingRoot.toString("hex"), total: s(v.pendingTotal), activeAt: v.pendingActiveAt } : null,
     totals: {
       collected: s(v.totalCollected), burned: s(v.totalBurned), lpTokens: s(v.totalLpTokens), lpXnt: s(v.totalLpXnt),
-      creatorXnt: s(v.totalCreatorXnt), crankRewards: s(v.totalCrankRewards),
+      creatorXnt: s(v.totalCreatorXnt), crankRewards: s(v.totalCrankRewards), rewardOut: s(v.totalRewardOut),
     },
     createdAt: v.createdAt,
   };

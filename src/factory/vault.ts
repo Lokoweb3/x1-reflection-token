@@ -4,12 +4,16 @@
  *
  * Every ~60 s, for each vault token (launch record or per-launch config says `taxVault`,
  * or a vault account exists for the mint), one pass:
+ *   0. upgrade   a 480-byte v1 vault gets `upgrade_vault` once (the crank pays the extra rent)
  *   1. collect   when the tax waiting is worth at least the token's minHarvestXnt: harvest
  *                the accounts holding withheld tax into the mint, withdraw, split, burn
  *   2. sell      the sell buckets, price-impact capped on-chain (min(3%, tax/2)), one sale
  *                per slot, each confirmed before the next; stops at dust or
  *                when a sale was capped (the rest waits for the next pass)
- *   3. add_liquidity when at least 0.01 XNT is set aside; fund_creator when any is
+ *   3. add_liquidity when at least 0.01 XNT is set aside; fund_creator when any is and the
+ *                reward swap (XNT -> the network's reward token, capped at half the reward
+ *                pool's fee, one per slot) would output something: the program swaps and
+ *                deposits into the creator's vesting vault
  *   4. rewards list: new holders' XNT (holders_funded − list_total) is split pro-rata over
  *                eligible holders (the distributor's rules), added to each wallet's running
  *                total, saved to <state>/vault-list.json and published (publish_list)
@@ -30,11 +34,11 @@ import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana
 import { Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, fromBaseUnits, loadKeypair, toBaseUnits, xnt } from "../config.js";
 import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts } from "../holders.js";
 import { outcome, sendAndConfirm, sign, simulate, withPriority } from "../tx.js";
-import { decodePool, poolAuthority, quoteSell, snapshot, spotValue } from "../xdex.js";
+import { decodePool, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "../xdex.js";
 import {
-  MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, RENT_EXEMPT_EMPTY, sellImpactBps, addLiquidityIx, buildVaultTree, collectIx, decodePaidRecord, decodeVault,
-  effectiveList, errorOf, fundCreatorIx, paidRecordPda, parseEvents, payIx, poolAccountsFrom, publishListIx, sellBuckets, sellIx, vaultAuthPda, vaultJson,
-  vaultPda, type Vault, type VaultEvent, type VaultPoolAccounts,
+  MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, RENT_EXEMPT_EMPTY, REWARD_MINT, rewardImpactBps, VAULT_VERSION, sellImpactBps, addLiquidityIx, buildVaultTree,
+  cancelsLeft, collectIx, decodePaidRecord, decodeVault, effectiveList, errorOf, fundCreatorIx, paidRecordPda, parseEvents, payIx, poolAccountsFrom, publishListIx,
+  rewardPoolAccountsFrom, rewardTokenInfo, sellBuckets, sellIx, upgradeVaultIx, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent, type VaultPoolAccounts,
 } from "../taxvault.js";
 import { type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged } from "./launch.js";
 
@@ -48,6 +52,10 @@ const MAX_PAYS_PER_TX = 6;
 const MAX_PAY_TXS_PER_PASS = 20;
 /** Seconds after a list's active time before paying against it (the chain clock can lag ours). */
 const ACTIVATION_MARGIN_SECS = 15;
+/** fund_creator calls per token per pass (each capped at half the reward pool's fee, one per slot). */
+const MAX_REWARD_SWAPS_PER_PASS = 5;
+/** After a failed upgrade_vault (e.g. the program isn't upgraded yet), wait this long before trying again. */
+const UPGRADE_RETRY_MS = 10 * 60_000;
 const nowSecs = () => Math.floor(Date.now() / 1000);
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -199,7 +207,19 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       listEpoch: v && v.listEpoch > 0n ? v.listEpoch.toString() : null,
       nextListAt: v && v.pendingEpoch > 0n ? v.pendingActiveAt : null,
       listUrl: `/api/vault/${mint}/list`,
+      version: v?.version ?? null,
+      // How many more pending lists the guardian (the creator) may cancel in a row (v2); null: no limit / no vault.
+      cancelsLeft: v ? cancelsLeft(v) : null,
     };
+  }
+
+  /**
+   * The mint a vault token's creator reward is paid in: the vault's reward_mint once it's v2,
+   * else the network's reward token (what init_vault and upgrade_vault set).
+   */
+  async function rewardMintOf(mint: string): Promise<PublicKey> {
+    const v = await cachedVault(mint).catch(() => null);
+    return v && v.version >= VAULT_VERSION ? v.rewardMint : REWARD_MINT[cfg.network];
   }
 
   // ---------- crank ----------
@@ -253,7 +273,11 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       } else if (e.name === "LiquidityAdded") {
         logEvent(mint, { kind: "auto-lp", signature, tokens: e.tokens.toString(), xnt: e.xnt.toString(), lp: e.lpBurned.toString() });
       } else if (e.name === "CreatorFunded") {
-        logEvent(mint, { kind: "creator-reward", signature, amount: e.amount.toString(), rewardMint: "XNT" });
+        // `xnt` is what the creator's share was worth in XNT (the site's totals); `reward` is
+        // what went into the vesting vault, in the reward token's base units.
+        const info = rewardTokenInfo(cfg.network, new PublicKey(e.rewardMint));
+        logEvent(mint, { kind: "creator-reward", signature, xnt: e.xntIn.toString(), reward: e.rewardOut.toString(), rewardMint: e.rewardMint,
+          rewardSymbol: info?.symbol ?? null, rewardDecimals: info?.decimals ?? null, vault: true });
       } else if (e.name === "Paid") {
         payments.push([e.wallet, e.amount.toString()]);
       }
@@ -325,14 +349,62 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     notes.push("added liquidity");
   }
 
+  /**
+   * Swap the creator's XNT for the reward token and deposit it (fund_creator). Each swap is
+   * capped on-chain at half the reward pool's trade fee, so a large bucket takes several
+   * calls, one per slot, each confirmed before the next; the rest waits in xnt_creator.
+   */
   async function creatorStep(r: LaunchRecord, notes: string[]) {
     const mint = new PublicKey(r.mint);
-    const v = await readVault(mint);
-    if (!v || v.xntCreator === 0n) return;
-    const { signature, events } = await send(r.symbol, `fund_creator ${xnt(v.xntCreator)}`,
-      [fundCreatorIx(program, crank!.publicKey, mint, v.creatorNft, v.rewardMint)], 300_000, v.address);
-    record(r.mint, v, signature, events);
-    notes.push(`creator reward ${xnt(v.xntCreator)}`);
+    for (let i = 0; i < MAX_REWARD_SWAPS_PER_PASS; i++) {
+      const v = await readVault(mint);
+      if (!v || v.xntCreator === 0n) return;
+      if (v.version < VAULT_VERSION) { notes.push("creator reward waits for the vault upgrade"); return; }
+      // Quote the swap the program makes (same cap, live reserves); skip when it would buy nothing.
+      const q = await quoteBuy(conn, xdex, v.rewardSwapPool, v.rewardMint, v.xntCreator, Number(OUT_TOLERANCE_BPS), rewardImpactBps).catch((e) => {
+        if (/too small|too shallow|no liquidity/i.test(msg(e))) return null;
+        throw e;
+      });
+      const info = rewardTokenInfo(cfg.network, v.rewardMint);
+      // The program needs a minimum out (expected x 99.5%) above zero.
+      if (!q || q.minimumOut <= 0n) { notes.push(`creator reward ${xnt(v.xntCreator)} would buy no ${info?.symbol ?? "reward token"} yet`); return; }
+      const rewardPool = rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint);
+      const out = info ? `${fromBaseUnits(q.expectedOut, info.decimals)} ${info.symbol}` : `${q.expectedOut} reward base units`;
+      // ~150k CU, up to ~195k when it also creates the reward vault: the default 200k is too tight.
+      let sent: Awaited<ReturnType<typeof send>> | null = null;
+      for (let attempt = 0; !sent; attempt++) {
+        try {
+          sent = await send(r.symbol, `fund_creator ${xnt(q.amountIn)} for ~${out}`,
+            [fundCreatorIx(program, crank!.publicKey, mint, v.creatorNft, rewardPool)], 300_000, v.address);
+        } catch (e) {
+          // The on-chain quote can come out smaller than ours (live reserves): wait for more.
+          if (/: TooSmall$/.test(msg(e))) { notes.push(`creator reward ${xnt(v.xntCreator)} is still too small to swap`); return; }
+          // One reward swap per slot: the last one's slot hasn't passed yet.
+          if (!/OneSellPerSlot/.test(msg(e)) || attempt >= 3) throw e;
+          await new Promise((res) => setTimeout(res, 800));
+        }
+      }
+      record(r.mint, v, sent.signature, sent.events);
+      notes.push(`creator reward ${xnt(q.amountIn)} -> ~${out}`);
+      if (q.amountIn >= v.xntCreator) return; // all of it went
+    }
+  }
+
+  /** A v1 (480-byte) vault: send upgrade_vault once; the crank pays the extra rent. */
+  const upgradeFailedAt = new Map<string, number>();
+  async function upgradeStep(r: LaunchRecord, v: Vault, notes: string[]) {
+    if (v.version >= VAULT_VERSION) return v;
+    const last = upgradeFailedAt.get(r.mint);
+    if (last && Date.now() - last < UPGRADE_RETRY_MS) { notes.push("vault still v1 (upgrade retried later)"); return v; }
+    try {
+      await send(r.symbol, "upgrade_vault", [upgradeVaultIx(program, crank!.publicKey, v.mint)], 60_000, v.address);
+      upgradeFailedAt.delete(r.mint);
+      notes.push("vault upgraded to v2");
+    } catch (e) {
+      upgradeFailedAt.set(r.mint, Date.now());
+      throw e;
+    }
+    return (await readVault(v.mint)) ?? v;
   }
 
   const tokenConfig = (r: LaunchRecord): Config | null => {
@@ -530,14 +602,19 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const notes: string[] = [];
     let ok = true;
     const step = async (name: string, fn: () => Promise<unknown>) => {
-      try { await fn(); } catch (e) { ok = false; notes.push(`${name} failed: ${msg(e).slice(0, 200)}`); console.error(`[vault crank] ${r.symbol} ${name}: ${msg(e)}`); }
+      try { await fn(); } catch (e) {
+        // A v1 vault under the v2 program refuses everything but upgrade_vault: wait for the upgrade.
+        if (/: WrongVersion$/.test(msg(e))) { notes.push(`${name} waits for the vault upgrade`); return; }
+        ok = false; notes.push(`${name} failed: ${msg(e).slice(0, 200)}`); console.error(`[vault crank] ${r.symbol} ${name}: ${msg(e)}`);
+      }
     };
     const mint = new PublicKey(r.mint);
     // Only the creator can start a vault (init_vault); until then there's nothing to crank.
     const v = await readVault(mint);
     if (!v) { status.set(r.mint, { at: new Date().toISOString(), ok, notes: ["no vault yet (the creator starts it after the LP lock)"] }); return; }
     seen.add(r.mint);
-    const vault = v;
+    let vault = v;
+    await step("upgrade_vault", async () => { vault = await upgradeStep(r, v, notes); });
     let pool: VaultPoolAccounts | null = null;
     await step("pool", async () => {
       const [info] = await conn.getMultipleAccountsInfo([vault.pool], "confirmed");
@@ -590,5 +667,10 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     }
   }
 
-  return { program, isVaultMint, authOf, view, listView, badge, crankOnce, crankOn: () => !!crank, passMs: PASS_MS };
+  /** Without a crank: still find the vault tokens (read-only), so the pages show their vault and reward token. */
+  async function discover() {
+    await vaultTokens().catch((e) => console.error(`[vault] listing vault tokens failed: ${msg(e)}`));
+  }
+
+  return { program, isVaultMint, authOf, view, listView, badge, rewardMintOf, crankOnce, discover, crankOn: () => !!crank, passMs: PASS_MS };
 }

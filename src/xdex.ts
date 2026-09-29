@@ -499,7 +499,7 @@ export interface BuyQuote {
  */
 export async function quoteBuy(
   conn: Connection, programId: PublicKey, poolAddr: PublicKey, outMint: PublicKey, xntIn: bigint,
-  slippageBps: number, maxImpactBps = 300,
+  slippageBps: number, maxImpactBps: number | ((tradeFeeRate: bigint) => number) = 300,
 ): Promise<BuyQuote> {
   const [poolInfo] = await conn.getMultipleAccountsInfo([poolAddr]);
   const pool = decodePool(poolAddr, poolInfo, programId);
@@ -512,7 +512,8 @@ export async function quoteBuy(
   const reserveIn = unpackAccount(pool.vaults[xntSide], vIn, pool.programs[xntSide]).amount - pool.protocolFees[xntSide] - pool.fundFees[xntSide];
   const reserveOut = unpackAccount(pool.vaults[1 - xntSide], vOut, pool.programs[1 - xntSide]).amount - pool.protocolFees[1 - xntSide] - pool.fundFees[1 - xntSide];
   if (reserveIn <= 0n || reserveOut <= 0n) throw new Error("Pool has no liquidity");
-  const cap = maxInputForImpact(reserveIn, BigInt(maxImpactBps), 0n);
+  // The cap may depend on the pool's trade fee (the Tax Vault's reward swap: half the fee).
+  const cap = maxInputForImpact(reserveIn, BigInt(typeof maxImpactBps === "function" ? maxImpactBps(tradeFeeRate) : maxImpactBps), 0n);
   const amountIn = xntIn < cap ? xntIn : cap;
   if (amountIn <= 0n) throw new Error("Pool too shallow to swap within the price-impact limit");
   let out = cpmmOut(amountIn, reserveIn, reserveOut, tradeFeeRate);

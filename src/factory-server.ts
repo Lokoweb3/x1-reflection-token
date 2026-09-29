@@ -46,6 +46,7 @@ import { buildCurveStep, validateCurveParams } from "./factory/launch.js";
 import { curveService } from "./factory/curve.js";
 import { vaultService } from "./factory/vault.js";
 import { buildVaultStep, isVaultLaunch } from "./factory/launch.js";
+import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
 
 const cfg = loadConfig();
@@ -99,18 +100,55 @@ if (vaults) allowRelayProgram(vaults.program.toBase58());
 /** The vault's auth PDA for a vault token (holds its collected tax; never a holder), else null. */
 const vaultAuthFor = (mint: string) => (vaults?.isVaultMint(mint) ? vaults.authOf(mint).toBase58() : null);
 
+/** Legacy (hot-wallet distributor) tokens: the network's configured creator reward (native XNT on testnet, USDC.X on mainnet). */
 const rewardMint = new PublicKey(CREATOR_REWARD[cfg.network].rewardMint ?? NATIVE_MINT);
 const rewardSymbol = CREATOR_REWARD[cfg.network].rewardMint ? "USDC" : "XNT";
 const rewardDecimals = CREATOR_REWARD[cfg.network].rewardMint ? 6 : 9;
+const rewardMeta = (mint: PublicKey) => (mint.equals(rewardMint) ? { symbol: rewardSymbol, decimals: rewardDecimals }
+  : rewardTokenInfo(cfg.network, mint) ?? { symbol: `${mint.toBase58().slice(0, 4)}…`, decimals: 9 });
 
-/** Creator rewards for a launch's lock NFT, in whole reward-token units. */
-async function creatorRewards(lockNft: string | null | undefined) {
-  if (!lockNft) return null;
-  const v = await readRewardVault(conn, new PublicKey(cfg.locker!.programId), new PublicKey(lockNft), rewardMint);
-  if (!v) return { claimable: "0", vesting: "0", claimed: "0", nextUnlock: null, nextAmount: "0", symbol: rewardSymbol, decimals: rewardDecimals };
+/**
+ * The reward mints a token's lock NFT may hold creator rewards in, the one it's paid in now
+ * first. A Tax Vault token is paid in its vault's reward mint (XNM on testnet); its creator
+ * may still have an older XNT vault from before the vault's upgrade. Other tokens: the
+ * configured one only.
+ */
+async function rewardMintsFor(tokenMint: string | null | undefined): Promise<PublicKey[]> {
+  if (!tokenMint || !vaults?.isVaultMint(tokenMint)) return [rewardMint];
+  const out: PublicKey[] = [];
+  for (const m of [await vaults.rewardMintOf(tokenMint), NATIVE_MINT, rewardMint]) if (!out.some((x) => x.equals(m))) out.push(m);
+  return out;
+}
+
+/** One reward vault of a lock NFT, in reward-token base units. */
+async function rewardVaultView(lockNft: PublicKey, mint: PublicKey) {
+  const { symbol, decimals } = rewardMeta(mint);
+  const v = await readRewardVault(conn, new PublicKey(cfg.locker!.programId), lockNft, mint);
+  if (!v) return { claimable: "0", vesting: "0", claimed: "0", nextUnlock: null as number | null, nextAmount: "0", symbol, decimals, mint: mint.toBase58() };
   const s = rewardSummary(v);
   return { claimable: s.claimable.toString(), vesting: s.vesting.toString(), claimed: s.totalClaimed.toString(), nextUnlock: s.nextUnlock,
-    nextAmount: s.nextAmount.toString(), symbol: rewardSymbol, decimals: rewardDecimals };
+    nextAmount: s.nextAmount.toString(), symbol, decimals, mint: mint.toBase58() };
+}
+
+/**
+ * Creator rewards for a launch's lock NFT: the reward token it's paid in now, plus
+ * `others`, any other reward vault of the NFT still holding something (a vault token's
+ * older XNT rewards). Amounts in the reward token's base units.
+ */
+async function creatorRewards(lockNft: string | null | undefined, tokenMint?: string | null) {
+  if (!lockNft) return null;
+  const nft = new PublicKey(lockNft);
+  const [main, ...rest] = await Promise.all((await rewardMintsFor(tokenMint)).map((m) => rewardVaultView(nft, m)));
+  return { ...main, others: rest.filter((r) => BigInt(r.claimable) + BigInt(r.vesting) > 0n) };
+}
+
+/** The reward mint a claim asks for (`body.rewardMint`), which must be one this NFT's token pays in; else the current one. */
+async function claimMint(tokenMint: string | null | undefined, asked: unknown) {
+  const allowed = await rewardMintsFor(tokenMint);
+  if (asked === undefined || asked === null || asked === "") return allowed[0];
+  const m = new PublicKey(String(asked));
+  if (!allowed.some((x) => x.equals(m))) throw new Error("This NFT's creator rewards aren't paid in that token.");
+  return m;
 }
 
 // ---------- Pair tokens (launches paired with JACK instead of XNT) ----------
@@ -363,7 +401,8 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const holder = new PublicKey(String(body.holder));
     await requireNftHolder(nft, holder);
     if (url === "/api/nft/claim") {
-      const { ixs } = await buildClaimReward(conn, cfg, holder, nft, rewardMint);
+      const tokenMint = (await receiptData(conn, cfg, nft))?.tokenMint ?? null;
+      const { ixs } = await buildClaimReward(conn, cfg, holder, nft, await claimMint(tokenMint, body.rewardMint));
       return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
     }
     const d = await receiptData(conn, cfg, nft);
@@ -402,7 +441,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const nft = r.lockNft ?? (await launchStatus(conn, cfg, r)).lockNft;
     if (!nft) throw new Error("This launch has no lock NFT yet.");
     await requireNftHolder(new PublicKey(nft), holder);
-    const { ixs } = await buildClaimReward(conn, cfg, holder, new PublicKey(nft), rewardMint);
+    const { ixs } = await buildClaimReward(conn, cfg, holder, new PublicKey(nft), await claimMint(r.mint, body.rewardMint));
     return { tx: await unsignedTx(conn, holder, ixs, [], opts) };
   }
   if (url === "/api/distribute/tip") {
@@ -464,7 +503,7 @@ async function nftView(mintStr: string) {
   // Trading fees this NFT's liquidity has earned, as its current holder would collect them.
   const fees = holder ? await collectQuote(holder.owner, nft, await nftTarget(d)).catch(() => null) : null;
   return {
-    fees, rewards: await creatorRewards(mintStr),
+    fees, rewards: await creatorRewards(mintStr, d.tokenMint),
     ...d, explorer, name: meta?.name ?? `${d.symbol} LP Lock`,
     image: onChain ?? `data:image/svg+xml,${encodeURIComponent(receiptSvg(d))}`, printed: !!onChain,
     // False once the design or the numbers (e.g. pool share) have moved on since it was printed.
@@ -523,14 +562,17 @@ async function buildNfts() {
     return Promise.all(locks.map(async (l) => {
       const [lp, holder, meta, rw] = await Promise.all([
         lockedLp(conn, programId, l.address), nftHolder(conn, l.nftMint),
-        getTokenMetadata(conn, l.nftMint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null), creatorRewards(l.nftMint.toBase58()),
+        getTokenMetadata(conn, l.nftMint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null), creatorRewards(l.nftMint.toBase58(), t.mint),
       ]);
       const ready = pendingFeeLp(lp, l.principal, sqrtK, supply);
       const feesCollected = lpXnt(l.feeLpCollected), feesReady = lpXnt(ready);
       const fee = holder ? await collectFeeEstimate({ holder: holder.owner, nft: l.nftMint, where }) : null;
-      const rewards = rw ? { claimed: rw.claimed, ready: rw.claimable, vesting: rw.vesting, nextUnlock: rw.nextUnlock, nextAmount: rw.nextAmount, symbol: rw.symbol, decimals: rw.decimals } : null;
-      // Rewards are XNT on testnet; on mainnet (USDC) they're listed separately, not added in.
-      const rewardXnt = rw && rw.symbol === "XNT" ? BigInt(rw.claimed) + BigInt(rw.claimable) + BigInt(rw.vesting) : 0n;
+      const view = (x: NonNullable<typeof rw>["others"][number]) => ({ claimed: x.claimed, ready: x.claimable, vesting: x.vesting, nextUnlock: x.nextUnlock,
+        nextAmount: x.nextAmount, symbol: x.symbol, decimals: x.decimals, mint: x.mint });
+      const rewards = rw ? { ...view(rw), others: rw.others.map(view) } : null;
+      // XNT rewards are added in; other reward tokens (XNM, USDC) are listed separately.
+      let rewardXnt = 0n;
+      for (const x of rw ? [rw, ...rw.others] : []) if (x.symbol === "XNT") rewardXnt += BigInt(x.claimed) + BigInt(x.claimable) + BigInt(x.vesting);
       return {
         nftMint: l.nftMint.toBase58(), symbol: t.symbol, tokenName: t.name, tokenMint: t.mint,
         name: meta?.name ?? `${t.symbol} LP Lock`, receipt: meta ? receiptImage(meta.uri) : null,
@@ -649,7 +691,9 @@ async function getView(url: URL) {
       }))),
       sourceUrl: "https://github.com/Lokoweb3/x1-reflection-token",
       // New XNT launches hand their tax to the Tax Vault program (no distributor gas to pre-fund).
-      ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR) } } : {}),
+      // Their creator reward is swapped on-chain into the network's reward token (XNM on testnet).
+      ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR),
+        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58() } } : {}),
     };
   }
   if (url.pathname === "/api/launches") {
@@ -669,7 +713,7 @@ async function getView(url: URL) {
           if (q) fees = { ...q, holder: holder.owner.toBase58() };
         }
       }
-      return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? receiptImage(nftMeta.uri) : null, rewards: await creatorRewards(nft), fees, nftHolder: nftHolderAddr };
+      return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? receiptImage(nftMeta.uri) : null, rewards: await creatorRewards(nft, r.mint), fees, nftHolder: nftHolderAddr };
     }));
   }
   if (url.pathname === "/api/tokens") return registeredLaunches().map((r) => ({ ...publicView(r), paid: tokenPayouts(r.mint) }));
@@ -811,13 +855,19 @@ function targetInfo(t: ReturnType<typeof targets>[number]) {
     links: { website: null, twitter: null, telegram: null } };
 }
 
+/**
+ * XNT a `creator-reward` event stands for: the Tax Vault's events record the XNT swapped
+ * (`xnt`) next to the reward tokens bought (`reward`); the distributor's record `amount`.
+ */
+const creatorXntOf = (e: Record<string, any>) => BigInt(e.xnt ?? e.amount ?? 0);
+
 /** Totals from one token's event log, in base units. */
 function eventTotals(events: Record<string, any>[]) {
   const t = { holdersXnt: 0n, liquidityXnt: 0n, creatorXnt: 0n, clickerXnt: 0n, burned: 0n, payouts: 0, wallets: new Set<string>(), lastRun: null as string | null };
   for (const e of events) {
     if (e.kind === "payout") { t.holdersXnt += BigInt(e.total ?? 0); t.payouts++; for (const [w] of e.payments ?? []) t.wallets.add(w); }
     else if (e.kind === "auto-lp") t.liquidityXnt += BigInt(e.xnt ?? 0);
-    else if (e.kind === "creator-reward") t.creatorXnt += BigInt(e.amount ?? 0);
+    else if (e.kind === "creator-reward") t.creatorXnt += creatorXntOf(e);
     else if (e.kind === "clicker-reward") t.clickerXnt += BigInt(e.xnt ?? 0);
     else if (e.kind === "burn") t.burned += BigInt(e.tokens ?? 0);
     if (e.at && (!t.lastRun || e.at > t.lastRun)) t.lastRun = e.at;
@@ -878,11 +928,11 @@ function analytics() {
       const b = days.get(hour) ?? { holders: 0n, liquidity: 0n, creator: 0n };
       if (x.kind === "payout") b.holders += BigInt(x.total ?? 0);
       else if (x.kind === "auto-lp") b.liquidity += BigInt(x.xnt ?? 0);
-      else if (x.kind === "creator-reward") b.creator += BigInt(x.amount ?? 0);
+      else if (x.kind === "creator-reward") b.creator += creatorXntOf(x);
       days.set(hour, b);
       if (["payout", "auto-lp", "burn", "creator-reward", "clicker-reward"].includes(x.kind)) {
         recent.push({ at: x.at, kind: x.kind, symbol: t.symbol, signature: x.signature ?? null,
-          xnt: x.kind === "payout" ? String(x.total ?? 0) : x.kind === "creator-reward" ? String(x.amount ?? 0) : x.xnt ?? null,
+          xnt: x.kind === "payout" ? String(x.total ?? 0) : x.kind === "creator-reward" ? creatorXntOf(x).toString() : x.xnt ?? null,
           tokens: x.kind === "burn" ? String(x.tokens ?? 0) : null, wallets: x.kind === "payout" ? (x.payments ?? []).length : null });
       }
     }
@@ -1324,8 +1374,12 @@ if (curves) {
 // Tax Vault crank: collect, sell, add liquidity, fund creators, publish rewards lists and
 // pay holders for every vault token. Transactions only go out with factory.taxVault.publisherKeypair.
 if (vaults) {
-  if (!vaults.crankOn()) console.log("Tax vault crank: no factory.taxVault.publisherKeypair, so vault tokens are not cranked by this server.");
-  else {
+  if (!vaults.crankOn()) {
+    console.log("Tax vault crank: no factory.taxVault.publisherKeypair, so vault tokens are not cranked by this server.");
+    // Still look for vaults on-chain (read-only) so vault tokens show as such.
+    setTimeout(() => vaults.discover(), 5_000);
+    setInterval(() => vaults.discover(), 600_000).unref();
+  } else {
     setTimeout(() => vaults.crankOnce().catch(() => undefined), 12_000);
     setInterval(() => vaults.crankOnce().catch(() => undefined), vaults.passMs).unref();
   }

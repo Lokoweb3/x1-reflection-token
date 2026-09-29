@@ -593,7 +593,7 @@ form.addEventListener("submit", async (ev) => {
   const lock = p.lockDays === null ? "locked FOREVER" : `locked for ${p.lockDays} days`;
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax.`); return; }
   const pair = pairOf(p.quote);
-  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${pairAmount(p.poolXnt, pair)}, LP ${lock}${pair.symbol !== "XNT" ? `\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT` : ""}\n• Launch fee ${info.feeAmount} ${info.feeSymbol}\n• Your creator reward: ${(info.creatorBps ?? 1000) / 100}% of the tax, paid in ${info.creatorRewardSymbol ?? "USDC"}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n${info.taxVault?.launches && pair.symbol === "XNT" ? "The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault." : "Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain)."}`);
+  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${pairAmount(p.poolXnt, pair)}, LP ${lock}${pair.symbol !== "XNT" ? `\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT` : ""}\n• Launch fee ${info.feeAmount} ${info.feeSymbol}\n• Your creator reward: ${(info.creatorBps ?? 1000) / 100}% of the tax, paid in ${info.taxVault?.launches && pair.symbol === "XNT" ? info.taxVault.rewardSymbol : info.creatorRewardSymbol ?? "USDC"}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n${info.taxVault?.launches && pair.symbol === "XNT" ? "The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault." : "Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain)."}`);
   if (!ok) return;
   running = true; renderWallet();
   document.getElementById("launchResult").replaceChildren();
@@ -756,15 +756,17 @@ function launchCard(l) {
   }
 
   // Creator rewards: ready now, vesting, and a live countdown to the next part.
-  const rw = l.rewards;
-  if (rw) {
+  // The reward token paid now, plus any older reward vault still holding something (a Tax
+  // Vault token's XNT rewards from before its upgrade): each has its own Claim.
+  const rws = l.rewards ? [l.rewards, ...(l.rewards.others ?? [])] : [];
+  for (const rw of rws) {
     const amt = (v) => fmt(Number(v) / 10 ** (rw.decimals ?? 9), 6);
     const ready = BigInt(rw.claimable) > 0n;
     const mineNft = !!l.nftHolder && l.nftHolder === W.state.address;
-    rows.push(row("Creator rewards", [`${amt(rw.claimable)} ${rw.symbol} ready`, el("span", { class: "muted", text: ` · ${amt(rw.vesting)} vesting` }),
+    rows.push(row(rws.length > 1 ? `Creator rewards (${rw.symbol})` : "Creator rewards", [`${amt(rw.claimable)} ${rw.symbol} ready`, el("span", { class: "muted", text: ` · ${amt(rw.vesting)} vesting` }),
       mineNft ? null : el("span", { class: "muted", text: ` · only the NFT holder (${l.nftHolder ? short(l.nftHolder) : "nobody"}) can claim` }),
       rw.nextUnlock ? el("div", { class: "muted" }, `Next ${amt(rw.nextAmount ?? "0")} ${rw.symbol} in `, Countdown.el(rw.nextUnlock)) : null],
-      mineNft ? btn("Claim", "primary", () => claimRewards(l.mint), !ready, ready ? "" : "Nothing has vested yet") : null));
+      mineNft ? btn("Claim", "primary", () => claimRewards(l.mint, rw.mint), !ready, ready ? "" : "Nothing has vested yet") : null));
   }
 
   // The receipt, if it hasn't been printed into the NFT yet.
@@ -844,11 +846,11 @@ async function collectFees(nftMint) {
     running = false; renderWallet(); loadMine();
   }
 }
-async function claimRewards(mint) {
+async function claimRewards(mint, rewardMint) {
   if (running) return;
   running = true; renderWallet();
   try {
-    await signAndSend("Claim creator rewards", () => api("/api/launch/claim-reward", { mint, holder: W.state.address }));
+    await signAndSend("Claim creator rewards", () => api("/api/launch/claim-reward", { mint, holder: W.state.address, rewardMint }));
   } catch (e) {
     toast("error", `Claim failed: ${e.message || e}`);
   } finally {
@@ -960,7 +962,10 @@ async function loadTokens() {
     }
     document.getElementById("creatorShare").textContent = `${(info.creatorBps ?? 1000) / 100}%`;
     document.getElementById("creatorHint").textContent =
-      `Fixed. Paid in ${info.creatorRewardSymbol}, vests 7 days, claimed with your LP-lock NFT (whoever holds it can claim).`;
+      `Fixed. Paid in ${info.taxVault?.launches ? info.taxVault.rewardSymbol : info.creatorRewardSymbol}`
+      // Tax Vault launches (XNT pairs) get the network's reward token; other pairs keep the usual one.
+      + (info.taxVault?.launches && info.quoteTokens?.length && info.taxVault.rewardSymbol !== info.creatorRewardSymbol ? ` (${info.creatorRewardSymbol} for tokens paired with ${info.quoteTokens.map((q) => q.symbol).join(" or ")})` : "")
+      + ", vests 7 days, claimed with your LP-lock NFT (whoever holds it can claim).";
   } catch (e) { toast("error", "Couldn't reach the factory server: " + e.message); }
   renderWallet(); renderForm(); loadTokens(); loadDistribute(); loadFaucet(); setupLogo();
 })();

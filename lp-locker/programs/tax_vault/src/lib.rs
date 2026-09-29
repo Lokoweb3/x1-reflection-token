@@ -11,8 +11,10 @@
 //!   and an on-chain minimum output, and books the XNT pro-rata into lamport buckets held
 //!   by `auth`. The caller earns 1% of the holders' part (capped).
 //! * `add_liquidity` deposits kept tokens + LP XNT into the pool and burns every LP token.
-//! * `fund_creator` deposits the creator's XNT into lp_locker's vesting reward vault of the
-//!   pool's lock NFT.
+//! * `fund_creator` swaps the creator's XNT into the network's reward token (XNM on
+//!   testnet, USDC.X on mainnet) on XDEX with an on-chain price-impact cap and minimum
+//!   output, and deposits it into lp_locker's vesting reward vault of the pool's lock NFT.
+//! * `upgrade_vault` turns a 480-byte v1 vault into a 552-byte v2 vault in place.
 //! * Holders are paid against a Merkle list of cumulative amounts. `publish_list` (the
 //!   publisher only) can only raise the list total and never above what the holders'
 //!   share has received (`holders_funded`); a list activates after a delay during which
@@ -44,6 +46,7 @@ use anchor_spl::token_2022::spl_token_2022::{
     state::Mint as MintState,
 };
 use anchor_spl::token_2022::{self as token_2022, Token2022};
+use anchor_spl::token_interface::{self, TokenInterface};
 use anchor_spl::token_2022_extensions::spl_token_metadata_interface::state::TokenMetadata;
 use solana_sha256_hasher::hashv;
 
@@ -55,6 +58,16 @@ pub const LOCKER_PROGRAM_ID: Pubkey = pubkey!("5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2s
 pub const XDEX_PROGRAM_ID: Pubkey = pubkey!("7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf");
 #[cfg(not(feature = "testnet"))]
 pub const XDEX_PROGRAM_ID: Pubkey = pubkey!("sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN");
+
+/// The creator reward token of this network (never chosen per token) and its XNT pool.
+#[cfg(feature = "testnet")]
+pub const REWARD_MINT: Pubkey = pubkey!("AvNDf423kEmWNP6AZHFV7DkNG4YRgt6qbdyyryjaa4PQ");
+#[cfg(feature = "testnet")]
+pub const REWARD_POOL: Pubkey = pubkey!("6XESNUXbGNT6x3zaB51Axk7Jh6Ba58LFJukkfPUzzSwA");
+#[cfg(not(feature = "testnet"))]
+pub const REWARD_MINT: Pubkey = pubkey!("B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq");
+#[cfg(not(feature = "testnet"))]
+pub const REWARD_POOL: Pubkey = pubkey!("CAJeVEoSm1QQZccnCqYu9cnNF7TTD2fcUA3E5HQoxRvR");
 
 pub const MEMO_PROGRAM_ID: Pubkey = pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 
@@ -77,6 +90,17 @@ pub const MIN_SELL_XNT: u64 = 2_000_000;
 /// `add_liquidity` needs at least this much XNT set aside.
 pub const MIN_LP_XNT: u64 = 10_000_000;
 pub const CREATOR_BPS: u16 = 1000;
+/// A reward swap (XNT -> reward token) moves the price at most this much, and at most
+/// half the reward pool's trade fee (see `math::reward_impact_bps`).
+pub const REWARD_MAX_IMPACT_BPS: u64 = 300;
+/// The guardian may cancel at most this many lists in a row (reset when a list goes live).
+pub const MAX_CANCELS_IN_ROW: u8 = 2;
+/// Vault layout versions: v1 = 480 bytes (no version byte), v2 = 552 bytes.
+pub const VAULT_VERSION: u8 = 2;
+pub const VAULT_V1_LEN: usize = 480;
+pub const VAULT_V2_LEN: usize = 552;
+/// sha256("account:Vault")[..8]
+pub const VAULT_DISC: [u8; 8] = [0xd3, 0x08, 0xe8, 0x2b, 0x02, 0x98, 0x75, 0x77];
 pub const MAX_BURN_BPS: u16 = 5000;
 pub const MAX_LP_BPS: u16 = 5000;
 pub const MAX_BURN_PLUS_LP_BPS: u16 = 5500;
@@ -148,8 +172,8 @@ pub mod tax_vault {
         v.mint = mint;
         v.pool = pool_key;
         v.creator_nft = nft;
-        v.reward_mint = native_mint::ID;
-        v.reward_swap_pool = Pubkey::default();
+        v.reward_mint = REWARD_MINT;
+        v.reward_swap_pool = REWARD_POOL;
         v.publisher = publisher;
         v.guardian = guardian;
         v.burn_bps = burn_bps;
@@ -181,6 +205,11 @@ pub mod tax_vault {
         v.bump = ctx.bumps.vault;
         v.auth_bump = ctx.bumps.auth;
         v.last_sell_slot = 0;
+        v.version = VAULT_VERSION;
+        v.cancels_in_row = 0;
+        v.total_reward_out = 0;
+        v.last_reward_slot = 0;
+        v.reserved = [0; 54];
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
     }
 
@@ -511,17 +540,21 @@ pub mod tax_vault {
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
     }
 
-    /// Deposit the creator's XNT (wrapped) into lp_locker's reward vault of the lock NFT;
-    /// it vests there and the NFT holder claims it.
+    /// Swap (up to) the creator's XNT into the network's reward token on the reward pool
+    /// and deposit it into lp_locker's reward vault of the lock NFT; it vests there and the
+    /// NFT holder claims it.
     pub fn fund_creator(ctx: Context<FundCreator>) -> Result<()> {
+        let clock = Clock::get()?;
         let a = &ctx.accounts;
         let v = &a.vault;
-        let amount = v.xnt_creator;
-        require!(amount > 0, VaultError::TooSmall);
+        // One reward swap per slot, so several capped swaps can't be sandwiched together.
+        require!(clock.slot > v.last_reward_slot, VaultError::OneSellPerSlot);
+        require!(v.xnt_creator > 0, VaultError::TooSmall);
         let mint_key = v.mint;
         let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[v.auth_bump]];
         let nft = a.creator_nft.key();
         let reward_mint = a.reward_mint.key();
+        let reward_program = a.reward_token_program.key();
         let locker_pda = |seeds: &[&[u8]]| Pubkey::find_program_address(seeds, &LOCKER_PROGRAM_ID).0;
         require_keys_eq!(a.lock.key(), locker_pda(&[b"lock", nft.as_ref()]), VaultError::WrongAccount);
         let reward_vault = locker_pda(&[b"reward", nft.as_ref(), reward_mint.as_ref()]);
@@ -531,11 +564,29 @@ pub mod tax_vault {
             locker_pda(&[b"reward_tokens", reward_vault.as_ref()]),
             VaultError::WrongAccount
         );
+        check_reward_mint(&a.reward_mint.to_account_info(), &reward_program)?;
+
+        // The reward pool: reward token / wXNT, swaps open, its own config/observation/vaults.
+        let pool = PoolView::read(&a.reward_pool.to_account_info())?;
+        let side = pool.pair_side(&reward_mint, &reward_program)?;
+        require!(pool.status & STATUS_SWAP_PAUSED == 0, VaultError::BadPool);
+        require_keys_eq!(pool.amm_config, a.reward_amm_config.key(), VaultError::WrongAccount);
+        require_keys_eq!(pool.observation, a.reward_observation.key(), VaultError::WrongAccount);
+        let reserve_xnt = pool.reserve(1 - side, &a.reward_pool_wxnt_vault.to_account_info())?;
+        let reserve_reward = pool.reserve(side, &a.reward_pool_reward_vault.to_account_info())?;
+        let trade_fee_rate = read_trade_fee_rate(&a.reward_amm_config.to_account_info())?;
+        let xnt_in = math::reward_swap_in(v.xnt_creator, reserve_xnt, trade_fee_rate)?;
+        require!(xnt_in > 0, VaultError::TooSmall);
+        let expected = math::cpmm_out(xnt_in, reserve_xnt, reserve_reward, trade_fee_rate)?;
+        let min_out = math::min_out(expected)?;
+        require!(min_out > 0, VaultError::TooSmall);
 
         let auth = a.auth.to_account_info();
         let caller = a.caller.to_account_info();
         let sys = a.system_program.to_account_info();
         let tok = a.token_program.to_account_info();
+        let rtok = a.reward_token_program.to_account_info();
+        let ata_prog = a.associated_token_program.to_account_info();
         let locker = a.locker_program.to_account_info();
 
         if a.reward_vault.data_is_empty() {
@@ -548,7 +599,7 @@ pub mod tax_vault {
                     AccountMeta::new_readonly(reward_mint, false),
                     AccountMeta::new(a.reward_vault.key(), false),
                     AccountMeta::new(a.reward_tokens.key(), false),
-                    AccountMeta::new_readonly(tok.key(), false),
+                    AccountMeta::new_readonly(reward_program, false),
                     AccountMeta::new_readonly(a.token_2022_program.key(), false),
                     AccountMeta::new_readonly(sys.key(), false),
                 ],
@@ -563,7 +614,7 @@ pub mod tax_vault {
                     a.reward_mint.to_account_info(),
                     a.reward_vault.to_account_info(),
                     a.reward_tokens.to_account_info(),
-                    tok.clone(),
+                    rtok.clone(),
                     a.token_2022_program.to_account_info(),
                     sys.clone(),
                     locker.clone(),
@@ -571,15 +622,79 @@ pub mod tax_vault {
             )?;
         }
 
+        // Wrap xnt_in, and open auth's reward-token account (both paid by the caller and
+        // refunded below).
         let auth_wxnt = a.auth_wxnt.to_account_info();
-        let rent_paid =
-            create_ata(&a.associated_token_program.to_account_info(), &caller, &auth_wxnt, &auth, &a.reward_mint.to_account_info(), &sys, &tok)?;
-        pay_from_auth(&sys, &auth, &auth_wxnt, amount, auth_seeds)?;
+        let auth_reward = a.auth_reward.to_account_info();
+        let rent_wxnt = create_ata(&ata_prog, &caller, &auth_wxnt, &auth, &a.native_mint.to_account_info(), &sys, &tok)?;
+        let rent_reward = create_ata(&ata_prog, &caller, &auth_reward, &auth, &a.reward_mint.to_account_info(), &sys, &rtok)?;
+        pay_from_auth(&sys, &auth, &auth_wxnt, xnt_in, auth_seeds)?;
         token::sync_native(CpiContext::new(tok.clone(), token::SyncNative { account: auth_wxnt.clone() }))?;
+        let wxnt_before = token_amount(&auth_wxnt, &token::ID)?;
+        let reward_before = token_amount(&auth_reward, &reward_program)?;
 
+        // XDEX swap_base_input XNT -> reward token (same account order as in `sell`).
+        let mut data = Vec::with_capacity(24);
+        data.extend_from_slice(&XDEX_SWAP_BASE_INPUT_DISC);
+        data.extend_from_slice(&xnt_in.to_le_bytes());
+        data.extend_from_slice(&min_out.to_le_bytes());
+        let ix = Instruction {
+            program_id: XDEX_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(auth.key(), true),
+                AccountMeta::new_readonly(a.xdex_authority.key(), false),
+                AccountMeta::new_readonly(a.reward_amm_config.key(), false),
+                AccountMeta::new(a.reward_pool.key(), false),
+                AccountMeta::new(auth_wxnt.key(), false),
+                AccountMeta::new(auth_reward.key(), false),
+                AccountMeta::new(a.reward_pool_wxnt_vault.key(), false),
+                AccountMeta::new(a.reward_pool_reward_vault.key(), false),
+                AccountMeta::new_readonly(tok.key(), false),
+                AccountMeta::new_readonly(reward_program, false),
+                AccountMeta::new_readonly(a.native_mint.key(), false),
+                AccountMeta::new_readonly(reward_mint, false),
+                AccountMeta::new(a.reward_observation.key(), false),
+            ],
+            data,
+        };
+        invoke_signed(
+            &ix,
+            &[
+                auth.clone(),
+                a.xdex_authority.to_account_info(),
+                a.reward_amm_config.to_account_info(),
+                a.reward_pool.to_account_info(),
+                auth_wxnt.clone(),
+                auth_reward.clone(),
+                a.reward_pool_wxnt_vault.to_account_info(),
+                a.reward_pool_reward_vault.to_account_info(),
+                tok.clone(),
+                rtok.clone(),
+                a.native_mint.to_account_info(),
+                a.reward_mint.to_account_info(),
+                a.reward_observation.to_account_info(),
+                a.xdex_program.to_account_info(),
+            ],
+            &[auth_seeds],
+        )?;
+        let spent = wxnt_before.checked_sub(token_amount(&auth_wxnt, &token::ID)?).ok_or(VaultError::MathOverflow)?;
+        require!(spent == xnt_in, VaultError::MathOverflow);
+        let held = token_amount(&auth_reward, &reward_program)?;
+        let out = held.checked_sub(reward_before).ok_or(VaultError::MathOverflow)?;
+        require!(out >= min_out, VaultError::TooSmall);
+
+        // Unwrap: every lamport of the wXNT account (rent + anything left) comes back to auth.
+        token::close_account(CpiContext::new_with_signer(
+            tok,
+            token::CloseAccount { account: auth_wxnt.clone(), destination: auth.clone(), authority: auth.clone() },
+            &[auth_seeds],
+        ))?;
+
+        // Deposit everything auth's reward account holds (the swap output, plus anything
+        // sent to that account before, so it can always be closed).
         let mut data = Vec::with_capacity(16);
         data.extend_from_slice(&LOCKER_DEPOSIT_REWARD_DISC);
-        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&held.to_le_bytes());
         let ix = Instruction {
             program_id: LOCKER_PROGRAM_ID,
             accounts: vec![
@@ -587,12 +702,12 @@ pub mod tax_vault {
                 AccountMeta::new(a.reward_vault.key(), false),
                 AccountMeta::new(a.reward_tokens.key(), false),
                 AccountMeta::new_readonly(reward_mint, false),
-                AccountMeta::new(auth_wxnt.key(), false),
-                AccountMeta::new_readonly(tok.key(), false),
+                AccountMeta::new(auth_reward.key(), false),
+                AccountMeta::new_readonly(reward_program, false),
             ],
             data,
         };
-        let deposited_before = token_amount(&auth_wxnt, &token::ID)?;
+        let vault_tokens_before = token_amount(&a.reward_tokens.to_account_info(), &reward_program)?;
         invoke_signed(
             &ix,
             &[
@@ -600,27 +715,62 @@ pub mod tax_vault {
                 a.reward_vault.to_account_info(),
                 a.reward_tokens.to_account_info(),
                 a.reward_mint.to_account_info(),
-                auth_wxnt.clone(),
-                tok.clone(),
+                auth_reward.clone(),
+                rtok.clone(),
                 locker,
             ],
             &[auth_seeds],
         )?;
-        let moved = deposited_before.checked_sub(token_amount(&auth_wxnt, &token::ID)?).ok_or(VaultError::MathOverflow)?;
-        require!(moved == amount, VaultError::WrongAccount);
+        require!(token_amount(&auth_reward, &reward_program)? == 0, VaultError::WrongAccount);
+        let received = token_amount(&a.reward_tokens.to_account_info(), &reward_program)?
+            .checked_sub(vault_tokens_before)
+            .ok_or(VaultError::MathOverflow)?;
+        require!(received == held, VaultError::BadRewardMint);
 
-        token::close_account(CpiContext::new_with_signer(
-            tok,
-            token::CloseAccount { account: auth_wxnt, destination: auth.clone(), authority: auth.clone() },
+        token_interface::close_account(CpiContext::new_with_signer(
+            rtok,
+            token_interface::CloseAccount { account: auth_reward.clone(), destination: auth.clone(), authority: auth.clone() },
             &[auth_seeds],
         ))?;
-        pay_from_auth(&sys, &auth, &caller, rent_paid, auth_seeds)?;
+        require!(auth_wxnt.lamports() == 0 && auth_reward.lamports() == 0, VaultError::WrongAccount);
+        pay_from_auth(&sys, &auth, &caller, add(rent_wxnt, rent_reward)?, auth_seeds)?;
 
         let v = &mut ctx.accounts.vault;
-        v.xnt_creator = 0;
-        v.total_creator_xnt = add(v.total_creator_xnt, amount)?;
-        emit!(CreatorFunded { vault: v.key(), amount });
+        v.xnt_creator -= xnt_in;
+        v.total_creator_xnt = add(v.total_creator_xnt, xnt_in)?;
+        v.total_reward_out = add(v.total_reward_out, held)?;
+        v.last_reward_slot = clock.slot;
+        emit!(CreatorFunded { vault: v.key(), xnt_in, reward_out: held, reward_mint });
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
+    }
+
+    /// Upgrade a 480-byte v1 vault to the 552-byte v2 layout in place (anyone; the payer
+    /// pays the extra rent). The creator reward switches to the network's reward token.
+    pub fn upgrade_vault(ctx: Context<UpgradeVault>) -> Result<()> {
+        let vault = ctx.accounts.vault.to_account_info();
+        {
+            let d = vault.try_borrow_data()?;
+            require!(d.len() >= 8 && d[..8] == VAULT_DISC, VaultError::WrongAccount);
+            require!(d.len() == VAULT_V1_LEN, VaultError::WrongVersion);
+            // The account is this program's ["vault", mint] PDA with its stored bump.
+            let mint = Pubkey::new_from_array(d[8..40].try_into().unwrap());
+            let expected = Pubkey::create_program_address(&[b"vault", mint.as_ref(), &[d[V1_BUMP_OFFSET]]], &crate::ID)
+                .map_err(|_| error!(VaultError::WrongAccount))?;
+            require_keys_eq!(expected, vault.key(), VaultError::WrongAccount);
+        }
+        let need = Rent::get()?.minimum_balance(VAULT_V2_LEN).saturating_sub(vault.lamports());
+        if need > 0 {
+            system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer { from: ctx.accounts.payer.to_account_info(), to: vault.clone() },
+                ),
+                need,
+            )?;
+        }
+        vault.resize(VAULT_V2_LEN)?;
+        let mut d = vault.try_borrow_mut_data()?;
+        upgrade_layout(&mut d)
     }
 
     /// Publish a new rewards list (pending for LIST_DELAY_SECS).
@@ -647,11 +797,13 @@ pub mod tax_vault {
         Ok(())
     }
 
-    /// The guardian clears a pending list (any time until it has been activated).
+    /// The guardian clears a pending list (any time until it has been activated), at most
+    /// MAX_CANCELS_IN_ROW times until a list goes live.
     pub fn cancel_list(ctx: Context<CancelList>) -> Result<()> {
         let v = &mut ctx.accounts.vault;
         require_keys_eq!(ctx.accounts.guardian.key(), v.guardian, VaultError::NotGuardian);
         require!(v.pending_epoch != 0, VaultError::NoPendingList);
+        v.cancels_in_row = math::next_cancel(v.cancels_in_row)?;
         let epoch = v.pending_epoch;
         v.pending_epoch = 0;
         v.pending_root = [0; 32];
@@ -718,6 +870,7 @@ fn activate_if_due(v: &mut Vault, now: i64) {
         v.pending_root = [0; 32];
         v.pending_total = 0;
         v.pending_active_at = 0;
+        v.cancels_in_row = 0;
     }
 }
 
@@ -738,6 +891,52 @@ fn check_solvent(auth: &AccountInfo, v: &Vault) -> Result<()> {
 fn check_tokens(auth_token: &AccountInfo, v: &Vault) -> Result<()> {
     let booked = add(add(add(add(v.pending_tokens, v.lp_tokens)?, v.sell_lp)?, v.sell_creator)?, v.sell_holders)?;
     require!(token_amount(auth_token, &token_2022::ID)? >= booked, VaultError::Insolvent);
+    Ok(())
+}
+
+/// Offsets in the raw vault account (discriminator included), see the spec.
+const V1_BUMP_OFFSET: usize = 470;
+const REWARD_MINT_OFFSET: usize = 104;
+const REWARD_SWAP_POOL_OFFSET: usize = 136;
+const VERSION_OFFSET: usize = 480;
+
+/// Rewrite a v1 vault (its 480 bytes followed by 72 new bytes) as v2: version 2, a clear
+/// cancel counter / reward totals / reserved space, and this network's reward token and
+/// pool. Every other v1 field keeps its bytes.
+pub fn upgrade_layout(d: &mut [u8]) -> Result<()> {
+    require!(d.len() == VAULT_V2_LEN && d[..8] == VAULT_DISC, VaultError::WrongVersion);
+    d[REWARD_MINT_OFFSET..REWARD_MINT_OFFSET + 32].copy_from_slice(REWARD_MINT.as_ref());
+    d[REWARD_SWAP_POOL_OFFSET..REWARD_SWAP_POOL_OFFSET + 32].copy_from_slice(REWARD_POOL.as_ref());
+    d[VAULT_V1_LEN..].fill(0);
+    d[VERSION_OFFSET] = VAULT_VERSION;
+    Ok(())
+}
+
+/// The reward token must be a plain SPL Token / Token-2022 mint owned by `program`, with
+/// no transfer fee (the swap output must be what lp_locker receives) and nothing that lets
+/// anyone move, freeze, hook or pause its tokens: only metadata / group extensions.
+fn check_reward_mint(mint: &AccountInfo, program: &Pubkey) -> Result<()> {
+    require_keys_eq!(*mint.owner, *program, VaultError::BadRewardMint);
+    reward_mint_ok(&mint.try_borrow_data()?)
+}
+
+pub fn reward_mint_ok(data: &[u8]) -> Result<()> {
+    let state = StateWithExtensions::<MintState>::unpack(data).map_err(|_| error!(VaultError::BadRewardMint))?;
+    require!(state.base.is_initialized, VaultError::BadRewardMint);
+    for ext in state.get_extension_types().map_err(|_| error!(VaultError::BadRewardMint))? {
+        require!(
+            matches!(
+                ext,
+                ExtensionType::MetadataPointer
+                    | ExtensionType::TokenMetadata
+                    | ExtensionType::GroupPointer
+                    | ExtensionType::GroupMemberPointer
+                    | ExtensionType::TokenGroup
+                    | ExtensionType::TokenGroupMember
+            ),
+            VaultError::BadRewardMint
+        );
+    }
     Ok(())
 }
 
@@ -922,6 +1121,12 @@ impl PoolView {
 
     /// Index of `mint` in the pool; the pool must be `mint` (Token-2022) / wXNT (SPL Token).
     fn token_side(&self, mint: &Pubkey) -> Result<usize> {
+        self.pair_side(mint, &token_2022::ID)
+    }
+
+    /// Index of `mint` in the pool; the pool must be `mint` (owned by `program`) / wXNT
+    /// (SPL Token).
+    fn pair_side(&self, mint: &Pubkey, program: &Pubkey) -> Result<usize> {
         let side = if self.mints[0] == *mint {
             0
         } else if self.mints[1] == *mint {
@@ -930,7 +1135,7 @@ impl PoolView {
             return err!(VaultError::BadPool);
         };
         require_keys_eq!(self.mints[1 - side], native_mint::ID, VaultError::BadPool);
-        require_keys_eq!(self.programs[side], token_2022::ID, VaultError::BadPool);
+        require_keys_eq!(self.programs[side], *program, VaultError::BadPool);
         require_keys_eq!(self.programs[1 - side], token::ID, VaultError::BadPool);
         Ok(side)
     }
@@ -1026,6 +1231,26 @@ pub mod math {
         let den = reserve_in as u128 + after;
         require!(den > 0, VaultError::BadPool);
         to_u64(after * reserve_out as u128 / den)
+    }
+
+    /// Impact cap of a reward swap (XNT -> reward token, no transfer tax): at most
+    /// REWARD_MAX_IMPACT_BPS and at most half the pool's trade fee (millionths / 100 = bps).
+    /// A sandwich pays the trade fee twice on the attacker's size and gains about twice the
+    /// swap's relative size, so keeping the impact under the fee makes it unprofitable.
+    pub fn reward_impact_bps(trade_fee_rate: u64) -> u64 {
+        REWARD_MAX_IMPACT_BPS.min(trade_fee_rate / 200)
+    }
+
+    /// XNT going into one reward swap: all of `xnt_creator` up to the impact cap.
+    pub fn reward_swap_in(xnt_creator: u64, reserve_xnt: u64, trade_fee_rate: u64) -> Result<u64> {
+        let cap = max_input_for_impact(reserve_xnt, reward_impact_bps(trade_fee_rate), 0, u64::MAX)?;
+        Ok(xnt_creator.min(cap))
+    }
+
+    /// The guardian's cancel counter after one more cancel (TooManyCancels past the limit).
+    pub fn next_cancel(cancels_in_row: u8) -> Result<u8> {
+        require!(cancels_in_row < MAX_CANCELS_IN_ROW, VaultError::TooManyCancels);
+        Ok(cancels_in_row + 1)
     }
 
     pub fn min_out(expected: u64) -> Result<u64> {
@@ -1160,8 +1385,10 @@ pub mod math {
 
 // ---------- State ----------
 
-#[account]
-#[derive(InitSpace)]
+/// The vault (v2 layout). Not `#[account]`: its deserializer refuses a v1 (480-byte) or
+/// other-version vault with `WrongVersion` instead of a generic Anchor error, so every
+/// instruction taking `Account<Vault>` requires an upgraded vault.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
 pub struct Vault {
     pub mint: Pubkey,
     /// XDEX TOKEN/wXNT pool.
@@ -1215,6 +1442,54 @@ pub struct Vault {
     pub auth_bump: u8,
     /// Slot of the last `sell` (one sale per slot).
     pub last_sell_slot: u64,
+    // ----- v2 (appended; offset 480) -----
+    /// Layout version: 2.
+    pub version: u8,
+    /// Guardian cancels since the last list went live.
+    pub cancels_in_row: u8,
+    /// Reward tokens ever deposited for the creator.
+    pub total_reward_out: u64,
+    /// Slot of the last reward swap in `fund_creator` (one per slot).
+    pub last_reward_slot: u64,
+    /// Future use (zero).
+    pub reserved: [u8; 54],
+}
+
+impl Discriminator for Vault {
+    const DISCRIMINATOR: &'static [u8] = &VAULT_DISC;
+}
+
+impl Owner for Vault {
+    fn owner() -> Pubkey {
+        crate::ID
+    }
+}
+
+impl AccountSerialize for Vault {
+    fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> Result<()> {
+        writer.write_all(&VAULT_DISC).map_err(|_| error!(anchor_lang::error::ErrorCode::AccountDidNotSerialize))?;
+        AnchorSerialize::serialize(self, writer).map_err(|_| error!(anchor_lang::error::ErrorCode::AccountDidNotSerialize))
+    }
+}
+
+impl AccountDeserialize for Vault {
+    fn try_deserialize(buf: &mut &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return err!(anchor_lang::error::ErrorCode::AccountDiscriminatorNotFound);
+        }
+        if buf[..8] != VAULT_DISC {
+            return err!(anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch);
+        }
+        if buf.len() < VAULT_V2_LEN || buf[VERSION_OFFSET] != VAULT_VERSION {
+            return err!(VaultError::WrongVersion);
+        }
+        Self::try_deserialize_unchecked(buf)
+    }
+
+    fn try_deserialize_unchecked(buf: &mut &[u8]) -> Result<Self> {
+        let mut data: &[u8] = &buf[8..];
+        AnchorDeserialize::deserialize(&mut data).map_err(|_| error!(anchor_lang::error::ErrorCode::AccountDidNotDeserialize))
+    }
 }
 
 #[account]
@@ -1372,14 +1647,14 @@ pub struct FundCreator<'info> {
     pub vault: Box<Account<'info, Vault>>,
     #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
     pub auth: SystemAccount<'info>,
-    /// CHECK: ATA(auth, reward_mint, SPL Token), created and closed here.
-    #[account(mut, address = ata(&auth.key(), &vault.reward_mint, &token::ID) @ VaultError::WrongAccount)]
+    /// CHECK: ATA(auth, NATIVE_MINT, SPL Token), created and closed here.
+    #[account(mut, address = ata(&auth.key(), &native_mint::ID, &token::ID) @ VaultError::WrongAccount)]
     pub auth_wxnt: UncheckedAccount<'info>,
     /// CHECK: the vault's lock NFT.
     #[account(address = vault.creator_nft @ VaultError::WrongAccount)]
     pub creator_nft: UncheckedAccount<'info>,
-    /// CHECK: the vault's reward mint (v1: wrapped XNT).
-    #[account(address = vault.reward_mint @ VaultError::WrongAccount, constraint = reward_mint.key() == native_mint::ID @ VaultError::WrongAccount)]
+    /// CHECK: the vault's reward mint (check_reward_mint).
+    #[account(address = vault.reward_mint @ VaultError::BadRewardMint)]
     pub reward_mint: UncheckedAccount<'info>,
     /// CHECK: lp_locker PDA(["reward", creator_nft, reward_mint]) (checked in the handler).
     #[account(mut)]
@@ -1396,6 +1671,43 @@ pub struct FundCreator<'info> {
     /// CHECK: lp_locker PDA(["lock", creator_nft]) (checked in the handler; used by init_reward_vault).
     pub lock: UncheckedAccount<'info>,
     pub token_2022_program: Program<'info, Token2022>,
+    /// CHECK: ATA(auth, reward_mint, reward_token_program), created and closed here.
+    #[account(mut, address = ata(&auth.key(), &vault.reward_mint, &reward_token_program.key()) @ VaultError::WrongAccount)]
+    pub auth_reward: UncheckedAccount<'info>,
+    /// CHECK: the vault's reward swap pool (layout checked in PoolView::read).
+    #[account(mut, address = vault.reward_swap_pool @ VaultError::WrongAccount)]
+    pub reward_pool: UncheckedAccount<'info>,
+    /// CHECK: must be the reward pool's amm config (checked in the handler).
+    pub reward_amm_config: UncheckedAccount<'info>,
+    /// CHECK: XDEX vault/LP authority PDA; XDEX verifies it.
+    pub xdex_authority: UncheckedAccount<'info>,
+    /// CHECK: the reward pool's reward-token vault (PoolView::reserve).
+    #[account(mut)]
+    pub reward_pool_reward_vault: UncheckedAccount<'info>,
+    /// CHECK: the reward pool's wXNT vault (PoolView::reserve).
+    #[account(mut)]
+    pub reward_pool_wxnt_vault: UncheckedAccount<'info>,
+    /// CHECK: the reward pool's observation account (checked in the handler).
+    #[account(mut)]
+    pub reward_observation: UncheckedAccount<'info>,
+    /// CHECK: the XDEX program this build targets.
+    #[account(address = XDEX_PROGRAM_ID @ VaultError::WrongAccount)]
+    pub xdex_program: UncheckedAccount<'info>,
+    /// CHECK: wrapped XNT mint.
+    #[account(address = native_mint::ID @ VaultError::WrongAccount)]
+    pub native_mint: UncheckedAccount<'info>,
+    /// The reward mint's token program (SPL Token or Token-2022).
+    pub reward_token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+pub struct UpgradeVault<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: a v1 vault of this program, read as raw bytes (checked in the handler).
+    #[account(mut, owner = crate::ID @ VaultError::WrongAccount)]
+    pub vault: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -1462,7 +1774,11 @@ pub struct LiquidityAdded {
 #[event]
 pub struct CreatorFunded {
     pub vault: Pubkey,
-    pub amount: u64,
+    /// XNT swapped.
+    pub xnt_in: u64,
+    /// Reward tokens deposited into the lock NFT's reward vault.
+    pub reward_out: u64,
+    pub reward_mint: Pubkey,
 }
 
 #[event]
@@ -1528,6 +1844,12 @@ pub enum VaultError {
     WrongAccount,
     #[msg("Only one sale per slot")]
     OneSellPerSlot,
+    #[msg("Wrong vault version (run upgrade_vault on a v1 vault; it can't run twice)")]
+    WrongVersion,
+    #[msg("The guardian can't cancel more lists in a row until one goes live")]
+    TooManyCancels,
+    #[msg("Reward mint must be the vault's reward token, without a transfer fee")]
+    BadRewardMint,
 }
 
 #[cfg(test)]
@@ -1741,7 +2063,8 @@ mod tests {
             xnt_lp: 0, xnt_creator: 0, holders_funded: 0, holders_paid: 0, list_epoch: 0, list_root: [0; 32], list_total: 0,
             pending_epoch: 0, pending_root: [0; 32], pending_total: 0, pending_active_at: 0, total_collected: 0,
             total_burned: 0, total_lp_tokens: 0, total_lp_xnt: 0, total_creator_xnt: 0, total_crank_rewards: 0,
-            created_at: 0, bump: 0, auth_bump: 0, last_sell_slot: 0,
+            created_at: 0, bump: 0, auth_bump: 0, last_sell_slot: 0, version: VAULT_VERSION, cancels_in_row: 0,
+            total_reward_out: 0, last_reward_slot: 0, reserved: [0; 54],
         }
     }
 
@@ -1767,7 +2090,172 @@ mod tests {
 
     #[test]
     fn vault_size() {
-        assert_eq!(8 + Vault::INIT_SPACE, 480);
+        assert_eq!(8 + Vault::INIT_SPACE, VAULT_V2_LEN);
+        assert_eq!(VAULT_V2_LEN, 552);
         assert_eq!(8 + PaidRecord::INIT_SPACE, 81);
+        assert_eq!(&hashv(&[b"account:Vault"]).to_bytes()[..8], &VAULT_DISC);
+        assert_eq!(Vault::DISCRIMINATOR, &VAULT_DISC);
+    }
+
+    /// A vault whose every field has a distinct, recognisable value.
+    fn filled() -> Vault {
+        let k = |b: u8| Pubkey::new_from_array([b; 32]);
+        Vault {
+            mint: k(1), pool: k(2), creator_nft: k(3), reward_mint: k(4), reward_swap_pool: k(5), publisher: k(6),
+            guardian: k(7), burn_bps: 0x0908, lp_bps: 0x0b0a, creator_bps: 0x0d0c, pending_tokens: 0x11, lp_tokens: 0x12,
+            sell_lp: 0x13, sell_creator: 0x14, sell_holders: 0x15, xnt_lp: 0x16, xnt_creator: 0x17, holders_funded: 0x18,
+            holders_paid: 0x19, list_epoch: 0x1a, list_root: [0x1b; 32], list_total: 0x1c, pending_epoch: 0x1d,
+            pending_root: [0x1e; 32], pending_total: 0x1f, pending_active_at: 0x20, total_collected: 0x21,
+            total_burned: 0x22, total_lp_tokens: 0x23, total_lp_xnt: 0x24, total_creator_xnt: 0x25,
+            total_crank_rewards: 0x26, created_at: 0x27, bump: 0x28, auth_bump: 0x29, last_sell_slot: 0x2a,
+            version: VAULT_VERSION, cancels_in_row: 0x2b, total_reward_out: 0x2c, last_reward_slot: 0x2d, reserved: [0x2e; 54],
+        }
+    }
+
+    #[test]
+    fn layout_offsets_match_the_spec() {
+        let mut buf = Vec::new();
+        filled().try_serialize(&mut buf).unwrap();
+        assert_eq!(buf.len(), VAULT_V2_LEN);
+        assert_eq!(&buf[..8], &VAULT_DISC);
+        let key_at = |o: usize, b: u8| assert_eq!(&buf[o..o + 32], &[b; 32], "pubkey at {o}");
+        let u64_at = |o: usize, v: u64| assert_eq!(u64::from_le_bytes(buf[o..o + 8].try_into().unwrap()), v, "u64 at {o}");
+        for (o, b) in [(8, 1), (40, 2), (72, 3), (104, 4), (136, 5), (168, 6), (200, 7)] {
+            key_at(o, b);
+        }
+        assert_eq!(u16::from_le_bytes([buf[232], buf[233]]), 0x0908);
+        assert_eq!(u16::from_le_bytes([buf[234], buf[235]]), 0x0b0a);
+        assert_eq!(u16::from_le_bytes([buf[236], buf[237]]), 0x0d0c);
+        for (o, v) in [(238, 0x11), (246, 0x12), (254, 0x13), (262, 0x14), (270, 0x15), (278, 0x16), (286, 0x17), (294, 0x18),
+            (302, 0x19), (310, 0x1a), (350, 0x1c), (358, 0x1d), (398, 0x1f), (406, 0x20), (414, 0x21), (422, 0x22),
+            (430, 0x23), (438, 0x24), (446, 0x25), (454, 0x26), (462, 0x27), (472, 0x2a), (482, 0x2c), (490, 0x2d)] {
+            u64_at(o, v);
+        }
+        assert_eq!(&buf[318..350], &[0x1b; 32]);
+        assert_eq!(&buf[366..398], &[0x1e; 32]);
+        assert_eq!((buf[470], buf[471]), (0x28, 0x29));
+        assert_eq!((buf[480], buf[481]), (VAULT_VERSION, 0x2b));
+        assert_eq!(&buf[498..552], &[0x2e; 54]);
+    }
+
+    #[test]
+    fn upgrade_keeps_v1_bytes_and_sets_v2_fields() {
+        // A v1 account is the first 480 bytes of the same serialization (the v1 struct is a
+        // prefix of v2); after the realloc the new 72 bytes are whatever the runtime gave.
+        let mut v2 = Vec::new();
+        filled().try_serialize(&mut v2).unwrap();
+        let v1 = v2[..VAULT_V1_LEN].to_vec();
+        // A 480-byte v1 vault is refused by the v2 deserializer.
+        assert_eq!(Vault::try_deserialize(&mut &v1[..]).err().unwrap(), error!(VaultError::WrongVersion));
+        let mut d = v1.clone();
+        d.resize(VAULT_V2_LEN, 0xff);
+        upgrade_layout(&mut d).unwrap();
+        // Untouched: everything but reward_mint / reward_swap_pool.
+        assert_eq!(&d[..REWARD_MINT_OFFSET], &v1[..REWARD_MINT_OFFSET]);
+        assert_eq!(&d[168..VAULT_V1_LEN], &v1[168..VAULT_V1_LEN]);
+        assert_eq!(&d[104..136], REWARD_MINT.as_ref());
+        assert_eq!(&d[136..168], REWARD_POOL.as_ref());
+        assert_eq!(d[480], 2);
+        assert!(d[481..].iter().all(|&b| b == 0));
+        let v = Vault::try_deserialize(&mut &d[..]).unwrap();
+        let f = filled();
+        assert_eq!((v.mint, v.pool, v.creator_nft, v.publisher, v.guardian), (f.mint, f.pool, f.creator_nft, f.publisher, f.guardian));
+        assert_eq!((v.reward_mint, v.reward_swap_pool), (REWARD_MINT, REWARD_POOL));
+        assert_eq!((v.xnt_creator, v.holders_funded, v.list_root, v.last_sell_slot, v.bump, v.auth_bump), (0x17, 0x18, [0x1b; 32], 0x2a, 0x28, 0x29));
+        assert_eq!((v.version, v.cancels_in_row, v.total_reward_out, v.last_reward_slot, v.reserved), (2, 0, 0, 0, [0; 54]));
+        // Upgrading needs exactly a 552-byte buffer with the vault discriminator.
+        assert!(upgrade_layout(&mut v1.clone()).is_err());
+        let mut other = d.clone();
+        other[0] ^= 1;
+        assert!(upgrade_layout(&mut other).is_err());
+        // Any other version byte is refused too.
+        let mut v3 = d.clone();
+        v3[480] = 3;
+        assert_eq!(Vault::try_deserialize(&mut &v3[..]).err().unwrap(), error!(VaultError::WrongVersion));
+        v3[480] = 0;
+        assert_eq!(Vault::try_deserialize(&mut &v3[..]).err().unwrap(), error!(VaultError::WrongVersion));
+    }
+
+    #[test]
+    fn cancel_counter_rules() {
+        assert_eq!(MAX_CANCELS_IN_ROW, 2);
+        assert_eq!(next_cancel(0).unwrap(), 1);
+        assert_eq!(next_cancel(1).unwrap(), 2);
+        assert_eq!(next_cancel(2).unwrap_err(), error!(VaultError::TooManyCancels));
+        assert_eq!(next_cancel(u8::MAX).unwrap_err(), error!(VaultError::TooManyCancels));
+        // A list going live resets it; a list that isn't due yet doesn't.
+        let mut v = blank();
+        v.cancels_in_row = 2;
+        v.pending_epoch = 5;
+        v.pending_active_at = 100;
+        activate_if_due(&mut v, 99);
+        assert_eq!(v.cancels_in_row, 2);
+        activate_if_due(&mut v, 100);
+        assert_eq!((v.cancels_in_row, v.list_epoch), (0, 5));
+        // Nothing pending: no reset either (only a list going live counts).
+        v.cancels_in_row = 1;
+        activate_if_due(&mut v, 1_000);
+        assert_eq!(v.cancels_in_row, 1);
+    }
+
+    #[test]
+    fn reward_swap_cap() {
+        // Half the trade fee (3000 millionths = 0.30% -> 15 bps), never above 300 bps.
+        assert_eq!(reward_impact_bps(3000), 15);
+        assert_eq!(reward_impact_bps(2800), 14);
+        assert_eq!(reward_impact_bps(100_000), 300);
+        assert_eq!(reward_impact_bps(199), 0);
+        let reserve = 34_369_347_033_187u64; // the testnet XNM pool's XNT side
+        let cap = reward_swap_in(u64::MAX, reserve, 3000).unwrap();
+        assert_eq!(cap, (reserve as u128 * 15 / 9985) as u64);
+        // The capped swap's impact (after / (reserve + after)) stays at or under 15 bps.
+        assert!(cap as u128 * BPS as u128 <= 15 * (reserve as u128 + cap as u128));
+        assert!((cap + 2) as u128 * BPS as u128 > 15 * (reserve as u128 + cap as u128 + 2));
+        // Under the cap everything goes; zero stays zero.
+        assert_eq!(reward_swap_in(1_000_000_000, reserve, 3000).unwrap(), 1_000_000_000);
+        assert_eq!(reward_swap_in(0, reserve, 3000).unwrap(), 0);
+        assert_eq!(reward_swap_in(5, reserve, 100).unwrap(), 0);
+        // Expected output and min out as the handler computes them.
+        let xnm = 3_358_454_947_163_493u64;
+        let out = cpmm_out(cap, reserve, xnm, 3000).unwrap();
+        assert!(out as u128 * (reserve as u128 + cap as u128) <= cap as u128 * xnm as u128);
+        assert!(min_out(out).unwrap() < out);
+    }
+
+    #[test]
+    fn reward_mint_extensions() {
+        use anchor_spl::token_2022::spl_token_2022::extension::{
+            metadata_pointer::MetadataPointer, transfer_fee::TransferFeeConfig, BaseStateWithExtensionsMut, StateWithExtensionsMut,
+        };
+        use anchor_lang::solana_program::program_pack::Pack;
+        fn mint_with(exts: &[ExtensionType]) -> Vec<u8> {
+            let len = ExtensionType::try_calculate_account_len::<MintState>(exts).unwrap();
+            let mut d = vec![0u8; len];
+            let mut st = StateWithExtensionsMut::<MintState>::unpack_uninitialized(&mut d).unwrap();
+            for e in exts {
+                match e {
+                    ExtensionType::TransferFeeConfig => {
+                        st.init_extension::<TransferFeeConfig>(true).unwrap();
+                    }
+                    ExtensionType::MetadataPointer => {
+                        st.init_extension::<MetadataPointer>(true).unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            st.base = MintState { decimals: 9, is_initialized: true, supply: 1, ..Default::default() };
+            st.pack_base();
+            st.init_account_type().unwrap();
+            d
+        }
+        assert!(reward_mint_ok(&mint_with(&[ExtensionType::MetadataPointer])).is_ok());
+        assert_eq!(reward_mint_ok(&mint_with(&[ExtensionType::TransferFeeConfig])).unwrap_err(), error!(VaultError::BadRewardMint));
+        assert!(reward_mint_ok(&mint_with(&[ExtensionType::MetadataPointer, ExtensionType::TransferFeeConfig])).is_err());
+        // A plain SPL Token mint (82 bytes, no extensions) is fine; garbage isn't.
+        let mut plain = vec![0u8; MintState::LEN];
+        MintState { decimals: 6, is_initialized: true, supply: 1, ..Default::default() }.pack_into_slice(&mut plain);
+        assert!(reward_mint_ok(&plain).is_ok());
+        assert!(reward_mint_ok(&[0u8; 10]).is_err());
+        assert!(reward_mint_ok(&vec![0u8; MintState::LEN]).is_err());
     }
 }

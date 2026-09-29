@@ -7,6 +7,8 @@ import {
   EVENT, IX, LOCKER_PROGRAM_ID, PAID_RECORD_DISC, PAID_RECORD_LEN, VAULT_DISC, VAULT_LEN, addLiquidityIx, buildVaultTree, cancelListIx, collectIx,
   decodeEvent, decodePaidRecord, decodeVault, derivePoolAccounts, effectiveList, encodePaidRecord, encodeVault, errorOf, fundCreatorIx, initVaultIx,
   paidRecordPda, parseEvents, payIx, poolAccountsFrom, publishListIx, sellIx, sellImpactBps, validSplit, TAX_VAULT_PROGRAM_ID, ERRORS, vaultAuthPda, vaultLeaf, vaultPda, verifyVaultProof, type Vault,
+  MAX_CANCELS_IN_ROW, REWARD_MAX_IMPACT_BPS, REWARD_MINT, REWARD_POOL, REWARD_TOKEN, VAULT_V2_LEN, VAULT_V2_OFFSETS, VAULT_VERSION, cancelsLeft, deriveRewardPoolAccounts,
+  rewardImpactBps, rewardPoolAccountsFrom, rewardTokenInfo, upgradeVaultIx, vaultJson,
 } from "../src/taxvault.js";
 import { lockPda, MEMO_PROGRAM_ID, rewardTokensPda, rewardVaultPda } from "../src/locker.js";
 import { poolAuthority, type Pool } from "../src/xdex.js";
@@ -20,7 +22,9 @@ test("discriminators are Anchor's sha256 prefixes of the spec's names", () => {
   const ixs: [keyof typeof IX, string][] = [
     ["initVault", "init_vault"], ["collect", "collect"], ["sell", "sell"], ["addLiquidity", "add_liquidity"],
     ["fundCreator", "fund_creator"], ["publishList", "publish_list"], ["cancelList", "cancel_list"], ["pay", "pay"],
+    ["upgradeVault", "upgrade_vault"],
   ];
+  assert.equal(Object.keys(IX).length, ixs.length);
   for (const [k, name] of ixs) assert.ok(IX[k].equals(disc(`global:${name}`)), name);
   assert.ok(VAULT_DISC.equals(disc("account:Vault")));
   assert.ok(PAID_RECORD_DISC.equals(disc("account:PaidRecord")));
@@ -135,17 +139,82 @@ test("add_liquidity: the spec's 19 accounts", () => {
   assert.deepEqual(ix.keys.map((k) => k.isWritable), [true, true, true, false, true, true, true, true, false, true, true, true, false, false, false, false, false, false, false]);
 });
 
-test("fund_creator: lp_locker reward vault PDAs", () => {
+/** An XNT/reward-token pool as decodePool returns it (reward token on `rewardSide`). */
+const rewardPoolFixture = (rewardMint: PublicKey, rewardSide: 0 | 1): Pool => {
+  const mints: [PublicKey, PublicKey] = rewardSide === 0 ? [rewardMint, NATIVE_MINT] : [NATIVE_MINT, rewardMint];
+  return {
+    address: key(), ammConfig: key(), vaults: [key(), key()], mints,
+    programs: rewardSide === 0 ? [TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID] : [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID],
+    observation: key(), lpMint: key(), lpSupply: 1n, lpDecimals: 9, depositsPaused: false, protocolFees: [0n, 0n], fundFees: [0n, 0n],
+  };
+};
+
+test("reward pool accounts: reward and wXNT vaults follow the pool's sides; derived PDAs match XDEX's", () => {
+  const rewardMint = REWARD_MINT.testnet;
+  for (const side of [0, 1] as const) {
+    const p = rewardPoolFixture(rewardMint, side);
+    const a = rewardPoolAccountsFrom(XDEX, p, rewardMint);
+    assert.ok(a.rewardVault.equals(p.vaults[side]));
+    assert.ok(a.wxntVault.equals(p.vaults[1 - side]));
+    assert.ok(a.rewardTokenProgram.equals(TOKEN_2022_PROGRAM_ID));
+    assert.ok(a.pool.equals(p.address) && a.ammConfig.equals(p.ammConfig) && a.observation.equals(p.observation));
+  }
+  assert.throws(() => rewardPoolAccountsFrom(XDEX, rewardPoolFixture(rewardMint, 0), key()));
+  const cfg = key();
+  const d = deriveRewardPoolAccounts(XDEX, cfg, rewardMint);
+  assert.ok(d.rewardVault.equals(PublicKey.findProgramAddressSync([Buffer.from("pool_vault"), d.pool.toBuffer(), rewardMint.toBuffer()], XDEX)[0]));
+  assert.ok(d.wxntVault.equals(PublicKey.findProgramAddressSync([Buffer.from("pool_vault"), d.pool.toBuffer(), NATIVE_MINT.toBuffer()], XDEX)[0]));
+});
+
+test("fund_creator (v2): the spec's 24 accounts, reward swap after the lp_locker ones", () => {
   const caller = key(), mint = key(), nft = key();
-  const ix = fundCreatorIx(PROGRAM, caller, mint, nft);
+  const rewardMint = REWARD_MINT.testnet;
+  const r = rewardPoolAccountsFrom(XDEX, rewardPoolFixture(rewardMint, 1), rewardMint);
+  const ix = fundCreatorIx(PROGRAM, caller, mint, nft, r);
   assert.ok(ix.data.equals(IX.fundCreator));
   const auth = vaultAuthPda(PROGRAM, mint);
-  const rv = rewardVaultPda(LOCKER_PROGRAM_ID, nft, NATIVE_MINT);
-  const want = [caller, vaultPda(PROGRAM, mint), auth, getAssociatedTokenAddressSync(NATIVE_MINT, auth, true, TOKEN_PROGRAM_ID), nft, NATIVE_MINT,
+  const rv = rewardVaultPda(LOCKER_PROGRAM_ID, nft, rewardMint);
+  const want = [caller, vaultPda(PROGRAM, mint), auth, getAssociatedTokenAddressSync(NATIVE_MINT, auth, true, TOKEN_PROGRAM_ID), nft, rewardMint,
     rv, rewardTokensPda(LOCKER_PROGRAM_ID, rv), LOCKER_PROGRAM_ID, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, SystemProgram.programId,
-    lockPda(LOCKER_PROGRAM_ID, nft), TOKEN_2022_PROGRAM_ID];
+    lockPda(LOCKER_PROGRAM_ID, nft), TOKEN_2022_PROGRAM_ID,
+    // auth_reward, reward_pool, reward_amm_config, xdex_authority, reward_pool_reward_vault, reward_pool_wxnt_vault,
+    // reward_observation, xdex_program, native_mint, reward_token_program
+    getAssociatedTokenAddressSync(rewardMint, auth, true, TOKEN_2022_PROGRAM_ID), r.pool, r.ammConfig, poolAuthority(XDEX), r.rewardVault, r.wxntVault,
+    r.observation, XDEX, NATIVE_MINT, TOKEN_2022_PROGRAM_ID];
+  assert.equal(ix.keys.length, 24);
   assert.deepEqual(ix.keys.map((k) => k.pubkey.toBase58()), want.map((k) => k.toBase58()));
-  assert.deepEqual(ix.keys.map((k) => k.isWritable), [true, true, true, true, false, false, true, true, false, false, false, false, false, false]);
+  assert.equal(flags(ix), "sw -w -w -w -- -- -w -w -- -- -- -- -- -- -w -w -- -- -w -w -w -- -- --");
+  // The reward vault is keyed by the reward mint, not wXNT (the creator's old XNT vault stays separate).
+  assert.ok(!rv.equals(rewardVaultPda(LOCKER_PROGRAM_ID, nft, NATIVE_MINT)));
+});
+
+test("upgrade_vault: payer, vault, system program", () => {
+  const payer = key(), mint = key();
+  const ix = upgradeVaultIx(PROGRAM, payer, mint);
+  assert.ok(ix.data.equals(IX.upgradeVault));
+  assert.equal(ix.data.length, 8);
+  assert.deepEqual(ix.keys.map((k) => k.pubkey.toBase58()), [payer, vaultPda(PROGRAM, mint), SystemProgram.programId].map((k) => k.toBase58()));
+  assert.equal(flags(ix), "sw -w --");
+});
+
+test("v2 constants: the network's reward token and pool, impact cap and cancel limit", () => {
+  assert.equal(REWARD_MINT.testnet.toBase58(), "AvNDf423kEmWNP6AZHFV7DkNG4YRgt6qbdyyryjaa4PQ");
+  assert.equal(REWARD_POOL.testnet.toBase58(), "6XESNUXbGNT6x3zaB51Axk7Jh6Ba58LFJukkfPUzzSwA");
+  assert.equal(REWARD_MINT.mainnet.toBase58(), "B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq");
+  assert.equal(REWARD_POOL.mainnet.toBase58(), "CAJeVEoSm1QQZccnCqYu9cnNF7TTD2fcUA3E5HQoxRvR");
+  assert.equal(REWARD_TOKEN.testnet.decimals, 9);
+  assert.equal(REWARD_TOKEN.mainnet.decimals, 6);
+  assert.equal(REWARD_MAX_IMPACT_BPS, 300);
+  // The reward swap's cap: half the pool's trade fee (millionths / 200), never above 3%.
+  assert.equal(rewardImpactBps(3000n), 15); // 0.3% fee (testnet)
+  assert.equal(rewardImpactBps(2800), 14); // 0.28% fee (mainnet)
+  assert.equal(rewardImpactBps(1_000_000n), 300);
+  assert.equal(rewardImpactBps(199), 0);
+  assert.equal(MAX_CANCELS_IN_ROW, 2);
+  assert.equal(VAULT_VERSION, 2);
+  assert.deepEqual(rewardTokenInfo("testnet", REWARD_MINT.testnet), { mint: REWARD_MINT.testnet, symbol: "XNM", decimals: 9 });
+  assert.equal(rewardTokenInfo("testnet", NATIVE_MINT)!.symbol, "XNT");
+  assert.equal(rewardTokenInfo("mainnet", REWARD_MINT.testnet), null);
 });
 
 test("publish_list, cancel_list and pay: args and accounts", () => {
@@ -186,7 +255,19 @@ const sampleVault = (): Omit<Vault, "address"> => ({
   pendingEpoch: 4n, pendingRoot: crypto.randomBytes(32), pendingTotal: 19n, pendingActiveAt: 1_790_000_000,
   totalCollected: 20n, totalBurned: 21n, totalLpTokens: 22n, totalLpXnt: 23n, totalCreatorXnt: 24n, totalCrankRewards: 25n,
   createdAt: 1_780_000_000, bump: 254, authBump: 253, lastSellSlot: 123_456_789_012n,
+  version: 1, cancelsInRow: 0, totalRewardOut: 0n, lastRewardSlot: 0n,
 });
+const sampleVaultV2 = (): Omit<Vault, "address"> => ({
+  ...sampleVault(), rewardMint: REWARD_MINT.testnet, rewardSwapPool: REWARD_POOL.testnet, version: 2, cancelsInRow: 1, totalRewardOut: 2n ** 60n + 7n, lastRewardSlot: 987_654_321_000n,
+});
+const sameVault = (back: Vault, v: Omit<Vault, "address">) => {
+  for (const [k, want] of Object.entries(v)) {
+    const got = (back as unknown as Record<string, unknown>)[k];
+    if (want instanceof PublicKey) assert.ok((got as PublicKey).equals(want), k);
+    else if (Buffer.isBuffer(want)) assert.ok((got as Buffer).equals(want), k);
+    else assert.equal(got, want, k);
+  }
+};
 
 test("Vault decodes what it encodes, field for field, at the spec's size", () => {
   assert.equal(VAULT_LEN, 480);
@@ -196,18 +277,53 @@ test("Vault decodes what it encodes, field for field, at the spec's size", () =>
   const addr = key();
   const back = decodeVault(addr, d);
   assert.ok(back.address.equals(addr));
-  for (const [k, want] of Object.entries(v)) {
-    const got = (back as unknown as Record<string, unknown>)[k];
-    if (want instanceof PublicKey) assert.ok((got as PublicKey).equals(want), k);
-    else if (Buffer.isBuffer(want)) assert.ok((got as Buffer).equals(want), k);
-    else assert.equal(got, want, k);
-  }
+  sameVault(back, v);
   // Fixed offsets the program's layout implies (8-byte discriminator, 7 keys, 3 u16).
   assert.equal(d.readUInt16LE(8 + 224), 2500);
   assert.equal(d.readBigUInt64LE(8 + 224 + 6 + 8), 11n); // lp_tokens after pending_tokens
   assert.equal(d.readBigUInt64LE(472), 123_456_789_012n); // last_sell_slot, the last field
   assert.throws(() => decodeVault(addr, Buffer.alloc(VAULT_LEN)));
   assert.throws(() => decodeVault(addr, d.subarray(0, VAULT_LEN - 1)));
+});
+
+test("Vault v2: 552 bytes, the appended fields at 480/481/482/490, older fields unmoved; v1 reads as version 1", () => {
+  assert.equal(VAULT_V2_LEN, 552);
+  assert.deepEqual(VAULT_V2_OFFSETS, { version: 480, cancelsInRow: 481, totalRewardOut: 482, lastRewardSlot: 490, reserved: 498 });
+  const v = sampleVaultV2();
+  const d = encodeVault(v);
+  assert.equal(d.length, VAULT_V2_LEN);
+  assert.equal(d[480], 2);
+  assert.equal(d[481], 1);
+  assert.equal(d.readBigUInt64LE(482), 2n ** 60n + 7n);
+  assert.equal(d.readBigUInt64LE(490), 987_654_321_000n); // last_reward_slot
+  assert.ok(d.subarray(498, 552).equals(Buffer.alloc(54))); // reserved
+  assert.ok(d.subarray(104, 136).equals(REWARD_MINT.testnet.toBuffer())); // reward_mint
+  assert.ok(d.subarray(136, 168).equals(REWARD_POOL.testnet.toBuffer())); // reward_swap_pool
+  assert.equal(d.readBigUInt64LE(472), 123_456_789_012n);
+  const back = decodeVault(key(), d);
+  sameVault(back, v);
+  // The first 480 bytes are a v1 vault's layout: an old account decodes with the v2 fields zeroed.
+  const v1 = decodeVault(key(), Buffer.from(d.subarray(0, VAULT_LEN)));
+  assert.equal(v1.version, 1);
+  assert.equal(v1.cancelsInRow, 0);
+  assert.equal(v1.totalRewardOut, 0n);
+  assert.equal(v1.lastRewardSlot, 0n);
+  assert.equal(v1.lastSellSlot, 123_456_789_012n);
+  assert.equal(encodeVault(sampleVault()).length, VAULT_LEN);
+});
+
+test("cancels left: MAX_CANCELS_IN_ROW minus cancels in a row on v2, no limit on v1", () => {
+  assert.equal(cancelsLeft({ version: 2, cancelsInRow: 0 }), 2);
+  assert.equal(cancelsLeft({ version: 2, cancelsInRow: 1 }), 1);
+  assert.equal(cancelsLeft({ version: 2, cancelsInRow: 2 }), 0);
+  assert.equal(cancelsLeft({ version: 2, cancelsInRow: 5 }), 0);
+  assert.equal(cancelsLeft({ version: 1, cancelsInRow: 0 }), null);
+  const j = vaultJson({ ...sampleVaultV2(), address: key() } as Vault);
+  assert.equal(j.version, 2);
+  assert.equal(j.cancelsLeft, 1);
+  assert.equal(j.rewardMint, REWARD_MINT.testnet.toBase58());
+  assert.equal(j.rewardSwapPool, REWARD_POOL.testnet.toBase58());
+  assert.equal(j.totals.rewardOut, (2n ** 60n + 7n).toString());
 });
 
 test("PaidRecord round-trips", () => {
@@ -300,7 +416,7 @@ test("events decode from \"Program data:\" log lines", () => {
     line(EVENT.Collected, vault.toBuffer(), u64(1000n), u64(250n)),
     line(EVENT.Sold, vault.toBuffer(), u64(700n), u64(9_000n), u64(1_000n), u64(1_500n), u64(6_430n), u64(70n)),
     line(EVENT.LiquidityAdded, vault.toBuffer(), u64(5n), u64(6n), u64(7n)),
-    line(EVENT.CreatorFunded, vault.toBuffer(), u64(8n)),
+    line(EVENT.CreatorFunded, vault.toBuffer(), u64(8n)), // v1 shape { vault, amount }
     line(EVENT.ListPublished, vault.toBuffer(), u64(2n), root, u64(99n), i64(1_790_000_600)),
     line(EVENT.ListCancelled, vault.toBuffer(), u64(2n)),
     line(EVENT.Paid, vault.toBuffer(), wallet.toBuffer(), u64(40n), u64(140n)),
@@ -313,6 +429,10 @@ test("events decode from \"Program data:\" log lines", () => {
   assert.deepEqual(ev[1], { name: "Sold", vault: vault.toBase58(), tokensIn: 700n, xntOut: 9_000n, toLp: 1_000n, toCreator: 1_500n, toHolders: 6_430n, crankReward: 70n });
   assert.deepEqual(ev[4], { name: "ListPublished", vault: vault.toBase58(), epoch: 2n, root: root.toString("hex"), total: 99n, activeAt: 1_790_000_600 });
   assert.deepEqual(ev[6], { name: "Paid", vault: vault.toBase58(), wallet: wallet.toBase58(), amount: 40n, cumulative: 140n });
+  assert.deepEqual(ev[3], { name: "CreatorFunded", vault: vault.toBase58(), xntIn: 8n, rewardOut: 8n, rewardMint: NATIVE_MINT.toBase58() });
+  // v2: { vault, xnt_in, reward_out, reward_mint }
+  const v2 = parseEvents([line(EVENT.CreatorFunded, vault.toBuffer(), u64(50_000_000n), u64(1_234_567_890n), REWARD_MINT.testnet.toBuffer())]);
+  assert.deepEqual(v2, [{ name: "CreatorFunded", vault: vault.toBase58(), xntIn: 50_000_000n, rewardOut: 1_234_567_890n, rewardMint: REWARD_MINT.testnet.toBase58() }]);
   assert.equal(decodeEvent(Buffer.alloc(4)), null);
 });
 
@@ -320,5 +440,10 @@ test("program errors are named from simulation messages", () => {
   assert.equal(errorOf(`Simulation failed: {"InstructionError":[2,{"Custom":6013}]}`), "NothingToPay");
   assert.equal(errorOf("custom program error: 0x177e"), "TooSmall"); // 6014
   assert.equal(errorOf(`{"Custom":6018}`), "OneSellPerSlot");
+  assert.equal(errorOf(`{"Custom":6019}`), "WrongVersion");
+  assert.equal(errorOf(`{"Custom":6020}`), "TooManyCancels");
+  assert.equal(errorOf("custom program error: 0x1785"), "BadRewardMint"); // 6021
+  assert.equal(errorOf(`{"Custom":6022}`), null);
+  assert.equal(ERRORS.length, 22);
   assert.equal(errorOf("something else"), null);
 });

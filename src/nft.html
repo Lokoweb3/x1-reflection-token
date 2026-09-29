@@ -293,7 +293,9 @@ function vaultRow(v) {
   return el("div", { class: "vault-row" },
     el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: "✓ Tax enforced by program" }),
     el("a", { href: v.listUrl, target: "_blank", rel: "noopener", text: "Latest rewards list ↗" }),
-    v.nextListAt ? el("span", { class: "muted", text: `Next rewards list pays at ${new Date(v.nextListAt * 1000).toLocaleString()}` }) : null);
+    v.nextListAt ? el("span", { class: "muted", text: `Next rewards list pays at ${new Date(v.nextListAt * 1000).toLocaleString()}` }) : null,
+    v.cancelsLeft != null ? el("span", { class: "muted", title: "The creator (the vault's guardian) can stop a new rewards list before it pays, but only this many times in a row: once a list goes live the count starts over.",
+      text: v.cancelsLeft > 0 ? `The creator can cancel ${v.cancelsLeft} more list${v.cancelsLeft === 1 ? "" : "s"} in a row` : "The creator can't cancel the next list" }) : null);
 }
 function renderTokenStats(d, s, host) {
   const tok = (v, max = 4) => `${fmtUnits(v, s.decimals, max)} ${s.symbol}`;
@@ -533,7 +535,7 @@ function renderGallery() {
         el("div", { class: "earned", text: `≈ ${xntFmt(e.totalXnt)}`, title: "Total earned so far, valued at current pool prices" }),
         el("div", { class: "line", text: `Fees collected ${xntFmt(e.feesCollectedXnt)}` }),
         el("div", { class: "line", text: `Fees ready ${xntFmt(e.feesReadyXnt)}` }),
-        r ? el("div", { class: "line", text: `Creator rewards ${fmtUnits(BigInt(r.claimed) + BigInt(r.ready) + BigInt(r.vesting), r.decimals, 4)} ${r.symbol} (${fmtUnits(r.vesting, r.decimals, 4)} vesting)` }) : null,
+        ...(r ? [r, ...(r.others ?? [])] : []).map((x) => el("div", { class: "line", text: `Creator rewards ${fmtUnits(BigInt(x.claimed) + BigInt(x.ready) + BigInt(x.vesting), x.decimals, 4)} ${x.symbol} (${fmtUnits(x.vesting, x.decimals, 4)} vesting)` })),
         el("div", { class: "line muted", text: `Liquidity locked ≈ ${xntFmt(n.valueXnt)}` })));
     return a;
   });
@@ -564,8 +566,9 @@ function withdrawCard(d) {
     b.onclick = fn; return b;
   };
   const rows = [];
-  const r = d.rewards;
-  if (r) {
+  // The reward token paid now, plus any older reward vault still holding something (a Tax
+  // Vault token's XNT rewards from before its upgrade): each is claimed on its own.
+  for (const r of d.rewards ? [d.rewards, ...(d.rewards.others ?? [])] : []) {
     const ready = BigInt(r.claimable) > 0n;
     rows.push(el("div", { class: "wd-row" },
       el("div", { class: "what" }, el("div", {}, "Creator rewards ", el("span", { class: "amt", text: `${fmtUnits(r.claimable, r.decimals)} ${r.symbol} ready` })),
@@ -573,7 +576,8 @@ function withdrawCard(d) {
           el("span", { class: "cd-label", text: `Next ${fmtUnits(r.nextAmount ?? "0", r.decimals)} ${r.symbol} claimable in` }), Countdown.el(r.nextUnlock),
           el("span", { class: "cd-label", text: new Date(r.nextUnlock * 1000).toLocaleString() })) : null,
         el("div", { class: "muted", text: `${fmtUnits(r.vesting, r.decimals)} ${r.symbol} still vesting in total · ${fmtUnits(r.claimed, r.decimals)} claimed so far. Each deposit vests 7 days.` })),
-      btn("Claim rewards", ready, ready ? "" : "Nothing has vested yet", () => withdraw("Claim creator rewards", "/api/nft/claim"))));
+      btn(d.rewards.others?.length ? `Claim ${r.symbol}` : "Claim rewards", ready, ready ? "" : "Nothing has vested yet",
+        () => withdraw(`Claim creator rewards (${r.symbol})`, "/api/nft/claim", { rewardMint: r.mint }))));
   }
   const f = d.fees;
   if (f) {
@@ -619,12 +623,12 @@ function receiptButton(d) {
   }
   return b;
 }
-async function withdraw(label, url) {
+async function withdraw(label, url, extra) {
   if (busy || !current) return;
   busy = true; show(current.nftMint, true);
   try {
     toast("info", `${label}: preparing and simulating…`);
-    const { tx } = await api(url, { nftMint: current.nftMint, holder: W.state.address, authority: W.state.address });
+    const { tx } = await api(url, { nftMint: current.nftMint, holder: W.state.address, authority: W.state.address, ...extra });
     toast("info", `${label}: approve it in your wallet…`);
     const signed = await W.sign(W.b64ToBytes(tx));
     toast("info", `${label}: sending…`);

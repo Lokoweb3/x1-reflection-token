@@ -195,8 +195,15 @@ function render(d) {
   const worth = sum(d.tokens, (t) => units(t.valueXnt));
   const perDay = sum(d.tokens, (t) => t.estPerDayXnt);
   const feesReady = sum(d.nfts, (n) => units(n.earned.feesReadyXnt));
-  const rewardsReady = sum(d.nfts, (n) => (n.earned.rewards?.symbol === "XNT" ? units(n.earned.rewards.ready) : 0));
-  const vesting = sum(d.nfts, (n) => (n.earned.rewards?.symbol === "XNT" ? units(n.earned.rewards.vesting) : 0));
+  // Every reward vault of an NFT (the token paid now, plus an older one still holding something); XNT ones add to the XNT tiles.
+  const rewardsOf = (n) => (n.earned.rewards ? [n.earned.rewards, ...(n.earned.rewards.others ?? [])] : []);
+  const xntRewards = (n, f) => rewardsOf(n).filter((r) => r.symbol === "XNT").reduce((a, r) => a + units(f(r)), 0);
+  const rewardsReady = sum(d.nfts, (n) => xntRewards(n, (r) => r.ready));
+  const vesting = sum(d.nfts, (n) => xntRewards(n, (r) => r.vesting));
+  // Other reward tokens (XNM, USDC) ready to claim, per symbol.
+  const otherReady = new Map();
+  for (const n of d.nfts) for (const r of rewardsOf(n)) if (r.symbol !== "XNT" && BigInt(r.ready) > 0n) otherReady.set(r.symbol, (otherReady.get(r.symbol) ?? 0) + units(r.ready, r.decimals));
+  const otherReadyText = [...otherReady].map(([sym, v]) => `${fmtSig(v)} ${sym}`).join(" + ");
   const me = W.state.address === d.wallet;
 
   const tile = (k, v, n, cls = "") => el("div", { class: `tile ${cls}` }, el("div", { class: "k", text: k }), el("div", { class: "v", text: v }), n ? el("div", { class: "n", text: n }) : null);
@@ -205,7 +212,7 @@ function render(d) {
     tile("XNT received", `${fmt(received + clicker, 6)} XNT`, clicker > 0 ? `incl. ${fmt(clicker, 6)} XNT “Distribute now” rewards` : "from holder payouts", "hl"),
     tile("Earning now", perDay > 0 ? `≈ ${fmtSig(perDay)} XNT/day` : "–", perDay > 0 ? `≈ ${fmtSig(perDay * 365)} XNT a year at the current yield` : "no earning holdings"),
     tile("Holdings worth", `≈ ${fmt(worth, 4)} XNT`, `${d.tokens.filter((t) => BigInt(t.balance) > 0n).length} token${d.tokens.length === 1 ? "" : "s"} at pool prices`),
-    tile("Ready to claim", `${fmt(feesReady + rewardsReady, 6)} XNT`, d.nfts.length ? `from ${d.nfts.length} LP-lock NFT${d.nfts.length === 1 ? "" : "s"}${vesting > 0 ? ` · ${fmt(vesting, 6)} XNT vesting` : ""}` : "no LP-lock NFTs"));
+    tile("Ready to claim", `${fmt(feesReady + rewardsReady, 6)} XNT${otherReadyText ? ` + ${otherReadyText}` : ""}`, d.nfts.length ? `from ${d.nfts.length} LP-lock NFT${d.nfts.length === 1 ? "" : "s"}${vesting > 0 ? ` · ${fmt(vesting, 6)} XNT vesting` : ""}` : "no LP-lock NFTs"));
 
   const rows = d.tokens.map((t) => el("tr", {},
     el("td", {}, link(`${d.explorer}/address/${t.mint}`, t.symbol), el("span", { class: "muted", text: ` ${t.name}` })),
@@ -227,8 +234,7 @@ function render(d) {
     : el("p", { class: "empty" }, "This wallet doesn't hold any 99 + Tax tokens yet. ", el("a", { href: "/tokens", text: "Browse tokens →" }));
 
   const nftCards = d.nfts.map((n) => {
-    const r = n.earned.rewards;
-    const ready = units(n.earned.feesReadyXnt) + (r?.symbol === "XNT" ? units(r.ready) : 0);
+    const ready = units(n.earned.feesReadyXnt) + xntRewards(n, (r) => r.ready);
     return el("div", { class: "nft" },
       el("div", { class: "thumb" }, n.receipt ? el("img", { src: n.receipt, alt: `${n.name} receipt` }) : el("div", { class: "none", text: "No receipt" })),
       el("div", {},
@@ -236,8 +242,9 @@ function render(d) {
         el("div", { class: "line", text: `${n.lpSharePct.toFixed(2)}% of the pool · ${n.unlockAt === null ? "locked forever" : `unlocks ${new Date(n.unlockAt * 1000).toLocaleDateString()}`}` }),
         el("div", { class: "ready", text: `${fmtSig(ready)} XNT ready` }),
         el("div", { class: "line", text: `Trading fees ${fmtSig(units(n.earned.feesReadyXnt))} XNT` + (n.earned.collectFeeXnt ? ` · network fee to collect ≈ ${fmtSig(units(n.earned.collectFeeXnt))} XNT` : "") }),
-        r ? el("div", { class: "line", text: `Creator rewards ${fmtSig(units(r.ready, r.decimals))} ${r.symbol} ready · ${fmtSig(units(r.vesting, r.decimals))} vesting` }) : null,
-        r?.nextUnlock ? el("div", { class: "line" }, `Next ${fmtSig(units(r.nextAmount ?? "0", r.decimals))} ${r.symbol} claimable in `, Countdown.el(r.nextUnlock)) : null,
+        ...rewardsOf(n).flatMap((r) => [
+          el("div", { class: "line", text: `Creator rewards ${fmtSig(units(r.ready, r.decimals))} ${r.symbol} ready · ${fmtSig(units(r.vesting, r.decimals))} vesting` }),
+          r.nextUnlock ? el("div", { class: "line" }, `Next ${fmtSig(units(r.nextAmount ?? "0", r.decimals))} ${r.symbol} claimable in `, Countdown.el(r.nextUnlock)) : null]),
         n.unlockAt !== null && n.unlockAt * 1000 > Date.now() ? el("div", { class: "line" }, "LP unlocks in ", Countdown.el(n.unlockAt)) : null,
         el("div", { class: "line muted", text: `Earned so far ≈ ${fmtSig(units(n.earned.totalXnt))} XNT` }),
         el("div", { class: "nft-actions" }, ...nftButtons(n, me))));
@@ -259,7 +266,7 @@ let busy = false;
 function nftButtons(n, me) {
   const open = el("a", { class: "btn sm", href: `/nft/${n.nftMint}`, text: "Open NFT" });
   if (!me) return [open];
-  const r = n.earned.rewards;
+  const rewards = n.earned.rewards ? [n.earned.rewards, ...(n.earned.rewards.others ?? [])] : [];
   const fees = BigInt(n.earned.feesReadyXnt);
   const collect = el("button", { class: "btn sm primary", type: "button", text: "Collect fees" });
   const ok = n.earned.collectFeeXnt !== null ? n.earned.collectable : fees >= DUST;
@@ -269,11 +276,12 @@ function nftButtons(n, me) {
     : "Nothing worth collecting yet; fees grow as people trade";
   collect.onclick = () => act("Collect trading fees", "/api/nft/collect", n.nftMint);
   const out = [collect];
-  if (r) {
-    const claim = el("button", { class: "btn sm primary", type: "button", text: "Claim rewards" });
+  // One Claim per reward token (a Tax Vault token's creator may also have older XNT rewards).
+  for (const r of rewards) {
+    const claim = el("button", { class: "btn sm primary", type: "button", text: rewards.length > 1 ? `Claim ${r.symbol}` : "Claim rewards" });
     claim.disabled = busy || BigInt(r.ready) === 0n;
     if (BigInt(r.ready) === 0n) claim.title = r.nextUnlock ? `Next part vests ${new Date(r.nextUnlock * 1000).toLocaleString()}` : "Nothing has vested yet";
-    claim.onclick = () => act("Claim creator rewards", "/api/nft/claim", n.nftMint);
+    claim.onclick = () => act(`Claim creator rewards (${r.symbol})`, "/api/nft/claim", n.nftMint, { nftMint: n.nftMint, holder: W.state.address, rewardMint: r.mint });
     out.push(claim);
   }
   return [...out, open];

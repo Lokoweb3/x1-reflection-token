@@ -535,7 +535,10 @@ function renderActivity(d, dec, sym) {
       case "auto-lp": return `Added ${tok(e.tokens)} + ${xnt(e.xnt)} to the pool, LP burned`;
       case "burn": return `Burned ${tok(e.tokens)} of collected tax (supply reduced)`;
       case "clicker-reward": return `Paid ${xnt(e.xnt)} to ${short(e.wallet)} for pressing Distribute now`;
-      case "creator-reward": return e.rewardMint === "XNT"
+      // Tax Vault: XNT swapped for the reward token on-chain, then deposited.
+      case "creator-reward": return e.reward != null && e.rewardSymbol
+        ? `Swapped ${xnt(e.xnt)} for ${compact(Number(e.reward) / 10 ** (e.rewardDecimals ?? 9), 6)} ${e.rewardSymbol} into the creator reward vault (vests 7 days)`
+        : e.rewardMint === "XNT"
         ? `Put ${xnt(e.amount)} into the creator reward vault (vests 7 days)`
         : `Put ${compact(Number(e.amount) / 1e6, 6)} USDC into the creator reward vault (vests 7 days)`;
       case "allocate": return `Allocated ${xnt(e.xnt)} across ${e.holders} holder${e.holders === 1 ? "" : "s"}`;

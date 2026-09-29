@@ -12,7 +12,8 @@
  *     --bpf-program D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW lp-locker/target/vault-test/tax_vault.so
  *   LOCAL_RPC=http://127.0.0.1:8999 npx tsx scripts/local-vault-test.ts
  *
- * The program must be built with `--features "testnet short-windows"` (5 s list delay).
+ * The program must be the v1 build with `--features "testnet short-windows"` (5 s list delay).
+ * For v2 (vault upgrade, XNM creator reward, cancel limit) see scripts/local-vault-v2-test.ts.
  */
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
