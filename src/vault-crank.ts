@@ -26,7 +26,7 @@ import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana
 import { DEFAULT_MIN_HARVEST_XNT, fromBaseUnits, toBaseUnits, xnt } from "./config.js";
 import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, type EligibilityRules } from "./holders.js";
 import { outcome, sendAndConfirm, sign, simulate, withPriority } from "./tx.js";
-import { decodePool, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "./xdex.js";
+import { decodePool, maxLpFor, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "./xdex.js";
 import {
   CID_CODEC, CRANK_REWARD_BPS, CRANK_REWARD_CAP, MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, PAID_RECORD_DISC, PAID_RECORD_LEN, RENT_EXEMPT_EMPTY,
   VAULT_VERSION, addLiquidityIx, buildVaultTree, cidToBytes, collectIx, decodePaidRecord, decodeVault, effectiveList, errorOf, fallbackActive,
@@ -520,7 +520,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   const sellLp = v.sellLp + (lp - lp / 2n), sellCr = v.sellCreator + cr, sellHo = v.sellHolders + holders;
   const wanted = sellLp + sellCr + sellHo;
   // 2. sell (one sale; the program caps it).
-  let reward = 0n, toLp = 0n, toCreator = 0n;
+  let reward = 0n, toLp = 0n, toCreator = 0n, soldIn = 0n, soldOut = 0n;
   const pool = poolAccountsFrom(xdex, decodePool(v.pool, (await conn.getMultipleAccountsInfo([v.pool], "confirmed"))[0], xdex), t.mint);
   if (wanted > 0n) {
     const q = await quoteSell(conn, xdex, v.pool, t.mint, wanted, { maxImpactBps: sellImpactBps(t.taxBps), slippageBps: Number(OUT_TOLERANCE_BPS) }).catch(() => null);
@@ -530,10 +530,18 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
       reward = (part * CRANK_REWARD_BPS) / 10_000n;
       if (reward > CRANK_REWARD_CAP) reward = CRANK_REWARD_CAP;
       toLp = (q.expectedOut * sellLp) / wanted; toCreator = (q.expectedOut * sellCr) / wanted;
+      soldIn = q.amountIn - q.transferFee; soldOut = q.expectedOut;
     } else if (q) notes.push("The tax to sell is still dust.");
   }
   // 3. add_liquidity, 4. fund_creator (counting what the sale sets aside).
-  if (v.xntLp + toLp >= MIN_LP_XNT && v.lpTokens + lp / 2n > 0n) {
+  // Only when the program will find something to deposit (its deposit_for, mirrored by
+  // maxLpFor, on the pool as the sale leaves it; 1% of margin on the tokens), so the
+  // visitor doesn't pay for a step it refuses with TooSmall.
+  const lpTokens = v.lpTokens + lp / 2n, lpXnt = v.xntLp + toLp;
+  const depositable = lpXnt >= MIN_LP_XNT && lpTokens > 0n && await snapshot(conn, xdex, v.pool, t.mint).then((snap) =>
+    maxLpFor((lpTokens * 99n) / 100n, lpXnt, snap.reserveToken + soldIn, snap.reserveQuote - soldOut, snap.pool.lpSupply,
+      BigInt(t.taxBps), 2n ** 64n - 1n) > 0n).catch(() => false);
+  if (depositable) {
     steps.push({ kind: "add_liquidity", label: "Add liquidity", ixs: [addLiquidityIx(program, caller, t.mint, pool)], units: 220_000 });
   }
   const creatorXnt = v.xntCreator + toCreator;

@@ -4,12 +4,25 @@ Runs everything on one small always-on server instead of a laptop:
 
 | Service | What it does | Reachable at |
 |---|---|---|
-| `reflect-factory` | 99 + Tax site: landing page, launch app, Distribute now | `https://<your domain>` (through Caddy) |
-| `reflect-distributor` | RFLT's cycle every 30 min | – |
-| `reflect-factory-distributor` | every launched token's cycle every 30 min | – |
+| `reflect-factory` | 99 + Tax site: landing page, launch app, Distribute now, and the **Tax Vault crank** for every vault token | `https://<your domain>` (through Caddy) |
+| `reflect-distributor` | the main config's token (RFLT) cycle every 30 min, while it's on a distributor | – |
+| `reflect-factory-distributor` | every launched token that isn't on the Tax Vault, a cycle every 15–30 min | – |
 | `reflect-dashboard` | your private RFLT dashboard | `127.0.0.1:8123` on the server only (SSH tunnel) |
 
 systemd restarts them if they crash and starts them on boot. Logs: `journalctl -u reflect-distributor -f`.
+
+**Tax Vault tokens don't need a distributor.** Their tax is held by the `tax_vault` program
+and cranked by the site. When every token on a network is on the vault (testnet today:
+CUP, RFLT, every launch and curve token), stop both distributors and keep them from
+starting on boot: `systemctl disable --now reflect-distributor reflect-factory-distributor`
+(`systemctl enable --now …` brings one back, e.g. for a token that isn't on the vault). The
+live server also runs mainnet as `reflect-mainnet-factory` and
+`reflect-mainnet-factory-distributor` (mainnet's "Test" is on a distributor until the vault
+is on mainnet).
+
+**Fees on X1:** X1 charges for the compute units a transaction *requests* (about 0.01 XNT
+per million), so every transaction here is simulated first and asks only for what it uses
+plus 20% (`fitComputeLimit` in `src/tx.ts`).
 
 ## 1. Server and domain
 
