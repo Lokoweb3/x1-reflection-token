@@ -296,3 +296,84 @@ this order).
    list not yet activated.
 7. `pay`: payouts in all never exceed `list_total` (`OverFunded`); no active list →
    `BadProof`; wallet ≠ auth.
+
+---
+
+# v2 (testnet first): creator rewards in the network's reward token, guardian limit, vault upgrade
+
+Everything above stays unless changed here. v2 is an upgrade of the same program
+(`D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW`); existing vaults (CUP on testnet) are
+upgraded in place by `upgrade_vault`.
+
+## New constants (per network, feature `testnet`)
+
+| Name | Testnet | Mainnet |
+|---|---|---|
+| `REWARD_MINT` | XNM `AvNDf423kEmWNP6AZHFV7DkNG4YRgt6qbdyyryjaa4PQ` (Token-2022, 9 dp, no transfer fee) | USDC.X `B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq` (Token-2022, 6 dp) |
+| `REWARD_POOL` | XNM/XNT `6XESNUXbGNT6x3zaB51Axk7Jh6Ba58LFJukkfPUzzSwA` | USDC.X/XNT `CAJeVEoSm1QQZccnCqYu9cnNF7TTD2fcUA3E5HQoxRvR` |
+| `REWARD_MAX_IMPACT_BPS` | `300` | `300` |
+| `MAX_CANCELS_IN_ROW` | `2` | `2` |
+
+The creator reward is always paid in the network's `REWARD_MINT` (never chosen per token).
+The program must refuse a reward mint with a transfer fee.
+
+## Vault layout v2 (append only; old fields and offsets unchanged)
+
+After `last_sell_slot` (offset 472) append:
+
+```rust
+pub version: u8,            // 2 (offset 480)
+pub cancels_in_row: u8,     // guardian cancels since the last list went live (481)
+pub total_reward_out: u64,  // reward tokens ever deposited for the creator (482)
+pub reserved: [u8; 62],     // future use (490..552)
+```
+
+`Vault` v2 = **552** bytes including the discriminator. `init_vault` creates v2 vaults
+directly (version 2, `reward_mint = REWARD_MINT`, `reward_swap_pool = REWARD_POOL`). Every
+instruction except `upgrade_vault` requires a v2 vault (`WrongVersion` otherwise).
+
+## New / changed instructions
+
+9. `upgrade_vault()` — anyone
+   payer(w,s), vault(w) [480-byte v1 vault, read as raw bytes], system_program.
+   Reallocs the vault to 552 bytes (payer pays the extra rent), sets `version = 2`,
+   `cancels_in_row = 0`, `total_reward_out = 0`, `reward_mint = REWARD_MINT`,
+   `reward_swap_pool = REWARD_POOL`. Fails with `WrongVersion` if already v2. XNT already in
+   `xnt_creator` is swapped by the next `fund_creator`. (The creator's older XNT reward
+   vault in lp_locker stays claimable as before.)
+
+5. `fund_creator()` (v2) — anyone
+   caller(w,s), vault(w), auth(w), auth_wxnt(w), creator_nft, reward_mint, reward_vault(w)
+   [lp_locker `["reward", creator_nft, reward_mint]`], reward_tokens(w) [lp_locker
+   `["reward_tokens", reward_vault]`], locker_program, token_program, associated_token_program,
+   system_program, lock, token_2022_program, **auth_reward(w)** [ATA(auth, reward_mint,
+   reward_token_program)], **reward_pool(w)**, **reward_amm_config**, **xdex_authority**,
+   **reward_pool_reward_vault(w)**, **reward_pool_wxnt_vault(w)**, **reward_observation(w)**,
+   **xdex_program**, **native_mint**, **reward_token_program**.
+   Requires `reward_mint == vault.reward_mint` and `reward_pool == vault.reward_swap_pool`.
+   Wraps up to `xnt_creator` into auth_wxnt, swaps XNT → reward token on the reward pool
+   (XDEX `swap_base_input`, owner = auth; amount capped so the swap moves the price at most
+   `REWARD_MAX_IMPACT_BPS`; min out computed on-chain from live reserves × (1 −
+   OUT_TOLERANCE)), unwraps any leftover, then CPIs lp_locker `deposit_reward(reward_out)`
+   from auth_reward (init the reward vault first if missing, payer caller). Updates
+   `xnt_creator -= xnt_in`, `total_creator_xnt += xnt_in`, `total_reward_out += reward_out`.
+   Emits `CreatorFunded { vault, xnt_in, reward_out, reward_mint }` (new fields; the v1
+   event shape `{ vault, amount }` is replaced).
+
+7. `cancel_list()` (v2)
+   Fails with `TooManyCancels` when `cancels_in_row >= MAX_CANCELS_IN_ROW`; otherwise clears
+   the pending list and `cancels_in_row += 1`.
+
+Activation (in `pay` and `publish_list`): when a pending list becomes the active one,
+`cancels_in_row = 0`.
+
+New errors appended after `OneSellPerSlot`: `WrongVersion`, `TooManyCancels`, `BadRewardMint`.
+
+## Off-chain (v2)
+
+- Crank: run `upgrade_vault` once for any 480-byte vault; `fund_creator` with the v2 account
+  list; skip it when the reward swap would output nothing.
+- Site: a vault token's creator reward reads the vault's `reward_mint` (XNM on testnet,
+  USDC.X on mainnet) for the NFT page, My earnings, tokens list and claims; show the right
+  symbol and decimals. Legacy tokens keep reading their own configured reward mint.
+- Events: `creator-reward` entries record `xnt` (in) and the reward token amount/symbol.
