@@ -49,8 +49,10 @@ export interface Config {
      */
     /** Pinata API key (JWT): logo uploads and token metadata go to IPFS. Or set PINATA_JWT. */
     pinataJwt?: string;
-    /** Gateway for IPFS links wallets fetch (default https://gateway.pinata.cloud/ipfs/). */
+    /** Gateway for IPFS links wallets fetch (default https://gateway.pinata.cloud/ipfs/; or IPFS_GATEWAY). */
     ipfsGateway?: string;
+    /** Pinata's upload API (default https://uploads.pinata.cloud/v3/files; or PINATA_API_URL), e.g. a local stand-in. */
+    pinataApiUrl?: string;
     faucet?: { keypair: string; amount: string; xntAmount?: string; cooldownHours?: number; dailyCap?: number };
     /** Cloudflare Turnstile keys; when set, faucet claims need the captcha. Keep `secret` out of git. */
     turnstile?: { siteKey: string; secret: string };
@@ -80,6 +82,8 @@ export interface Config {
      * `programId` the site shows vault state; with `publisherKeypair` too, the server runs
      * the vault crank (it pays the fees, publishes rewards lists, earns the crank reward)
      * and new XNT-paired testnet launches hand their tax to the vault instead of a hot wallet.
+     * v3: each rewards list file is pinned to IPFS (factory.pinataJwt) before it's published;
+     * without a Pinata key no new lists are published (payouts of published lists go on).
      */
     taxVault?: { programId: string; publisherKeypair?: string };
     /**

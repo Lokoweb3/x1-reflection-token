@@ -462,6 +462,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     readinessCache.delete(t.mint);
     return { started: true };
   }
+  if (url.startsWith("/api/vault/")) return vaults ? vaultPost(url, body) : null;
   if (url.startsWith("/api/curve/")) return curves ? curvePost(url, body, ip) : null;
   if (url === "/api/send") rateLimit("send", ip, "transactions");
   if (url === "/api/send") {
@@ -471,6 +472,44 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     return { signature };
   }
   return null;
+}
+
+/**
+ * Tax Vault actions for a visitor's wallet (unsigned transactions; the wallet signs):
+ *   crank-tx      "Run the vault now": the permissionless steps due now (collect, sell, add
+ *                 liquidity, creator reward, pay / pay_fallback a few wallets), in order, paid
+ *                 by `caller`, with the crank reward the sale would earn it
+ *   crank-result  what those transactions did (read from the chain) and the reward received
+ *   appoint-tx    v3: the guardian (creator) appoints a new publisher once allowed
+ */
+async function vaultPost(url: string, body: Record<string, unknown>) {
+  const v = vaults!;
+  const m = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})\/(crank-tx|crank-result|appoint-tx)$/.exec(url);
+  if (!m) return null;
+  const [, mint, action] = m;
+  if (action === "crank-tx") {
+    const caller = new PublicKey(String(body.caller));
+    const plan = await v.crankPlan(mint, caller);
+    if (!plan.steps.length) throw new Error(`Nothing to run right now: no tax to collect or sell, and nobody is owed a payout.${plan.notes.length ? ` ${plan.notes.join(" ")}` : ""}`);
+    const fees = await Promise.all(plan.steps.map((s) => networkFee(conn, caller, s.ixs, { ...opts, units: s.units }).catch(() => 0n)));
+    const fee = fees.reduce((a, b) => a + b, 0n);
+    await requireXnt(caller, Number(fee + plan.recordsRent) / 1e9 + 0.002, "Running the vault", "network fees and the payment records' rent");
+    // Only the first is simulated here: later ones count on the earlier ones landing (the sale sells what collect adds).
+    const txs = [];
+    for (const [i, s] of plan.steps.entries()) {
+      txs.push({ kind: s.kind, label: s.label, tx: await unsignedTx(conn, caller, s.ixs, [], { ...opts, units: s.units, simulate: i === 0 }) });
+    }
+    return { txs, crankRewardLamports: plan.rewardLamports.toString(), recordsRentLamports: plan.recordsRent.toString(), networkFeeLamports: fee.toString(), notes: plan.notes };
+  }
+  if (action === "crank-result") {
+    const sigs = Array.isArray(body.signatures) ? body.signatures.map(String) : [];
+    return v.crankResult(mint, sigs);
+  }
+  const guardian = new PublicKey(String(body.guardian));
+  let newPublisher: PublicKey;
+  try { newPublisher = new PublicKey(String(body.newPublisher ?? "").trim()); } catch { throw new Error("The new publisher must be a wallet address."); }
+  const ixs = await v.appointIxs(mint, guardian, newPublisher);
+  return { tx: await unsignedTx(conn, guardian, ixs, [], opts) };
 }
 
 /** Curve launches, buys and sells: unsigned transactions for the viewer's wallet. */
@@ -1378,6 +1417,7 @@ if (curves) {
 // Tax Vault crank: collect, sell, add liquidity, fund creators, publish rewards lists and
 // pay holders for every vault token. Transactions only go out with factory.taxVault.publisherKeypair.
 if (vaults) {
+  if (vaults.crankOn() && !ipfsEnabled(cfg)) console.log("Tax vault crank: no Pinata key (factory.pinataJwt), so no new rewards lists are published (their files must be on IPFS); payouts of published lists go on.");
   if (!vaults.crankOn()) {
     console.log("Tax vault crank: no factory.taxVault.publisherKeypair, so vault tokens are not cranked by this server.");
     // Still look for vaults on-chain (read-only) so vault tokens show as such.

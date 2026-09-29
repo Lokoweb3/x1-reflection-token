@@ -138,7 +138,8 @@ function card(t) {
     // Tax Vault tokens: the program holds the tax; link its public rewards list.
     t.vault ? el("div", { class: "vault-row" }, el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: "✓ Tax enforced by program" }),
       el("a", { href: t.vault.listUrl, target: "_blank", rel: "noopener", text: "Rewards list ↗" }),
-      t.vault.nextListAt ? el("span", { class: "sub", text: `Next list pays at ${new Date(t.vault.nextListAt * 1000).toLocaleString()}` }) : null) : null,
+      t.vault.nextListAt ? el("span", { class: "sub", text: `Next list pays at ${new Date(t.vault.nextListAt * 1000).toLocaleString()}` }) : null,
+      t.vault.fallbackActive ? el("span", { class: "sub", title: "No rewards list was published for 30 days: anyone can pay holders from the last one.", text: "Fallback active: paying from the last list" }) : null) : null,
     el("div", {}, el("div", { class: "sub", text: `${t.taxPct}% tax on every trade, split:` }), bar,
       el("div", { class: "legend" }, ...SPLIT.filter(([k]) => t.split[k] > 0).map(([k, l, c]) => el("span", {}, el("i", { style: `background:${c}` }), `${l} ${t.split[k]}%`)))),
     t.yield && t.yield.per1000PerDay > 0 ? el("div", { class: "yield", title: `From payouts over the last ${t.yield.windowDays} days, split across tokens that earn now. Not guaranteed.` },
@@ -164,7 +165,9 @@ function card(t) {
     el("div", { class: "links" },
       ...[["website", "Website"], ["twitter", "X"], ["telegram", "Telegram"]].filter(([k]) => t.links?.[k]).map(([k, l]) => link(t.links[k], `${l} ↗`, "btn sm")),
       t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}`, text: "LP lock NFT" }) : null,
-      t.vault ? null : el("a", { class: "btn sm", href: "/launch#distribute", text: "Distribute now" }),
+      // Vault tokens: anyone can run the vault's steps from the token's NFT page (and earn the crank reward).
+      t.vault ? (t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}#vault`, text: "Run the vault" }) : null)
+        : el("a", { class: "btn sm", href: "/launch#distribute", text: "Distribute now" }),
       link(`${explorer}/address/${t.pool}`, "Pool ↗", "btn sm")));
 }
 

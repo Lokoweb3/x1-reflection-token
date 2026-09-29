@@ -24,7 +24,7 @@ export const allowRelayProgram = (id: string) => void RELAY_PROGRAMS.add(id);
 
 export async function unsignedTx(
   conn: Connection, payer: PublicKey, ixs: TransactionInstruction[], extra: Keypair[] = [],
-  opts: { microLamports: number; units?: number; noBudget?: boolean } = { microLamports: 10_000 },
+  opts: { microLamports: number; units?: number; noBudget?: boolean; simulate?: boolean } = { microLamports: 10_000 },
 ) {
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
   const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
@@ -38,9 +38,10 @@ export async function unsignedTx(
   tx.add(...ixs);
   for (const ix of ixs) RELAY_PROGRAMS.add(ix.programId.toBase58());
   if (extra.length) tx.partialSign(...extra);
-  // Catch problems before asking the wallet to approve anything.
-  const sim = await conn.simulateTransaction(tx);
-  if (sim.value.err) {
+  // Catch problems before asking the wallet to approve anything. (simulate: false for a
+  // transaction that counts on an earlier one of the same batch landing first.)
+  const sim = opts.simulate === false ? null : await conn.simulateTransaction(tx);
+  if (sim?.value.err) {
     const logs = (sim.value.logs ?? []).filter((l) => /Error|failed|insufficient/i.test(l)).slice(-3).join(" | ");
     throw new Error(`Simulation failed: ${JSON.stringify(sim.value.err)}${logs ? ` — ${logs}` : ""}`);
   }

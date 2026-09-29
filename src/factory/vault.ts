@@ -1,10 +1,12 @@
 /**
- * Tax Vault on the factory site (docs/tax-vault-spec.md): read views for the token pages
- * and the crank that keeps every vault token moving.
+ * Tax Vault on the factory site (docs/tax-vault-spec.md): read views for the token pages,
+ * the crank that keeps every vault token moving, and the unsigned transactions behind the
+ * pages' "Run the vault now" and "Appoint a new publisher" buttons.
  *
  * Every ~60 s, for each vault token (launch record or per-launch config says `taxVault`,
- * or a vault account exists for the mint), one pass:
- *   0. upgrade   a 480-byte v1 vault gets `upgrade_vault` once (the crank pays the extra rent)
+ * or a vault account exists for the mint), one pass (the steps are src/vault-crank.ts,
+ * shared with scripts/crank.ts):
+ *   0. upgrade   a v1/v2 vault gets `upgrade_vault` once (the crank pays the extra rent)
  *   1. collect   when the tax waiting is worth at least the token's minHarvestXnt: harvest
  *                the accounts holding withheld tax into the mint, withdraw, split, burn
  *   2. sell      the sell buckets, price-impact capped on-chain (min(3%, tax/2)), one sale
@@ -14,49 +16,41 @@
  *                reward swap (XNT -> the network's reward token, capped at half the reward
  *                pool's fee, one per slot) would output something: the program swaps and
  *                deposits into the creator's vesting vault
- *   4. rewards list: new holders' XNT (holders_funded − list_total) is split pro-rata over
- *                eligible holders (the distributor's rules), added to each wallet's running
- *                total, saved to <state>/vault-list.json and published (publish_list)
+ *   4. rewards list: new holders' XNT is split pro-rata over eligible holders (the
+ *                distributor's rules) and added to each wallet's running total, starting from
+ *                max(previous total, on-chain paid); saved to <state>/vault-list.json, pinned
+ *                to IPFS (v3: no pin, no publish; retried next pass) and published with its CID
  *   5. pay       once the list is active, every wallet whose total is at least
- *                minPayoutXnt above what it was paid (several pays per transaction)
+ *                minPayoutXnt above what it was paid (several pays per transaction); in
+ *                fallback (v3: no list published for 30 days) pay_fallback instead
  * Each confirmed transaction's program events are appended to the token's events.jsonl in
- * the shapes the hot-wallet distributor writes, so the site's stats keep working.
+ * the shapes the hot-wallet distributor writes, so the site's stats keep working (steps a
+ * visitor runs with "Run the vault now" are added from the chain afterwards).
  *
  * The crank signs with factory.taxVault.publisherKeypair (pays the fees, is the list
  * publisher, earns the on-chain crank reward from each sale). Without it nothing is sent;
- * the read views still work. Every step is guarded: a failure is logged and the pass goes
- * on with the next step or token, never crashing the server; passes never overlap.
+ * the read views still work. If the vault's guardian appointed another publisher (v3), the
+ * site stops publishing for that token and pays from that publisher's lists (read from IPFS).
+ * Every step is guarded: a failure is logged and the pass goes on with the next step or
+ * token, never crashing the server; passes never overlap.
  */
 import fs from "node:fs";
 import path from "node:path";
-import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
-import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
-import { Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, fromBaseUnits, loadKeypair, toBaseUnits, xnt } from "../config.js";
-import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts } from "../holders.js";
-import { outcome, sendAndConfirm, sign, simulate, withPriority } from "../tx.js";
-import { decodePool, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "../xdex.js";
+import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import { Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, loadKeypair, toBaseUnits, xnt } from "../config.js";
 import {
-  MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, RENT_EXEMPT_EMPTY, REWARD_MINT, rewardImpactBps, VAULT_VERSION, sellImpactBps, addLiquidityIx, buildVaultTree,
-  cancelsLeft, collectIx, decodePaidRecord, decodeVault, effectiveList, errorOf, fundCreatorIx, paidRecordPda, parseEvents, payIx, poolAccountsFrom, publishListIx,
-  rewardPoolAccountsFrom, rewardTokenInfo, sellBuckets, sellIx, upgradeVaultIx, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent, type VaultPoolAccounts,
+  REWARD_MINT, VAULT_VERSION, appointAllowedAt, appointPublisherIx, cancelsLeft, cidFromBytes, effectiveList, fallbackAt, fallbackActive,
+  parseEvents, rewardTokenInfo, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent,
 } from "../taxvault.js";
-import { type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged } from "./launch.js";
+import {
+  ACTIVATION_MARGIN_SECS, type CrankRules, type CrankToken, type PayList, inFallback, listFileText, nowSecs, parseListFile, planForCaller,
+  readVaultAccount, rulesJson, vaultCrank,
+} from "../vault-crank.js";
+import { fetchFromGateways, gatewayBase, gatewayUrl, ipfsEnabled, pinJson } from "./ipfs.js";
+import { DECIMALS, type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged } from "./launch.js";
 
-const PASS_MS = 60_000;
-/** Most harvest accounts one collect carries (also capped by transaction size). */
-const MAX_HARVEST_PER_TX = 20;
-/** Sales per token per pass; each is capped at 3% price impact on-chain. */
-const MAX_SELLS_PER_PASS = 3;
-const MAX_PAYS_PER_TX = 6;
-/** Pay transactions per token per pass, so one big list can't hold up the others. */
-const MAX_PAY_TXS_PER_PASS = 20;
-/** Seconds after a list's active time before paying against it (the chain clock can lag ours). */
-const ACTIVATION_MARGIN_SECS = 15;
-/** fund_creator calls per token per pass (each capped at half the reward pool's fee, one per slot). */
-const MAX_REWARD_SWAPS_PER_PASS = 5;
-/** After a failed upgrade_vault (e.g. the program isn't upgraded yet), wait this long before trying again. */
-const UPGRADE_RETRY_MS = 10 * 60_000;
-const nowSecs = () => Math.floor(Date.now() / 1000);
+/** Crank pass interval; TAX_VAULT_PASS_SECS shortens it for local rehearsals (short-windows builds). */
+const PASS_MS = Number(process.env.TAX_VAULT_PASS_SECS ?? 60) * 1000;
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** One published (or about to be published) rewards list: every wallet's cumulative XNT. */
@@ -69,6 +63,8 @@ export interface VaultList {
   /** XNT added by this list and how many wallets it went to (for the log). */
   allocated?: string;
   holders?: number;
+  /** v3: the list file's IPFS address, once pinned (before it's published). */
+  cid?: string;
   signature?: string;
   /** Set once the publish transaction is confirmed (or seen on-chain). */
   publishedAt?: string;
@@ -82,7 +78,7 @@ export interface VaultListFile {
   active: VaultList | null;
   /** The next list: saved before it's sent, then pending on-chain until its active time. */
   next: VaultList | null;
-  history: { at: string; epoch: string; root: string; total: string; event: "published" | "active" | "cancelled" | "dropped"; signature?: string }[];
+  history: { at: string; epoch: string; root: string; total: string; event: "published" | "active" | "cancelled" | "dropped" | "adopted"; signature?: string; cid?: string }[];
 }
 
 const launchDir = (mint: string) => path.join(FACTORY_DIR, "launches", mint);
@@ -124,11 +120,16 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   if (keyPath) {
     try { crank = loadKeypair(keyPath); } catch (e) { console.error(`Tax vault crank off: can't read factory.taxVault.publisherKeypair (${msg(e)})`); }
   }
+  const core = crank ? vaultCrank({ conn, program, xdex, network: cfg.network, signer: crank, microLamports: opts.microLamports,
+    onTx: (t, v, signature, events) => record(t.mint.toBase58(), v, signature, events, crank!.publicKey.toBase58()) }) : null;
 
   const authOf = (mint: string) => vaultAuthPda(program, new PublicKey(mint));
   const addrOf = (mint: string) => vaultPda(program, new PublicKey(mint));
-  /** XNT-paired launches only: the vault is TOKEN/wXNT only in v1. */
+  /** XNT-paired launches only: the vault is TOKEN/wXNT only. */
   const xntPaired = (r: LaunchRecord) => !pairOf(cfg, r).xntPool;
+  /** Where list files are read from: this site's gateway, then a public one. */
+  const gateways = [...new Set([gatewayBase(cfg), "https://ipfs.io/ipfs/"])];
+  const cidUrl = (cid: string | null | undefined) => (cid ? gatewayUrl(cfg, cid) : null);
 
   /** Whether the vault handles this token (its files say so, or a vault was seen on-chain). */
   function isVaultMint(mint: string) {
@@ -138,12 +139,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     return !!r && vaultManaged(r);
   }
 
-  async function readVault(mint: PublicKey): Promise<Vault | null> {
-    const addr = vaultPda(program, mint);
-    const info = await conn.getAccountInfo(addr, "confirmed");
-    if (!info || !info.owner.equals(program)) return null;
-    return decodeVault(addr, info.data);
-  }
+  const readVault = (mint: PublicKey) => readVaultAccount(conn, program, mint);
 
   // ---------- read views ----------
   const viewCache = new Map<string, { at: number; data: Promise<Vault | null> }>();
@@ -155,6 +151,20 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     viewCache.set(mint, { at: Date.now(), data });
     if (viewCache.size > 500) viewCache.clear();
     return data;
+  }
+
+  /** v3 status for the pages: who publishes, since when, and when appointing / fallback open up. */
+  function v3Status(v: Vault | null) {
+    if (!v || v.version < 3) return null;
+    const now = nowSecs();
+    const cid = cidFromBytes(v.listCid), pendingCid = cidFromBytes(v.pendingCid);
+    return {
+      publisher: v.publisher.toBase58(), guardian: v.guardian.toBase58(), lastPublishAt: v.lastPublishAt,
+      appointAllowedAt: appointAllowedAt(v), fallbackAt: fallbackAt(v), fallbackActive: fallbackActive(v, now),
+      fallbackPaid: v.fallbackPaid.toString(), listCid: cid, listCidUrl: cidUrl(cid), pendingCid, pendingCidUrl: cidUrl(pendingCid),
+      // The site's own key still publishes (false once the guardian appointed someone else).
+      sitePublishes: !!crank && v.publisher.equals(crank.publicKey),
+    };
   }
 
   /** GET /api/vault/<mint>: the vault's state and totals, and what the crank last did. */
@@ -170,11 +180,12 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       nextListAt: v && v.pendingEpoch > 0n ? v.pendingActiveAt : null,
       latestList: file ? listSummary(file.next ?? file.active) : null,
       listUrl: `/api/vault/${mint}/list`,
+      ...(v3Status(v) ?? {}),
       crank: { on: !!crank, wallet: crank?.publicKey.toBase58() ?? null, lastPass: status.get(mint) ?? null },
     };
   }
   const listSummary = (l: VaultList | null) => (l ? { epoch: l.epoch, root: l.root, total: l.total, wallets: Object.keys(l.wallets).length,
-    builtAt: l.builtAt, publishedAt: l.publishedAt ?? null, activeAt: l.activeAt ?? null } : null);
+    builtAt: l.builtAt, publishedAt: l.publishedAt ?? null, activeAt: l.activeAt ?? null, cid: l.cid ?? null, cidUrl: cidUrl(l.cid) } : null);
 
   /** GET /api/vault/<mint>/list: the latest rewards list with every wallet's cumulative total. */
   async function listView(mintStr: string) {
@@ -182,7 +193,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     if (!isVaultMint(mint)) throw new Error("This token's tax isn't held by the Tax Vault.");
     const file = readListFile(mint);
     const latest = file?.next ?? file?.active ?? null;
-    if (!file || !latest) return { mint, vault: addrOf(mint).toBase58(), status: "none", epoch: null, root: null, total: "0", activeAt: null, wallets: [], active: null };
+    if (!file || !latest) return { mint, vault: addrOf(mint).toBase58(), status: "none", epoch: null, root: null, total: "0", activeAt: null, cid: null, cidUrl: null, wallets: [], active: null };
     const v = await cachedVault(mint).catch(() => null);
     const isNext = latest === file.next;
     const listStatus = !isNext ? "active"
@@ -191,14 +202,16 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     return {
       mint, vault: addrOf(mint).toBase58(), status: listStatus, epoch: latest.epoch, root: latest.root, total: latest.total,
       activeAt: latest.activeAt ?? null, builtAt: latest.builtAt, publishedAt: latest.publishedAt ?? null, signature: latest.signature ?? null,
+      // v3: the same list as a file on IPFS (its CID is on-chain), so it can be read without this site.
+      cid: latest.cid ?? null, cidUrl: cidUrl(latest.cid),
       wallets: Object.entries(latest.wallets).map(([wallet, cumulative]) => ({ wallet, cumulative }))
         .sort((a, b) => (BigInt(b.cumulative) > BigInt(a.cumulative) ? 1 : BigInt(b.cumulative) < BigInt(a.cumulative) ? -1 : a.wallet.localeCompare(b.wallet))),
       // While a new list waits for its time, the one paying now.
-      active: isNext && file.active ? { epoch: file.active.epoch, root: file.active.root, total: file.active.total } : null,
+      active: isNext && file.active ? { epoch: file.active.epoch, root: file.active.root, total: file.active.total, cid: file.active.cid ?? null, cidUrl: cidUrl(file.active.cid) } : null,
     };
   }
 
-  /** The small summary token pages show (badge, list link, next list time); null for other tokens. */
+  /** The small summary token pages show (badge, list link, next list time, v3 status); null for other tokens. */
   async function badge(mint: string) {
     if (!isVaultMint(mint)) return null;
     const v = await cachedVault(mint).catch(() => null);
@@ -210,57 +223,24 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       version: v?.version ?? null,
       // How many more pending lists the guardian (the creator) may cancel in a row (v2); null: no limit / no vault.
       cancelsLeft: v ? cancelsLeft(v) : null,
+      ...(v3Status(v) ?? {}),
     };
   }
 
   /**
-   * The mint a vault token's creator reward is paid in: the vault's reward_mint once it's v2,
-   * else the network's reward token (what init_vault and upgrade_vault set).
+   * The mint a vault token's creator reward is paid in: the vault's reward_mint once it's
+   * upgraded (v2+), else the network's reward token (what init_vault and upgrade_vault set).
    */
   async function rewardMintOf(mint: string): Promise<PublicKey> {
     const v = await cachedVault(mint).catch(() => null);
-    return v && v.version >= VAULT_VERSION ? v.rewardMint : REWARD_MINT[cfg.network];
+    return v && v.version >= 2 ? v.rewardMint : REWARD_MINT[cfg.network];
   }
 
-  // ---------- crank ----------
-  function fits(ixs: TransactionInstruction[]) {
-    const tx = new Transaction({ feePayer: crank!.publicKey, recentBlockhash: PublicKey.default.toBase58() }).add(...withPriority(ixs, opts.microLamports, 1_400_000));
-    try { return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).length <= 1232; } catch { return false; }
-  }
-
-  /** The program's events for `vault` in a confirmed transaction (a few tries: RPCs lag). */
-  async function eventsOf(signature: string, vault: PublicKey): Promise<VaultEvent[] | null> {
-    for (let i = 0; i < 5; i++) {
-      if (i) await new Promise((r) => setTimeout(r, 2_000));
-      const tx = await conn.getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
-      if (tx?.meta) {
-        return parseEvents(tx.meta.logMessages ?? []).filter((e) => e.vault === vault.toBase58());
-      }
-    }
-    return null;
-  }
-
-  async function send(tag: string, label: string, ixs: TransactionInstruction[], units: number, vault: PublicKey) {
-    const signed = await sign(conn, withPriority(ixs, opts.microLamports, units), crank!);
-    try {
-      await simulate(conn, signed.tx);
-    } catch (e) {
-      const name = errorOf(msg(e));
-      throw new Error(name ? `${label}: ${name}` : `${label}: ${msg(e).split("\n")[0]}`);
-    }
-    try {
-      await sendAndConfirm(conn, signed);
-    } catch (e) {
-      // A slow confirmation can look like a failure; only a transaction that didn't land is one.
-      if ((await outcome(conn, signed.signature, signed.lastValidBlockHeight).catch(() => "pending")) !== "confirmed") throw e;
-    }
-    console.log(`[vault crank] ${tag} ${label}: ${signed.signature}`);
-    return { signature: signed.signature, events: (await eventsOf(signed.signature, vault)) ?? [] };
-  }
-
-  /** Append a confirmed transaction's events to the token's log in the distributor's shapes. */
-  function record(mint: string, v: Vault, signature: string, events: VaultEvent[]) {
+  // ---------- event log ----------
+  /** Append a confirmed transaction's events to the token's log in the distributor's shapes; `wallet` sent it. */
+  function record(mint: string, v: Vault, signature: string, events: VaultEvent[], wallet: string) {
     const payments: [string, string][] = [];
+    let fallback = false;
     for (const e of events) {
       if (e.name === "Collected") {
         const lp = (e.got * BigInt(v.lpBps)) / 10_000n;
@@ -269,7 +249,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       } else if (e.name === "Sold") {
         logEvent(mint, { kind: "sell", signature, tokens: e.tokensIn.toString(), xnt: e.xntOut.toString(), lpXnt: e.toLp.toString() });
         // The crank reward is the vault's "Distribute now" reward: it goes to whoever sent the sale.
-        if (e.crankReward > 0n) logEvent(mint, { kind: "clicker-reward", signature, xnt: e.crankReward.toString(), wallet: crank!.publicKey.toBase58() });
+        if (e.crankReward > 0n) logEvent(mint, { kind: "clicker-reward", signature, xnt: e.crankReward.toString(), wallet });
       } else if (e.name === "LiquidityAdded") {
         logEvent(mint, { kind: "auto-lp", signature, tokens: e.tokens.toString(), xnt: e.xnt.toString(), lp: e.lpBurned.toString() });
       } else if (e.name === "CreatorFunded") {
@@ -278,151 +258,74 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
         const info = rewardTokenInfo(cfg.network, new PublicKey(e.rewardMint));
         logEvent(mint, { kind: "creator-reward", signature, xnt: e.xntIn.toString(), reward: e.rewardOut.toString(), rewardMint: e.rewardMint,
           rewardSymbol: info?.symbol ?? null, rewardDecimals: info?.decimals ?? null, vault: true });
-      } else if (e.name === "Paid") {
+      } else if (e.name === "Paid" || e.name === "FallbackPaid") {
         payments.push([e.wallet, e.amount.toString()]);
+        if (e.name === "FallbackPaid") fallback = true;
+      } else if (e.name === "PublisherChanged") {
+        logEvent(mint, { kind: "publisher", signature, old: e.old, new: e.new, byGuardian: e.byGuardian, vault: true });
       }
     }
     if (payments.length) {
-      logEvent(mint, { kind: "payout", signature, payments, total: payments.reduce((a, [, x]) => a + BigInt(x), 0n).toString(), vault: true });
+      logEvent(mint, { kind: "payout", signature, payments, total: payments.reduce((a, [, x]) => a + BigInt(x), 0n).toString(), vault: true, ...(fallback ? { fallback: true } : {}) });
     }
   }
-
-  async function collectStep(r: LaunchRecord, v: Vault, notes: string[]) {
-    const mint = new PublicKey(r.mint);
-    const [rows, mintInfo] = await Promise.all([scanTokenAccounts(conn, mint), conn.getAccountInfo(mint, "confirmed")]);
-    const withheld = rows.filter((x) => x.withheld > 0n).sort((a, b) => (b.withheld > a.withheld ? 1 : b.withheld < a.withheld ? -1 : 0));
-    const inMint = getTransferFeeConfig(unpackMint(mint, mintInfo, TOKEN_2022_PROGRAM_ID))?.withheldAmount ?? 0n;
-    const waiting = withheld.reduce((a, x) => a + x.withheld, 0n) + inMint;
-    if (waiting === 0n) return;
-    // Same threshold as the distributor: don't spend fees collecting dust.
-    const worth = spotValue(waiting, await snapshot(conn, xdex, v.pool, mint));
-    const min = toBaseUnits(tokenConfig(r)?.distribution.minHarvestXnt ?? DEFAULT_MIN_HARVEST_XNT, 9);
-    if (worth < min) { notes.push(`tax waiting ~${xnt(worth)}, under ${xnt(min)}`); return; }
-    const todo = withheld.map((x) => x.address);
-    do {
-      const chunk: PublicKey[] = [];
-      while (todo.length && chunk.length < MAX_HARVEST_PER_TX && fits([collectIx(program, crank!.publicKey, mint, [...chunk, todo[0]])])) chunk.push(todo.shift()!);
-      if (!chunk.length && todo.length) chunk.push(todo.shift()!);
-      const { signature, events } = await send(r.symbol, `collect (${chunk.length} accounts)`, [collectIx(program, crank!.publicKey, mint, chunk)],
-        200_000 + 15_000 * chunk.length, v.address);
-      record(r.mint, v, signature, events);
-      notes.push(`collected from ${chunk.length} account(s)`);
-    } while (todo.length);
+  /** Signatures already in a token's log (steps a visitor ran are recorded once). */
+  function loggedSignatures(mint: string) {
+    const f = path.join(stateDirOf(mint), "events.jsonl");
+    const out = new Set<string>();
+    if (!fs.existsSync(f)) return out;
+    for (const l of fs.readFileSync(f, "utf8").split("\n")) { const m = /"signature":"([1-9A-HJ-NP-Za-km-z]+)"/.exec(l); if (m) out.add(m[1]); }
+    return out;
   }
 
-  async function sellStep(r: LaunchRecord, pool: VaultPoolAccounts, notes: string[]) {
-    const mint = new PublicKey(r.mint);
-    for (let i = 0; i < MAX_SELLS_PER_PASS; i++) {
-      const v = await readVault(mint);
-      if (!v) return;
-      const wanted = sellBuckets(v);
-      if (wanted === 0n) return;
-      // The program caps a sale at min(3%, tax/2) price impact; quote the same cap.
-      const q = await quoteSell(conn, xdex, v.pool, mint, wanted, { maxImpactBps: sellImpactBps(r.taxBps), slippageBps: Number(OUT_TOLERANCE_BPS) });
-      if (!q || q.expectedOut < MIN_SELL_XNT) { notes.push(`${fromBaseUnits(wanted, 9)} tokens to sell are still dust`); return; }
-      // One sale per slot per vault, each confirmed before the next (never two in one
-      // transaction). OneSellPerSlot means the last sale's slot hasn't passed: retry shortly.
-      let sent: Awaited<ReturnType<typeof send>> | null = null;
-      for (let attempt = 0; !sent; attempt++) {
-        try {
-          sent = await send(r.symbol, `sell ~${fromBaseUnits(q.amountIn, 9)} tokens for ~${xnt(q.expectedOut)}`,
-            [sellIx(program, crank!.publicKey, mint, pool, wanted)], 400_000, v.address);
-        } catch (e) {
-          if (!/OneSellPerSlot/.test(msg(e)) || attempt >= 3) throw e;
-          await new Promise((res) => setTimeout(res, 800));
-        }
-      }
-      const { signature, events } = sent;
-      record(r.mint, v, signature, events);
-      notes.push(`sold for ~${xnt(q.expectedOut)}`);
-      // Capped by the 3% price-impact limit: the rest waits for the next pass instead of walking the price down now.
-      if (q.amountIn < wanted) return;
-    }
-  }
-
-  async function liquidityStep(r: LaunchRecord, pool: VaultPoolAccounts, notes: string[]) {
-    const mint = new PublicKey(r.mint);
-    const v = await readVault(mint);
-    if (!v || v.xntLp < MIN_LP_XNT || v.lpTokens === 0n) return;
-    const { signature, events } = await send(r.symbol, `add_liquidity (${xnt(v.xntLp)} set aside)`, [addLiquidityIx(program, crank!.publicKey, mint, pool)], 400_000, v.address);
-    record(r.mint, v, signature, events);
-    notes.push("added liquidity");
-  }
-
-  /**
-   * Swap the creator's XNT for the reward token and deposit it (fund_creator). Each swap is
-   * capped on-chain at half the reward pool's trade fee, so a large bucket takes several
-   * calls, one per slot, each confirmed before the next; the rest waits in xnt_creator.
-   */
-  async function creatorStep(r: LaunchRecord, notes: string[]) {
-    const mint = new PublicKey(r.mint);
-    for (let i = 0; i < MAX_REWARD_SWAPS_PER_PASS; i++) {
-      const v = await readVault(mint);
-      if (!v || v.xntCreator === 0n) return;
-      if (v.version < VAULT_VERSION) { notes.push("creator reward waits for the vault upgrade"); return; }
-      // Quote the swap the program makes (same cap, live reserves); skip when it would buy nothing.
-      const q = await quoteBuy(conn, xdex, v.rewardSwapPool, v.rewardMint, v.xntCreator, Number(OUT_TOLERANCE_BPS), rewardImpactBps).catch((e) => {
-        if (/too small|too shallow|no liquidity/i.test(msg(e))) return null;
-        throw e;
-      });
-      const info = rewardTokenInfo(cfg.network, v.rewardMint);
-      // The program needs a minimum out (expected x 99.5%) above zero.
-      if (!q || q.minimumOut <= 0n) { notes.push(`creator reward ${xnt(v.xntCreator)} would buy no ${info?.symbol ?? "reward token"} yet`); return; }
-      const rewardPool = rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint);
-      const out = info ? `${fromBaseUnits(q.expectedOut, info.decimals)} ${info.symbol}` : `${q.expectedOut} reward base units`;
-      // ~150k CU, up to ~195k when it also creates the reward vault: the default 200k is too tight.
-      let sent: Awaited<ReturnType<typeof send>> | null = null;
-      for (let attempt = 0; !sent; attempt++) {
-        try {
-          sent = await send(r.symbol, `fund_creator ${xnt(q.amountIn)} for ~${out}`,
-            [fundCreatorIx(program, crank!.publicKey, mint, v.creatorNft, rewardPool)], 300_000, v.address);
-        } catch (e) {
-          // The on-chain quote can come out smaller than ours (live reserves): wait for more.
-          if (/: TooSmall$/.test(msg(e))) { notes.push(`creator reward ${xnt(v.xntCreator)} is still too small to swap`); return; }
-          // One reward swap per slot: the last one's slot hasn't passed yet.
-          if (!/OneSellPerSlot/.test(msg(e)) || attempt >= 3) throw e;
-          await new Promise((res) => setTimeout(res, 800));
-        }
-      }
-      record(r.mint, v, sent.signature, sent.events);
-      notes.push(`creator reward ${xnt(q.amountIn)} -> ~${out}`);
-      if (q.amountIn >= v.xntCreator) return; // all of it went
-    }
-  }
-
-  /** A v1 (480-byte) vault: send upgrade_vault once; the crank pays the extra rent. */
-  const upgradeFailedAt = new Map<string, number>();
-  async function upgradeStep(r: LaunchRecord, v: Vault, notes: string[]) {
-    if (v.version >= VAULT_VERSION) return v;
-    const last = upgradeFailedAt.get(r.mint);
-    if (last && Date.now() - last < UPGRADE_RETRY_MS) { notes.push("vault still v1 (upgrade retried later)"); return v; }
-    try {
-      await send(r.symbol, "upgrade_vault", [upgradeVaultIx(program, crank!.publicKey, v.mint)], 60_000, v.address);
-      upgradeFailedAt.delete(r.mint);
-      notes.push("vault upgraded to v2");
-    } catch (e) {
-      upgradeFailedAt.set(r.mint, Date.now());
-      throw e;
-    }
-    return (await readVault(v.mint)) ?? v;
-  }
-
+  // ---------- crank ----------
   const tokenConfig = (r: LaunchRecord): Config | null => {
     const f = path.join(launchDir(r.mint), "config.json");
     try { return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : null; } catch { return null; }
   };
+  /** The token's payout rules from its per-launch config; null before it's registered. */
+  function rulesOf(r: LaunchRecord): CrankRules | null {
+    const dc = tokenConfig(r)?.distribution;
+    if (!dc) return null;
+    return {
+      minHarvest: toBaseUnits(dc.minHarvestXnt ?? DEFAULT_MIN_HARVEST_XNT, 9), minPayout: toBaseUnits(dc.minPayoutXnt ?? "0", 9),
+      minCycle: toBaseUnits(dc.minCycleXnt, 9), minHolding: toBaseUnits(dc.minHoldingTokens, DECIMALS),
+      // A migrated token's old distributor wallet never earns.
+      excludeOwners: [...dc.excludeOwners, ...(r.distributor ? [r.distributor] : [])], excludeOffCurve: dc.excludeOffCurveOwners,
+    };
+  }
+  const tokenOf = (r: LaunchRecord): CrankToken => ({
+    mint: new PublicKey(r.mint), symbol: r.symbol, taxBps: r.taxBps,
+    // Before the per-launch config exists: the default collection threshold, no list yet.
+    rules: rulesOf(r) ?? { minHarvest: toBaseUnits(DEFAULT_MIN_HARVEST_XNT, 9), minPayout: 0n, minCycle: 0n, minHolding: 0n, excludeOwners: [], excludeOffCurve: true },
+  });
+
+  /** A list by its CID (IPFS), checked against the on-chain root; cached. */
+  const fetched = new Map<string, Record<string, string>>();
+  async function listByCid(v: Vault, cidBytes: Buffer, root: Buffer) {
+    const cid = cidFromBytes(cidBytes);
+    if (!cid) return null;
+    const key = `${cid}:${root.toString("hex")}`;
+    if (!fetched.has(key)) {
+      const { wallets } = parseListFile(await fetchFromGateways(gateways, cid), v.address, root, cidBytes);
+      if (fetched.size > 50) fetched.clear();
+      fetched.set(key, wallets);
+    }
+    return { cid, wallets: fetched.get(key)! };
+  }
 
   /**
    * Bring vault-list.json in line with the chain: the next list became active, is pending,
-   * was cancelled by the guardian, or never landed (sent again). Returns false when the
+   * was cancelled by the guardian, or never landed (sent again). A list the site doesn't
+   * have (another publisher's) is read from IPFS by its on-chain CID. Returns false when the
    * file and the chain disagree in a way the crank can't repair (lists and pays stop).
    */
-  async function syncList(r: LaunchRecord, v: Vault, file: VaultListFile, notes: string[]): Promise<boolean> {
+  async function syncList(t: CrankToken, v: Vault, file: VaultListFile, notes: string[]): Promise<boolean> {
     const hex = (b: Buffer) => b.toString("hex");
     const n = file.next;
     if (n) {
       if (v.listEpoch.toString() === n.epoch && hex(v.listRoot) === n.root) {
-        file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "active" });
+        file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "active", cid: n.cid });
         file.active = { ...n, publishedAt: n.publishedAt ?? new Date().toISOString() };
         file.next = null;
         saveListFile(file);
@@ -435,206 +338,142 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       } else if (n.publishedAt) {
         // It was on-chain and isn't any more: the guardian cancelled it. Its allocation is
         // dropped; the XNT stays in the holder pool and is allocated again.
-        file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "cancelled" });
+        file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "cancelled", cid: n.cid });
         file.next = null;
         saveListFile(file);
         notes.push(`list ${n.epoch} was cancelled by the guardian`);
       } else {
         const floor = v.listEpoch > v.pendingEpoch ? v.listEpoch : v.pendingEpoch;
-        const minTotal = v.listTotal > v.pendingTotal ? v.listTotal : v.pendingTotal;
+        const minTotal = [v.listTotal, v.pendingTotal, v.holdersPaid].reduce((a, b) => (b > a ? b : a), 0n);
         if (BigInt(n.epoch) > floor && BigInt(n.total) >= minTotal && BigInt(n.total) <= v.holdersFunded && v.pendingEpoch === 0n
-            && (file.active?.root ?? hex(Buffer.alloc(32))) === hex(v.listRoot)) {
-          await publish(r, v, file, notes); // saved but never landed: send the same list again
+            && (file.active?.root ?? hex(Buffer.alloc(32))) === hex(v.listRoot) && v.publisher.equals(crank!.publicKey)) {
+          await publish(t, v, file, notes); // saved but never landed: pin (if needed) and send the same list again
         } else {
-          file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "dropped" });
+          file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "dropped", cid: n.cid });
           file.next = null;
           saveListFile(file);
         }
       }
     }
     if (v.listEpoch > 0n && (!file.active || file.active.epoch !== v.listEpoch.toString() || file.active.root !== hex(v.listRoot))) {
-      console.error(`[vault crank] ${r.symbol}: the on-chain rewards list (epoch ${v.listEpoch}) isn't the one in vault-list.json; lists and payouts paused for this token.`);
+      // v3: another publisher's list (or one this site lost): read it from IPFS by its CID.
+      const got = await listByCid(v, v.listCid, v.listRoot).catch((e) => { notes.push(`list file not readable: ${msg(e).slice(0, 120)}`); return null; });
+      if (got) {
+        file.active = { epoch: v.listEpoch.toString(), root: hex(v.listRoot), total: v.listTotal.toString(), wallets: got.wallets, cid: got.cid,
+          builtAt: new Date().toISOString(), publishedAt: new Date().toISOString() };
+        file.history.push({ at: new Date().toISOString(), epoch: file.active.epoch, root: file.active.root, total: file.active.total, event: "adopted", cid: got.cid });
+        saveListFile(file);
+        notes.push(`list ${v.listEpoch} read from IPFS (${got.cid})`);
+        return true;
+      }
+      console.error(`[vault crank] ${t.symbol}: the on-chain rewards list (epoch ${v.listEpoch}) isn't the one in vault-list.json; lists and payouts paused for this token.`);
       notes.push("rewards list out of sync with the chain");
       return false;
     }
     return true;
   }
 
-  async function publish(r: LaunchRecord, v: Vault, file: VaultListFile, notes: string[]) {
+  /** Pin the next list's file (no pin, no publish: retried next pass), then publish_list with its CID. */
+  async function publish(t: CrankToken, v: Vault, file: VaultListFile, notes: string[]) {
     const n = file.next!;
-    const mint = new PublicKey(r.mint);
-    const ix = publishListIx(program, crank!.publicKey, mint, Buffer.from(n.root, "hex"), BigInt(n.epoch), BigInt(n.total));
-    const { signature, events } = await send(r.symbol, `publish_list epoch ${n.epoch} (${Object.keys(n.wallets).length} wallets, total ${xnt(BigInt(n.total))})`,
-      [ix], 60_000, v.address);
-    const pub = events.find((e) => e.name === "ListPublished");
+    if (!n.cid) {
+      if (!ipfsEnabled(cfg)) throw new Error("no Pinata key (factory.pinataJwt): the list can't be pinned, so it isn't published");
+      const text = listFileText({ mint: file.mint, vault: file.vault, epoch: n.epoch, root: n.root, total: n.total, wallets: n.wallets, rules: rulesJson(t.rules) });
+      try {
+        n.cid = await pinJson(cfg, text, `${t.symbol}-list-${n.epoch}.json`, `99tax ${t.symbol} rewards list ${n.epoch}`);
+      } catch (e) {
+        throw new Error(`list ${n.epoch} not pinned to IPFS, publish retried next pass (${msg(e)})`);
+      }
+      saveListFile(file); // the CID is kept: the next try publishes the same file
+    }
+    const { signature, activeAt } = await core!.publish(t, v, { epoch: BigInt(n.epoch), total: BigInt(n.total), root: Buffer.from(n.root, "hex"), cid: n.cid, wallets: Object.keys(n.wallets).length });
     n.signature = signature;
     n.publishedAt = new Date().toISOString();
-    if (pub?.name === "ListPublished") n.activeAt = pub.activeAt;
-    file.history.push({ at: n.publishedAt, epoch: n.epoch, root: n.root, total: n.total, event: "published", signature });
+    if (activeAt !== null) n.activeAt = activeAt;
+    file.history.push({ at: n.publishedAt, epoch: n.epoch, root: n.root, total: n.total, event: "published", signature, cid: n.cid });
     saveListFile(file);
-    logEvent(r.mint, { kind: "allocate", signature, xnt: n.allocated ?? "0", holders: n.holders ?? 0, epoch: n.epoch, vault: true });
-    notes.push(`published list ${n.epoch}`);
+    logEvent(file.mint, { kind: "allocate", signature, xnt: n.allocated ?? "0", holders: n.holders ?? 0, epoch: n.epoch, cid: n.cid, vault: true });
+    notes.push(`published list ${n.epoch} (${n.cid})`);
   }
 
   /** Allocate the holder pool's new XNT over eligible holders and publish the new totals. */
-  async function listStep(r: LaunchRecord, v: Vault, file: VaultListFile, notes: string[]) {
+  async function listStep(r: LaunchRecord, t: CrankToken, v: Vault, file: VaultListFile, notes: string[]) {
     if (file.next || v.pendingEpoch > 0n) return; // one list at a time: a new one would restart the wait
-    const tc = tokenConfig(r);
-    if (!tc) { notes.push("no per-launch config yet"); return; }
-    const dc = tc.distribution;
-    const pot = v.holdersFunded - v.listTotal;
-    if (pot < toBaseUnits(dc.minCycleXnt, 9)) return; // carried over, as the distributor does
-    const mint = new PublicKey(r.mint);
-    const [rows, mintInfo] = await Promise.all([scanTokenAccounts(conn, mint), conn.getAccountInfo(mint, "confirmed")]);
-    const decimals = unpackMint(mint, mintInfo, TOKEN_2022_PROGRAM_ID).decimals;
-    // The distributor's rules. The vault's auth PDA (off-curve, holds the collected tax) and
-    // a migrated token's old distributor wallet never earn.
-    const excluded = new Set([...dc.excludeOwners, ...BURN_OWNERS, r.distributor, authOf(r.mint).toBase58(), poolAuthority(xdex).toBase58()]);
-    const balances = eligibleBalances(rows, { excluded, excludeOffCurve: dc.excludeOffCurveOwners, minHolding: toBaseUnits(dc.minHoldingTokens, decimals) });
-    const shares = allocate(balances, pot);
-    let allocated = 0n;
-    for (const x of shares.values()) allocated += x;
-    if (allocated === 0n) { if (balances.size === 0) notes.push("no eligible holders yet"); return; }
-    const wallets: Record<string, string> = { ...(file.active?.wallets ?? {}) };
-    for (const [w, x] of shares) wallets[w] = (BigInt(wallets[w] ?? "0") + x).toString();
-    const total = v.listTotal + allocated;
-    const epoch = (v.listEpoch > v.pendingEpoch ? v.listEpoch : v.pendingEpoch) + 1n;
-    const { root } = buildVaultTree(v.address, wallets);
+    if (!rulesOf(r)) { notes.push("no per-launch config yet"); return; }
+    if (!v.publisher.equals(crank!.publicKey)) { notes.push(`lists are published by ${v.publisher.toBase58().slice(0, 4)}… (not this site)`); return; }
+    if (v.version < VAULT_VERSION) { notes.push("new lists wait for the vault upgrade"); return; }
+    // In fallback, publish even a small list: it ends the fallback (the site is alive).
+    const next = await core!.nextList(t, v, file.active?.wallets ?? {}, notes, inFallback(v));
+    if (!next) return;
     file.next = {
-      epoch: epoch.toString(), root: root.toString("hex"), total: total.toString(), wallets, builtAt: new Date().toISOString(),
-      allocated: allocated.toString(), holders: shares.size,
+      epoch: next.epoch.toString(), root: next.root.toString("hex"), total: next.total.toString(), wallets: next.wallets, builtAt: new Date().toISOString(),
+      allocated: next.allocated.toString(), holders: next.holders,
     };
-    saveListFile(file); // the list is on disk (and served) before it's published
-    console.log(`[vault crank] ${r.symbol}: list ${epoch}: ${xnt(allocated)} across ${shares.size} holder(s), total ${xnt(total)}`);
-    await publish(r, v, file, notes);
+    saveListFile(file); // the list is on disk (and served) before it's pinned and published
+    console.log(`[vault crank] ${r.symbol}: list ${next.epoch}: ${xnt(next.allocated)} across ${next.holders} holder(s), total ${xnt(next.total)}`);
+    await publish(t, v, file, notes);
   }
 
-  /** Pay every wallet the active list owes at least minPayoutXnt. */
-  async function payStep(r: LaunchRecord, v: Vault, file: VaultListFile, notes: string[]) {
+  /** The list `pay` checks now (a due pending list counts), from vault-list.json or IPFS; null if none. */
+  async function payList(v: Vault, file: VaultListFile): Promise<PayList | null> {
+    const eff = effectiveList(v, nowSecs() - ACTIVATION_MARGIN_SECS);
+    if (!eff) return null;
+    const root = eff.root.toString("hex");
+    const mine = [file.next, file.active].find((l) => l && l.root === root);
+    if (mine) return { root, wallets: mine.wallets };
+    const got = await listByCid(v, eff.cid, eff.root);
+    return got ? { root, wallets: got.wallets } : null;
+  }
+
+  /** Pay every wallet the active list owes at least minPayoutXnt (in fallback: pay_fallback). */
+  async function payStep(t: CrankToken, v: Vault, file: VaultListFile, notes: string[]) {
     const now = nowSecs();
     const eff = effectiveList(v, now - ACTIVATION_MARGIN_SECS);
     if (!eff) return;
     // A pending list inside the margin: wait, so every proof is for the list the program checks.
     if (!eff.pending && v.pendingEpoch > 0n && now >= v.pendingActiveAt) return;
-    const list = eff.pending ? file.next : file.active;
-    if (!list || list.root !== eff.root.toString("hex")) { notes.push("the list to pay isn't in vault-list.json"); return; }
-    const tc = tokenConfig(r);
-    const minPayout = toBaseUnits(tc?.distribution.minPayoutXnt ?? "0", 9);
-    const entries = Object.entries(list.wallets).map(([w, c]) => ({ wallet: new PublicKey(w), cumulative: BigInt(c) }));
-    // The program refuses a payout that would leave an empty wallet below the rent-exempt minimum.
-    const rentMin = RENT_EXEMPT_EMPTY;
-    const due: { wallet: PublicKey; cumulative: bigint; owed: bigint }[] = [];
-    for (let i = 0; i < entries.length; i += 100) {
-      const chunk = entries.slice(i, i + 100);
-      const [records, accounts] = await Promise.all([
-        conn.getMultipleAccountsInfo(chunk.map((e) => paidRecordPda(program, v.address, e.wallet)), "confirmed"),
-        conn.getMultipleAccountsInfo(chunk.map((e) => e.wallet), "confirmed"),
-      ]);
-      chunk.forEach((e, j) => {
-        const info = records[j];
-        const paid = info && info.owner.equals(program) ? decodePaidRecord(paidRecordPda(program, v.address, e.wallet), info.data).paid : 0n;
-        const owed = e.cumulative - paid;
-        // A payment to a wallet that doesn't exist yet must cover its rent-exempt minimum.
-        if (owed > 0n && owed >= minPayout && (accounts[j] || owed >= rentMin)) due.push({ ...e, owed });
-      });
-    }
-    if (!due.length && eff.pending) {
-      // The program switches to a new list inside `pay`. If nobody is owed minPayoutXnt yet,
-      // pay the largest amount owed anyway so the new list takes over and the next can follow.
-      const owedAll = await owedUnder(v, entries, rentMin);
-      if (owedAll) due.push(owedAll);
-    }
-    if (!due.length) return;
-    const { proofs } = buildVaultTree(v.address, list.wallets);
-    const mint = new PublicKey(r.mint);
-    const ixOf = (d: (typeof due)[number]) => payIx(program, crank!.publicKey, mint, d.wallet, d.cumulative, proofs[d.wallet.toBase58()]);
-    let txs = 0, paidWallets = 0;
-    while (due.length && txs < MAX_PAY_TXS_PER_PASS) {
-      const batch: typeof due = [];
-      while (due.length && batch.length < MAX_PAYS_PER_TX && fits([...batch, due[0]].map(ixOf))) batch.push(due.shift()!);
-      if (!batch.length) batch.push(due.shift()!);
-      txs++;
-      try {
-        const { signature, events } = await send(r.symbol, `pay ${batch.length} wallet(s)`, batch.map(ixOf), Math.min(1_400_000, 60_000 + 90_000 * batch.length), v.address);
-        // Events are the record; if they couldn't be read, log what was sent (the amounts are exact).
-        record(r.mint, v, signature, events.some((e) => e.name === "Paid") ? events
-          : batch.map((b) => ({ name: "Paid", vault: v.address.toBase58(), wallet: b.wallet.toBase58(), amount: b.owed, cumulative: b.cumulative }) as VaultEvent));
-        paidWallets += batch.length;
-      } catch (e) {
-        if (batch.length === 1) { console.error(`[vault crank] ${r.symbol}: pay ${batch[0].wallet.toBase58()} failed: ${msg(e)}`); continue; }
-        // One bad payment shouldn't hold up the rest: retry them one by one.
-        for (const b of batch) {
-          try {
-            const { signature, events } = await send(r.symbol, `pay ${b.wallet.toBase58().slice(0, 4)}…`, [ixOf(b)], 200_000, v.address);
-            record(r.mint, v, signature, events.some((x) => x.name === "Paid") ? events
-              : [{ name: "Paid", vault: v.address.toBase58(), wallet: b.wallet.toBase58(), amount: b.owed, cumulative: b.cumulative }]);
-            paidWallets++;
-          } catch (err) {
-            console.error(`[vault crank] ${r.symbol}: pay ${b.wallet.toBase58()} failed: ${msg(err)}`);
-          }
-        }
-      }
-    }
-    if (paidWallets) notes.push(`paid ${paidWallets} wallet(s)`);
-  }
-
-  /** The wallet owed the most on this list (any amount), or null. */
-  async function owedUnder(v: Vault, entries: { wallet: PublicKey; cumulative: bigint }[], rentMin: bigint) {
-    let best: { wallet: PublicKey; cumulative: bigint; owed: bigint } | null = null;
-    for (let i = 0; i < entries.length; i += 100) {
-      const chunk = entries.slice(i, i + 100);
-      const [records, accounts] = await Promise.all([
-        conn.getMultipleAccountsInfo(chunk.map((e) => paidRecordPda(program, v.address, e.wallet)), "confirmed"),
-        conn.getMultipleAccountsInfo(chunk.map((e) => e.wallet), "confirmed"),
-      ]);
-      chunk.forEach((e, j) => {
-        const info = records[j];
-        const paid = info && info.owner.equals(program) ? decodePaidRecord(paidRecordPda(program, v.address, e.wallet), info.data).paid : 0n;
-        const owed = e.cumulative - paid;
-        if (owed > 0n && (accounts[j] || owed >= rentMin) && (!best || owed > best.owed)) best = { ...e, owed };
-      });
-    }
-    return best as { wallet: PublicKey; cumulative: bigint; owed: bigint } | null;
+    const list = await payList(v, file);
+    if (!list) { notes.push("the list to pay isn't in vault-list.json or on IPFS"); return; }
+    // (A due pending list with nobody owed minPayoutXnt: core.pay pays the largest amount owed so it takes over.)
+    await core!.pay(t, v, list, inFallback(v, now) ? "fallback" : "pay", notes);
   }
 
   /** One token's pass. Each step is on its own: a failed sale doesn't stop payouts. */
   async function crankToken(r: LaunchRecord) {
+    const c = core!;
     const notes: string[] = [];
     let ok = true;
     const step = async (name: string, fn: () => Promise<unknown>) => {
       try { await fn(); } catch (e) {
-        // A v1 vault under the v2 program refuses everything but upgrade_vault: wait for the upgrade.
+        // An old vault under the new program refuses everything but upgrade_vault: wait for the upgrade.
         if (/: WrongVersion$/.test(msg(e))) { notes.push(`${name} waits for the vault upgrade`); return; }
         ok = false; notes.push(`${name} failed: ${msg(e).slice(0, 200)}`); console.error(`[vault crank] ${r.symbol} ${name}: ${msg(e)}`);
       }
     };
-    const mint = new PublicKey(r.mint);
+    const t = tokenOf(r);
     // Only the creator can start a vault (init_vault); until then there's nothing to crank.
-    const v = await readVault(mint);
+    const v = await readVault(t.mint);
     if (!v) { status.set(r.mint, { at: new Date().toISOString(), ok, notes: ["no vault yet (the creator starts it after the LP lock)"] }); return; }
     seen.add(r.mint);
     let vault = v;
-    await step("upgrade_vault", async () => { vault = await upgradeStep(r, v, notes); });
-    let pool: VaultPoolAccounts | null = null;
-    await step("pool", async () => {
-      const [info] = await conn.getMultipleAccountsInfo([vault.pool], "confirmed");
-      pool = poolAccountsFrom(xdex, decodePool(vault.pool, info, xdex), mint);
-    });
-    await step("collect", () => collectStep(r, vault, notes));
+    await step("upgrade_vault", async () => { vault = await c.upgrade(t, v, notes); });
+    let pool: Awaited<ReturnType<typeof c.poolOf>> | null = null;
+    await step("pool", async () => { pool = await c.poolOf(vault); });
+    await step("collect", () => c.collect(t, vault, notes));
     if (pool) {
-      await step("sell", () => sellStep(r, pool!, notes));
-      await step("add_liquidity", () => liquidityStep(r, pool!, notes));
+      await step("sell", () => c.sell(t, pool!, notes));
+      await step("add_liquidity", () => c.liquidity(t, pool!, notes));
     }
-    await step("fund_creator", () => creatorStep(r, notes));
+    await step("fund_creator", () => c.creator(t, notes));
     await step("rewards list", async () => {
-      const now = await readVault(mint);
+      const now = await readVault(t.mint);
       if (!now) return;
       const file: VaultListFile = readListFile(r.mint) ?? { version: 1, mint: r.mint, vault: now.address.toBase58(), active: null, next: null, history: [] };
-      if (!(await syncList(r, now, file, notes))) return;
-      const fresh = (await readVault(mint)) ?? now; // a re-sent list changes the pending fields
-      await listStep(r, fresh, file, notes);
-      const latest = (await readVault(mint)) ?? fresh;
-      await payStep(r, latest, file, notes);
+      if (!(await syncList(t, now, file, notes))) return;
+      const fresh = (await readVault(t.mint)) ?? now; // a re-sent list changes the pending fields
+      await listStep(r, t, fresh, file, notes);
+      const latest = (await readVault(t.mint)) ?? fresh;
+      await payStep(t, latest, file, notes);
     });
     viewCache.delete(r.mint);
     status.set(r.mint, { at: new Date().toISOString(), ok, notes });
@@ -672,5 +511,74 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     await vaultTokens().catch((e) => console.error(`[vault] listing vault tokens failed: ${msg(e)}`));
   }
 
-  return { program, isVaultMint, authOf, view, listView, badge, rewardMintOf, crankOnce, discover, crankOn: () => !!crank, passMs: PASS_MS };
+  // ---------- visitors' wallets ----------
+  /**
+   * "Run the vault now": the permissionless steps due right now as instruction lists for
+   * `caller`'s wallet to sign and pay (it earns the sale's crank reward), plus an estimate.
+   */
+  async function crankPlan(mintStr: string, caller: PublicKey) {
+    const mint = new PublicKey(mintStr).toBase58();
+    const r = readLaunch(mint);
+    if (!r || !isVaultMint(mint)) throw new Error("This token's tax isn't held by the Tax Vault.");
+    const v = await readVault(new PublicKey(mint));
+    if (!v) throw new Error("This token's vault hasn't been started yet.");
+    const t = tokenOf(r);
+    const file = readListFile(mint) ?? { version: 1 as const, mint, vault: v.address.toBase58(), active: null, next: null, history: [] };
+    const list = await payList(v, file).catch(() => null);
+    return planForCaller(conn, { program, xdex, network: cfg.network }, v, t, caller, list, { maxPays: 4, minPayout: t.rules.minPayout });
+  }
+
+  /**
+   * What the "Run the vault now" transactions did, read from the chain (only this program's
+   * events count), and added to the token's log so the stats include them.
+   */
+  async function crankResult(mintStr: string, signatures: string[]) {
+    const mint = new PublicKey(mintStr).toBase58();
+    if (!isVaultMint(mint)) throw new Error("This token's tax isn't held by the Tax Vault.");
+    const v = await readVault(new PublicKey(mint));
+    if (!v) throw new Error("This token's vault hasn't been started yet.");
+    const logged = loggedSignatures(mint);
+    const out: { signature: string; ok: boolean; events: Record<string, string | boolean>[] }[] = [];
+    let reward = 0n;
+    for (const sig of signatures.slice(0, 10)) {
+      if (!/^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(sig)) continue;
+      let tx = null;
+      for (let i = 0; i < 4 && !tx; i++) {
+        if (i) await new Promise((res) => setTimeout(res, 1_500));
+        tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+      }
+      if (!tx?.meta) { out.push({ signature: sig, ok: false, events: [] }); continue; }
+      const events = tx.meta.err ? [] : parseEvents(tx.meta.logMessages ?? [], program).filter((e) => e.vault === v.address.toBase58());
+      const sender = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses }).get(0)!.toBase58();
+      if (events.length && !logged.has(sig)) { record(mint, v, sig, events, sender); logged.add(sig); }
+      for (const e of events) if (e.name === "Sold") reward += e.crankReward;
+      out.push({ signature: sig, ok: !tx.meta.err, events: events.map((e) => Object.fromEntries(Object.entries(e).map(([k, x]) => [k, typeof x === "bigint" ? x.toString() : x]))) });
+    }
+    viewCache.delete(mint);
+    return { results: out, crankRewardLamports: reward.toString() };
+  }
+
+  /**
+   * v3: the guardian (the creator) appoints a new publisher, once the publisher has been
+   * silent long enough. Refused with a clear message before then or for another wallet.
+   */
+  async function appointIxs(mintStr: string, guardian: PublicKey, newPublisher: PublicKey): Promise<TransactionInstruction[]> {
+    const mint = new PublicKey(mintStr);
+    if (!isVaultMint(mint.toBase58())) throw new Error("This token's tax isn't held by the Tax Vault.");
+    const v = await readVault(mint);
+    if (!v) throw new Error("This token's vault hasn't been started yet.");
+    if (v.version < 3) throw new Error("This vault hasn't been upgraded to v3 yet; run the vault once first.");
+    if (!v.guardian.equals(guardian)) throw new Error(`Only the vault's guardian (the creator, ${v.guardian.toBase58().slice(0, 4)}…${v.guardian.toBase58().slice(-4)}) can appoint a publisher.`);
+    if (newPublisher.equals(v.publisher)) throw new Error("That wallet is already the publisher.");
+    const at = appointAllowedAt(v)!;
+    if (nowSecs() < at) {
+      throw new Error(`The publisher published a list ${new Date(v.lastPublishAt * 1000).toUTCString()}; a new publisher can be appointed from ${new Date(at * 1000).toUTCString()}.`);
+    }
+    return [appointPublisherIx(program, guardian, mint, newPublisher)];
+  }
+
+  return {
+    program, isVaultMint, authOf, view, listView, badge, rewardMintOf, crankOnce, discover, crankPlan, crankResult, appointIxs,
+    crankOn: () => !!crank, passMs: PASS_MS,
+  };
 }

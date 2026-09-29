@@ -13,9 +13,15 @@
  * 552 bytes (a 480-byte v1 vault is brought up to date by `upgrade_vault`); the guardian
  * may cancel at most MAX_CANCELS_IN_ROW lists before one goes live.
  *
+ * v3 (the spec's "# v3"): keeps working if the operator disappears. Vaults are 640 bytes and
+ * record the last publish time and the list files' IPFS addresses (CIDs); the guardian may
+ * appoint a new publisher after APPOINT_AFTER_SECS of silence, and after FALLBACK_AFTER_SECS
+ * anyone may pay holders from the last list scaled up to everything funded (pay_fallback).
+ *
  * Nothing here signs or sends.
  */
 import crypto from "node:crypto";
+import bs58 from "bs58";
 import { PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync,
@@ -63,7 +69,17 @@ export const rewardImpactBps = (tradeFeeRate: bigint | number) => Math.min(REWAR
 /** v2: the guardian may cancel this many lists in a row; a list going live resets the count. */
 export const MAX_CANCELS_IN_ROW = 2;
 /** The Vault layout version `init_vault` and `upgrade_vault` write. */
-export const VAULT_VERSION = 2;
+export const VAULT_VERSION = 3;
+/**
+ * v3 windows, counted from the vault's last_publish_at: the guardian may appoint a new
+ * publisher after APPOINT_AFTER_SECS, anyone may pay_fallback after FALLBACK_AFTER_SECS.
+ * The program's `short-windows` feature (local tests only) uses 15 s and 30 s; set
+ * TAX_VAULT_SHORT_WINDOWS=1 to match such a build.
+ */
+export const VAULT_WINDOWS = process.env.TAX_VAULT_SHORT_WINDOWS
+  ? { appointAfterSecs: 15, fallbackAfterSecs: 30 }
+  : { appointAfterSecs: 7 * 86_400, fallbackAfterSecs: 30 * 86_400 };
+export type VaultWindows = typeof VAULT_WINDOWS;
 
 /**
  * v2: the creator reward is always paid in the network's reward token (the program's
@@ -107,6 +123,10 @@ export const IX = {
   cancelList: disc("global:cancel_list"),
   pay: disc("global:pay"),
   upgradeVault: disc("global:upgrade_vault"),
+  // v3
+  setPublisher: disc("global:set_publisher"),
+  appointPublisher: disc("global:appoint_publisher"),
+  payFallback: disc("global:pay_fallback"),
 };
 export const VAULT_DISC = disc("account:Vault");
 export const PAID_RECORD_DISC = disc("account:PaidRecord");
@@ -118,6 +138,9 @@ export const EVENT = {
   ListPublished: disc("event:ListPublished"),
   ListCancelled: disc("event:ListCancelled"),
   Paid: disc("event:Paid"),
+  // v3
+  PublisherChanged: disc("event:PublisherChanged"),
+  FallbackPaid: disc("event:FallbackPaid"),
 };
 /** Anchor numbers custom errors from 6000 in declaration order. */
 export const ERRORS = [
@@ -126,6 +149,8 @@ export const ERRORS = [
   "TooSmall", "Insolvent", "MathOverflow", "WrongAccount", "OneSellPerSlot",
   // v2
   "WrongVersion", "TooManyCancels", "BadRewardMint",
+  // v3
+  "PublisherActive", "FallbackNotActive",
 ] as const;
 export const errorName = (code: number) => ERRORS[code - 6000] ?? null;
 /** The program's error name in a simulation/transaction error ({"Custom":6012} etc.), or null. */
@@ -196,6 +221,14 @@ export interface Vault {
   totalRewardOut: bigint;
   /** Slot of the last reward swap in fund_creator (one per slot, v2). */
   lastRewardSlot: bigint;
+  /** Unix time of the last publish_list, or of creation / the v3 upgrade (v3; 0 before). */
+  lastPublishAt: number;
+  /** IPFS address of the active list file, [codec, sha256 digest] (33 bytes, all zero = none; v3). */
+  listCid: Buffer;
+  /** IPFS address of the pending list file (v3). */
+  pendingCid: Buffer;
+  /** XNT paid by pay_fallback, ever (v3). */
+  fallbackPaid: bigint;
 }
 const VAULT_KEYS = ["mint", "pool", "creatorNft", "rewardMint", "rewardSwapPool", "publisher", "guardian"] as const;
 const VAULT_U64S_A = ["pendingTokens", "lpTokens", "sellLp", "sellCreator", "sellHolders", "xntLp", "xntCreator", "holdersFunded", "holdersPaid", "listEpoch"] as const;
@@ -206,6 +239,10 @@ export const VAULT_LEN = 8 + 32 * 7 + 2 * 3 + 8 * 10 + 32 + 8 + 8 + 32 + 8 + 8 +
 export const VAULT_V2_LEN = VAULT_LEN + 1 + 1 + 8 + 8 + 54;
 /** Offsets of the v2 fields. */
 export const VAULT_V2_OFFSETS = { version: 480, cancelsInRow: 481, totalRewardOut: 482, lastRewardSlot: 490, reserved: 498 } as const;
+/** v3 reuses v2's reserved bytes and grows to 640: last_publish_at, list_cid, pending_cid, fallback_paid, 60 reserved. */
+export const VAULT_V3_LEN = 640;
+export const VAULT_V3_OFFSETS = { lastPublishAt: 498, listCid: 506, pendingCid: 539, fallbackPaid: 572, reserved: 580 } as const;
+export const CID_LEN = 33;
 export const PAID_RECORD_LEN = 8 + 32 + 32 + 8 + 1;
 
 export function decodeVault(address: PublicKey, d: Buffer): Vault {
@@ -232,12 +269,19 @@ export function decodeVault(address: PublicKey, d: Buffer): Vault {
   } else {
     v.version = 1; v.cancelsInRow = 0; v.totalRewardOut = 0n; v.lastRewardSlot = 0n;
   }
+  // v3 fields; an older (480/552-byte) vault reads them as zero until it's upgraded.
+  const o3 = VAULT_V3_OFFSETS;
+  const v3 = d.length >= VAULT_V3_LEN && (v.version as number) >= 3;
+  v.lastPublishAt = v3 ? Number(d.readBigInt64LE(o3.lastPublishAt)) : 0;
+  v.listCid = v3 ? Buffer.from(d.subarray(o3.listCid, o3.listCid + CID_LEN)) : Buffer.alloc(CID_LEN);
+  v.pendingCid = v3 ? Buffer.from(d.subarray(o3.pendingCid, o3.pendingCid + CID_LEN)) : Buffer.alloc(CID_LEN);
+  v.fallbackPaid = v3 ? d.readBigUInt64LE(o3.fallbackPaid) : 0n;
   return v as unknown as Vault;
 }
 
-/** The inverse of decodeVault (tests and local fixtures): 480 bytes for version 1, else 552. */
+/** The inverse of decodeVault (tests and local fixtures): 480 bytes for version 1, 552 for 2, else 640. */
 export function encodeVault(v: Omit<Vault, "address">): Buffer {
-  const d = Buffer.alloc(v.version >= 2 ? VAULT_V2_LEN : VAULT_LEN);
+  const d = Buffer.alloc(v.version >= 3 ? VAULT_V3_LEN : v.version >= 2 ? VAULT_V2_LEN : VAULT_LEN);
   VAULT_DISC.copy(d, 0);
   let o = 8;
   const key = (k: PublicKey) => { k.toBuffer().copy(d, o); o += 32; };
@@ -257,6 +301,12 @@ export function encodeVault(v: Omit<Vault, "address">): Buffer {
     d[VAULT_V2_OFFSETS.version] = v.version; d[VAULT_V2_OFFSETS.cancelsInRow] = v.cancelsInRow;
     d.writeBigUInt64LE(v.totalRewardOut, VAULT_V2_OFFSETS.totalRewardOut);
     d.writeBigUInt64LE(v.lastRewardSlot, VAULT_V2_OFFSETS.lastRewardSlot);
+  }
+  if (v.version >= 3) {
+    const o3 = VAULT_V3_OFFSETS;
+    d.writeBigInt64LE(BigInt(v.lastPublishAt), o3.lastPublishAt);
+    v.listCid.copy(d, o3.listCid, 0, CID_LEN); v.pendingCid.copy(d, o3.pendingCid, 0, CID_LEN);
+    d.writeBigUInt64LE(v.fallbackPaid, o3.fallbackPaid);
   }
   return d;
 }
@@ -285,10 +335,90 @@ export const sellBuckets = (v: Pick<Vault, "sellLp" | "sellCreator" | "sellHolde
  * the active one inside `pay`, so proofs must be built for it. Null when no list exists.
  */
 export function effectiveList(v: Vault, nowSec: number) {
-  if (v.pendingEpoch > 0n && nowSec >= v.pendingActiveAt) return { epoch: v.pendingEpoch, root: v.pendingRoot, total: v.pendingTotal, pending: true };
-  if (v.listEpoch > 0n) return { epoch: v.listEpoch, root: v.listRoot, total: v.listTotal, pending: false };
+  if (v.pendingEpoch > 0n && nowSec >= v.pendingActiveAt) return { epoch: v.pendingEpoch, root: v.pendingRoot, total: v.pendingTotal, cid: v.pendingCid, pending: true };
+  if (v.listEpoch > 0n) return { epoch: v.listEpoch, root: v.listRoot, total: v.listTotal, cid: v.listCid, pending: false };
   return null;
 }
+
+// ---------- v3: publisher silence, appointing, fallback ----------
+/** When the guardian may appoint a new publisher (unix seconds); null before v3. */
+export const appointAllowedAt = (v: Pick<Vault, "version" | "lastPublishAt">, w: VaultWindows = VAULT_WINDOWS) =>
+  (v.version >= 3 ? v.lastPublishAt + w.appointAfterSecs : null);
+/** When anyone may pay holders from the last list with pay_fallback (unix seconds); null before v3. */
+export const fallbackAt = (v: Pick<Vault, "version" | "lastPublishAt">, w: VaultWindows = VAULT_WINDOWS) =>
+  (v.version >= 3 ? v.lastPublishAt + w.fallbackAfterSecs : null);
+/**
+ * Whether pay_fallback works at `nowSec`: a v3 vault, a list active (a due pending list
+ * counts: the program activates it first), nothing else pending, and no publish for
+ * FALLBACK_AFTER_SECS.
+ */
+export function fallbackActive(v: Vault, nowSec: number, w: VaultWindows = VAULT_WINDOWS) {
+  if (v.version < 3) return false;
+  const eff = effectiveList(v, nowSec);
+  const stillPending = v.pendingEpoch > 0n && !eff?.pending;
+  return !!eff && !stillPending && nowSec >= v.lastPublishAt + w.fallbackAfterSecs;
+}
+/**
+ * What pay_fallback lets a wallet have been paid in all: its list share scaled up to
+ * everything funded, floor(cumulative * holders_funded / list_total) (the program's u128
+ * maths). The amount paid is this minus its PaidRecord.
+ */
+export const fallbackEntitled = (cumulative: bigint, holdersFunded: bigint, listTotal: bigint) =>
+  (listTotal === 0n ? 0n : (cumulative * holdersFunded) / listTotal);
+
+// ---------- list files on IPFS: CIDs <-> the program's [codec, sha256 digest] ----------
+/** Multicodecs a list file's CID may use (the CID is stored, never interpreted, on-chain). */
+export const CID_CODEC = { raw: 0x55, dagPb: 0x70 } as const;
+const B32 = "abcdefghijklmnopqrstuvwxyz234567";
+/** RFC 4648 base32, lowercase, no padding (multibase "b"). */
+export function base32Encode(b: Uint8Array) {
+  let out = "", bits = 0, acc = 0;
+  for (const x of b) {
+    acc = (acc << 8) | x; bits += 8;
+    while (bits >= 5) { out += B32[(acc >>> (bits - 5)) & 31]; bits -= 5; }
+    acc &= (1 << bits) - 1;
+  }
+  if (bits > 0) out += B32[(acc << (5 - bits)) & 31];
+  return out;
+}
+export function base32Decode(s: string) {
+  const out: number[] = [];
+  let bits = 0, acc = 0;
+  for (const ch of s.toLowerCase()) {
+    const i = B32.indexOf(ch);
+    if (i < 0) throw new Error(`Invalid base32 character "${ch}"`);
+    acc = (acc << 5) | i; bits += 5;
+    if (bits >= 8) { out.push((acc >>> (bits - 8)) & 0xff); bits -= 8; }
+    acc &= (1 << bits) - 1;
+  }
+  return Buffer.from(out);
+}
+/**
+ * A CID string as the program stores it: 33 bytes, [codec, sha256 digest]. Takes a CIDv1
+ * in base32 ("b…", sha2-256, raw or dag-pb) or a CIDv0 ("Qm…", dag-pb).
+ */
+export function cidToBytes(cid: string): Buffer {
+  let codec: number, mh: Buffer;
+  if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(cid)) {
+    codec = CID_CODEC.dagPb; mh = Buffer.from(bs58.decode(cid));
+  } else if (/^b[a-z2-7]+$/i.test(cid)) {
+    const d = base32Decode(cid.slice(1));
+    if (d[0] !== 0x01) throw new Error("Only CIDv1 (or v0) is supported");
+    codec = d[1]; mh = d.subarray(2);
+  } else throw new Error(`Not a CIDv1 base32 or CIDv0 string: ${cid}`);
+  if (codec !== CID_CODEC.raw && codec !== CID_CODEC.dagPb) throw new Error(`Unsupported CID codec 0x${codec.toString(16)}`);
+  if (mh.length !== 34 || mh[0] !== 0x12 || mh[1] !== 0x20) throw new Error("The CID's hash must be sha2-256");
+  return Buffer.concat([Buffer.from([codec]), mh.subarray(2)]);
+}
+/** The CIDv1 string (base32 "b…") of a stored [codec, digest]; null for all zeros (no file). */
+export function cidFromBytes(b: Uint8Array): string | null {
+  if (b.length !== CID_LEN) throw new Error("A stored CID is 33 bytes");
+  if (b.every((x) => x === 0)) return null;
+  if (b[0] !== CID_CODEC.raw && b[0] !== CID_CODEC.dagPb) throw new Error(`Unsupported CID codec 0x${b[0].toString(16)}`);
+  return "b" + base32Encode(Buffer.concat([Buffer.from([0x01, b[0], 0x12, 0x20]), Buffer.from(b.subarray(1))]));
+}
+/** The CIDv1 of `bytes` stored as one raw block (what IPFS gives a small file with raw leaves). */
+export const rawCid = (bytes: Uint8Array) => cidFromBytes(Buffer.concat([Buffer.from([CID_CODEC.raw]), crypto.createHash("sha256").update(bytes).digest()]))!;
 
 // ---------- XDEX accounts the vault's sell and add_liquidity need ----------
 export interface VaultPoolAccounts {
@@ -452,7 +582,7 @@ export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: Pub
   });
 }
 
-/** v2: bring a 480-byte v1 vault up to the 552-byte layout (anyone; `payer` pays the extra rent). */
+/** Bring a 480-byte v1 or 552-byte v2 vault up to the 640-byte v3 layout (anyone; `payer` pays the extra rent). */
 export function upgradeVaultIx(programId: PublicKey, payer: PublicKey, mint: PublicKey) {
   return new TransactionInstruction({
     programId, data: Buffer.from(IX.upgradeVault),
@@ -460,11 +590,28 @@ export function upgradeVaultIx(programId: PublicKey, payer: PublicKey, mint: Pub
   });
 }
 
-export function publishListIx(programId: PublicKey, publisher: PublicKey, mint: PublicKey, root: Buffer, epoch: bigint, total: bigint) {
+/**
+ * v3: publish a list (pending for LIST_DELAY_SECS) with its file's IPFS address `cid` (33
+ * bytes from cidToBytes, or all zero for none). Restarts the appoint / fallback clocks.
+ */
+export function publishListIx(programId: PublicKey, publisher: PublicKey, mint: PublicKey, root: Buffer, epoch: bigint, total: bigint, cid: Buffer) {
   if (root.length !== 32) throw new Error("root must be 32 bytes");
-  const data = Buffer.alloc(8 + 32 + 8 + 8);
-  IX.publishList.copy(data, 0); root.copy(data, 8); data.writeBigUInt64LE(epoch, 40); data.writeBigUInt64LE(total, 48);
+  if (cid.length !== CID_LEN) throw new Error("cid must be 33 bytes");
+  const data = Buffer.alloc(8 + 32 + 8 + 8 + CID_LEN);
+  IX.publishList.copy(data, 0); root.copy(data, 8); data.writeBigUInt64LE(epoch, 40); data.writeBigUInt64LE(total, 48); cid.copy(data, 56);
   return new TransactionInstruction({ programId, data, keys: [m(publisher, true, false), m(vaultPda(programId, mint), false, true)] });
+}
+
+/** v3: the publisher hands its role to `newPublisher` (immediate). */
+export function setPublisherIx(programId: PublicKey, publisher: PublicKey, mint: PublicKey, newPublisher: PublicKey) {
+  const data = Buffer.concat([IX.setPublisher, newPublisher.toBuffer()]);
+  return new TransactionInstruction({ programId, data, keys: [m(publisher, true, false), m(vaultPda(programId, mint), false, true)] });
+}
+
+/** v3: the guardian appoints a new publisher; the program refuses (PublisherActive) until appointAllowedAt. */
+export function appointPublisherIx(programId: PublicKey, guardian: PublicKey, mint: PublicKey, newPublisher: PublicKey) {
+  const data = Buffer.concat([IX.appointPublisher, newPublisher.toBuffer()]);
+  return new TransactionInstruction({ programId, data, keys: [m(guardian, true, false), m(vaultPda(programId, mint), false, true)] });
 }
 
 export function cancelListIx(programId: PublicKey, guardian: PublicKey, mint: PublicKey) {
@@ -475,9 +622,21 @@ export function cancelListIx(programId: PublicKey, guardian: PublicKey, mint: Pu
 
 /** Pay `wallet` up to its `cumulative` total (proved against the list); `payer` creates its PaidRecord if needed. */
 export function payIx(programId: PublicKey, payer: PublicKey, mint: PublicKey, wallet: PublicKey, cumulative: bigint, proof: Buffer[]) {
+  return payLikeIx(IX.pay, programId, payer, mint, wallet, cumulative, proof);
+}
+
+/**
+ * v3: in fallback, pay `wallet` up to fallbackEntitled(cumulative, ...) of its entry in the
+ * active list. Same data and accounts as `pay`; anyone may send it.
+ */
+export function payFallbackIx(programId: PublicKey, payer: PublicKey, mint: PublicKey, wallet: PublicKey, cumulative: bigint, proof: Buffer[]) {
+  return payLikeIx(IX.payFallback, programId, payer, mint, wallet, cumulative, proof);
+}
+
+function payLikeIx(tag: Buffer, programId: PublicKey, payer: PublicKey, mint: PublicKey, wallet: PublicKey, cumulative: bigint, proof: Buffer[]) {
   const vault = vaultPda(programId, mint);
   const data = Buffer.alloc(8 + 8 + 4 + 32 * proof.length);
-  IX.pay.copy(data, 0); data.writeBigUInt64LE(cumulative, 8); data.writeUInt32LE(proof.length, 16);
+  tag.copy(data, 0); data.writeBigUInt64LE(cumulative, 8); data.writeUInt32LE(proof.length, 16);
   proof.forEach((p, i) => p.copy(data, 20 + 32 * i));
   return new TransactionInstruction({
     programId, data,
@@ -510,7 +669,9 @@ export type VaultEvent =
   | { name: "CreatorFunded"; vault: string; xntIn: bigint; rewardOut: bigint; rewardMint: string }
   | { name: "ListPublished"; vault: string; epoch: bigint; root: string; total: bigint; activeAt: number }
   | { name: "ListCancelled"; vault: string; epoch: bigint }
-  | { name: "Paid"; vault: string; wallet: string; amount: bigint; cumulative: bigint };
+  | { name: "Paid"; vault: string; wallet: string; amount: bigint; cumulative: bigint }
+  | { name: "PublisherChanged"; vault: string; old: string; new: string; byGuardian: boolean }
+  | { name: "FallbackPaid"; vault: string; wallet: string; amount: bigint; entitled: bigint };
 
 /** Decode one event's bytes (discriminator first); null for anything else. */
 export function decodeEvent(d: Buffer): VaultEvent | null {
@@ -539,16 +700,32 @@ export function decodeEvent(d: Buffer): VaultEvent | null {
     }
     if (tag.equals(EVENT.ListCancelled)) return { name: "ListCancelled", vault: key(), epoch: u64() };
     if (tag.equals(EVENT.Paid)) return { name: "Paid", vault: key(), wallet: key(), amount: u64(), cumulative: u64() };
+    if (tag.equals(EVENT.PublisherChanged)) {
+      const vault = key(), old = key(), nu = key();
+      if (o >= d.length) return null;
+      return { name: "PublisherChanged", vault, old, new: nu, byGuardian: d[o] === 1 };
+    }
+    if (tag.equals(EVENT.FallbackPaid)) return { name: "FallbackPaid", vault: key(), wallet: key(), amount: u64(), entitled: u64() };
   } catch { /* truncated: not ours */ }
   return null;
 }
 
-/** Every vault event in a transaction's logs ("Program data: <base64>" lines from emit!). */
-export function parseEvents(logs: readonly string[]): VaultEvent[] {
+/**
+ * Every vault event in a transaction's logs ("Program data: <base64>" lines from emit!).
+ * With `programId`, only lines the tax_vault program itself wrote count (another program in
+ * the same transaction could log look-alike bytes), e.g. for transactions the site didn't build.
+ */
+export function parseEvents(logs: readonly string[], programId?: PublicKey): VaultEvent[] {
   const out: VaultEvent[] = [];
+  const stack: string[] = [];
+  const id = programId?.toBase58();
   for (const l of logs) {
+    const call = /^Program (\w+) invoke \[\d+\]$/.exec(l);
+    if (call) { stack.push(call[1]); continue; }
+    if (/^Program \w+ (success|failed)/.test(l)) { stack.pop(); continue; }
     const mm = /^Program data: (.+)$/.exec(l);
     if (!mm) continue;
+    if (id && stack.at(-1) !== id) continue;
     const e = decodeEvent(Buffer.from(mm[1], "base64"));
     if (e) out.push(e);
   }
@@ -576,5 +753,9 @@ export function vaultJson(v: Vault) {
       creatorXnt: s(v.totalCreatorXnt), crankRewards: s(v.totalCrankRewards), rewardOut: s(v.totalRewardOut),
     },
     createdAt: v.createdAt,
+    // v3: who publishes, when the publisher went silent, and the list files on IPFS.
+    lastPublishAt: v.version >= 3 ? v.lastPublishAt : null,
+    listCid: v.version >= 3 ? cidFromBytes(v.listCid) : null, pendingCid: v.version >= 3 ? cidFromBytes(v.pendingCid) : null,
+    fallbackPaid: s(v.fallbackPaid),
   };
 }

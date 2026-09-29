@@ -346,7 +346,9 @@ WebP or GIF, checked by its bytes, ≤ 500 KB, 20 uploads per IP per hour) and n
 kept on the server. The token's metadata JSON (name, symbol, description, image) is
 pinned too, so the on-chain link points to IPFS (`factory.ipfsGateway`, default
 `https://gateway.pinata.cloud/ipfs/`) and keeps working even if the site goes away. Without a key,
-creators paste a logo link and the site serves the metadata as before.
+creators paste a logo link and the site serves the metadata as before. Tax Vault rewards
+lists are pinned the same way (v3). For rehearsals the upload API and the gateway can be
+pointed at a local stand-in (`factory.pinataApiUrl` / `PINATA_API_URL`, `IPFS_GATEWAY`).
 
 ## Holder passes (pull-based holder rewards)
 
@@ -433,9 +435,63 @@ rules checked on-chain. Anyone can crank it; the site's crank does it automatica
 - `upgrade_vault` converts a v1 vault in place (480 → 552 bytes); the crank runs it by
   itself, and older XNT rewards stay claimable next to the new token.
 
-Enabled by `factory.taxVault: { programId, publisherKeypair }`. The publisher key can
-only post lists (which the guardian can cancel) and cannot move funds. Mainnet stays on
-distributors, with launches paused, until the vault is audited.
+**v3** (built and rehearsed; not deployed yet): the vault keeps working if 99 + Tax
+disappears (see the next section).
+
+- every rewards list file is **pinned to IPFS** before it is published, and its CID is
+  stored on-chain next to the list's Merkle root, so anyone can pay from it without the
+  site (no pin, no publish: the crank retries next pass);
+- the **guardian** (the creator) can **appoint a new publisher** once the publisher has
+  published nothing for **7 days**; before that it can't, so a stolen creator key can't
+  take over while the site is alive;
+- after **30 days** without a published list, **anyone** can keep paying holders from the
+  last list with `pay_fallback`: each wallet's share of that list scaled up to all the XNT
+  set aside for holders so far (`floor(cumulative × funded / list_total)`). Any new list
+  ends the fallback; lists never pay anyone less than they already received;
+- the token page shows the publisher, when it last published, when appointing / fallback
+  open up, and a **Run the vault now** button: the visitor's wallet signs the steps that
+  are due (collect, sell, liquidity, creator reward, a few payouts) and earns the crank
+  reward. The creator gets an **Appoint a new publisher** form there once it's allowed;
+- `upgrade_vault` converts v1 and v2 vaults in place (→ 640 bytes); the crank does it.
+
+Enabled by `factory.taxVault: { programId, publisherKeypair }` (v3 lists also need
+`factory.pinataJwt`). The publisher key can only post lists (which the guardian can
+cancel) and cannot move funds. Mainnet stays on distributors, with launches paused, until
+the vault is audited.
+
+## If 99 + Tax goes offline
+
+Tax Vault tokens don't depend on this site, its server or its keys (v3):
+
+- **Always, with no one's permission:** collecting the tax, burning, selling, adding
+  liquidity, the creator reward and paying holders from a published list are program
+  instructions anyone can send; whoever sends a sale earns the crank reward (1% of the
+  holders' XNT from it, up to 0.05 XNT). The list files are on IPFS and their CIDs are
+  on-chain; a file is only used if it gives the on-chain Merkle root.
+- **Anyone can run the crank** with only an RPC and a funded wallet:
+
+  ```bash
+  npx tsx scripts/crank.ts --rpc https://rpc.testnet.x1.xyz --keypair <wallet.json> --all --loop 300
+  # one token: --mint <mint>; other gateways: --ipfs-gateway https://ipfs.io/ipfs/
+  ```
+
+  It finds every vault of the program (`--program`, default the testnet `tax_vault`),
+  reads the rules the site pinned with each list, and runs collect, sell, add liquidity,
+  creator reward and payouts (`pay`, or `pay_fallback` in fallback).
+- **New lists need a publisher.** If the publisher has published nothing for 7 days, the
+  token's creator (its guardian) can appoint a new one, on the NFT page ("Appoint a new
+  publisher", if a copy of the site is up) or by sending `appoint_publisher` themselves.
+  The new publisher runs the same script with its key and a Pinata key:
+
+  ```bash
+  PINATA_JWT=<key> npx tsx scripts/crank.ts --rpc <url> --keypair <wallet.json> --publisher <publisher.json> --all --loop 300
+  ```
+
+  Its lists use the same eligibility rules (pinned with each list), start every wallet
+  from what it was already paid, and end any fallback.
+- **If nobody publishes for 30 days**, holders are still paid: anyone running the crank
+  pays each wallet of the last list its share of everything funded since (`pay_fallback`).
+  New holders who bought after that list aren't in it until a publisher publishes again.
 
 ## Leaderboard, burns and earnings
 
@@ -489,7 +545,7 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # 71 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, holder-pass and tax-vault trees
+npm test          # 80 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
@@ -505,6 +561,8 @@ script's header for the validator command):
 | `scripts/local-vault-test.ts`, `scripts/vault-rehearsal.ts` | Tax Vault v1: the program alone, then site + crank, including migrating a distributor token |
 | `scripts/local-vault-v2-test.ts` | Tax Vault v2: a v1 vault upgraded in place, the XNM creator-reward swap, the guardian cancel limit, error cases |
 | `scripts/vault-v2-rehearsal.ts` | The v2 rollout as it happens on testnet: the previous site + v1 program, then the program upgrade and the new site upgrading the vault by itself |
+| `scripts/local-vault-v3-test.ts` | Tax Vault v3 program alone: v1/v2 vaults upgraded, list CIDs, appointing a publisher, `pay_fallback` maths and error cases |
+| `scripts/vault-v3-rehearsal.ts` | The "operator dies" drill: previous site + v2 program, v3 deployed, the new site upgrades the vault and publishes lists to IPFS (a local stand-in), "Run the vault now" from a visitor's wallet; then the site stops and another wallet keeps holders paid with `scripts/crank.ts` from the IPFS list, through fallback, until the creator's appointed publisher publishes again |
 | `scripts/local-holder-pass-test.ts`, `scripts/local-claims-cycle-test.ts` | Holder passes |
 
 Use the solana 3.x CLI and test validator for the program upgrade tests: the older 2.1
@@ -529,7 +587,8 @@ program, a freezable NFT mint, unlocking early or a forever lock), crash recover
 distributor's journal, and program upgrades against the real lock accounts.
 
 **Not yet:** an independent audit of `lp_locker`, `bonding_curve` and `tax_vault` (all
-still upgradeable by the team); Tax Vault v2 on testnet and the vault on mainnet
+still upgradeable by the team); Tax Vault v2 and v3 on testnet (v3 is rehearsed locally,
+including a real Pinata pin only in production) and the vault on mainnet
 (mainnet launches stay paused until then); a JACK-paired launch on mainnet itself; Holder
 Passes on a public network; the bonding curve on mainnet.
 

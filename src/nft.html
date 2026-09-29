@@ -168,6 +168,21 @@ table.burns .num { text-align: right; }
 .vault-row { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 13px; }
 .vault-badge { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 3px 10px; border: 1px solid var(--lime); color: var(--lime); background: rgb(182 255 59 / .06); cursor: help; white-space: nowrap; }
 .vault-row { margin: -8px 0 16px; }
+.vault-panel { margin-bottom: 12px; }
+.vault-panel .vp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.vault-panel dl { margin: 6px 0 10px; }
+.vault-panel dd a.mono { white-space: nowrap; }
+.vault-panel .vp-state { font-size: 13px; margin: 0 0 10px; }
+.vault-panel .vp-state.warn { color: var(--warning); font-weight: 600; }
+.vault-panel .vp-run { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; }
+.vault-panel .vp-run .muted { font-size: 12px; flex: 1 1 260px; }
+.vault-panel ul.vp-log { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.vault-panel ul.vp-log .bad { color: var(--critical); }
+.vault-panel ul.vp-log .good { color: var(--lime); }
+.vault-panel form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.vault-panel form label { flex: 1 1 100%; font-size: 13px; color: var(--text-secondary); }
+.vault-panel form input { flex: 1 1 260px; min-width: 0; background: rgb(0 0 0 / .35); border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 12px; color: var(--text-primary); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.vault-panel form input:focus { outline: none; border-color: var(--cyan); }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/theme.js"></script>
@@ -282,6 +297,7 @@ async function loadTokenStats(d, host) {
     const s = await api(`/api/token/${d.tokenMint}/stats`);
     if (current?.nftMint !== d.nftMint) return; // navigated away meanwhile
     renderTokenStats(d, s, host);
+    if (location.hash === "#vault") $("vault")?.scrollIntoView({ block: "start" });
   } catch (e) {
     host.replaceChildren(el("p", { class: "muted", text: `Token stats aren't available: ${e.message || e}` }));
   }
@@ -296,6 +312,120 @@ function vaultRow(v) {
     v.nextListAt ? el("span", { class: "muted", text: `Next rewards list pays at ${new Date(v.nextListAt * 1000).toLocaleString()}` }) : null,
     v.cancelsLeft != null ? el("span", { class: "muted", title: "The creator (the vault's guardian) can stop a new rewards list before it pays, but only this many times in a row: once a list goes live the count starts over.",
       text: v.cancelsLeft > 0 ? `The creator can cancel ${v.cancelsLeft} more list${v.cancelsLeft === 1 ? "" : "s"} in a row` : "The creator can't cancel the next list" }) : null);
+}
+/** "3 hours ago" / "in 2 days" for unix seconds. */
+function relTime(sec) {
+  const d = sec - Date.now() / 1000, a = Math.abs(d);
+  const [n, u] = a < 90 ? [Math.round(a), "second"] : a < 5400 ? [Math.round(a / 60), "minute"] : a < 129600 ? [Math.round(a / 3600), "hour"] : [Math.round(a / 86400), "day"];
+  const t = `${n} ${u}${n === 1 ? "" : "s"}`;
+  return d < 0 ? `${t} ago` : `in ${t}`;
+}
+const when = (sec) => new Date(sec * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+let vaultLog = null; // what the last "Run the vault now" did: { mint, lines: [[text, cls]] }
+/**
+ * The vault's status (v3: who publishes, when the creator may appoint someone else, when
+ * fallback payouts start), "Run the vault now" for any wallet, and the creator's
+ * "Appoint a new publisher" form.
+ */
+function vaultPanel(d, s) {
+  const v = s.vault;
+  if (!v || !v.exists) return null;
+  const me = W.state.address;
+  const now = Date.now() / 1000;
+  const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
+  const rows = [];
+  if (v.publisher) {
+    rows.push(["Publisher", el("span", {}, addr(v.publisher), v.sitePublishes ? el("span", { class: "lbl", text: "99 + Tax" }) : el("span", { class: "lbl", text: "Appointed" }))]);
+    rows.push(["Last list published", el("span", { title: when(v.lastPublishAt), text: relTime(v.lastPublishAt) })]);
+    // The active list's file on IPFS: its address is stored on-chain, so it's readable without this site.
+    if (v.listCid) rows.push(["List file (IPFS)", link(v.listCidUrl, `${v.listCid.slice(0, 10)}…${v.listCid.slice(-6)} ↗`, "mono")]);
+    if (BigInt(v.fallbackPaid ?? "0") > 0n) rows.push(["Paid in fallback", `${fmtUnits(v.fallbackPaid, 9, 6)} XNT`]);
+  }
+  const state = !v.publisher ? el("p", { class: "vp-state muted", text: "This vault is upgraded to v3 on its next run (anyone can run it below)." })
+    : v.fallbackActive ? el("p", { class: "vp-state warn", text: "Fallback active: paying from the last list. No list was published for 30 days, so anyone can pay holders their share of the last list, scaled up to all the XNT set aside for them. A new list from a publisher ends it." })
+    : el("p", { class: "vp-state muted" },
+      now >= v.appointAllowedAt ? `The publisher has been silent since ${when(v.lastPublishAt)}: the creator can appoint a new publisher now. ` : `The creator can appoint a new publisher from ${when(v.appointAllowedAt)} if no list is published before then. `,
+      `Fallback payouts from the last list start ${when(v.fallbackAt)} if still none is.`);
+  const run = el("button", { class: "btn primary", type: "button", text: "Run the vault now" });
+  run.disabled = busy;
+  run.onclick = (ev) => (W.state.address ? runVault(d, s) : openWalletMenu(ev));
+  const log = vaultLog && vaultLog.mint === s.mint ? el("ul", { class: "vp-log", "aria-live": "polite" }, ...vaultLog.lines.map(([t, c]) => el("li", { class: c ?? "", text: t }))) : null;
+  // The creator (the vault's guardian) can hand publishing to another wallet once the publisher has gone quiet.
+  let form = null;
+  if (me && v.guardian === me && v.publisher) {
+    if (now >= v.appointAllowedAt) {
+      const input = el("input", { id: "newPublisher", placeholder: "New publisher's wallet address", autocomplete: "off", spellcheck: "false" });
+      const go = el("button", { class: "btn", type: "submit", text: "Appoint a new publisher" });
+      go.disabled = busy;
+      form = el("form", {}, el("label", { for: "newPublisher", text: "You're this vault's guardian. The publisher has gone quiet, so you can hand publishing to a wallet that will run the crank with --publisher (see the README)." }), input, go);
+      form.onsubmit = (ev) => { ev.preventDefault(); appointPublisher(d, s, input.value.trim()); };
+    } else {
+      form = el("p", { class: "muted", style: "font-size:12px;margin:10px 0 0", text: `You're this vault's guardian: if the publisher stays silent, you can appoint a new one here from ${when(v.appointAllowedAt)}.` });
+    }
+  }
+  return el("div", { class: "panel vault-panel", id: "vault" },
+    el("div", { class: "vp-head" }, el("h3", { text: "Tax Vault", style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: `v${v.version ?? "?"} · ${short(v.vault)}` })),
+    rows.length ? el("dl", {}, ...rows.flatMap(([k, x]) => [el("dt", { text: k }), el("dd", {}, x)])) : null,
+    state,
+    el("div", { class: "vp-run" }, run, el("span", { class: "muted", text: "Anyone can run the vault: your wallet signs the steps that are due (collect, sell, liquidity, creator reward, payouts) and pays their network fees; you earn the crank reward, 1% of the holders' XNT from each sale (up to 0.05 XNT)." })),
+    log, form);
+}
+async function runVault(d, s) {
+  if (busy) return;
+  busy = true;
+  const lines = [];
+  vaultLog = { mint: s.mint, lines };
+  const redraw = () => { const host = document.querySelector(".stats-card"); const old = host?.querySelector("#vault"); const nu = vaultPanel(d, s); if (old && nu) old.replaceWith(nu); };
+  try {
+    toast("info", "Run the vault: finding the steps that are due…");
+    const plan = await api(`/api/vault/${s.mint}/crank-tx`, { caller: W.state.address });
+    const reward = BigInt(plan.crankRewardLamports), rent = BigInt(plan.recordsRentLamports);
+    lines.push([`${plan.txs.length} step${plan.txs.length === 1 ? "" : "s"}: ${plan.txs.map((t) => t.label).join(" · ")}`]);
+    lines.push([`Estimated reward ≈ ${fmtUnits(reward, 9, 6)} XNT · network fees ≈ ${fmtUnits(plan.networkFeeLamports, 9, 6)} XNT${rent > 0n ? ` · payment records' rent ${fmtUnits(rent, 9, 6)} XNT` : ""}`]);
+    for (const n of plan.notes ?? []) lines.push([n]);
+    redraw();
+    toast("info", `Approve ${plan.txs.length} transaction${plan.txs.length === 1 ? "" : "s"} in your wallet…`);
+    const signed = await W.signAll(plan.txs.map((t) => W.b64ToBytes(t.tx)));
+    const sigs = [];
+    for (const [i, t] of plan.txs.entries()) {
+      toast("info", `Sending ${i + 1} of ${plan.txs.length}: ${t.label}…`);
+      try {
+        const { signature } = await api("/api/send", { tx: W.bytesToB64(signed[i]) });
+        sigs.push(signature); lines.push([`✓ ${t.label}`, "good"]);
+      } catch (e) {
+        // Later steps may still work (a payout doesn't need the sale).
+        lines.push([`✗ ${t.label}: ${e.message || e}`, "bad"]);
+      }
+      redraw();
+    }
+    if (sigs.length) {
+      const res = await api(`/api/vault/${s.mint}/crank-result`, { signatures: sigs });
+      const got = BigInt(res.crankRewardLamports);
+      lines.push([got > 0n ? `Crank reward received: ${fmtUnits(got, 9, 6)} XNT` : "No crank reward this time (no sale ran)", got > 0n ? "good" : ""]);
+      toast("success", `Vault run: ${sigs.length} of ${plan.txs.length} step${plan.txs.length === 1 ? "" : "s"} confirmed${got > 0n ? `, you earned ${fmtUnits(got, 9, 6)} XNT` : ""}. `, link(`${d.explorer}/tx/${sigs.at(-1)}`, "View transaction ↗"));
+    } else toast("error", "Nothing went through; see the details under the button.");
+  } catch (e) {
+    lines.push([`${e.message || e}`, "bad"]);
+    toast("error", `Run the vault: ${e.message || e}`);
+  }
+  busy = false; redraw();
+}
+async function appointPublisher(d, s, newPublisher) {
+  if (busy) return;
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(newPublisher)) { toast("error", "Enter the new publisher's wallet address."); return; }
+  if (!confirm(`Appoint ${newPublisher} as this vault's publisher?\n\nThat wallet will publish the rewards lists from now on (it must run the crank). The current publisher can't publish any more.`)) return;
+  busy = true;
+  try {
+    toast("info", "Appoint a new publisher: preparing and simulating…");
+    const { tx } = await api(`/api/vault/${s.mint}/appoint-tx`, { guardian: W.state.address, newPublisher });
+    toast("info", "Approve it in your wallet…");
+    const signed = await W.sign(W.b64ToBytes(tx));
+    const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
+    toast("success", "New publisher appointed. ", link(`${d.explorer}/tx/${signature}`, "View transaction ↗"));
+  } catch (e) {
+    toast("error", `Appoint a new publisher failed: ${e.message || e}`);
+  }
+  busy = false;
 }
 function renderTokenStats(d, s, host) {
   const tok = (v, max = 4) => `${fmtUnits(v, s.decimals, max)} ${s.symbol}`;
@@ -430,7 +560,7 @@ function renderTokenStats(d, s, host) {
   host.replaceChildren(
     el("div", { class: "ts-head" }, el("h2", { text: `${s.name} (${s.symbol})` }), link(`${d.explorer}/address/${s.mint}`, "Token on explorer ↗")),
     el("div", { class: "ts-sub", text: `Live token stats${s.lastRun ? ` · last distribution ${new Date(s.lastRun).toLocaleString()}` : ""}. Values in XNT use the current pool price and are estimates.` }),
-    ...[vaultRow(s.vault), hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel, burnPanel,
+    ...[vaultRow(s.vault), vaultPanel(d, s), hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel, burnPanel,
     el("div", { class: "hold-head" }, el("h2", { text: "Holders" }),
       el("div", { class: "chips" },
         el("span", { class: "chip" }, el("b", { text: String(s.holders.length) }), " addresses"),

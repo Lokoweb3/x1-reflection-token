@@ -9,7 +9,10 @@ import {
   paidRecordPda, parseEvents, payIx, poolAccountsFrom, publishListIx, sellIx, sellImpactBps, validSplit, TAX_VAULT_PROGRAM_ID, ERRORS, vaultAuthPda, vaultLeaf, vaultPda, verifyVaultProof, type Vault,
   MAX_CANCELS_IN_ROW, REWARD_MAX_IMPACT_BPS, REWARD_MINT, REWARD_POOL, REWARD_TOKEN, VAULT_V2_LEN, VAULT_V2_OFFSETS, VAULT_VERSION, cancelsLeft, deriveRewardPoolAccounts,
   rewardImpactBps, rewardPoolAccountsFrom, rewardTokenInfo, upgradeVaultIx, vaultJson,
+  VAULT_V3_LEN, VAULT_V3_OFFSETS, VAULT_WINDOWS, appointAllowedAt, appointPublisherIx, base32Decode, base32Encode, cidFromBytes, cidToBytes, fallbackActive,
+  fallbackAt, fallbackEntitled, payFallbackIx, rawCid, setPublisherIx,
 } from "../src/taxvault.js";
+import { composeList, listFileText, parseListFile } from "../src/vault-crank.js";
 import { lockPda, MEMO_PROGRAM_ID, rewardTokensPda, rewardVaultPda } from "../src/locker.js";
 import { poolAuthority, type Pool } from "../src/xdex.js";
 
@@ -22,7 +25,7 @@ test("discriminators are Anchor's sha256 prefixes of the spec's names", () => {
   const ixs: [keyof typeof IX, string][] = [
     ["initVault", "init_vault"], ["collect", "collect"], ["sell", "sell"], ["addLiquidity", "add_liquidity"],
     ["fundCreator", "fund_creator"], ["publishList", "publish_list"], ["cancelList", "cancel_list"], ["pay", "pay"],
-    ["upgradeVault", "upgrade_vault"],
+    ["upgradeVault", "upgrade_vault"], ["setPublisher", "set_publisher"], ["appointPublisher", "appoint_publisher"], ["payFallback", "pay_fallback"],
   ];
   assert.equal(Object.keys(IX).length, ixs.length);
   for (const [k, name] of ixs) assert.ok(IX[k].equals(disc(`global:${name}`)), name);
@@ -211,7 +214,7 @@ test("v2 constants: the network's reward token and pool, impact cap and cancel l
   assert.equal(rewardImpactBps(1_000_000n), 300);
   assert.equal(rewardImpactBps(199), 0);
   assert.equal(MAX_CANCELS_IN_ROW, 2);
-  assert.equal(VAULT_VERSION, 2);
+  assert.equal(VAULT_VERSION, 3);
   assert.deepEqual(rewardTokenInfo("testnet", REWARD_MINT.testnet), { mint: REWARD_MINT.testnet, symbol: "XNM", decimals: 9 });
   assert.equal(rewardTokenInfo("testnet", NATIVE_MINT)!.symbol, "XNT");
   assert.equal(rewardTokenInfo("mainnet", REWARD_MINT.testnet), null);
@@ -219,15 +222,20 @@ test("v2 constants: the network's reward token and pool, impact cap and cancel l
 
 test("publish_list, cancel_list and pay: args and accounts", () => {
   const publisher = key(), mint = key(), root = crypto.randomBytes(32);
-  const pub = publishListIx(PROGRAM, publisher, mint, root, 7n, 9_000_000_000n);
-  assert.equal(pub.data.length, 56);
+  const cid = cidToBytes("bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku");
+  const pub = publishListIx(PROGRAM, publisher, mint, root, 7n, 9_000_000_000n, cid);
+  // v3: root, epoch, total, then the list file's CID as [u8; 33].
+  assert.equal(pub.data.length, 8 + 32 + 8 + 8 + 33);
   assert.ok(pub.data.subarray(0, 8).equals(IX.publishList));
   assert.ok(pub.data.subarray(8, 40).equals(root));
   assert.equal(pub.data.readBigUInt64LE(40), 7n);
   assert.equal(pub.data.readBigUInt64LE(48), 9_000_000_000n);
+  assert.ok(pub.data.subarray(56, 89).equals(cid));
+  assert.equal(pub.data[56], 0x55);
   assert.deepEqual(pub.keys.map((k) => k.pubkey.toBase58()), [publisher, vaultPda(PROGRAM, mint)].map((k) => k.toBase58()));
   assert.equal(flags(pub), "s- -w");
-  assert.throws(() => publishListIx(PROGRAM, publisher, mint, Buffer.alloc(31), 1n, 1n));
+  assert.throws(() => publishListIx(PROGRAM, publisher, mint, Buffer.alloc(31), 1n, 1n, cid));
+  assert.throws(() => publishListIx(PROGRAM, publisher, mint, root, 1n, 1n, Buffer.alloc(32)));
 
   const guardian = key();
   const cancel = cancelListIx(PROGRAM, guardian, mint);
@@ -256,6 +264,7 @@ const sampleVault = (): Omit<Vault, "address"> => ({
   totalCollected: 20n, totalBurned: 21n, totalLpTokens: 22n, totalLpXnt: 23n, totalCreatorXnt: 24n, totalCrankRewards: 25n,
   createdAt: 1_780_000_000, bump: 254, authBump: 253, lastSellSlot: 123_456_789_012n,
   version: 1, cancelsInRow: 0, totalRewardOut: 0n, lastRewardSlot: 0n,
+  lastPublishAt: 0, listCid: Buffer.alloc(33), pendingCid: Buffer.alloc(33), fallbackPaid: 0n,
 });
 const sampleVaultV2 = (): Omit<Vault, "address"> => ({
   ...sampleVault(), rewardMint: REWARD_MINT.testnet, rewardSwapPool: REWARD_POOL.testnet, version: 2, cancelsInRow: 1, totalRewardOut: 2n ** 60n + 7n, lastRewardSlot: 987_654_321_000n,
@@ -443,7 +452,216 @@ test("program errors are named from simulation messages", () => {
   assert.equal(errorOf(`{"Custom":6019}`), "WrongVersion");
   assert.equal(errorOf(`{"Custom":6020}`), "TooManyCancels");
   assert.equal(errorOf("custom program error: 0x1785"), "BadRewardMint"); // 6021
-  assert.equal(errorOf(`{"Custom":6022}`), null);
-  assert.equal(ERRORS.length, 22);
+  assert.equal(errorOf(`{"Custom":6022}`), "PublisherActive");
+  assert.equal(errorOf("custom program error: 0x1787"), "FallbackNotActive"); // 6023
+  assert.equal(errorOf(`{"Custom":6024}`), null);
+  assert.equal(ERRORS.length, 24);
   assert.equal(errorOf("something else"), null);
+});
+
+// ---------- v3 ----------
+const sampleVaultV3 = (): Omit<Vault, "address"> => ({
+  ...sampleVaultV2(), version: 3, lastPublishAt: 1_790_123_456, listCid: Buffer.concat([Buffer.from([0x55]), crypto.randomBytes(32)]),
+  pendingCid: Buffer.concat([Buffer.from([0x70]), crypto.randomBytes(32)]), fallbackPaid: 2n ** 40n + 3n,
+});
+
+test("Vault v3: 640 bytes, last_publish_at 498, list_cid 506, pending_cid 539, fallback_paid 572, reserved to 640; v1/v2 still decode", () => {
+  assert.equal(VAULT_V3_LEN, 640);
+  assert.deepEqual(VAULT_V3_OFFSETS, { lastPublishAt: 498, listCid: 506, pendingCid: 539, fallbackPaid: 572, reserved: 580 });
+  const v = sampleVaultV3();
+  const d = encodeVault(v);
+  assert.equal(d.length, 640);
+  assert.equal(d[480], 3);
+  assert.equal(d.readBigInt64LE(498), 1_790_123_456n);
+  assert.ok(d.subarray(506, 539).equals(v.listCid));
+  assert.ok(d.subarray(539, 572).equals(v.pendingCid));
+  assert.equal(d.readBigUInt64LE(572), 2n ** 40n + 3n);
+  assert.ok(d.subarray(580, 640).equals(Buffer.alloc(60)));
+  // The v2 fields before 498 are where they were.
+  assert.equal(d[481], 1);
+  assert.equal(d.readBigUInt64LE(482), 2n ** 60n + 7n);
+  assert.equal(d.readBigUInt64LE(490), 987_654_321_000n);
+  sameVault(decodeVault(key(), d), v);
+  // An older vault the crank still has to upgrade: its v3 fields read as zero.
+  const v2 = decodeVault(key(), encodeVault(sampleVaultV2()));
+  assert.equal(v2.version, 2);
+  assert.equal(v2.lastPublishAt, 0);
+  assert.ok(v2.listCid.equals(Buffer.alloc(33)) && v2.pendingCid.equals(Buffer.alloc(33)));
+  assert.equal(v2.fallbackPaid, 0n);
+  assert.equal(decodeVault(key(), encodeVault(sampleVault())).version, 1);
+  // The site's JSON carries the CIDs as strings.
+  const j = vaultJson({ ...v, address: key() } as Vault);
+  assert.equal(j.lastPublishAt, 1_790_123_456);
+  assert.equal(j.listCid, cidFromBytes(v.listCid));
+  assert.equal(j.fallbackPaid, (2n ** 40n + 3n).toString());
+  assert.equal(vaultJson({ ...sampleVaultV2(), address: key() } as Vault).listCid, null);
+});
+
+test("CIDs: known CIDv1 / CIDv0 strings round-trip through the program's [codec, digest]", () => {
+  // The empty file as a raw block, and the empty UnixFS directory (v0 and v1 of the same CID).
+  const empty = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+  const b = cidToBytes(empty);
+  assert.equal(b.length, 33);
+  assert.equal(b[0], 0x55);
+  assert.equal(b.subarray(1).toString("hex"), crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex"));
+  assert.equal(cidFromBytes(b), empty);
+  assert.equal(rawCid(new Uint8Array()), empty);
+  assert.equal(rawCid(Buffer.from("hello world")), "bafkreifzjut3te2nhyekklss27nh3k72ysco7y32koao5eei66wof36n5e");
+  const dir = cidToBytes("QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn");
+  assert.equal(dir[0], 0x70);
+  assert.equal(cidFromBytes(dir), "bafybeiczsscdsbs7ffqz55asqdf3smv6klcw3gofszvwlyarci47bgf354");
+  assert.ok(cidToBytes("bafybeiczsscdsbs7ffqz55asqdf3smv6klcw3gofszvwlyarci47bgf354").equals(dir));
+  assert.equal(cidFromBytes(Buffer.alloc(33)), null); // no file
+  assert.throws(() => cidToBytes("zb2rhe5P4gXftAwvA4eXQ5HJwsER2owDyS9sKaQRRVQPn93bA")); // base58btc CIDv1: not what we store
+  assert.throws(() => cidToBytes("bagaaierasords4njcts6vs7qvdjfcvgnume4hqohf65zsfguprqphs3icwea")); // another codec (dag-json)
+  assert.throws(() => cidFromBytes(Buffer.alloc(32)));
+  for (let n = 0; n < 40; n++) {
+    const x = crypto.randomBytes(n);
+    assert.ok(base32Decode(base32Encode(x)).equals(x));
+  }
+  assert.equal(base32Encode(Buffer.from("foobar")), "mzxw6ytboi"); // RFC 4648 test vector, lowercase, no padding
+});
+
+test("fallbackEntitled: floor(cumulative * funded / list_total), like the program's u128 maths", () => {
+  assert.equal(fallbackEntitled(1_000n, 3_000n, 2_000n), 1_500n);
+  assert.equal(fallbackEntitled(1n, 10n, 3n), 3n); // 3.33 -> 3
+  assert.equal(fallbackEntitled(5n, 7n, 0n), 0n);
+  const big = 2n ** 63n;
+  assert.equal(fallbackEntitled(big, big, big), big); // no overflow (bigint)
+  assert.equal(fallbackEntitled(big - 1n, big, big - 1n), big);
+  // Shares of a list never add up to more than funded.
+  const cums = [123n, 456n, 789n, 1n];
+  const total = cums.reduce((a, b) => a + b, 0n), funded = 10_007n;
+  assert.ok(cums.reduce((a, c) => a + fallbackEntitled(c, funded, total), 0n) <= funded);
+});
+
+test("v3 windows: appointing and fallback count from last_publish_at; fallback needs an active list and nothing pending", () => {
+  const w = { appointAfterSecs: 100, fallbackAfterSecs: 300 };
+  const base = { ...sampleVaultV3(), address: key(), pendingEpoch: 0n, lastPublishAt: 1_000 } as Vault;
+  assert.equal(appointAllowedAt(base, w), 1_100);
+  assert.equal(fallbackAt(base, w), 1_300);
+  assert.equal(appointAllowedAt({ version: 2, lastPublishAt: 0 }, w), null);
+  assert.equal(fallbackActive(base, 1_299, w), false);
+  assert.equal(fallbackActive(base, 1_300, w), true);
+  assert.equal(fallbackActive({ ...base, listEpoch: 0n }, 5_000, w), false); // no list to pay from
+  // A pending list not due yet blocks it; a due one is activated first, so it doesn't.
+  assert.equal(fallbackActive({ ...base, pendingEpoch: 9n, pendingActiveAt: 6_000 }, 5_000, w), false);
+  assert.equal(fallbackActive({ ...base, pendingEpoch: 9n, pendingActiveAt: 1_010 }, 5_000, w), true);
+  assert.equal(fallbackActive({ ...base, version: 2 }, 5_000, w), false);
+  assert.deepEqual(VAULT_WINDOWS, process.env.TAX_VAULT_SHORT_WINDOWS ? { appointAfterSecs: 15, fallbackAfterSecs: 30 } : { appointAfterSecs: 604_800, fallbackAfterSecs: 2_592_000 });
+});
+
+test("set_publisher, appoint_publisher and pay_fallback: args and accounts", () => {
+  const mint = key(), signer = key(), np = key();
+  for (const [ix, tag] of [[setPublisherIx(PROGRAM, signer, mint, np), IX.setPublisher], [appointPublisherIx(PROGRAM, signer, mint, np), IX.appointPublisher]] as const) {
+    assert.equal(ix.data.length, 40);
+    assert.ok(ix.data.subarray(0, 8).equals(tag));
+    assert.ok(ix.data.subarray(8).equals(np.toBuffer()));
+    assert.deepEqual(ix.keys.map((k) => k.pubkey.toBase58()), [signer, vaultPda(PROGRAM, mint)].map((k) => k.toBase58()));
+    assert.equal(flags(ix), "s- -w");
+  }
+  const payer = key(), wallet = key(), proof = [crypto.randomBytes(32), crypto.randomBytes(32)];
+  const fb = payFallbackIx(PROGRAM, payer, mint, wallet, 77n, proof);
+  const normal = payIx(PROGRAM, payer, mint, wallet, 77n, proof);
+  assert.ok(fb.data.subarray(0, 8).equals(IX.payFallback));
+  // Same data and accounts as pay, only the discriminator differs.
+  assert.ok(fb.data.subarray(8).equals(normal.data.subarray(8)));
+  assert.deepEqual(fb.keys, normal.keys);
+});
+
+test("v3 events: PublisherChanged and FallbackPaid; only the program's own log lines count when asked", () => {
+  const vault = key(), a = key(), b = key();
+  const u64 = (v: bigint) => { const x = Buffer.alloc(8); x.writeBigUInt64LE(v); return x; };
+  const data = (...parts: Buffer[]) => `Program data: ${Buffer.concat(parts).toString("base64")}`;
+  const changed = data(EVENT.PublisherChanged, vault.toBuffer(), a.toBuffer(), b.toBuffer(), Buffer.from([1]));
+  const fb = data(EVENT.FallbackPaid, vault.toBuffer(), a.toBuffer(), u64(40n), u64(1_040n));
+  assert.deepEqual(parseEvents([changed, fb]), [
+    { name: "PublisherChanged", vault: vault.toBase58(), old: a.toBase58(), new: b.toBase58(), byGuardian: true },
+    { name: "FallbackPaid", vault: vault.toBase58(), wallet: a.toBase58(), amount: 40n, entitled: 1_040n },
+  ]);
+  const other = key().toBase58(), me = PROGRAM.toBase58();
+  const logs = [
+    `Program ${other} invoke [1]`, fb, `Program ${other} success`, // someone else's look-alike line
+    `Program ${me} invoke [1]`, `Program ${other} invoke [2]`, fb, `Program ${other} success`, changed, `Program ${me} consumed 1 of 2 compute units`, `Program ${me} success`,
+  ];
+  assert.equal(parseEvents(logs).length, 3);
+  assert.deepEqual(parseEvents(logs, PROGRAM).map((e) => e.name), ["PublisherChanged"]);
+});
+
+test("list builder: nobody starts below what they were paid, the total covers holders_paid, shares go on top", () => {
+  const [a, b, c, d] = [key(), key(), key(), key()].map((k) => k.toBase58());
+  const prev = { [a]: "100", [b]: "50", [c]: "10" };
+  // After a fallback: a and b were paid more than their list totals.
+  const paid = new Map([[a, 130n], [b, 50n], [d, 5n]]);
+  const shares = new Map([[a, 7n], [c, 3n], [d, 1n]]);
+  const floor = 190n; // holders_paid
+  const r = composeList(prev, paid, shares, floor);
+  assert.deepEqual(r.wallets, { [a]: "137", [b]: "50", [c]: "13", [d]: "6" });
+  assert.equal(r.total, 206n);
+  for (const [w, p] of paid) assert.ok(BigInt(r.wallets[w]) >= p, w);
+  for (const [w, x] of Object.entries(prev)) assert.ok(BigInt(r.wallets[w]) >= BigInt(x), w);
+  // Rebuilt from the paid records alone (the old list file is gone), with rounding dust:
+  // the shortfall to max(list_total, holders_paid) goes to the largest share.
+  const r2 = composeList(null, paid, new Map([[c, 20n], [a, 30n]]), 300n);
+  assert.equal(r2.total, 300n);
+  assert.equal(r2.wallets[a], String(130n + 30n + (300n - (185n + 50n))));
+  for (const [w, p] of paid) assert.ok(BigInt(r2.wallets[w]) >= p);
+  assert.deepEqual(composeList(null, new Map(), new Map(), 0n).wallets, {});
+});
+
+test("list files: the pinned bytes are canonical and a fetched file must give the on-chain root (and its raw CID)", () => {
+  const vault = key(), mint = key();
+  const wallets = { [key().toBase58()]: "5", [key().toBase58()]: "1000000000", [key().toBase58()]: "42" };
+  const { root } = buildVaultTree(vault, wallets);
+  const text = listFileText({ mint: mint.toBase58(), vault: vault.toBase58(), epoch: "3", root: root.toString("hex"), total: "1000000047", wallets });
+  // Entries sorted by wallet, whatever order they came in.
+  const f = JSON.parse(text);
+  assert.deepEqual(f.entries.map((e: string[]) => e[0]), Object.keys(wallets).sort());
+  assert.equal(text, listFileText({ mint: mint.toBase58(), vault: vault.toBase58(), epoch: "3", root: root.toString("hex"), total: "1000000047",
+    wallets: Object.fromEntries(Object.entries(wallets).reverse()) }));
+  const bytes = Buffer.from(text);
+  const cid = cidToBytes(rawCid(bytes));
+  assert.deepEqual(parseListFile(bytes, vault, root, cid).wallets, wallets);
+  assert.throws(() => parseListFile(bytes, key(), root), /another vault/);
+  assert.throws(() => parseListFile(bytes, vault, crypto.randomBytes(32)), /root/);
+  const tampered = Buffer.from(text.replace('"42"', '"43"'));
+  assert.throws(() => parseListFile(tampered, vault, root), /root/);
+  assert.throws(() => parseListFile(bytes, vault, root, cidToBytes(rawCid(tampered))), /CID/);
+});
+
+// The program source, when it's in the tree: instruction args, error order and the v3 event
+// fields must match what this client encodes.
+const LIB = new URL("../lp-locker/programs/tax_vault/src/lib.rs", import.meta.url);
+test("the client matches lp-locker/programs/tax_vault/src/lib.rs (args, errors, events, layout)", async (t) => {
+  const fs = await import("node:fs");
+  if (!fs.existsSync(LIB)) { t.skip("program source not present"); return; }
+  const src = fs.readFileSync(LIB, "utf8");
+  const size: Record<string, number> = { u8: 1, u16: 2, u64: 8, i64: 8, Pubkey: 32, "[u8; 32]": 32, "[u8; 33]": 33 };
+  const argsOf = (name: string) => {
+    const m = new RegExp(`pub fn ${name}(?:<[^>]*>)?\\(([^)]*(?:\\)[^)]*)?)\\) -> Result`).exec(src);
+    assert.ok(m, `pub fn ${name} in lib.rs`);
+    return m![1].split(/,(?![^<\[]*[>\]])/).map((s) => s.trim()).filter((s) => s && !/^(mut )?ctx:/.test(s)).map((s) => s.split(":").slice(1).join(":").trim());
+  };
+  const fixed = (name: string) => argsOf(name).reduce((a, ty) => a + (size[ty] ?? NaN), 0);
+  const root = crypto.randomBytes(32), mint = key(), k = key();
+  assert.equal(publishListIx(PROGRAM, k, mint, root, 1n, 2n, Buffer.alloc(33)).data.length, 8 + fixed("publish_list"));
+  assert.deepEqual(argsOf("publish_list"), ["[u8; 32]", "u64", "u64", "[u8; 33]"]);
+  assert.equal(setPublisherIx(PROGRAM, k, mint, k).data.length, 8 + fixed("set_publisher"));
+  assert.equal(appointPublisherIx(PROGRAM, k, mint, k).data.length, 8 + fixed("appoint_publisher"));
+  assert.deepEqual(argsOf("pay_fallback"), ["u64", "Vec<[u8; 32]>"]);
+  assert.deepEqual(argsOf("pay"), ["u64", "Vec<[u8; 32]>"]);
+  assert.equal(argsOf("upgrade_vault").length, 0);
+  // Error codes: declaration order in `enum VaultError`.
+  const errs = /pub enum VaultError \{([\s\S]*?)\n\}/.exec(src)![1].split("\n").map((l) => l.trim()).filter((l) => /^[A-Z]\w*,?$/.test(l)).map((l) => l.replace(",", ""));
+  assert.deepEqual(errs, [...ERRORS]);
+  // v3 event fields, in order.
+  const fields = (ev: string) => new RegExp(`pub struct ${ev} \\{([\\s\\S]*?)\\n\\}`).exec(src)![1].split("\n").map((l) => /^\s*pub (\w+):/.exec(l)?.[1]).filter(Boolean);
+  assert.deepEqual(fields("PublisherChanged"), ["vault", "old", "new", "by_guardian"]);
+  assert.deepEqual(fields("FallbackPaid"), ["vault", "wallet", "amount", "entitled"]);
+  // Layout constants.
+  assert.match(src, /pub const VAULT_V3_LEN: usize = 640;/);
+  assert.match(src, /pub const VAULT_VERSION: u8 = 3;/);
+  assert.match(src, /const LAST_PUBLISH_AT_OFFSET: usize = 498;/);
+  const vaultFields = fields("Vault");
+  assert.deepEqual(vaultFields.slice(-9), ["version", "cancels_in_row", "total_reward_out", "last_reward_slot", "last_publish_at", "list_cid", "pending_cid", "fallback_paid", "reserved"]);
 });

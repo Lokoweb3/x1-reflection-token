@@ -131,6 +131,31 @@ window.X1Wallet = (() => {
       throw e;
     }
   }
+  /**
+   * Sign several transactions with one approval where the wallet supports it (Wallet
+   * Standard takes a list; older wallets have signAllTransactions); else one by one.
+   */
+  async function signAll(list) {
+    try {
+      if (state.active) {
+        const inputs = list.map((transaction) => ({ account: state.account, transaction, ...(state.account.chains?.length ? { chain: state.account.chains[0] } : {}) }));
+        const out = await state.active.features["solana:signTransaction"].signTransaction(...inputs);
+        return out.map((o) => o.signedTransaction);
+      }
+      if (state.legacy?.signAllTransactions) {
+        await loadWeb3();
+        const signed = await state.legacy.signAllTransactions(list.map((b) => window.solanaWeb3.Transaction.from(b)));
+        return signed.map((t) => t.serialize({ requireAllSignatures: true }));
+      }
+    } catch (e) {
+      const m = String(e?.message ?? e), net = siteNet();
+      if (net && /blockhash|simulat|not found|cluster|genesis|network|insufficient/i.test(m)) throw new Error(`${m} (Check that your wallet is set to ${netName(net.network)}.)`);
+      throw e;
+    }
+    const out = [];
+    for (const b of list) out.push(await sign(b));
+    return out;
+  }
   async function signRaw(bytes) {
     if (state.active) {
       const input = { account: state.account, transaction: bytes };
@@ -151,5 +176,5 @@ window.X1Wallet = (() => {
     return btoa(s);
   }
 
-  return { state, choices, connect, disconnect, sign, onChange: (f) => listeners.add(f), b64ToBytes, bytesToB64 };
+  return { state, choices, connect, disconnect, sign, signAll, onChange: (f) => listeners.add(f), b64ToBytes, bytesToB64 };
 })();

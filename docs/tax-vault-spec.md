@@ -429,3 +429,183 @@ New errors appended after `OneSellPerSlot`: `WrongVersion`, `TooManyCancels`, `B
 3. `fund_creator` deposits auth_reward's whole balance (`reward_out` = that), check order
    and error codes as listed above; `auth_wxnt` is ATA(auth, NATIVE_MINT).
 4. `upgrade_vault`: `WrongAccount` for an account that isn't this program's vault.
+
+# v3 (testnet first): keeps working if the operator disappears
+
+Everything above stays unless changed here. v3 is an upgrade of the same program; v1 and
+v2 vaults are upgraded in place by `upgrade_vault`.
+
+**Goal.** Every flow must keep working with the 99 + Tax operator (its server, its site
+and its publisher key) gone for good:
+
+- collect, sell, burn, add liquidity, creator reward and paying an existing list are
+  already permissionless (any `caller`, who earns the crank reward where one applies);
+- the rewards list files must be retrievable without the site (IPFS, address on-chain);
+- **(A)** the guardian (creator) may appoint a new publisher, but only after the publisher
+  has been silent for `APPOINT_AFTER_SECS`, so a stolen creator key can't take over while
+  the operator is alive;
+- **(C)** after `FALLBACK_AFTER_SECS` without a published list, anyone can keep paying
+  holders from the last active list, scaled up to everything funded so far.
+
+## New constants
+
+| Name | Value | `short-windows` feature (tests only) |
+|---|---|---|
+| `APPOINT_AFTER_SECS` | `7 * 86_400` | `15` |
+| `FALLBACK_AFTER_SECS` | `30 * 86_400` | `30` |
+| `VAULT_VERSION` | `3` | |
+| `VAULT_V3_LEN` | `640` | |
+
+## Vault layout v3
+
+Offsets 0..498 are unchanged from v2 (version byte at 480 becomes `3`). The v2 `reserved`
+bytes are reused and the account grows to **640** bytes:
+
+```rust
+pub version: u8,                 // 3 (offset 480)
+pub cancels_in_row: u8,          // (481)
+pub total_reward_out: u64,       // (482)
+pub last_reward_slot: u64,       // (490)
+pub last_publish_at: i64,        // unix time of the last publish_list (498)
+pub list_cid: [u8; 33],          // IPFS address of the active list file (506)
+pub pending_cid: [u8; 33],       // IPFS address of the pending list file (539)
+pub fallback_paid: u64,          // XNT paid by pay_fallback, ever (572)
+pub reserved: [u8; 60],          // zero (580..640)
+```
+
+A CID field is `[codec, sha256 digest (32)]`: codec `0x55` (raw) or `0x70` (dag-pb), i.e.
+the CIDv1 `0x01 codec 0x12 0x20 digest`; all zero = no file. The program stores it and
+never interprets it.
+
+`init_vault` creates v3 vaults directly with `last_publish_at = now` (so the clocks start at
+creation). Every instruction except `upgrade_vault` requires a v3 vault (`WrongVersion`).
+
+## Changed / new instructions
+
+1. **`upgrade_vault`** (anyone, payer pays the extra rent): accepts a 480-byte (v1) or
+   552-byte (v2) vault and makes it v3 in one call: a v1 vault first gets the v2 rewrite
+   (reward mint/pool, cleared counters); then resize to 640, bytes 498..640 zeroed,
+   `version = 3`, `last_publish_at = now` (an upgraded vault gets the full windows from
+   the upgrade). Refuses anything else (`WrongVersion` / `WrongAccount` as in v2).
+2. **`publish_list(root, epoch, total, cid: [u8; 33])`**: as v2 plus stores `pending_cid =
+   cid` and `last_publish_at = now`. New check (in `check_publish`): `total >=
+   holders_paid` (`TotalDecreased`), since v3 payments can exceed `list_total` while in
+   fallback.
+3. **Activation** (`activate_if_due`, wherever v2 calls it): also `list_cid = pending_cid`
+   and clears `pending_cid`. **`cancel_list`** also clears `pending_cid` (and does not
+   touch `last_publish_at`).
+4. **`set_publisher(new_publisher)`**, signer = current `publisher`: immediate key
+   rotation by the operator. Emits `PublisherChanged { vault, old, new, by_guardian: false }`.
+5. **`appoint_publisher(new_publisher)`**, signer = `guardian`: allowed only when `now >=
+   last_publish_at + APPOINT_AFTER_SECS` (else `PublisherActive`). Sets `publisher`,
+   emits `PublisherChanged { .., by_guardian: true }`. It does not reset
+   `last_publish_at` (the new publisher resets it by publishing).
+6. **`pay_fallback(cumulative, proof)`**: same accounts as `pay` (anyone is `caller`, pays
+   the PaidRecord rent). Requires, after `activate_if_due`: `list_epoch > 0`, no pending
+   list, and `now >= last_publish_at + FALLBACK_AFTER_SECS` (else `FallbackNotActive`).
+   Verifies `(wallet, cumulative)` against the **active** `list_root` (`BadProof`), then:
+
+   ```
+   entitled = floor(cumulative * holders_funded / list_total)   // u128 maths
+   require entitled > record.paid                               // NothingToPay
+   amount = entitled - record.paid
+   require holders_paid + amount <= holders_funded              // OverFunded
+   pay amount; record.paid = entitled; holders_paid += amount; fallback_paid += amount
+   ```
+   The last list's shares are scaled up to everything funded, so the XNT keeps reaching
+   the same wallets in the same proportions as more tax arrives. Emits
+   `FallbackPaid { vault, wallet, amount, entitled }`; `check_solvent` after.
+7. `pay` (the normal path) is unchanged and still allowed in fallback (it pays at most
+   `cumulative`, which is <= `entitled`).
+
+Leaving fallback: any `publish_list` resets `last_publish_at`, so fallback ends as soon
+as a publisher (the old one or an appointed one) publishes. That list's `cumulative`
+values must include what each wallet was already paid (`>= record.paid`), and its
+`total >= holders_paid`.
+
+New errors appended after `BadRewardMint`: `PublisherActive`, `FallbackNotActive`.
+
+## Off-chain (v3)
+
+- **List files on IPFS.** Before `publish_list`, the crank pins the list file (the same
+  JSON as `/api/vault/<mint>/list`: `{ version, mint, vault, epoch, root, total,
+  entries: [[wallet, cumulative], ...] }`, entries sorted by wallet) to IPFS through
+  Pinata (`factory.pinataJwt`), and passes its CID. No pin, no publish (retry next
+  pass). The site shows the CID and a gateway link.
+- **Lists after a fallback.** The list builder starts each wallet from
+  `max(previous cumulative, on-chain paid)` before adding the new allocation, so a new
+  list never pays anyone less than they already got and `total >= holders_paid`.
+- **Crank.** Upgrades v1/v2 vaults to v3; in fallback, runs `pay_fallback` for wallets
+  with something owed (dust rules as for `pay`).
+- **"Run the vault" button** on each vault token's page: any visitor's wallet signs the
+  permissionless steps that are due (collect, sell, add liquidity, creator reward, pay /
+  pay_fallback) and earns the crank rewards. The site only builds the transactions.
+- **Creator controls** (NFT / launch page, guardian wallet only): "Appoint a new
+  publisher" once allowed, with the date it becomes allowed shown before that.
+- **Status** on the token page: publisher, last list published, when appointing becomes
+  possible, when fallback starts, and "Fallback active: paying from the last list".
+- **Standalone crank** `scripts/crank.ts`: needs only an RPC and a wallet (no site, no
+  config.json): cranks one mint or every vault of the program, reads list files from IPFS
+  via the on-chain CID, runs pay / pay_fallback; with `--publisher <keypair>` it also
+  builds and publishes lists (what an appointed publisher runs).
+
+### Off-chain (v3) as implemented
+
+The shared steps live in `src/vault-crank.ts` (used by the site's crank in
+`src/factory/vault.ts`, the "Run the vault" routes and `scripts/crank.ts`).
+
+- **List file bytes.** The pinned file is `JSON.stringify({ version: 1, mint, vault, epoch,
+  root, total, entries, rules })` with `entries` sorted by wallet (`listFileText`); amounts
+  are decimal strings. `rules` carries the token's payout rules in base units (`minHarvest`,
+  `minPayout`, `minCycle`, `minHolding`, `excludeOwners`, `excludeOffCurve`) so another
+  publisher applies the same eligibility (the burn addresses, the vault's auth PDA and
+  XDEX's pool authority are always excluded). `/api/vault/<mint>/list` keeps its own shape
+  and adds `cid` / `cidUrl`. A fetched file is used only if it is for this vault and its
+  entries give the on-chain root (and, for a raw-codec CID, its bytes hash to the digest).
+- **CIDs** are written as CIDv1 base32 (`b…`); `cidToBytes` also accepts CIDv0 (`Qm…`,
+  dag-pb). The Pinata upload API and gateway can be overridden (`factory.pinataApiUrl` /
+  `PINATA_API_URL`, `factory.ipfsGateway` / `IPFS_GATEWAY`).
+- **List builder.** Each wallet starts at `max(previous cumulative, PaidRecord.paid)` over
+  every PaidRecord of the vault (one `getProgramAccounts`); the new XNT is `holders_funded −
+  Σ start`, allocated pro-rata; if rounding (or a list rebuilt from paid records because the
+  previous file is unreadable) leaves the total under `max(list_total, pending_total,
+  holders_paid)`, the difference goes to the largest share. A publisher publishes when the
+  new XNT is at least `minCycle`, or in fallback (any list ends it).
+- **Clock margins.** The crank treats fallback as active 15 s after `last_publish_at +
+  FALLBACK_AFTER_SECS` (the chain clock lags). `TAX_VAULT_SHORT_WINDOWS=1` makes the
+  client use the `short-windows` build's 15 s / 30 s.
+- **Site crank.** It publishes only while `publisher` is its own key; a list it doesn't have
+  (another publisher's) is read from IPFS by the on-chain CID. No Pinata key: no new lists.
+- **Routes.** `POST /api/vault/<mint>/crank-tx {caller}` returns the due steps as unsigned
+  transactions in order (`upgrade` alone if the vault isn't v3; else `collect` of the
+  accounts that fit one transaction, one `sell`, `add_liquidity`, `fund_creator`, then
+  `pay` / `pay_fallback` for up to 4 wallets, existing PaidRecords first), with the sale's
+  estimated crank reward, the network fees and the new records' rent; only the first is
+  simulated (the rest count on it). `POST /api/vault/<mint>/crank-result {signatures}`
+  reads those transactions back (only events logged by the tax_vault program itself count)
+  and adds them to the token's event log. `POST /api/vault/<mint>/appoint-tx {guardian,
+  newPublisher}` refuses a wallet that isn't the guardian or a request before
+  `last_publish_at + APPOINT_AFTER_SECS`.
+
+## Changes from the first v3 draft (made while implementing the program)
+
+No behaviour changes; these pin down details the draft left open.
+
+1. `pay_fallback` uses the exact `pay` account list (payer(w,s), vault(w), auth(w),
+   wallet(w), record(w), system_program) and the same data (`cumulative: u64`, Borsh
+   `Vec<[u8;32]>` proof). Check order: `WrongAccount` (wallet == auth), then
+   `FallbackNotActive` (after `activate_if_due`: `list_epoch == 0`, a pending list, or
+   `now < last_publish_at + FALLBACK_AFTER_SECS`), `BadProof`, `NothingToPay`, `OverFunded`.
+   A list with `list_total == 0` entitles nobody (`NothingToPay`); an entitlement that
+   doesn't fit a u64 (a leaf far above the list total) fails with `MathOverflow`.
+2. The v1 invariant `holders_paid ≤ list_total` no longer holds once `pay_fallback` has
+   paid (`fallback_paid > 0`); `holders_paid ≤ holders_funded` and `list_total ≤
+   holders_funded` always hold. A normal `pay` checks `holders_paid + amount ≤ list_total`
+   as before, so in fallback it mostly fails with `NothingToPay`/`OverFunded`.
+3. `appoint_publisher` checks `NotGuardian` before `PublisherActive`; `set_publisher`
+   fails with `NotPublisher`. Neither touches `last_publish_at`; `cancel_list` doesn't either.
+4. `upgrade_vault`: a 552-byte account whose byte 480 isn't 2, or any other length
+   (640 = already v3), fails with `WrongVersion`; the `WrongAccount` checks are as in v2.
+5. Error codes: `PublisherActive` = 6022, `FallbackNotActive` = 6023.
+6. Deploying v3 over the live v2 program: the v3 .so is 590,376 bytes vs 568,896 bytes of
+   program data, so `solana program extend <program> 21480` first.

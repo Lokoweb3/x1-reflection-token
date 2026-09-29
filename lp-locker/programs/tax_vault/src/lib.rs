@@ -14,12 +14,17 @@
 //! * `fund_creator` swaps the creator's XNT into the network's reward token (XNM on
 //!   testnet, USDC.X on mainnet) on XDEX with an on-chain price-impact cap and minimum
 //!   output, and deposits it into lp_locker's vesting reward vault of the pool's lock NFT.
-//! * `upgrade_vault` turns a 480-byte v1 vault into a 552-byte v2 vault in place.
+//! * `upgrade_vault` turns a 480-byte v1 or 552-byte v2 vault into a 640-byte v3 vault in place.
 //! * Holders are paid against a Merkle list of cumulative amounts. `publish_list` (the
 //!   publisher only) can only raise the list total and never above what the holders'
 //!   share has received (`holders_funded`); a list activates after a delay during which
 //!   the guardian can `cancel_list`; `pay` (anyone) pays a wallet its cumulative amount
-//!   minus what it was already paid, never more than the list total in all.
+//!   minus what it was already paid, never more than the list total in all. The list
+//!   file's IPFS address is stored with each list.
+//! * If the operator disappears: the publisher can rotate its own key (`set_publisher`);
+//!   the guardian can `appoint_publisher` after APPOINT_AFTER_SECS without a published
+//!   list; and after FALLBACK_AFTER_SECS without one anyone can `pay_fallback`, which pays
+//!   from the last active list scaled up to everything funded so far.
 //!
 //! Lamport accounting: `auth` always holds at least
 //! `xnt_lp + xnt_creator + (holders_funded - holders_paid)` plus a rent-exempt reserve for
@@ -85,6 +90,18 @@ pub const LIST_DELAY_SECS: i64 = 600;
 /// Local testing only.
 #[cfg(feature = "short-windows")]
 pub const LIST_DELAY_SECS: i64 = 5;
+/// The guardian may appoint a new publisher once the publisher has been silent this long.
+#[cfg(not(feature = "short-windows"))]
+pub const APPOINT_AFTER_SECS: i64 = 7 * 86_400;
+/// Local testing only.
+#[cfg(feature = "short-windows")]
+pub const APPOINT_AFTER_SECS: i64 = 15;
+/// Anyone may `pay_fallback` once no list has been published for this long.
+#[cfg(not(feature = "short-windows"))]
+pub const FALLBACK_AFTER_SECS: i64 = 30 * 86_400;
+/// Local testing only.
+#[cfg(feature = "short-windows")]
+pub const FALLBACK_AFTER_SECS: i64 = 30;
 /// A `sell` whose expected output is under this fails with TooSmall.
 pub const MIN_SELL_XNT: u64 = 2_000_000;
 /// `add_liquidity` needs at least this much XNT set aside.
@@ -95,10 +112,11 @@ pub const CREATOR_BPS: u16 = 1000;
 pub const REWARD_MAX_IMPACT_BPS: u64 = 300;
 /// The guardian may cancel at most this many lists in a row (reset when a list goes live).
 pub const MAX_CANCELS_IN_ROW: u8 = 2;
-/// Vault layout versions: v1 = 480 bytes (no version byte), v2 = 552 bytes.
-pub const VAULT_VERSION: u8 = 2;
+/// Vault layout versions: v1 = 480 bytes (no version byte), v2 = 552 bytes, v3 = 640 bytes.
+pub const VAULT_VERSION: u8 = 3;
 pub const VAULT_V1_LEN: usize = 480;
 pub const VAULT_V2_LEN: usize = 552;
+pub const VAULT_V3_LEN: usize = 640;
 /// sha256("account:Vault")[..8]
 pub const VAULT_DISC: [u8; 8] = [0xd3, 0x08, 0xe8, 0x2b, 0x02, 0x98, 0x75, 0x77];
 pub const MAX_BURN_BPS: u16 = 5000;
@@ -209,7 +227,12 @@ pub mod tax_vault {
         v.cancels_in_row = 0;
         v.total_reward_out = 0;
         v.last_reward_slot = 0;
-        v.reserved = [0; 54];
+        // The appoint / fallback clocks start at creation.
+        v.last_publish_at = now;
+        v.list_cid = [0; 33];
+        v.pending_cid = [0; 33];
+        v.fallback_paid = 0;
+        v.reserved = [0; 60];
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
     }
 
@@ -744,21 +767,27 @@ pub mod tax_vault {
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
     }
 
-    /// Upgrade a 480-byte v1 vault to the 552-byte v2 layout in place (anyone; the payer
-    /// pays the extra rent). The creator reward switches to the network's reward token.
+    /// Upgrade a 480-byte v1 or 552-byte v2 vault to the 640-byte v3 layout in place
+    /// (anyone; the payer pays the extra rent). A v1 vault's creator reward switches to the
+    /// network's reward token; the appoint / fallback clocks start now.
     pub fn upgrade_vault(ctx: Context<UpgradeVault>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
         let vault = ctx.accounts.vault.to_account_info();
-        {
+        let old_len = {
             let d = vault.try_borrow_data()?;
             require!(d.len() >= 8 && d[..8] == VAULT_DISC, VaultError::WrongAccount);
-            require!(d.len() == VAULT_V1_LEN, VaultError::WrongVersion);
+            require!(
+                d.len() == VAULT_V1_LEN || (d.len() == VAULT_V2_LEN && d[VERSION_OFFSET] == 2),
+                VaultError::WrongVersion
+            );
             // The account is this program's ["vault", mint] PDA with its stored bump.
             let mint = Pubkey::new_from_array(d[8..40].try_into().unwrap());
             let expected = Pubkey::create_program_address(&[b"vault", mint.as_ref(), &[d[V1_BUMP_OFFSET]]], &crate::ID)
                 .map_err(|_| error!(VaultError::WrongAccount))?;
             require_keys_eq!(expected, vault.key(), VaultError::WrongAccount);
-        }
-        let need = Rent::get()?.minimum_balance(VAULT_V2_LEN).saturating_sub(vault.lamports());
+            d.len()
+        };
+        let need = Rent::get()?.minimum_balance(VAULT_V3_LEN).saturating_sub(vault.lamports());
         if need > 0 {
             system_program::transfer(
                 CpiContext::new(
@@ -768,13 +797,14 @@ pub mod tax_vault {
                 need,
             )?;
         }
-        vault.resize(VAULT_V2_LEN)?;
+        vault.resize(VAULT_V3_LEN)?;
         let mut d = vault.try_borrow_mut_data()?;
-        upgrade_layout(&mut d)
+        upgrade_layout(&mut d, old_len, now)
     }
 
-    /// Publish a new rewards list (pending for LIST_DELAY_SECS).
-    pub fn publish_list(ctx: Context<PublishList>, root: [u8; 32], epoch: u64, total: u64) -> Result<()> {
+    /// Publish a new rewards list (pending for LIST_DELAY_SECS); `cid` is the list file's
+    /// IPFS address ([codec, sha256 digest], stored, never interpreted).
+    pub fn publish_list(ctx: Context<PublishList>, root: [u8; 32], epoch: u64, total: u64, cid: [u8; 33]) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let v = &mut ctx.accounts.vault;
         require_keys_eq!(ctx.accounts.publisher.key(), v.publisher, VaultError::NotPublisher);
@@ -785,6 +815,7 @@ pub mod tax_vault {
             v.list_total,
             v.pending_total,
             v.holders_funded,
+            v.holders_paid,
             epoch,
             total,
         )?;
@@ -793,6 +824,9 @@ pub mod tax_vault {
         v.pending_root = root;
         v.pending_total = total;
         v.pending_active_at = active_at;
+        v.pending_cid = cid;
+        // A publish ends a fallback and restarts the appoint / fallback clocks.
+        v.last_publish_at = now;
         emit!(ListPublished { vault: v.key(), epoch, root, total, active_at });
         Ok(())
     }
@@ -809,7 +843,32 @@ pub mod tax_vault {
         v.pending_root = [0; 32];
         v.pending_total = 0;
         v.pending_active_at = 0;
+        v.pending_cid = [0; 33];
         emit!(ListCancelled { vault: v.key(), epoch });
+        Ok(())
+    }
+
+    /// The publisher hands its role to a new key (immediate).
+    pub fn set_publisher(ctx: Context<SetPublisher>, new_publisher: Pubkey) -> Result<()> {
+        let v = &mut ctx.accounts.vault;
+        require_keys_eq!(ctx.accounts.publisher.key(), v.publisher, VaultError::NotPublisher);
+        let old = v.publisher;
+        v.publisher = new_publisher;
+        emit!(PublisherChanged { vault: v.key(), old, new: new_publisher, by_guardian: false });
+        Ok(())
+    }
+
+    /// The guardian appoints a new publisher, only after the publisher has been silent for
+    /// APPOINT_AFTER_SECS (so a stolen guardian key can't take over a live operator). It
+    /// doesn't restart the clock; the new publisher does by publishing.
+    pub fn appoint_publisher(ctx: Context<AppointPublisher>, new_publisher: Pubkey) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let v = &mut ctx.accounts.vault;
+        require_keys_eq!(ctx.accounts.guardian.key(), v.guardian, VaultError::NotGuardian);
+        math::check_appoint(v.last_publish_at, now)?;
+        let old = v.publisher;
+        v.publisher = new_publisher;
+        emit!(PublisherChanged { vault: v.key(), old, new: new_publisher, by_guardian: true });
         Ok(())
     }
 
@@ -852,6 +911,46 @@ pub mod tax_vault {
         emit!(Paid { vault: vault_key, wallet, amount, cumulative });
         check_solvent(&accs.auth.to_account_info(), &accs.vault)
     }
+
+    /// Fallback (no list published for FALLBACK_AFTER_SECS): pay `wallet` its share of the
+    /// last active list scaled up to everything funded so far,
+    /// `floor(cumulative * holders_funded / list_total)`, minus what it was paid. Same
+    /// accounts as `pay`.
+    pub fn pay_fallback(mut ctx: Context<Pay>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let accs = &mut ctx.accounts;
+        let wallet = accs.wallet.key();
+        require_keys_neq!(wallet, accs.auth.key(), VaultError::WrongAccount);
+        let v = &mut accs.vault;
+        activate_if_due(v, now);
+        math::check_fallback(v.list_epoch, v.pending_epoch, v.last_publish_at, now)?;
+        let vault_key = v.key();
+        require!(verify_proof(&proof, &v.list_root, vault_leaf(&vault_key, &wallet, cumulative)), VaultError::BadProof);
+
+        let rec = &mut accs.record;
+        if rec.vault == Pubkey::default() {
+            rec.vault = vault_key;
+            rec.wallet = wallet;
+            rec.paid = 0;
+            rec.bump = ctx.bumps.record;
+        }
+        let f = math::fallback_pay(cumulative, v.holders_funded, v.list_total, rec.paid, v.holders_paid)?;
+
+        let mint_key = v.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[v.auth_bump]];
+        pay_from_auth(
+            &accs.system_program.to_account_info(),
+            &accs.auth.to_account_info(),
+            &accs.wallet.to_account_info(),
+            f.amount,
+            auth_seeds,
+        )?;
+        rec.paid = f.entitled;
+        v.holders_paid = add(v.holders_paid, f.amount)?;
+        v.fallback_paid = add(v.fallback_paid, f.amount)?;
+        emit!(FallbackPaid { vault: vault_key, wallet, amount: f.amount, entitled: f.entitled });
+        check_solvent(&accs.auth.to_account_info(), &accs.vault)
+    }
 }
 
 // ---------- Helpers ----------
@@ -871,6 +970,8 @@ fn activate_if_due(v: &mut Vault, now: i64) {
         v.pending_total = 0;
         v.pending_active_at = 0;
         v.cancels_in_row = 0;
+        v.list_cid = v.pending_cid;
+        v.pending_cid = [0; 33];
     }
 }
 
@@ -899,16 +1000,31 @@ const V1_BUMP_OFFSET: usize = 470;
 const REWARD_MINT_OFFSET: usize = 104;
 const REWARD_SWAP_POOL_OFFSET: usize = 136;
 const VERSION_OFFSET: usize = 480;
+/// First byte after the v2 fields that v3 keeps (version .. last_reward_slot).
+const V3_NEW_OFFSET: usize = 498;
+const LAST_PUBLISH_AT_OFFSET: usize = 498;
 
-/// Rewrite a v1 vault (its 480 bytes followed by 72 new bytes) as v2: version 2, a clear
-/// cancel counter / reward totals / reserved space, and this network's reward token and
-/// pool. Every other v1 field keeps its bytes.
-pub fn upgrade_layout(d: &mut [u8]) -> Result<()> {
-    require!(d.len() == VAULT_V2_LEN && d[..8] == VAULT_DISC, VaultError::WrongVersion);
-    d[REWARD_MINT_OFFSET..REWARD_MINT_OFFSET + 32].copy_from_slice(REWARD_MINT.as_ref());
-    d[REWARD_SWAP_POOL_OFFSET..REWARD_SWAP_POOL_OFFSET + 32].copy_from_slice(REWARD_POOL.as_ref());
-    d[VAULT_V1_LEN..].fill(0);
+/// Rewrite a v1 (480-byte) or v2 (552-byte) vault, already resized to 640 bytes, as v3.
+/// `old_len` is its length before the resize. A v1 vault first gets the v2 rewrite: a clear
+/// cancel counter / reward totals, and this network's reward token and pool. Then bytes
+/// 498..640 are cleared, `version = 3` and `last_publish_at = now`. Every other old field
+/// keeps its bytes (a v2 vault keeps all of 0..498 but the version byte).
+pub fn upgrade_layout(d: &mut [u8], old_len: usize, now: i64) -> Result<()> {
+    require!(d.len() == VAULT_V3_LEN && d[..8] == VAULT_DISC, VaultError::WrongVersion);
+    match old_len {
+        VAULT_V1_LEN => {
+            d[REWARD_MINT_OFFSET..REWARD_MINT_OFFSET + 32].copy_from_slice(REWARD_MINT.as_ref());
+            d[REWARD_SWAP_POOL_OFFSET..REWARD_SWAP_POOL_OFFSET + 32].copy_from_slice(REWARD_POOL.as_ref());
+            d[VAULT_V1_LEN..].fill(0);
+        }
+        VAULT_V2_LEN => {
+            require!(d[VERSION_OFFSET] == 2, VaultError::WrongVersion);
+            d[V3_NEW_OFFSET..].fill(0);
+        }
+        _ => return err!(VaultError::WrongVersion),
+    }
     d[VERSION_OFFSET] = VAULT_VERSION;
+    d[LAST_PUBLISH_AT_OFFSET..LAST_PUBLISH_AT_OFFSET + 8].copy_from_slice(&now.to_le_bytes());
     Ok(())
 }
 
@@ -1364,8 +1480,9 @@ pub mod math {
         Ok(None)
     }
 
-    /// Rules for a new list: newer epoch, total never lower, never above what the holders'
-    /// share has received.
+    /// Rules for a new list: newer epoch, total never lower (than the active and pending
+    /// lists, and than what was already paid, which fallback payments can push above the
+    /// list total), never above what the holders' share has received.
     #[allow(clippy::too_many_arguments)]
     pub fn check_publish(
         list_epoch: u64,
@@ -1373,20 +1490,60 @@ pub mod math {
         list_total: u64,
         pending_total: u64,
         holders_funded: u64,
+        holders_paid: u64,
         epoch: u64,
         total: u64,
     ) -> Result<()> {
         require!(epoch > list_epoch.max(pending_epoch), VaultError::StaleEpoch);
-        require!(total >= list_total.max(pending_total), VaultError::TotalDecreased);
+        require!(total >= list_total.max(pending_total).max(holders_paid), VaultError::TotalDecreased);
         require!(total <= holders_funded, VaultError::OverFunded);
         Ok(())
+    }
+
+    /// The guardian may appoint a publisher only after APPOINT_AFTER_SECS without a publish.
+    pub fn check_appoint(last_publish_at: i64, now: i64) -> Result<()> {
+        require!(now >= last_publish_at.saturating_add(APPOINT_AFTER_SECS), VaultError::PublisherActive);
+        Ok(())
+    }
+
+    /// Fallback payments need an active list, nothing pending, and FALLBACK_AFTER_SECS
+    /// without a publish.
+    pub fn check_fallback(list_epoch: u64, pending_epoch: u64, last_publish_at: i64, now: i64) -> Result<()> {
+        require!(
+            list_epoch > 0 && pending_epoch == 0 && now >= last_publish_at.saturating_add(FALLBACK_AFTER_SECS),
+            VaultError::FallbackNotActive
+        );
+        Ok(())
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Fallback {
+        /// What the wallet may have been paid in all: floor(cumulative * funded / list_total).
+        pub entitled: u64,
+        /// Paid now: entitled - record.paid.
+        pub amount: u64,
+    }
+
+    /// A fallback payment: the wallet's list share scaled up to everything funded (u128,
+    /// rounded down), minus what it was paid; payments in all never exceed `holders_funded`.
+    pub fn fallback_pay(cumulative: u64, holders_funded: u64, list_total: u64, record_paid: u64, holders_paid: u64) -> Result<Fallback> {
+        let entitled = if list_total == 0 {
+            0
+        } else {
+            to_u64(cumulative as u128 * holders_funded as u128 / list_total as u128)?
+        };
+        require!(entitled > record_paid, VaultError::NothingToPay);
+        let amount = entitled - record_paid;
+        let paid_total = holders_paid.checked_add(amount).ok_or(VaultError::MathOverflow)?;
+        require!(paid_total <= holders_funded, VaultError::OverFunded);
+        Ok(Fallback { entitled, amount })
     }
 }
 
 // ---------- State ----------
 
-/// The vault (v2 layout). Not `#[account]`: its deserializer refuses a v1 (480-byte) or
-/// other-version vault with `WrongVersion` instead of a generic Anchor error, so every
+/// The vault (v3 layout). Not `#[account]`: its deserializer refuses a v1 (480-byte), v2
+/// (552-byte) or other-version vault with `WrongVersion` instead of a generic Anchor error, so every
 /// instruction taking `Account<Vault>` requires an upgraded vault.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
 pub struct Vault {
@@ -1443,7 +1600,7 @@ pub struct Vault {
     /// Slot of the last `sell` (one sale per slot).
     pub last_sell_slot: u64,
     // ----- v2 (appended; offset 480) -----
-    /// Layout version: 2.
+    /// Layout version: 3.
     pub version: u8,
     /// Guardian cancels since the last list went live.
     pub cancels_in_row: u8,
@@ -1451,8 +1608,17 @@ pub struct Vault {
     pub total_reward_out: u64,
     /// Slot of the last reward swap in `fund_creator` (one per slot).
     pub last_reward_slot: u64,
+    // ----- v3 (offset 498, over the v2 reserved bytes) -----
+    /// Unix time of the last `publish_list` (or of creation / the v3 upgrade).
+    pub last_publish_at: i64,
+    /// IPFS address of the active list file: [codec, sha256 digest]; zero = none.
+    pub list_cid: [u8; 33],
+    /// IPFS address of the pending list file.
+    pub pending_cid: [u8; 33],
+    /// XNT paid by `pay_fallback`, ever.
+    pub fallback_paid: u64,
     /// Future use (zero).
-    pub reserved: [u8; 54],
+    pub reserved: [u8; 60],
 }
 
 impl Discriminator for Vault {
@@ -1480,7 +1646,7 @@ impl AccountDeserialize for Vault {
         if buf[..8] != VAULT_DISC {
             return err!(anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch);
         }
-        if buf.len() < VAULT_V2_LEN || buf[VERSION_OFFSET] != VAULT_VERSION {
+        if buf.len() < VAULT_V3_LEN || buf[VERSION_OFFSET] != VAULT_VERSION {
             return err!(VaultError::WrongVersion);
         }
         Self::try_deserialize_unchecked(buf)
@@ -1704,7 +1870,7 @@ pub struct FundCreator<'info> {
 pub struct UpgradeVault<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    /// CHECK: a v1 vault of this program, read as raw bytes (checked in the handler).
+    /// CHECK: a v1 or v2 vault of this program, read as raw bytes (checked in the handler).
     #[account(mut, owner = crate::ID @ VaultError::WrongAccount)]
     pub vault: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
@@ -1724,6 +1890,21 @@ pub struct CancelList<'info> {
     pub vault: Box<Account<'info, Vault>>,
 }
 
+#[derive(Accounts)]
+pub struct SetPublisher<'info> {
+    pub publisher: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+}
+
+#[derive(Accounts)]
+pub struct AppointPublisher<'info> {
+    pub guardian: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+}
+
+/// Accounts of `pay` and `pay_fallback`.
 #[derive(Accounts)]
 pub struct Pay<'info> {
     #[account(mut)]
@@ -1804,6 +1985,24 @@ pub struct Paid {
     pub cumulative: u64,
 }
 
+#[event]
+pub struct PublisherChanged {
+    pub vault: Pubkey,
+    pub old: Pubkey,
+    pub new: Pubkey,
+    /// true = appointed by the guardian, false = rotated by the publisher.
+    pub by_guardian: bool,
+}
+
+#[event]
+pub struct FallbackPaid {
+    pub vault: Pubkey,
+    pub wallet: Pubkey,
+    pub amount: u64,
+    /// floor(cumulative * holders_funded / list_total): the wallet's total paid after this.
+    pub entitled: u64,
+}
+
 #[error_code]
 pub enum VaultError {
     #[msg("Mint must be a Token-2022 tax token with only transfer-fee/metadata extensions, no freeze authority and a 0.01-99.99% fee")]
@@ -1844,12 +2043,16 @@ pub enum VaultError {
     WrongAccount,
     #[msg("Only one sale per slot")]
     OneSellPerSlot,
-    #[msg("Wrong vault version (run upgrade_vault on a v1 vault; it can't run twice)")]
+    #[msg("Wrong vault version (run upgrade_vault on a v1/v2 vault; it can't run twice)")]
     WrongVersion,
     #[msg("The guardian can't cancel more lists in a row until one goes live")]
     TooManyCancels,
     #[msg("Reward mint must be the vault's reward token, without a transfer fee")]
     BadRewardMint,
+    #[msg("The publisher has published recently; the guardian can't appoint a new one yet")]
+    PublisherActive,
+    #[msg("Fallback payments start only after a long time without a published list")]
+    FallbackNotActive,
 }
 
 #[cfg(test)]
@@ -2038,21 +2241,27 @@ mod tests {
     #[test]
     fn list_rules() {
         // First list.
-        assert!(check_publish(0, 0, 0, 0, 100, 1, 100).is_ok());
-        assert!(check_publish(0, 0, 0, 0, 100, 0, 1).is_err()); // epoch must be > 0
+        assert!(check_publish(0, 0, 0, 0, 100, 0, 1, 100).is_ok());
+        assert!(check_publish(0, 0, 0, 0, 100, 0, 0, 1).is_err()); // epoch must be > 0
         // Epoch must beat both the active and the pending list.
-        assert!(check_publish(3, 0, 50, 0, 100, 3, 60).is_err());
-        assert!(check_publish(3, 5, 50, 60, 100, 5, 60).is_err());
-        assert!(check_publish(3, 5, 50, 60, 100, 6, 60).is_ok());
+        assert!(check_publish(3, 0, 50, 0, 100, 0, 3, 60).is_err());
+        assert!(check_publish(3, 5, 50, 60, 100, 0, 5, 60).is_err());
+        assert!(check_publish(3, 5, 50, 60, 100, 0, 6, 60).is_ok());
         // Total never decreases (vs active and pending) and never exceeds holders_funded.
-        assert!(check_publish(3, 0, 50, 0, 100, 4, 49).is_err());
-        assert!(check_publish(3, 5, 50, 60, 100, 6, 59).is_err());
-        assert!(check_publish(3, 0, 50, 0, 100, 4, 101).is_err());
-        assert!(check_publish(3, 0, 50, 0, 100, 4, 100).is_ok());
-        let e = check_publish(3, 0, 50, 0, 100, 4, 101).unwrap_err();
+        assert!(check_publish(3, 0, 50, 0, 100, 0, 4, 49).is_err());
+        assert!(check_publish(3, 5, 50, 60, 100, 0, 6, 59).is_err());
+        assert!(check_publish(3, 0, 50, 0, 100, 0, 4, 101).is_err());
+        assert!(check_publish(3, 0, 50, 0, 100, 0, 4, 100).is_ok());
+        let e = check_publish(3, 0, 50, 0, 100, 0, 4, 101).unwrap_err();
         assert_eq!(e, error!(VaultError::OverFunded));
-        assert_eq!(check_publish(3, 0, 50, 0, 100, 2, 60).unwrap_err(), error!(VaultError::StaleEpoch));
-        assert_eq!(check_publish(3, 0, 50, 0, 100, 4, 40).unwrap_err(), error!(VaultError::TotalDecreased));
+        assert_eq!(check_publish(3, 0, 50, 0, 100, 0, 2, 60).unwrap_err(), error!(VaultError::StaleEpoch));
+        assert_eq!(check_publish(3, 0, 50, 0, 100, 0, 4, 40).unwrap_err(), error!(VaultError::TotalDecreased));
+        // v3: the total also covers what was already paid (fallback can pay past list_total).
+        assert!(check_publish(3, 0, 50, 0, 100, 70, 4, 70).is_ok());
+        assert_eq!(check_publish(3, 0, 50, 0, 100, 70, 4, 69).unwrap_err(), error!(VaultError::TotalDecreased));
+        assert_eq!(check_publish(3, 0, 50, 0, 100, 101, 4, 100).unwrap_err(), error!(VaultError::TotalDecreased));
+        assert!(check_publish(3, 5, 50, 60, 100, 55, 6, 60).is_ok());
+        assert_eq!(check_publish(3, 5, 50, 60, 100, 61, 6, 60).unwrap_err(), error!(VaultError::TotalDecreased));
     }
 
     fn blank() -> Vault {
@@ -2064,7 +2273,8 @@ mod tests {
             pending_epoch: 0, pending_root: [0; 32], pending_total: 0, pending_active_at: 0, total_collected: 0,
             total_burned: 0, total_lp_tokens: 0, total_lp_xnt: 0, total_creator_xnt: 0, total_crank_rewards: 0,
             created_at: 0, bump: 0, auth_bump: 0, last_sell_slot: 0, version: VAULT_VERSION, cancels_in_row: 0,
-            total_reward_out: 0, last_reward_slot: 0, reserved: [0; 54],
+            total_reward_out: 0, last_reward_slot: 0, last_publish_at: 0, list_cid: [0; 33], pending_cid: [0; 33],
+            fallback_paid: 0, reserved: [0; 60],
         }
     }
 
@@ -2090,8 +2300,8 @@ mod tests {
 
     #[test]
     fn vault_size() {
-        assert_eq!(8 + Vault::INIT_SPACE, VAULT_V2_LEN);
-        assert_eq!(VAULT_V2_LEN, 552);
+        assert_eq!(8 + Vault::INIT_SPACE, VAULT_V3_LEN);
+        assert_eq!((VAULT_V1_LEN, VAULT_V2_LEN, VAULT_V3_LEN), (480, 552, 640));
         assert_eq!(8 + PaidRecord::INIT_SPACE, 81);
         assert_eq!(&hashv(&[b"account:Vault"]).to_bytes()[..8], &VAULT_DISC);
         assert_eq!(Vault::DISCRIMINATOR, &VAULT_DISC);
@@ -2108,7 +2318,8 @@ mod tests {
             pending_root: [0x1e; 32], pending_total: 0x1f, pending_active_at: 0x20, total_collected: 0x21,
             total_burned: 0x22, total_lp_tokens: 0x23, total_lp_xnt: 0x24, total_creator_xnt: 0x25,
             total_crank_rewards: 0x26, created_at: 0x27, bump: 0x28, auth_bump: 0x29, last_sell_slot: 0x2a,
-            version: VAULT_VERSION, cancels_in_row: 0x2b, total_reward_out: 0x2c, last_reward_slot: 0x2d, reserved: [0x2e; 54],
+            version: VAULT_VERSION, cancels_in_row: 0x2b, total_reward_out: 0x2c, last_reward_slot: 0x2d,
+            last_publish_at: 0x2f, list_cid: [0x30; 33], pending_cid: [0x31; 33], fallback_paid: 0x32, reserved: [0x2e; 60],
         }
     }
 
@@ -2116,7 +2327,7 @@ mod tests {
     fn layout_offsets_match_the_spec() {
         let mut buf = Vec::new();
         filled().try_serialize(&mut buf).unwrap();
-        assert_eq!(buf.len(), VAULT_V2_LEN);
+        assert_eq!(buf.len(), VAULT_V3_LEN);
         assert_eq!(&buf[..8], &VAULT_DISC);
         let key_at = |o: usize, b: u8| assert_eq!(&buf[o..o + 32], &[b; 32], "pubkey at {o}");
         let u64_at = |o: usize, v: u64| assert_eq!(u64::from_le_bytes(buf[o..o + 8].try_into().unwrap()), v, "u64 at {o}");
@@ -2128,52 +2339,188 @@ mod tests {
         assert_eq!(u16::from_le_bytes([buf[236], buf[237]]), 0x0d0c);
         for (o, v) in [(238, 0x11), (246, 0x12), (254, 0x13), (262, 0x14), (270, 0x15), (278, 0x16), (286, 0x17), (294, 0x18),
             (302, 0x19), (310, 0x1a), (350, 0x1c), (358, 0x1d), (398, 0x1f), (406, 0x20), (414, 0x21), (422, 0x22),
-            (430, 0x23), (438, 0x24), (446, 0x25), (454, 0x26), (462, 0x27), (472, 0x2a), (482, 0x2c), (490, 0x2d)] {
+            (430, 0x23), (438, 0x24), (446, 0x25), (454, 0x26), (462, 0x27), (472, 0x2a), (482, 0x2c), (490, 0x2d),
+            (498, 0x2f), (572, 0x32)] {
             u64_at(o, v);
         }
         assert_eq!(&buf[318..350], &[0x1b; 32]);
         assert_eq!(&buf[366..398], &[0x1e; 32]);
         assert_eq!((buf[470], buf[471]), (0x28, 0x29));
         assert_eq!((buf[480], buf[481]), (VAULT_VERSION, 0x2b));
-        assert_eq!(&buf[498..552], &[0x2e; 54]);
+        assert_eq!(&buf[506..539], &[0x30; 33]);
+        assert_eq!(&buf[539..572], &[0x31; 33]);
+        assert_eq!(&buf[580..640], &[0x2e; 60]);
+    }
+
+    /// The raw bytes of `filled()` as an older layout: v2 = its first 498 bytes (version 2)
+    /// followed by 54 reserved bytes; v1 = its first 480 bytes.
+    fn old_vault(len: usize) -> Vec<u8> {
+        let mut d = Vec::new();
+        filled().try_serialize(&mut d).unwrap();
+        d.truncate(len);
+        if len == VAULT_V2_LEN {
+            d[480] = 2;
+            d[498..].fill(0x77);
+        }
+        d
     }
 
     #[test]
-    fn upgrade_keeps_v1_bytes_and_sets_v2_fields() {
-        // A v1 account is the first 480 bytes of the same serialization (the v1 struct is a
-        // prefix of v2); after the realloc the new 72 bytes are whatever the runtime gave.
-        let mut v2 = Vec::new();
-        filled().try_serialize(&mut v2).unwrap();
-        let v1 = v2[..VAULT_V1_LEN].to_vec();
-        // A 480-byte v1 vault is refused by the v2 deserializer.
+    fn upgrade_v1_to_v3_keeps_v1_bytes() {
+        let v1 = old_vault(VAULT_V1_LEN);
+        // A 480-byte v1 vault is refused by the v3 deserializer.
         assert_eq!(Vault::try_deserialize(&mut &v1[..]).err().unwrap(), error!(VaultError::WrongVersion));
         let mut d = v1.clone();
-        d.resize(VAULT_V2_LEN, 0xff);
-        upgrade_layout(&mut d).unwrap();
+        // After the realloc the new bytes are whatever the runtime gave.
+        d.resize(VAULT_V3_LEN, 0xff);
+        upgrade_layout(&mut d, VAULT_V1_LEN, 1_234_567).unwrap();
         // Untouched: everything but reward_mint / reward_swap_pool.
         assert_eq!(&d[..REWARD_MINT_OFFSET], &v1[..REWARD_MINT_OFFSET]);
         assert_eq!(&d[168..VAULT_V1_LEN], &v1[168..VAULT_V1_LEN]);
         assert_eq!(&d[104..136], REWARD_MINT.as_ref());
         assert_eq!(&d[136..168], REWARD_POOL.as_ref());
-        assert_eq!(d[480], 2);
-        assert!(d[481..].iter().all(|&b| b == 0));
+        assert_eq!(d[480], 3);
+        assert!(d[481..498].iter().all(|&b| b == 0));
+        assert_eq!(i64::from_le_bytes(d[498..506].try_into().unwrap()), 1_234_567);
+        assert!(d[506..].iter().all(|&b| b == 0));
         let v = Vault::try_deserialize(&mut &d[..]).unwrap();
         let f = filled();
         assert_eq!((v.mint, v.pool, v.creator_nft, v.publisher, v.guardian), (f.mint, f.pool, f.creator_nft, f.publisher, f.guardian));
         assert_eq!((v.reward_mint, v.reward_swap_pool), (REWARD_MINT, REWARD_POOL));
         assert_eq!((v.xnt_creator, v.holders_funded, v.list_root, v.last_sell_slot, v.bump, v.auth_bump), (0x17, 0x18, [0x1b; 32], 0x2a, 0x28, 0x29));
-        assert_eq!((v.version, v.cancels_in_row, v.total_reward_out, v.last_reward_slot, v.reserved), (2, 0, 0, 0, [0; 54]));
-        // Upgrading needs exactly a 552-byte buffer with the vault discriminator.
-        assert!(upgrade_layout(&mut v1.clone()).is_err());
-        let mut other = d.clone();
+        assert_eq!((v.version, v.cancels_in_row, v.total_reward_out, v.last_reward_slot), (3, 0, 0, 0));
+        assert_eq!((v.last_publish_at, v.list_cid, v.pending_cid, v.fallback_paid, v.reserved), (1_234_567, [0; 33], [0; 33], 0, [0; 60]));
+        // Upgrading needs exactly a 640-byte buffer with the vault discriminator.
+        assert!(upgrade_layout(&mut v1.clone(), VAULT_V1_LEN, 0).is_err());
+        let mut other = v1.clone();
+        other.resize(VAULT_V3_LEN, 0);
         other[0] ^= 1;
-        assert!(upgrade_layout(&mut other).is_err());
-        // Any other version byte is refused too.
-        let mut v3 = d.clone();
-        v3[480] = 3;
-        assert_eq!(Vault::try_deserialize(&mut &v3[..]).err().unwrap(), error!(VaultError::WrongVersion));
-        v3[480] = 0;
-        assert_eq!(Vault::try_deserialize(&mut &v3[..]).err().unwrap(), error!(VaultError::WrongVersion));
+        assert!(upgrade_layout(&mut other, VAULT_V1_LEN, 0).is_err());
+        let mut odd = v1.clone();
+        odd.resize(VAULT_V3_LEN, 0);
+        assert_eq!(upgrade_layout(&mut odd, 500, 0).unwrap_err(), error!(VaultError::WrongVersion));
+        assert_eq!(upgrade_layout(&mut odd, VAULT_V3_LEN, 0).unwrap_err(), error!(VaultError::WrongVersion));
+    }
+
+    #[test]
+    fn upgrade_v2_to_v3_keeps_v2_fields() {
+        let v2 = old_vault(VAULT_V2_LEN);
+        assert_eq!(Vault::try_deserialize(&mut &v2[..]).err().unwrap(), error!(VaultError::WrongVersion));
+        let mut d = v2.clone();
+        d.resize(VAULT_V3_LEN, 0xff);
+        upgrade_layout(&mut d, VAULT_V2_LEN, -5).unwrap();
+        // Every v1 and v2 byte kept (reward mint/pool too), except the version byte.
+        assert_eq!(&d[..480], &v2[..480]);
+        assert_eq!(&d[481..498], &v2[481..498]);
+        assert_eq!(d[480], 3);
+        assert_eq!(i64::from_le_bytes(d[498..506].try_into().unwrap()), -5);
+        assert!(d[506..].iter().all(|&b| b == 0));
+        let v = Vault::try_deserialize(&mut &d[..]).unwrap();
+        let f = filled();
+        assert_eq!((v.reward_mint, v.reward_swap_pool), (f.reward_mint, f.reward_swap_pool));
+        assert_eq!((v.cancels_in_row, v.total_reward_out, v.last_reward_slot), (0x2b, 0x2c, 0x2d));
+        assert_eq!((v.pending_epoch, v.pending_root, v.pending_total, v.pending_active_at), (0x1d, [0x1e; 32], 0x1f, 0x20));
+        assert_eq!((v.version, v.last_publish_at, v.list_cid, v.pending_cid, v.fallback_paid, v.reserved), (3, -5, [0; 33], [0; 33], 0, [0; 60]));
+        // A 552-byte account whose version byte isn't 2 is refused.
+        let mut bad = v2.clone();
+        bad[480] = 3;
+        bad.resize(VAULT_V3_LEN, 0);
+        assert_eq!(upgrade_layout(&mut bad, VAULT_V2_LEN, 0).unwrap_err(), error!(VaultError::WrongVersion));
+        // Any other version byte on a 640-byte account is refused by the deserializer.
+        let mut v4 = d.clone();
+        v4[480] = 2;
+        assert_eq!(Vault::try_deserialize(&mut &v4[..]).err().unwrap(), error!(VaultError::WrongVersion));
+        v4[480] = 4;
+        assert_eq!(Vault::try_deserialize(&mut &v4[..]).err().unwrap(), error!(VaultError::WrongVersion));
+    }
+
+    #[test]
+    fn cids_follow_the_list() {
+        let mut v = blank();
+        v.pending_epoch = 2;
+        v.pending_cid = [0x55; 33];
+        v.pending_active_at = 10;
+        activate_if_due(&mut v, 9);
+        assert_eq!((v.list_cid, v.pending_cid), ([0; 33], [0x55; 33]));
+        activate_if_due(&mut v, 10);
+        assert_eq!((v.list_cid, v.pending_cid), ([0x55; 33], [0; 33]));
+    }
+
+    #[test]
+    fn appoint_and_fallback_timing() {
+        let t0 = 1_700_000_000i64;
+        assert_eq!(check_appoint(t0, t0 + APPOINT_AFTER_SECS - 1).unwrap_err(), error!(VaultError::PublisherActive));
+        assert!(check_appoint(t0, t0 + APPOINT_AFTER_SECS).is_ok());
+        assert!(check_appoint(t0, t0 + FALLBACK_AFTER_SECS).is_ok());
+        assert_eq!(check_appoint(t0, t0).unwrap_err(), error!(VaultError::PublisherActive));
+        // No overflow at the edge of i64.
+        assert_eq!(check_appoint(i64::MAX, i64::MAX - 1).unwrap_err(), error!(VaultError::PublisherActive));
+        let e = error!(VaultError::FallbackNotActive);
+        assert_eq!(check_fallback(1, 0, t0, t0 + FALLBACK_AFTER_SECS - 1).unwrap_err(), e);
+        assert!(check_fallback(1, 0, t0, t0 + FALLBACK_AFTER_SECS).is_ok());
+        // No active list, or a list pending: no fallback.
+        assert_eq!(check_fallback(0, 0, t0, t0 + FALLBACK_AFTER_SECS).unwrap_err(), e);
+        assert_eq!(check_fallback(1, 2, t0, t0 + FALLBACK_AFTER_SECS).unwrap_err(), e);
+        #[cfg(not(feature = "short-windows"))]
+        assert_eq!((APPOINT_AFTER_SECS, FALLBACK_AFTER_SECS), (7 * 86_400, 30 * 86_400));
+        assert!(APPOINT_AFTER_SECS < FALLBACK_AFTER_SECS);
+    }
+
+    #[test]
+    fn fallback_entitlement() {
+        // Scaled up by funded / list_total, rounded down.
+        let f = fallback_pay(300, 1_000, 900, 0, 0).unwrap();
+        assert_eq!(f, Fallback { entitled: 333, amount: 333 });
+        let f = fallback_pay(300, 1_000, 900, 300, 900).unwrap();
+        assert_eq!(f, Fallback { entitled: 333, amount: 33 });
+        assert_eq!(fallback_pay(300, 1_000, 900, 333, 0).unwrap_err(), error!(VaultError::NothingToPay));
+        assert_eq!(fallback_pay(300, 1_000, 900, 400, 0).unwrap_err(), error!(VaultError::NothingToPay));
+        // Nothing funded beyond the list: entitled == cumulative.
+        assert_eq!(fallback_pay(300, 900, 900, 0, 0).unwrap().entitled, 300);
+        // u128 maths: no overflow near u64::MAX.
+        let big = u64::MAX / 2;
+        let f = fallback_pay(big, u64::MAX, u64::MAX, 0, 0).unwrap();
+        assert_eq!(f.entitled, big);
+        let f = fallback_pay(u64::MAX / 3, u64::MAX, u64::MAX / 2, 0, 0).unwrap();
+        assert_eq!(f.entitled as u128, (u64::MAX / 3) as u128 * u64::MAX as u128 / (u64::MAX / 2) as u128);
+        // A leaf above the list total would be entitled to more than was funded: capped.
+        assert_eq!(fallback_pay(1_000, 1_000, 500, 0, 0).unwrap_err(), error!(VaultError::OverFunded));
+        assert_eq!(fallback_pay(u64::MAX, u64::MAX, 1, 0, 0).unwrap_err(), error!(VaultError::MathOverflow));
+        // Payments in all never exceed holders_funded.
+        assert_eq!(fallback_pay(300, 1_000, 900, 0, 700).unwrap_err(), error!(VaultError::OverFunded));
+        assert_eq!(fallback_pay(300, 1_000, 900, 0, 667).unwrap().amount, 333);
+        // A zero-total list pays nothing.
+        assert_eq!(fallback_pay(5, 1_000, 0, 0, 0).unwrap_err(), error!(VaultError::NothingToPay));
+        // Random lists: paying every wallet never exceeds funded, and each gets its floor.
+        let mut seed = 5u64;
+        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        for _ in 0..2_000 {
+            let n = (rnd() % 20 + 1) as usize;
+            let c: Vec<u64> = (0..n).map(|_| rnd() % 1_000_000_000_000).collect();
+            let total: u64 = c.iter().sum();
+            if total == 0 { continue; }
+            let funded = total + rnd() % (total * 3 + 1);
+            // Each wallet was already paid part of its cumulative by the normal path.
+            let paid: Vec<u64> = c.iter().map(|&x| if x == 0 { 0 } else { rnd() % (x + 1) }).collect();
+            let mut holders_paid: u64 = paid.iter().sum();
+            for i in 0..n {
+                let want = (c[i] as u128 * funded as u128 / total as u128) as u64;
+                match fallback_pay(c[i], funded, total, paid[i], holders_paid) {
+                    Ok(f) => {
+                        assert_eq!(f.entitled, want);
+                        assert_eq!(f.amount, want - paid[i]);
+                        holders_paid += f.amount;
+                    }
+                    Err(e) => {
+                        assert_eq!(e, error!(VaultError::NothingToPay));
+                        assert!(want <= paid[i]);
+                    }
+                }
+                assert!(holders_paid <= funded);
+            }
+            // Rounding leaves less than one lamport per wallet unpaid.
+            assert!(funded - holders_paid < n as u64 || funded == holders_paid);
+        }
     }
 
     #[test]
