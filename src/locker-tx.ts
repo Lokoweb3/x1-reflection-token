@@ -44,6 +44,12 @@ export function lockerIds(cfg: Config, target?: Target) {
   };
 }
 
+/** Just the locker program: rewards are per NFT, so no pool or token is needed. */
+export function lockerProgram(cfg: Config) {
+  if (!cfg.locker?.programId) throw new Error("Set locker.programId in config.json to the deployed lp_locker program.");
+  return new PublicKey(cfg.locker.programId);
+}
+
 /** LP tokens `owner` holds in their wallet (the withdrawable kind). */
 export async function walletLp(conn: Connection, cfg: Config, owner: PublicKey) {
   const ids = lockerIds(cfg);
@@ -271,7 +277,7 @@ export async function buildCollect(conn: Connection, cfg: Config, holder: Public
 export async function buildDepositReward(
   conn: Connection, cfg: Config, depositor: PublicKey, nftMint: PublicKey, rewardMint: PublicKey, amount: bigint,
 ) {
-  const ids = lockerIds(cfg);
+  const ids = { programId: lockerProgram(cfg) };
   const mintInfo = await conn.getAccountInfo(rewardMint);
   if (!mintInfo) throw new Error("Reward mint not found");
   const rewardProgram = mintInfo.owner;
@@ -311,7 +317,7 @@ export async function buildDepositReward(
  * the NFT). Wrapped XNT is unwrapped straight into the wallet.
  */
 export async function buildClaimReward(conn: Connection, cfg: Config, holder: PublicKey, nftMint: PublicKey, rewardMint: PublicKey) {
-  const ids = lockerIds(cfg);
+  const ids = { programId: lockerProgram(cfg) };
   const vaultState = await readRewardVault(conn, ids.programId, nftMint, rewardMint);
   if (!vaultState) throw new Error("No creator rewards have been deposited for this NFT yet.");
   const s = rewardSummary(vaultState);
