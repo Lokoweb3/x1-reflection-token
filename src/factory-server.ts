@@ -1010,7 +1010,11 @@ function tokenStats(mintStr: string) {
     const excluded = new Set([...dc.excludeOwners, ...BURN_OWNERS, t.distributor, pool]);
     // A vault token's collected tax sits with the vault's auth PDA: never a holder.
     const vaultAuth = vaultAuthFor(t.mint);
-    if (vaultAuth) { labels.set(vaultAuth, "Tax vault"); excluded.add(vaultAuth); }
+    if (vaultAuth) {
+      labels.set(vaultAuth, "Tax vault"); excluded.add(vaultAuth);
+      // A migrated token's hot wallet lost its withdraw authority to the vault; it only holds dust now.
+      if (t.distributor) labels.set(t.distributor, "Old distributor (retired)");
+    }
     const vault = vaults ? await vaults.badge(t.mint).catch(() => null) : null;
     const minHolding = toBaseUnits(dc.minHoldingTokens, m.decimals);
     const earning = eligibleBalances(rows, { excluded, excludeOffCurve: dc.excludeOffCurveOwners, minHolding });
