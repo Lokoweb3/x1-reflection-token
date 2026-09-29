@@ -72,6 +72,7 @@ fieldset { margin: 0 0 14px; padding: 12px; min-width: 0; }
 .banner { padding: 12px 14px; margin-bottom: 16px; border: 2px solid var(--ink, #1d1b16); }
 .banner.live { border-color: var(--good); }
 .banner b { display: block; margin-bottom: 2px; }
+.banner .btn { margin-top: 10px; }
 .cols { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 18px; align-items: start; }
 .chart { width: 100%; height: auto; display: block; touch-action: pan-y; }
 .chart .axis { stroke: var(--rule, rgb(0 0 0 / .4)); stroke-width: 1; }
@@ -183,13 +184,13 @@ function toast(kind, ...parts) {
   const t = $("toast"); t.className = `toast ${kind}`; t.replaceChildren(...parts); t.hidden = false;
   clearTimeout(toastTimer); if (kind !== "info") toastTimer = setTimeout(() => { t.hidden = true; }, 12000);
 }
-async function signAndSend(label, build, curveMint) {
+async function signAndSend(label, build, curveMint, vaultMint) {
   toast("info", `${label}: preparing and simulating…`);
   const { tx, ...rest } = await build();
   toast("info", `${label}: approve it in your wallet…`);
   const signed = await W.sign(W.b64ToBytes(tx));
   toast("info", `${label}: sending…`);
-  const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), curveMint });
+  const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), curveMint, vaultMint });
   toast("success", `${label} confirmed. `, link(`${info.explorer}/tx/${signature}`, "View transaction ↗"));
   return { signature, ...rest };
 }
@@ -359,7 +360,8 @@ function renderCosts() {
   const rows = [
     ["Launch fee", info ? `${info.feeAmount} ${info.feeSymbol}` : "…"],
     [`Graduation deposit (pays for the pool and lock at graduation; the rest is refunded to you when the curve finishes)`, `${fmt(dep, 3)} XNT`],
-    ["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"],
+    // Tax Vault sites: the vault program holds the tax, so there's no distributor wallet to fund.
+    ...(info?.taxVault?.launches ? [] : [["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"]]),
     ["Account rent and network fees", "≈ 0.01 XNT"],
   ];
   $("costs").replaceChildren(...rows.map(([a, b]) => el("tr", {}, el("td", { text: a }), el("td", { text: b }))));
@@ -396,7 +398,7 @@ async function createCurve(ev) {
   const p = readForm();
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax.`); return; }
   const target = fmt(units(listData.params.targetXnt), 0);
-  const ok = confirm(`Create ${p.name} (${p.symbol}) on the bonding curve?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed); ${listData.params.curveBps / 100}% sold on the curve\n• Tax ${p.taxBps / 100}% on every transfer once it graduates (can never change)\n• Graduates at ${target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee ${info.feeAmount} ${info.feeSymbol}, plus a ${fmt(units(listData.params.depositXnt), 3)} XNT graduation deposit (the rest comes back when it finishes)\n\nYou can't buy on your own curve. Your wallet will ask you to approve 1 transaction.`);
+  const ok = confirm(`Create ${p.name} (${p.symbol}) on the bonding curve?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed); ${listData.params.curveBps / 100}% sold on the curve\n• Tax ${p.taxBps / 100}% on every transfer once it graduates (can never change)\n• Graduates at ${target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee ${info.feeAmount} ${info.feeSymbol}, plus a ${fmt(units(listData.params.depositXnt), 3)} XNT graduation deposit (the rest comes back when it finishes)\n\nYou can't buy on your own curve. Your wallet will ask you to approve 1 transaction.${info.taxVault?.launches ? "\n\nThe tax is held by the Tax Vault program, not a wallet. After graduation you sign one more transaction to start the tax vault (the tax waits safely until then)." : ""}`);
   if (!ok) return;
   creating = true; renderCosts();
   try {
@@ -425,7 +427,36 @@ function banner(v) {
     return el("div", { class: "banner live" }, el("b", { text: "Delivering tokens…" }), `The pool is live and its liquidity locked forever. Buyers' tokens are being sent to their wallets (${v.state.positions} left).`, links(pool, nft));
   }
   return el("div", { class: "banner live" }, el("b", { text: "Graduated" }), "Every buyer has their tokens. It now trades on XDEX, and its tax pays holders in XNT.",
-    links(pool, nft, el("a", { href: `/leaderboard/${v.mint}`, text: "Leaderboard" }), el("a", { href: "/tokens", text: "All tokens" })));
+    links(pool, nft, v.vault?.exists && v.lockNft ? el("a", { href: `/nft/${v.lockNft}#vault`, text: "Tax vault" }) : null,
+      el("a", { href: `/leaderboard/${v.mint}`, text: "Leaderboard" }), el("a", { href: "/tokens", text: "All tokens" })));
+}
+
+/**
+ * A Tax Vault token after graduation, before its vault exists: only the creator can start it
+ * (init_vault), so they get the button and everyone else a note. Meanwhile the tax stays
+ * withheld in the holders' token accounts, where nobody can move it.
+ */
+let vaultBusy = false;
+function vaultStart(v) {
+  if (!v.vault || v.vault.exists || v.statusCode < 3) return null;
+  if (!W.state.address || W.state.address !== v.creator) {
+    return el("div", { class: "banner" }, el("b", { text: "Tax vault not started yet" }), "Waiting for the creator to start the tax vault — the tax waits safely until then.");
+  }
+  const go = el("button", { class: "btn primary", type: "button", text: vaultBusy ? "Starting…" : "Start the tax vault" });
+  go.disabled = vaultBusy;
+  go.onclick = startVault;
+  return el("div", { class: "banner" }, el("b", { text: "Start the tax vault" }),
+    "Your token has graduated. Sign one transaction to start its tax vault: from then on the Tax Vault program, not a wallet, collects the tax, burns, adds liquidity, funds your creator reward and pays holders. Until you do, the tax waits safely in the holders' token accounts.",
+    el("div", {}, go));
+}
+async function startVault() {
+  if (vaultBusy) return;
+  vaultBusy = true; renderDetail();
+  try {
+    await signAndSend("Start the tax vault", () => api("/api/launch/vault", { mint: view.mint, creator: W.state.address }), view.mint, view.mint);
+  } catch (e) { toast("error", `Start the tax vault failed: ${e.message || e}`); }
+  vaultBusy = false;
+  await loadDetail();
 }
 
 /** Price vs XNT raised, drawn from the curve: at raised r, x = x0 + r and price = x² / k0. */
@@ -607,6 +638,7 @@ function renderDetail() {
           el("a", { href: `/wallet/${v.creator}`, class: "mono", text: short(v.creator) })))),
     v.description ? el("p", { class: "lede", text: v.description }) : null,
     banner(v),
+    vaultStart(v),
     el("div", { class: "card" }, progressBlock(v),
       el("dl", { class: "kv", style: "margin-top:12px" },
         el("div", {}, el("dt", { class: "muted", text: "Price" }), el("dd", { text: `${sig(v.priceXnt)} XNT` })),

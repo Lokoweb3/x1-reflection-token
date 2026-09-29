@@ -211,12 +211,23 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     };
   }
 
-  /** The small summary token pages show (badge, list link, next list time, v3 status); null for other tokens. */
+  /**
+   * The small summary token pages show (badge, list link, next list time, v3 status); null for
+   * other tokens. `exists` false: the creator (`creator`) hasn't started the vault yet (a
+   * graduated curve token); the pages offer them "Start the tax vault".
+   */
   async function badge(mint: string) {
     if (!isVaultMint(mint)) return null;
     const v = await cachedVault(mint).catch(() => null);
+    let r: LaunchRecord | null = null;
+    try { r = readLaunch(mint); } catch { /* no record */ }
+    const creator = r?.creator ?? null;
+    // A creator who builds their own init_vault (a curve token's vault is started after it's
+    // listed) could pick other settings than the launch shows: say so on every page.
+    const mismatch = v && r && (!v.guardian.equals(new PublicKey(r.creator)) || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps)
+      ? "This vault's settings differ from the launch (guardian or tax split)." : null;
     return {
-      programId: program.toBase58(), vault: addrOf(mint).toBase58(), auth: authOf(mint).toBase58(), exists: !!v,
+      programId: program.toBase58(), vault: addrOf(mint).toBase58(), auth: authOf(mint).toBase58(), exists: !!v, creator, mismatch,
       listEpoch: v && v.listEpoch > 0n ? v.listEpoch.toString() : null,
       nextListAt: v && v.pendingEpoch > 0n ? v.pendingActiveAt : null,
       listUrl: `/api/vault/${mint}/list`,
@@ -453,7 +464,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const t = tokenOf(r);
     // Only the creator can start a vault (init_vault); until then there's nothing to crank.
     const v = await readVault(t.mint);
-    if (!v) { status.set(r.mint, { at: new Date().toISOString(), ok, notes: ["no vault yet (the creator starts it after the LP lock)"] }); return; }
+    if (!v) { status.set(r.mint, { at: new Date().toISOString(), ok, notes: ["no vault yet (the creator starts it after the LP lock or the curve's graduation)"] }); return; }
     seen.add(r.mint);
     let vault = v;
     await step("upgrade_vault", async () => { vault = await c.upgrade(t, v, notes); });
@@ -577,8 +588,11 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     return [appointPublisherIx(program, guardian, mint, newPublisher)];
   }
 
+  /** Forget a token's cached vault (after the creator starts it, so the pages show it at once). */
+  const forget = (mint: string) => { viewCache.delete(mint); };
+
   return {
-    program, isVaultMint, authOf, view, listView, badge, rewardMintOf, crankOnce, discover, crankPlan, crankResult, appointIxs,
+    program, isVaultMint, authOf, view, listView, badge, rewardMintOf, crankOnce, discover, crankPlan, crankResult, appointIxs, forget,
     crankOn: () => !!crank, passMs: PASS_MS,
   };
 }

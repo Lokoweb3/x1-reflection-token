@@ -332,10 +332,10 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, signers, opts) };
   }
   if (url === "/api/launch/vault") {
-    // Tax Vault launches, after the lock: the creator starts the vault (init_vault).
+    // Tax Vault launches, after the lock (a curve token: after graduation): the creator starts the vault (init_vault).
     const r = ownLaunch(body);
     const s = await launchStatus(conn, cfg, r);
-    if (!s.lock || !s.lockNft) throw new Error("Step 3 (LP lock) hasn't confirmed yet.");
+    if (!s.lock || !s.lockNft) throw new Error(r.kind === "curve" ? "The curve hasn't graduated yet; the tax vault starts after graduation." : "Step 3 (LP lock) hasn't confirmed yet.");
     const ixs = await buildVaultStep(conn, cfg, r, s.lockNft);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, units: 200_000 }) };
   }
@@ -469,6 +469,8 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const signature = await sendSigned(conn, String(body.tx));
     // A curve trade: show it on the next page load instead of after the cache expires.
     if (curves && typeof body.curveMint === "string") { try { curves.invalidate(new PublicKey(body.curveMint).toBase58()); } catch { /* ignore */ } }
+    // A creator just started a tax vault: the pages show it at once.
+    if (vaults && typeof body.vaultMint === "string") { try { vaults.forget(new PublicKey(body.vaultMint).toBase58()); } catch { /* ignore */ } }
     return { signature };
   }
   return null;
@@ -708,7 +710,13 @@ async function getView(url: URL) {
   if (url.pathname === "/api/nfts") return allNfts();
   if (url.pathname === "/api/curves") return curves ? curves.list() : null;
   const cv = /^\/api\/curve\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
-  if (cv) return curves ? curves.view(cv[1], url.searchParams.get("wallet")) : null;
+  if (cv) {
+    if (!curves) return null;
+    // A Tax Vault curve token: whether its creator has started the vault (after graduation).
+    const [view, vault] = await Promise.all([curves.view(cv[1], url.searchParams.get("wallet")),
+      vaults ? vaults.badge(new PublicKey(cv[1]).toBase58()).catch(() => null) : null]);
+    return { ...view, vault };
+  }
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (nftApi) return nftView(nftApi[1]);
   const va = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})(\/list)?$/.exec(url.pathname);
@@ -1054,7 +1062,8 @@ function tokenStats(mintStr: string) {
     if (vaultAuth) {
       labels.set(vaultAuth, "Tax vault"); excluded.add(vaultAuth);
       // A migrated token's hot wallet lost its withdraw authority to the vault; it only holds dust now.
-      if (t.distributor) labels.set(t.distributor, "Old distributor (retired)");
+      // (A token launched on the vault, curve ones included, records the auth PDA itself there.)
+      if (t.distributor && t.distributor !== vaultAuth) labels.set(t.distributor, "Old distributor (retired)");
     }
     const vault = vaults ? await vaults.badge(t.mint).catch(() => null) : null;
     const minHolding = toBaseUnits(dc.minHoldingTokens, m.decimals);

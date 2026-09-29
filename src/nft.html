@@ -292,9 +292,10 @@ function yieldPanel(y, sym, extraNote) {
 }
 /** Small prices keep 3 significant digits (0.0000001534), larger ones up to 6 decimals. */
 const fmtPrice = (p) => p === 0 ? "0" : p < 0.001 ? p.toFixed(Math.min(18, 2 - Math.floor(Math.log10(p)))) : p.toLocaleString(undefined, { maximumFractionDigits: 6 });
-async function loadTokenStats(d, host) {
+async function loadTokenStats(d, host, fresh = false) {
   try {
-    const s = await api(`/api/token/${d.tokenMint}/stats`);
+    // `fresh`: skip the site's 30 s view cache (right after the creator started the tax vault).
+    const s = await api(`/api/token/${d.tokenMint}/stats${fresh ? `?t=${Date.now()}` : ""}`);
     if (current?.nftMint !== d.nftMint) return; // navigated away meanwhile
     renderTokenStats(d, s, host);
     if (location.hash === "#vault") $("vault")?.scrollIntoView({ block: "start" });
@@ -308,7 +309,7 @@ function vaultRow(v) {
   if (!v) return null;
   return el("div", { class: "vault-row" },
     el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: "✓ Tax enforced by program" }),
-    el("a", { href: v.listUrl, target: "_blank", rel: "noopener", text: "Latest rewards list ↗" }),
+    v.exists ? el("a", { href: v.listUrl, target: "_blank", rel: "noopener", text: "Latest rewards list ↗" }) : null,
     v.nextListAt ? el("span", { class: "muted", text: `Next rewards list pays at ${new Date(v.nextListAt * 1000).toLocaleString()}` }) : null,
     v.cancelsLeft != null ? el("span", { class: "muted", title: "The creator (the vault's guardian) can stop a new rewards list before it pays, but only this many times in a row: once a list goes live the count starts over.",
       text: v.cancelsLeft > 0 ? `The creator can cancel ${v.cancelsLeft} more list${v.cancelsLeft === 1 ? "" : "s"} in a row` : "The creator can't cancel the next list" }) : null);
@@ -329,13 +330,14 @@ let vaultLog = null; // what the last "Run the vault now" did: { mint, lines: [[
  */
 function vaultPanel(d, s) {
   const v = s.vault;
-  if (!v || !v.exists) return null;
+  if (!v) return null;
+  if (!v.exists) return vaultStartPanel(d, s);
   const me = W.state.address;
   const now = Date.now() / 1000;
   const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
   const rows = [];
   if (v.publisher) {
-    rows.push(["Publisher", el("span", {}, addr(v.publisher), v.sitePublishes ? el("span", { class: "lbl", text: "99 + Tax" }) : el("span", { class: "lbl", text: "Appointed" }))]);
+    rows.push(["Publisher", el("span", {}, addr(v.publisher), el("span", { class: "lbl", text: v.sitePublishes ? "99 + Tax" : "Not 99 + Tax" }))]);
     rows.push(["Last list published", el("span", { title: when(v.lastPublishAt), text: relTime(v.lastPublishAt) })]);
     // The active list's file on IPFS: its address is stored on-chain, so it's readable without this site.
     if (v.listCid) rows.push(["List file (IPFS)", link(v.listCidUrl, `${v.listCid.slice(0, 10)}…${v.listCid.slice(-6)} ↗`, "mono")]);
@@ -346,6 +348,12 @@ function vaultPanel(d, s) {
     : el("p", { class: "vp-state muted" },
       now >= v.appointAllowedAt ? `The publisher has been silent since ${when(v.lastPublishAt)}: the creator can appoint a new publisher now. ` : `The creator can appoint a new publisher from ${when(v.appointAllowedAt)} if no list is published before then. `,
       `Fallback payouts from the last list start ${when(v.fallbackAt)} if still none is.`);
+  // Lists decide who gets the holders' XNT: flag a publisher that isn't this site's key (a
+  // creator-chosen one, or one appointed after the site went quiet) and settings that differ.
+  const warns = [
+    v.mismatch,
+    v.publisher && !v.sitePublishes ? "Rewards lists for this token are published by a wallet that isn't 99 + Tax's, so holder payouts depend on that wallet." : null,
+  ].filter(Boolean).map((t) => el("p", { class: "vp-state warn", text: `⚠ ${t}` }));
   const run = el("button", { class: "btn primary", type: "button", text: "Run the vault now" });
   run.disabled = busy;
   run.onclick = (ev) => (W.state.address ? runVault(d, s) : openWalletMenu(ev));
@@ -366,9 +374,45 @@ function vaultPanel(d, s) {
   return el("div", { class: "panel vault-panel", id: "vault" },
     el("div", { class: "vp-head" }, el("h3", { text: "Tax Vault", style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: `v${v.version ?? "?"} · ${short(v.vault)}` })),
     rows.length ? el("dl", {}, ...rows.flatMap(([k, x]) => [el("dt", { text: k }), el("dd", {}, x)])) : null,
+    ...warns,
     state,
     el("div", { class: "vp-run" }, run, el("span", { class: "muted", text: "Anyone can run the vault: your wallet signs the steps that are due (collect, sell, liquidity, creator reward, payouts) and pays their network fees; you earn the crank reward, 1% of the holders' XNT from each sale (up to 0.05 XNT)." })),
     log, form);
+}
+/**
+ * A vault token whose vault doesn't exist yet (a curve token after graduation): only the
+ * creator can start it, so they get "Start the tax vault" and everyone else a note. The tax
+ * stays withheld in the holders' token accounts meanwhile, where nobody can move it.
+ */
+function vaultStartPanel(d, s) {
+  const mine = !!W.state.address && W.state.address === s.vault.creator;
+  const go = mine ? el("button", { class: "btn primary", type: "button", text: "Start the tax vault" }) : null;
+  if (go) { go.disabled = busy; go.onclick = () => startVault(d, s); }
+  return el("div", { class: "panel vault-panel", id: "vault" },
+    el("div", { class: "vp-head" }, el("h3", { text: "Tax Vault", style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: "not started yet" })),
+    el("p", { class: "vp-state muted", text: mine
+      ? "Your token has graduated. Sign one transaction to start its tax vault: from then on the Tax Vault program collects the tax, burns, adds liquidity, funds your creator reward and pays holders. Until you do, the tax waits safely in the holders' token accounts."
+      : "Waiting for the creator to start the tax vault — the tax waits safely until then." }),
+    go ? el("div", { class: "vp-run" }, go) : null);
+}
+async function startVault(d, s) {
+  if (busy) return;
+  busy = true;
+  try {
+    toast("info", "Start the tax vault: preparing and simulating…");
+    const { tx } = await api("/api/launch/vault", { mint: s.mint, creator: W.state.address });
+    toast("info", "Approve it in your wallet…");
+    const signed = await W.sign(W.b64ToBytes(tx));
+    const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), vaultMint: s.mint });
+    toast("success", "Tax vault started: the vault crank takes it from here. ", link(`${d.explorer}/tx/${signature}`, "View transaction ↗"));
+    busy = false;
+    const host = document.querySelector(".stats-card");
+    if (host) await loadTokenStats(d, host, true);
+    return;
+  } catch (e) {
+    toast("error", `Start the tax vault failed: ${e.message || e}`);
+  }
+  busy = false;
 }
 async function runVault(d, s) {
   if (busy) return;

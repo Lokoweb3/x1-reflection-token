@@ -18,8 +18,13 @@
  * withdraw authority is the vault program's `auth` PDA for the new mint instead of a
  * distributor wallet, so there is no distributor key and no gas to pre-fund. After the lock
  * the creator signs one more transaction, init_vault (step 4, "Start the tax vault");
- * registration checks the vault and the server's vault crank serves the token. Curve
- * launches keep a distributor wallet (the creator isn't there to sign at graduation).
+ * registration checks the vault and the server's vault crank serves the token.
+ *
+ * Curve launches on such a site are vault launches too: the mint's withdraw authority is
+ * the vault's auth PDA from the start (the curve program doesn't check it). The curve
+ * crank registers the token at graduation; the creator then starts the vault with the same
+ * init_vault transaction (their lock NFT only exists after graduation). Until then the tax
+ * stays withheld in the holders' token accounts, where nobody can move it.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -408,14 +413,16 @@ export function validateCurveParams(raw: Record<string, unknown>): LaunchParams 
 }
 
 /**
- * A bonding-curve launch: the same mint (tax, metadata, launch fee, distributor) with
- * minting handed to the curve's auth PDA and nothing minted, then create_curve. The
+ * A bonding-curve launch: the same mint (tax, metadata, launch fee, distributor or vault)
+ * with minting handed to the curve's auth PDA and nothing minted, then create_curve. The
  * program checks the mint and holds the creator's 0.3 XNT graduation deposit.
  */
 export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, curveProgram: PublicKey) {
-  // Curve tokens keep a distributor wallet in v1: init_vault needs the creator's signature,
-  // and the creator isn't there when the curve graduates.
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint));
+  // With the Tax Vault set up (curves are always XNT-paired), the vault's auth PDA gets the
+  // withdraw authority now; the creator starts the vault after graduation (init_vault needs
+  // their signature and the lock NFT). Otherwise the token gets a distributor wallet.
+  const vault = vaultLaunches(cfg);
+  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault);
   const mint = mintKp.publicKey;
   ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply)));
   const setup = curveSetup(BigInt(p.supply), p.taxBps);
@@ -425,6 +432,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
     // What the program puts into the pool at graduation (tokens before the transfer fee).
     poolTokens: fromBaseUnits(setup.Pg, DECIMALS), poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null,
     mint: mint.toBase58(), distributor: withdrawAuthority.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
+    ...(vault ? { taxVault: true } : {}),
   };
   saveNewLaunch(record, distributor);
   return { ixs, signers: [mintKp], record };
@@ -460,14 +468,22 @@ export async function readCurveOf(conn: Connection, cfg: Config, r: LaunchRecord
   return info ? decodeCurve(addr, info.data) : null;
 }
 
+/** Whether a vault launch's vault account exists (the creator started it). */
+async function vaultStarted(conn: Connection, cfg: Config, r: LaunchRecord) {
+  const id = cfg.factory?.taxVault?.programId;
+  return !!id && !!(await conn.getAccountInfo(vaultPda(new PublicKey(id), new PublicKey(r.mint)), "confirmed"));
+}
+
 /** Which steps are done, read from the chain. */
 export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecord) {
   if (r.kind === "curve") {
     // The curve program does the pool and the lock itself at graduation.
     const c = await readCurveOf(conn, cfg, r);
     const graduated = !!c && c.status >= CurveStatus.Graduated;
-    return { token: !!c, pool: !!c && c.status >= CurveStatus.PoolCreated, lock: graduated,
+    const out = { token: !!c, pool: !!c && c.status >= CurveStatus.PoolCreated, lock: graduated,
       lockNft: graduated ? c!.lockNft.toBase58() : null, registered: !!r.registeredAt, curveStatus: c?.status ?? null };
+    // A vault curve token: the creator starts the vault once it has graduated.
+    return r.taxVault ? { ...out, taxVault: true, vault: graduated && (await vaultStarted(conn, cfg, r)) } : out;
   }
   const [mintInfo, poolInfo] = await conn.getMultipleAccountsInfo([new PublicKey(r.mint), new PublicKey(r.pool)], "confirmed");
   const token = !!mintInfo;
@@ -480,11 +496,7 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
     lockNft = mine?.nftMint.toBase58() ?? null;
   }
   // Vault launches have one more creator-signed step: starting the tax vault (init_vault).
-  if (r.taxVault) {
-    const id = cfg.factory?.taxVault?.programId;
-    const vault = !!id && !!(await conn.getAccountInfo(vaultPda(new PublicKey(id), new PublicKey(r.mint)), "confirmed"));
-    return { token, pool, lock, lockNft, taxVault: true, vault, registered: !!r.registeredAt };
-  }
+  if (r.taxVault) return { token, pool, lock, lockNft, taxVault: true, vault: await vaultStarted(conn, cfg, r), registered: !!r.registeredAt };
   return { token, pool, lock, lockNft, registered: !!r.registeredAt };
 }
 
@@ -492,7 +504,8 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
  * Vault launches, after the lock: init_vault signed and paid by the creator (the program
  * only takes the mint's metadata authority, so nobody can front-run it with their own
  * publisher). It doesn't fit in the lock transaction (about 1,240–1,370 bytes together), so
- * it's its own step. Publisher = this site's crank key, guardian = the creator.
+ * it's its own step. Publisher = this site's crank key, guardian = the creator. A curve
+ * token's is the same transaction after graduation, with the pool the curve created.
  */
 export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRecord, lockNft: string) {
   const tv = cfg.factory?.taxVault;
@@ -505,7 +518,10 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   if (!validSplit(burnBps, lpBps)) throw new Error(`The tax vault can't take this split (burn ${burnBps / 100}%, liquidity ${lpBps / 100}%).`);
   const publisher = loadKeypair(tv.publisherKeypair).publicKey;
   const creator = new PublicKey(r.creator);
-  return [initVaultIx(program, { payer: creator, mint, pool: new PublicKey(r.pool), creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator })];
+  const c = r.kind === "curve" ? await readCurveOf(conn, cfg, r) : null;
+  if (r.kind === "curve" && (!c || c.status < CurveStatus.Graduated)) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
+  const pool = c ? c.pool : new PublicKey(r.pool);
+  return [initVaultIx(program, { payer: creator, mint, pool, creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator })];
 }
 
 /** A vault launch's vault must exist with this site's publisher, the creator as guardian and the recorded split. */
@@ -553,10 +569,13 @@ function withdrawAuthorityOf(cfg: Config, r: LaunchRecord) {
 }
 
 /**
- * Register a graduated curve token with the factory distributor. The checks differ from a
- * normal launch: the LP lock is owned by the curve's auth PDA (its NFT went to the
- * creator), the pool is the one the curve recorded, and the mint authority stays with
- * the auth PDA until the last buyer's tokens are delivered (the program then removes it).
+ * Register a graduated curve token with the factory distributor, or as a Tax Vault token.
+ * The checks differ from a normal launch: the LP lock is owned by the curve's auth PDA (its
+ * NFT went to the creator), the pool is the one the curve recorded, and the mint authority
+ * stays with the auth PDA until the last buyer's tokens are delivered (the program then
+ * removes it). A vault curve token is registered before its vault exists: the creator
+ * starts it after graduation, and the vault crank waits for it (the distributor never
+ * serves it).
  */
 async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
   const id = cfg.factory?.curve?.programId;

@@ -137,7 +137,9 @@ function card(t) {
     t.description ? el("div", { class: "sub", text: t.description.slice(0, 140) }) : null,
     // Tax Vault tokens: the program holds the tax; link its public rewards list.
     t.vault ? el("div", { class: "vault-row" }, el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: "✓ Tax enforced by program" }),
-      el("a", { href: t.vault.listUrl, target: "_blank", rel: "noopener", text: "Rewards list ↗" }),
+      // A graduated curve token whose creator hasn't started the vault yet: nothing to list or run.
+      t.vault.exists ? el("a", { href: t.vault.listUrl, target: "_blank", rel: "noopener", text: "Rewards list ↗" })
+        : el("span", { class: "sub", text: "Waiting for the creator to start the tax vault — the tax waits safely until then" }),
       t.vault.nextListAt ? el("span", { class: "sub", text: `Next list pays at ${new Date(t.vault.nextListAt * 1000).toLocaleString()}` }) : null,
       t.vault.fallbackActive ? el("span", { class: "sub", title: "No rewards list was published for 30 days: anyone can pay holders from the last one.", text: "Fallback active: paying from the last list" }) : null) : null,
     el("div", {}, el("div", { class: "sub", text: `${t.taxPct}% tax on every trade, split:` }), bar,
@@ -166,7 +168,7 @@ function card(t) {
       ...[["website", "Website"], ["twitter", "X"], ["telegram", "Telegram"]].filter(([k]) => t.links?.[k]).map(([k, l]) => link(t.links[k], `${l} ↗`, "btn sm")),
       t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}`, text: "LP lock NFT" }) : null,
       // Vault tokens: anyone can run the vault's steps from the token's NFT page (and earn the crank reward).
-      t.vault ? (t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}#vault`, text: "Run the vault" }) : null)
+      t.vault ? (t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}#vault`, text: t.vault.exists ? "Run the vault" : "Tax vault" }) : null)
         : el("a", { class: "btn sm", href: "/launch#distribute", text: "Distribute now" }),
       link(`${explorer}/address/${t.pool}`, "Pool ↗", "btn sm")));
 }

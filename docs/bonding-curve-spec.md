@@ -11,9 +11,11 @@ this file first and say so.
 - Tokens are **created at graduation**. During the curve, balances live in per-buyer
   `Position` accounts; no tokens exist, so no transfer tax applies on the curve.
 - The token is created up front with its Token-2022 transfer fee (the creator's tax,
-  100–1000 bps, config authority **None**, withdraw-withheld authority = the token's
-  distributor wallet), metadata pointer + metadata, **mint authority = the curve's
-  `auth` PDA**, freeze authority None, supply 0, 9 decimals.
+  100–1000 bps, config authority **None**, withdraw-withheld authority = the Tax Vault's
+  `auth` PDA when the site runs the vault, else the token's distributor wallet; see
+  [Tax authority](#tax-authority-and-the-creators-start-step)), metadata pointer +
+  metadata, **mint authority = the curve's `auth` PDA**, freeze authority None, supply 0,
+  9 decimals.
 - 80% of the supply is sold on the curve; the rest seeds the XDEX pool at graduation.
 - Graduation target: **20 XNT goes into the pool** (testnet).
 - Fee: **1% of the XNT** on every curve buy and sell, to `FEE_RECEIVER`.
@@ -209,6 +211,37 @@ Account lists in this exact order (w = writable, s = signer).
    (0 if it already existed) to owner, closes the position to owner. When `positions`
    reaches 0: sets the mint authority to None, status Finished, and sends all remaining
    auth lamports to the creator.
+
+## Tax authority and the creator's start step
+
+The program doesn't constrain the mint's withdraw-withheld authority (`check_curve_mint`
+checks everything else), so the site picks it when it builds the creator's create-curve
+transaction:
+
+- **Tax Vault site** (testnet, `factory.taxVault` with a publisher key): the withdraw
+  authority is the `tax_vault` program's `auth` PDA for the mint (`["auth", mint]`). No
+  distributor key is generated and no distributor gas is charged; the launch record is
+  flagged `taxVault: true` (its `distributor` field is that PDA).
+- **Otherwise** (and on mainnet, where the curve is off): a new distributor wallet, as
+  before.
+
+`init_vault` needs the XDEX pool and the lp_locker lock NFT (`check_lock` only checks the
+lock's NFT and pool, not who locked it, so the curve's lock qualifies), and its payer must
+be the mint's metadata update authority: the creator. Both only exist after graduation,
+and the creator isn't there to sign then, so:
+
+1. At graduation the site's curve crank records the pool and lock NFT and registers the
+   token as a vault token (per-launch config with `taxVault: true`); the hot-wallet
+   distributor never serves it.
+2. The creator starts the vault with the same "Start the tax vault" transaction as a
+   normal vault launch (`/api/launch/vault`: `init_vault` with the recorded split,
+   publisher = the site's publisher key, guardian = the creator), from the curve page, the
+   lock NFT's page or "Your launches". Everyone else sees "Waiting for the creator to
+   start the tax vault".
+3. Until then the tax stays withheld in the token accounts (and the mint): only the
+   vault's `auth` PDA can ever withdraw it, and it can't sign before the vault exists.
+   Once the vault exists, the vault crank, "Run the vault now", lists and payouts work as
+   for any vault token; `collect` harvests what was withheld meanwhile.
 
 ## Events (Anchor `emit!`, parsed by the site from logs)
 

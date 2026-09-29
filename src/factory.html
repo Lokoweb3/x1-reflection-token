@@ -535,13 +535,13 @@ function setSteps(status, active, errorStep) {
     li.className = status?.[s] ? "done" : s === errorStep ? "error" : s === active ? "active" : "";
   }
 }
-async function signAndSend(label, build) {
+async function signAndSend(label, build, vaultMint) {
   toast("info", `${label}: preparing and simulating…`);
   const { tx, ...rest } = await build();
   toast("info", `${label}: approve it in your wallet…`);
   const signed = await W.sign(W.b64ToBytes(tx));
   toast("info", `${label}: sending…`);
-  const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
+  const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), vaultMint });
   toast("success", `${label} confirmed. `, link(`${info.explorer}/tx/${signature}`, "View transaction ↗"));
   return { signature, ...rest };
 }
@@ -568,7 +568,7 @@ async function continueLaunch(mint) {
     if (status.taxVault && !status.vault) {
       // Only the creator can start the vault, so nobody else can set who publishes its lists.
       step = "vault"; setSteps(status, "vault");
-      await signAndSend("Start the tax vault", () => api("/api/launch/vault", { mint, creator }));
+      await signAndSend("Start the tax vault", () => api("/api/launch/vault", { mint, creator }), mint);
       status = { ...status, vault: true };
     }
     step = "registered"; setSteps(status, "registered");
@@ -582,6 +582,16 @@ async function continueLaunch(mint) {
     toast("error", `Launch paused at "${step}": ${e.message || e}. You can continue it from “Your launches”.`);
   }
   loadMine(); loadTokens();
+}
+/** A graduated Tax Vault curve token: the creator starts its vault ("Your launches"). */
+async function startCurveVault(mint) {
+  if (running) return;
+  running = true; renderWallet();
+  try {
+    await signAndSend("Start the tax vault", () => api("/api/launch/vault", { mint, creator: W.state.address }), mint);
+  } catch (e) { toast("error", `Start the tax vault failed: ${e.message || e}`); }
+  running = false; renderWallet();
+  loadMine();
 }
 function showResult(mint) {
   document.getElementById("launchResult").replaceChildren(el("p", { class: "sub" }, "Token: ", link(`${info.explorer}/address/${mint}`, mint, "mono")));
@@ -734,7 +744,11 @@ function launchCard(l) {
     // Curve tokens graduate on their own (the curve creates the pool and the lock); nothing to continue here.
     const curveStatus = ["On the curve", "Graduating", "Graduating", "Delivering tokens", "Live"][s.curveStatus ?? -1] ?? "Not started (the create transaction was not sent)";
     const open = el("a", { class: "btn small", href: `/curve/${l.mint}`, text: "Open curve" });
-    rows.push(row("Status", s.registered ? "Live" : curveStatus, s.token ? open : null));
+    // A Tax Vault curve token, graduated: the creator starts its vault (the tax waits safely until then).
+    const startVault = s.taxVault && s.lock && !s.vault
+      ? btn("Start the tax vault", "primary", () => startCurveVault(l.mint), false, "Sign init_vault: the Tax Vault program then holds and pays out the tax")
+      : null;
+    rows.push(row("Status", startVault ? "Graduated: start the tax vault (the tax waits safely until then)" : s.registered ? "Live" : curveStatus, s.token ? open : null, startVault));
   } else {
     const cont = s.token && !s.registered
       ? btn("Continue", "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })

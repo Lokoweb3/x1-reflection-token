@@ -39,7 +39,7 @@ a bonding curve (testnet) and an off-chain distributor around them.
 | **`lp_locker`** (Anchor, `lp-locker/programs/lp_locker`) | Locks the pool's LP behind a 1-of-1 NFT (forever or timed). The NFT holder collects the LP's trading fees and claims the creator reward from a 7-day vesting vault. Also Holder Passes (built, not deployed). |
 | **`bonding_curve`** (Anchor, `lp-locker/programs/bonding_curve`, testnet) | Curve launches with no starting liquidity; at graduation it creates the XDEX pool and locks the LP through `lp_locker`. See [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). |
 | **`tax_vault`** (Anchor, `lp-locker/programs/tax_vault`, testnet) | Program custody of each token's tax: collect, burn, sell, add liquidity, creator reward and holder payouts against a published Merkle list, all enforced on-chain and cranked by anyone. See [docs/tax-vault-spec.md](docs/tax-vault-spec.md). |
-| **Distributor** (`src/distribute.ts`, one wallet per token) | The pre-vault path (mainnet's "Test", RFLT, curve and JACK tokens): each cycle collects the tax, burns, sells for XNT, adds liquidity (LP burned), funds the creator reward and pays holders. Crash-safe journal. |
+| **Distributor** (`src/distribute.ts`, one wallet per token) | The pre-vault path (mainnet's "Test", RFLT, JACK tokens, and curve tokens on a site without the vault): each cycle collects the tax, burns, sells for XNT, adds liquidity (LP burned), funds the creator reward and pays holders. Crash-safe journal. |
 | **Site** (`src/factory-server.ts`) | Landing page, launch app and all the public pages below; builds transactions for the visitor's wallet to sign (it never holds their keys). |
 
 **Program ids**
@@ -400,10 +400,17 @@ that XNT and the last 20% of the supply, locks all the LP forever through `lp_lo
   first 2 minutes one buy can take at most 1% of the supply.
 - Graduation and delivery are permissionless; the site's crank (`factory.curve.crankKeypair`)
   does them automatically and earns the 0.01 XNT graduation reward.
+- **Tax custody:** on a site running the Tax Vault (testnet), a curve token's tax belongs
+  to the vault from the start (withdraw authority = the vault's `auth` PDA; no distributor
+  wallet, no distributor gas). At graduation the crank registers it as a vault token; the
+  creator then signs one transaction, **Start the tax vault** (on the curve page, the lock
+  NFT's page or "Your launches"), and the vault crank takes over. Until then the tax waits
+  in the token accounts, where nobody can move it. Without `factory.taxVault` a curve
+  token gets a distributor wallet as before.
 - Spec: [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). Tests:
-  `scripts/local-curve-test.ts` (program end to end) and `scripts/curve-rehearsal.ts`
-  (site + program + crank + distributor). Enabled by `factory.curve.programId`; off on mainnet
-  until audited.
+  `scripts/local-curve-test.ts` (program end to end), `scripts/curve-rehearsal.ts`
+  (site + program + crank + distributor) and `scripts/curve-vault-rehearsal.ts` (site +
+  curve + Tax Vault v3). Enabled by `factory.curve.programId`; off on mainnet until audited.
 
 ## Tax Vault (testnet)
 
@@ -414,6 +421,9 @@ rules checked on-chain. Anyone can crank it; the site's crank does it automatica
 
 - **Authorities at launch:** fee config, mint and freeze authorities all revoked; the
   withdraw authority is the vault's `auth` PDA (`["auth", mint]`).
+- **Starting the vault:** the creator signs `init_vault` (publisher = the site's key,
+  guardian = the creator): step 4 of a normal launch, or after graduation for a bonding
+  curve token (see [Bonding curve](#bonding-curve-testnet)).
 - **Collect → burn → sell → add liquidity:** each sale's price impact is capped and at
   most one sale runs per slot; the LP from auto-liquidity is burned.
 - **Holder payouts:** the site publishes a Merkle list of each wallet's cumulative XNT
@@ -545,7 +555,7 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # 80 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths
+npm test          # 84 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
@@ -558,6 +568,7 @@ script's header for the validator command):
 | `scripts/mainnet-rehearsal.ts` | A mainnet launch through the site (USDC fee, pool, lock), trades, a distributor cycle (burn, sell, auto-LP, USDC creator reward, payouts), fee collection |
 | `scripts/mainnet-rehearsal-jack.ts` | The same for a TOKEN/JACK launch, incl. the JACK→XNT swap for payouts |
 | `scripts/local-curve-test.ts`, `scripts/curve-rehearsal.ts` | The bonding curve, alone and with the site, crank and distributor |
+| `scripts/curve-vault-rehearsal.ts` | A curve token on the Tax Vault (v3): the vault's auth PDA as withdraw authority from creation, graduation and registration as a vault token, the tax waiting until the creator starts the vault through the site, then the site's vault crank (collect, sell, XNM creator reward, list, payouts) and "Run the vault now" from a visitor's wallet |
 | `scripts/local-vault-test.ts`, `scripts/vault-rehearsal.ts` | Tax Vault v1: the program alone, then site + crank, including migrating a distributor token |
 | `scripts/local-vault-v2-test.ts` | Tax Vault v2: a v1 vault upgraded in place, the XNM creator-reward swap, the guardian cancel limit, error cases |
 | `scripts/vault-v2-rehearsal.ts` | The v2 rollout as it happens on testnet: the previous site + v1 program, then the program upgrade and the new site upgrading the vault by itself |
@@ -581,7 +592,8 @@ locked-liquidity maths checked on-chain), a creator's collect-fees and metadata 
 with a real wallet, the faucet, the `bonding_curve` program, and the `tax_vault` program
 (v1), with CUP migrated onto it and paid out by the vault.
 
-**Rehearsed on local copies of the chain:** every launch path (XNT, JACK, bonding curve),
+**Rehearsed on local copies of the chain:** every launch path (XNT, JACK, bonding curve,
+bonding curve on the Tax Vault),
 the locker's attack cases (collecting without the NFT, draining the vault, a fake XDEX
 program, a freezable NFT mint, unlocking early or a forever lock), crash recovery of the
 distributor's journal, and program upgrades against the real lock accounts.

@@ -7,6 +7,9 @@
  * factory.curve.crankKeypair, a hot wallet that pays the fees and earns the graduation
  * reward; without it nothing is sent, and graduation is left to anyone else (it is
  * permissionless on-chain).
+ *
+ * At graduation the crank registers the token: with the distributor, or (a Tax Vault curve
+ * token, see src/factory/launch.ts) as a vault token whose vault the creator then starts.
  */
 import bs58 from "bs58";
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
@@ -286,7 +289,10 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     }
   }
 
-  /** One pass: move every finished curve along (pool, lock, deliveries) and register graduated ones with the distributor. */
+  /**
+   * One pass: move every finished curve along (pool, lock, deliveries) and register graduated
+   * ones (pool and lock NFT recorded) with the distributor, or as vault tokens.
+   */
   let cranking = false;
   async function crankOnce() {
     if (cranking) return;
@@ -308,10 +314,13 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
             c = await readCurve(c.mint);
           }
           // Start paying holders once the token trades on XDEX (the lock NFT keys the creator's reward).
+          // A vault token waits for its creator to start the vault; the vault crank serves it from then on.
           const r = readLaunch(mint);
           if (r && !r.registeredAt && c.status >= CurveStatus.Graduated) {
             await registerLaunch(conn, cfg, r);
-            console.log(`[curve crank] registered ${r.symbol} (${mint}) with the distributor`);
+            console.log(r.taxVault
+              ? `[curve crank] registered ${r.symbol} (${mint}) as a Tax Vault token; the creator starts its vault`
+              : `[curve crank] registered ${r.symbol} (${mint}) with the distributor`);
           }
           if (c.status >= CurveStatus.Complete) invalidate(mint);
         } catch (e) {
