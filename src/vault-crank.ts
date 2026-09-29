@@ -476,6 +476,12 @@ export function vaultCrank(env: CrankEnv) {
 export const inFallback = (v: Vault, now = nowSecs()) => fallbackActive(v, now - ACTIVATION_MARGIN_SECS);
 
 // ---------- "Run the vault now": the due steps as unsigned instruction lists for any wallet ----------
+/**
+ * A visitor's steps after the first can't be simulated (each counts on the one before
+ * landing), so their compute limits are fixed: measured use on testnet plus a margin
+ * (X1 bills the requested units). Sell ~88k, fund_creator up to ~194k, collect ~32k-45k,
+ * pay / pay_fallback ~16k-20k per wallet, upgrade ~6k.
+ */
 export interface PlannedStep { kind: "upgrade" | "collect" | "sell" | "add_liquidity" | "fund_creator" | "pay" | "pay_fallback"; label: string; ixs: TransactionInstruction[]; units: number }
 /**
  * What a visitor's wallet (`caller`) can run right now, in order: each step is one
@@ -489,7 +495,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   const steps: PlannedStep[] = [];
   const notes: string[] = [];
   if (v.version < VAULT_VERSION) {
-    steps.push({ kind: "upgrade", label: `Upgrade the vault to v${VAULT_VERSION}`, ixs: [upgradeVaultIx(program, caller, t.mint)], units: 60_000 });
+    steps.push({ kind: "upgrade", label: `Upgrade the vault to v${VAULT_VERSION}`, ixs: [upgradeVaultIx(program, caller, t.mint)], units: 20_000 });
     notes.push("The vault is upgraded first; the other steps wait for the next run.");
     return { steps, notes, rewardLamports: 0n, recordsRent: 0n };
   }
@@ -507,7 +513,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
     if (harvest.length >= MAX_HARVEST_PER_TX || !fitsFor([collectIx(program, caller, t.mint, [...harvest, w.address])])) break;
     harvest.push(w.address); got += w.withheld;
   }
-  if (got > 0n) steps.push({ kind: "collect", label: `Collect the tax (${harvest.length} account${harvest.length === 1 ? "" : "s"})`, ixs: [collectIx(program, caller, t.mint, harvest)], units: 200_000 + 15_000 * harvest.length });
+  if (got > 0n) steps.push({ kind: "collect", label: `Collect the tax (${harvest.length} account${harvest.length === 1 ? "" : "s"})`, ixs: [collectIx(program, caller, t.mint, harvest)], units: 50_000 + 12_000 * harvest.length });
   // What collect adds to the buckets (the program's split).
   const burn = (got * BigInt(v.burnBps)) / 10_000n, lp = (got * BigInt(v.lpBps)) / 10_000n, cr = (got * BigInt(v.creatorBps)) / 10_000n;
   const holders = got - burn - lp - cr;
@@ -519,7 +525,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   if (wanted > 0n) {
     const q = await quoteSell(conn, xdex, v.pool, t.mint, wanted, { maxImpactBps: sellImpactBps(t.taxBps), slippageBps: Number(OUT_TOLERANCE_BPS) }).catch(() => null);
     if (q && q.expectedOut >= MIN_SELL_XNT) {
-      steps.push({ kind: "sell", label: `Sell ~${fromBaseUnits(q.amountIn, 9)} tokens for ~${xnt(q.expectedOut)}`, ixs: [sellIx(program, caller, t.mint, pool, wanted)], units: 400_000 });
+      steps.push({ kind: "sell", label: `Sell ~${fromBaseUnits(q.amountIn, 9)} tokens for ~${xnt(q.expectedOut)}`, ixs: [sellIx(program, caller, t.mint, pool, wanted)], units: 140_000 });
       const part = (q.expectedOut * sellHo) / wanted;
       reward = (part * CRANK_REWARD_BPS) / 10_000n;
       if (reward > CRANK_REWARD_CAP) reward = CRANK_REWARD_CAP;
@@ -528,7 +534,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   }
   // 3. add_liquidity, 4. fund_creator (counting what the sale sets aside).
   if (v.xntLp + toLp >= MIN_LP_XNT && v.lpTokens + lp / 2n > 0n) {
-    steps.push({ kind: "add_liquidity", label: "Add liquidity", ixs: [addLiquidityIx(program, caller, t.mint, pool)], units: 400_000 });
+    steps.push({ kind: "add_liquidity", label: "Add liquidity", ixs: [addLiquidityIx(program, caller, t.mint, pool)], units: 220_000 });
   }
   const creatorXnt = v.xntCreator + toCreator;
   if (creatorXnt > 0n) {
@@ -536,7 +542,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
     if (q && q.minimumOut > 0n) {
       const info = rewardTokenInfo(env.network, v.rewardMint);
       steps.push({ kind: "fund_creator", label: `Pay the creator reward (${xnt(q.amountIn)} → ${info?.symbol ?? "reward token"})`,
-        ixs: [fundCreatorIx(program, caller, t.mint, v.creatorNft, rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint))], units: 300_000 });
+        ixs: [fundCreatorIx(program, caller, t.mint, v.creatorNft, rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint))], units: 240_000 });
     }
   }
   // 5. pay / pay_fallback a few wallets. Only wallets that already have a PaidRecord: a
@@ -564,7 +570,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
         recordsRent = rent * BigInt(batch.filter((d) => !d.recordExists).length);
         steps.push({ kind: fallback ? "pay_fallback" : "pay",
           label: `${fallback ? "Pay holders from the last list (fallback)" : "Pay holders"}: ${batch.length} wallet${batch.length === 1 ? "" : "s"}, ${xnt(batch.reduce((a, d) => a + d.owed, 0n))}`,
-          ixs: batch.map((d) => build(program, caller, t.mint, d.wallet, d.cumulative, proofs[d.wallet.toBase58()])), units: Math.min(1_400_000, 60_000 + 90_000 * batch.length) });
+          ixs: batch.map((d) => build(program, caller, t.mint, d.wallet, d.cumulative, proofs[d.wallet.toBase58()])), units: Math.min(1_400_000, 20_000 + 30_000 * batch.length) });
       }
     }
   }

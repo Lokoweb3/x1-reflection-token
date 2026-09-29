@@ -4,7 +4,7 @@
  * and later broadcast the bytes the wallet signed. The server never holds the
  * wallet's key.
  */
-import { confirmByPolling } from "../tx.js";
+import { confirmByPolling, fitComputeLimit } from "../tx.js";
 import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 
 /**
@@ -26,16 +26,18 @@ export async function unsignedTx(
   conn: Connection, payer: PublicKey, ixs: TransactionInstruction[], extra: Keypair[] = [],
   opts: { microLamports: number; units?: number; noBudget?: boolean; simulate?: boolean } = { microLamports: 10_000 },
 ) {
+  // noBudget: leave out the priority-fee instructions to free space (receipt NFT metadata).
+  let all = opts.noBudget ? ixs : [
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.microLamports }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: opts.units ?? 400_000 }),
+    ...ixs,
+  ];
+  // X1 bills the requested compute units: ask for what this uses (a transaction that counts
+  // on an earlier one of its batch can't be measured yet and keeps the caller's limit).
+  if (!opts.noBudget && opts.simulate !== false) all = await fitComputeLimit(conn, all, payer);
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
   const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
-  // noBudget: leave out the priority-fee instructions to free space (receipt NFT metadata).
-  if (!opts.noBudget) {
-    tx.add(
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.microLamports }),
-      ComputeBudgetProgram.setComputeUnitLimit({ units: opts.units ?? 400_000 }),
-    );
-  }
-  tx.add(...ixs);
+  tx.add(...all);
   for (const ix of ixs) RELAY_PROGRAMS.add(ix.programId.toBase58());
   if (extra.length) tx.partialSign(...extra);
   // Catch problems before asking the wallet to approve anything. (simulate: false for a
@@ -59,15 +61,13 @@ export async function networkFee(
   conn: Connection, payer: PublicKey, ixs: TransactionInstruction[],
   opts: { microLamports: number; units?: number; noBudget?: boolean } = { microLamports: 10_000 },
 ) {
+  const all = opts.noBudget ? ixs : await fitComputeLimit(conn, [
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.microLamports }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: opts.units ?? 400_000 }),
+    ...ixs,
+  ], payer);
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-  const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
-  if (!opts.noBudget) {
-    tx.add(
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.microLamports }),
-      ComputeBudgetProgram.setComputeUnitLimit({ units: opts.units ?? 400_000 }),
-    );
-  }
-  tx.add(...ixs);
+  const tx = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(...all);
   const { value } = await conn.getFeeForMessage(tx.compileMessage(), "confirmed");
   return BigInt(value ?? 0);
 }

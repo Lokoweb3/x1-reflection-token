@@ -321,7 +321,13 @@ try {
       const tx = Transaction.from(Buffer.from(t.tx, "base64"));
       assert.ok(tx.feePayer!.equals(visitor.publicKey), "the visitor pays");
       tx.partialSign(visitor);
-      const r = await api("/api/send", { tx: tx.serialize().toString("base64") }).catch((e) => ({ error: e.message }));
+      // Like the page: a step right behind the sale may hit OneSellPerSlot; resend a moment later.
+      let r: { signature: string } | { error: string } = { error: "" };
+      for (let attempt = 0; attempt < 4; attempt++) {
+        r = await api("/api/send", { tx: tx.serialize().toString("base64") }).catch((e) => ({ error: e.message as string }));
+        if ("signature" in r || !/OneSellPerSlot|0x1782/.test(r.error)) break;
+        await sleep(1200);
+      }
       if ("signature" in r) sigs.push(r.signature);
       ok(`${t.label}: ${"signature" in r ? "confirmed" : `failed (${r.error})`}`);
     }
@@ -337,6 +343,9 @@ try {
     assert.ok(ev.includes(sellSig) && ev.includes(visitor.publicKey.toBase58()), "the visitor's run is in the token's log");
     ok(`crank reward ${xnt(reward)} XNT arrived (balance +${xnt(delta)} after the ${xnt(tx.meta!.fee)} XNT fee); recorded for the token's stats`);
     setMinHarvest(t1.mint, "0.05");
+    // A pass that started before the reset may still publish with the old threshold in its rules.
+    const pass1 = (await fresh(`/api/vault/${t1.mint}`)).crank.lastPass?.at;
+    await waitFor("a site crank pass after the reset", async () => (await fresh(`/api/vault/${t1.mint}`)).crank.lastPass?.at !== pass1, 120_000, 1_000);
   }
 
   console.log("3. The site publishes one more list and STOPS before paying it (the operator is gone)");

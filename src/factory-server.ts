@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, Transaction } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
 import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
@@ -491,14 +491,16 @@ async function vaultPost(url: string, body: Record<string, unknown>) {
     const caller = new PublicKey(String(body.caller));
     const plan = await v.crankPlan(mint, caller);
     if (!plan.steps.length) throw new Error(`Nothing to run right now: no tax to collect or sell, and nobody is owed a payout.${plan.notes.length ? ` ${plan.notes.join(" ")}` : ""}`);
-    const fees = await Promise.all(plan.steps.map((s) => networkFee(conn, caller, s.ixs, { ...opts, units: s.units }).catch(() => 0n)));
-    const fee = fees.reduce((a, b) => a + b, 0n);
-    await requireXnt(caller, Number(fee + plan.recordsRent) / 1e9 + 0.002, "Running the vault", "network fees and the payment records' rent");
     // Only the first is simulated here: later ones count on the earlier ones landing (the sale sells what collect adds).
     const txs = [];
     for (const [i, s] of plan.steps.entries()) {
       txs.push({ kind: s.kind, label: s.label, tx: await unsignedTx(conn, caller, s.ixs, [], { ...opts, units: s.units, simulate: i === 0 }) });
     }
+    // The fee X1 quotes for exactly these transactions (it bills the compute units each one requests).
+    const fees = await Promise.all(txs.map((t) => conn.getFeeForMessage(Transaction.from(Buffer.from(t.tx, "base64")).compileMessage(), "confirmed")
+      .then((r) => BigInt(r.value ?? 0)).catch(() => 0n)));
+    const fee = fees.reduce((a, b) => a + b, 0n);
+    await requireXnt(caller, Number(fee + plan.recordsRent) / 1e9 + 0.002, "Running the vault", "network fees and the payment records' rent");
     return { txs, crankRewardLamports: plan.rewardLamports.toString(), recordsRentLamports: plan.recordsRent.toString(), networkFeeLamports: fee.toString(), notes: plan.notes };
   }
   if (action === "crank-result") {

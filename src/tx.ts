@@ -1,5 +1,5 @@
 import {
-  ComputeBudgetProgram, Connection, Keypair, Transaction, TransactionInstruction,
+  ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction, TransactionMessage, VersionedTransaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 
@@ -15,8 +15,45 @@ export function withPriority(ixs: TransactionInstruction[], microLamports: numbe
   return [...budget, ...ixs];
 }
 
+/** Compute units a limit leaves above what the simulation used (state can move before it lands). */
+const LIMIT_HEADROOM = 1.2;
+const LIMIT_EXTRA = 3_000;
+const MAX_UNITS = 1_400_000;
+const isLimit = (ix: TransactionInstruction) => ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === 2;
+const isBudget = (ix: TransactionInstruction) => ix.programId.equals(ComputeBudgetProgram.programId);
+
+/**
+ * X1 charges for the compute units a transaction *requests* (about 0.01 XNT per million,
+ * used or not, for anything beyond a plain transfer), so a generous limit costs real XNT.
+ * When `ixs` carry compute-budget instructions, simulate them and set the limit to what
+ * they use plus headroom (never above the limit asked for). Unchanged if the simulation
+ * fails (the caller's own simulation then reports why) or there's no budget instruction.
+ */
+export async function fitComputeLimit(conn: Connection, ixs: TransactionInstruction[], payer: PublicKey): Promise<TransactionInstruction[]> {
+  if (!ixs.some(isBudget)) return ixs;
+  const asked = ixs.filter(isLimit).map((ix) => ix.data.readUInt32LE(1))[0] ?? MAX_UNITS;
+  const probe = [...ixs.filter((ix) => !isLimit(ix)), ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_UNITS })];
+  try {
+    const { blockhash } = await conn.getLatestBlockhash("confirmed");
+    const tx = new VersionedTransaction(new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: probe }).compileToV0Message());
+    const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
+    const used = sim.value.unitsConsumed;
+    if (sim.value.err || !used) return ixs;
+    const units = Math.min(asked, MAX_UNITS, Math.ceil(used * LIMIT_HEADROOM) + LIMIT_EXTRA);
+    const limit = ComputeBudgetProgram.setComputeUnitLimit({ units });
+    // Keep the budget instructions first, where the caller put them.
+    const out = ixs.filter((ix) => !isLimit(ix));
+    const at = out.findIndex((ix) => !isBudget(ix));
+    out.splice(at < 0 ? out.length : at, 0, limit);
+    return out;
+  } catch {
+    return ixs;
+  }
+}
+
 /** Build and sign without sending, so the caller can journal the signature first. */
 export async function sign(conn: Connection, ixs: TransactionInstruction[], payer: Keypair, extra: Keypair[] = []): Promise<Signed> {
+  ixs = await fitComputeLimit(conn, ixs, payer.publicKey);
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
   const tx = new Transaction({ feePayer: payer.publicKey, blockhash, lastValidBlockHeight }).add(...ixs);
   tx.sign(payer, ...extra);

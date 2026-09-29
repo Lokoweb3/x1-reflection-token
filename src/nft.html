@@ -390,11 +390,22 @@ async function runVault(d, s) {
     for (const [i, t] of plan.txs.entries()) {
       toast("info", `Sending ${i + 1} of ${plan.txs.length}: ${t.label}…`);
       try {
-        const { signature } = await api("/api/send", { tx: W.bytesToB64(signed[i]) });
+        // The vault allows one sale / reward swap per slot: a step right behind the sale can
+        // land in the same slot, so resend the same signed transaction a moment later.
+        let signature;
+        for (let attempt = 0; ; attempt++) {
+          try { ({ signature } = await api("/api/send", { tx: W.bytesToB64(signed[i]) })); break; } catch (e) {
+            if (attempt >= 3 || !/OneSellPerSlot|0x1782/.test(String(e.message || e))) throw e;
+            await new Promise((r) => setTimeout(r, 1200));
+          }
+        }
         sigs.push(signature); lines.push([`✓ ${t.label}`, "good"]);
       } catch (e) {
         // Later steps may still work (a payout doesn't need the sale).
-        lines.push([`✗ ${t.label}: ${e.message || e}`, "bad"]);
+        const m = String(e.message || e);
+        // TooSmall / NothingToPay: someone else (usually the site's own crank) ran this step first.
+        if (/TooSmall|NothingToPay|0x177e|0x177c\b/.test(m)) lines.push([`– ${t.label}: already done by someone else, nothing left for this step (no fee charged)`]);
+        else lines.push([`✗ ${t.label}: ${m}`, "bad"]);
       }
       redraw();
     }
