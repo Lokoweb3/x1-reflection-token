@@ -7,11 +7,16 @@ token pays a small tax (1–10%), and a distributor turns that tax into:
   of the tax),
 - **permanent liquidity**: tokens + XNT added to the pool, with the LP tokens burned,
 - **burned tokens**, so the supply only goes down,
-- a **10% creator reward**, paid in USDC (XNT on testnet) and vesting over 7 days.
+- a **10% creator reward**, paid in USDC.X on mainnet (XNM on testnet with Tax Vault v2)
+  and vesting over 7 days.
 
-Anyone can launch one in three wallet approvals. The whole supply goes into the pool
+Anyone can launch one in a few wallet approvals. The whole supply goes into the pool
 (no dev bag), the launch liquidity is locked forever in an NFT, and the tax can never be
 changed.
+
+On testnet the tax is held by the **Tax Vault** program: no server key can move it (see
+[Tax Vault](#tax-vault-testnet)). **Mainnet launches are paused** until the vault is
+audited and deployed there, so that the site never holds a key to anyone's tax.
 
 | | |
 |---|---|
@@ -33,7 +38,8 @@ a bonding curve (testnet) and an off-chain distributor around them.
 | **XDEX pool** (TOKEN/XNT, or TOKEN/JACK) | Where the token trades and where the tax is sold. |
 | **`lp_locker`** (Anchor, `lp-locker/programs/lp_locker`) | Locks the pool's LP behind a 1-of-1 NFT (forever or timed). The NFT holder collects the LP's trading fees and claims the creator reward from a 7-day vesting vault. Also Holder Passes (built, not deployed). |
 | **`bonding_curve`** (Anchor, `lp-locker/programs/bonding_curve`, testnet) | Curve launches with no starting liquidity; at graduation it creates the XDEX pool and locks the LP through `lp_locker`. See [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). |
-| **Distributor** (`src/distribute.ts`, one wallet per token) | Each cycle: collect the tax, burn, sell for XNT, add liquidity (LP burned), fund the creator reward, pay holders. Crash-safe journal. |
+| **`tax_vault`** (Anchor, `lp-locker/programs/tax_vault`, testnet) | Program custody of each token's tax: collect, burn, sell, add liquidity, creator reward and holder payouts against a published Merkle list, all enforced on-chain and cranked by anyone. See [docs/tax-vault-spec.md](docs/tax-vault-spec.md). |
+| **Distributor** (`src/distribute.ts`, one wallet per token) | The pre-vault path (mainnet's "Test", RFLT, curve and JACK tokens): each cycle collects the tax, burns, sells for XNT, adds liquidity (LP burned), funds the creator reward and pays holders. Crash-safe journal. |
 | **Site** (`src/factory-server.ts`) | Landing page, launch app and all the public pages below; builds transactions for the visitor's wallet to sign (it never holds their keys). |
 
 **Program ids**
@@ -42,6 +48,7 @@ a bonding curve (testnet) and an off-chain distributor around them.
 |---|---|---|
 | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` |
 | `bonding_curve` | – | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` |
+| `tax_vault` | – | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` |
 | XDEX | `sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN` | `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf` |
 
 The home page's **Contracts** section lists every address the live site uses.
@@ -289,7 +296,7 @@ is burned (0–50%; liquidity + burn at most 55%, because 10% is the creator's r
 holders keep at least 35%), the starting
 liquidity, and the lock (forever, 7, 30, 90 days or 1 year; mainnet offers **forever
 only**, via `factory.lockForeverOnly`). Before step 1 charges anything, the site checks
-the wallet can afford the whole launch. Their wallet approves three transactions:
+the wallet can afford the whole launch. Their wallet approves three transactions (four with the Tax Vault):
 
 1. **Token:** Token-2022 mint with the tax and **no fee authority** (the tax can never
    change), the supply minted to the creator only to be put into the pool in step 2
@@ -299,6 +306,9 @@ the wallet can afford the whole launch. Their wallet approves three transactions
    creator picks another pair the site offers, e.g. JACK, a TOKEN/JACK pool with their
    JACK; XDEX's pool fee is still XNT).
 3. **Lock:** all of the creator's LP locked in an NFT, which collects the trading fees.
+4. **Start the tax vault** (when `factory.taxVault` is set, i.e. testnet): `init_vault`
+   hands the token's withdraw authority to the vault program, so no distributor key is
+   ever created for it.
 
 **Pairs other than XNT.** List them in `factory.quoteTokens` and the launch form shows
 "Pair with: XNT / JACK" (XNT stays the default; without the list the choice is hidden):
@@ -393,6 +403,40 @@ that XNT and the last 20% of the supply, locks all the LP forever through `lp_lo
   (site + program + crank + distributor). Enabled by `factory.curve.programId`; off on mainnet
   until audited.
 
+## Tax Vault (testnet)
+
+The distributor model needs one hot wallet per token that can withdraw that token's tax.
+The **Tax Vault** removes that key: the token's withdraw-withheld authority is a PDA of
+the `tax_vault` program, and every step of the cycle is a program instruction with its
+rules checked on-chain. Anyone can crank it; the site's crank does it automatically.
+
+- **Authorities at launch:** fee config, mint and freeze authorities all revoked; the
+  withdraw authority is the vault's `auth` PDA (`["auth", mint]`).
+- **Collect → burn → sell → add liquidity:** each sale's price impact is capped and at
+  most one sale runs per slot; the LP from auto-liquidity is burned.
+- **Holder payouts:** the site publishes a Merkle list of each wallet's cumulative XNT
+  (public at `/api/vault/<mint>/list`). A list becomes payable after a **10-minute delay**
+  during which the token's **guardian** (the creator) can cancel it; each wallet's
+  payment is capped by the list, recorded on-chain and can't be paid twice.
+- **Creator reward:** funded from the vault into the lock NFT's 7-day vesting vault.
+- **Migration:** `scripts/migrate-to-vault.ts` moves an existing distributor token onto
+  the vault (hands over the withdraw authority once the old wallet is drained). CUP was
+  migrated this way.
+
+**v2** (built and rehearsed; the testnet program is being upgraded to it):
+
+- the creator reward is **swapped into the network's reward token** before it is
+  deposited: **XNM** on testnet (pool `6XES…`), **USDC.X** on mainnet (pool `CAJe…`),
+  with price impact capped at half the reward pool's fee, one swap per slot;
+- the guardian can cancel at most **2 lists in a row** (the count resets when a list
+  goes live), so payouts can't be stalled forever;
+- `upgrade_vault` converts a v1 vault in place (480 → 552 bytes); the crank runs it by
+  itself, and older XNT rewards stay claimable next to the new token.
+
+Enabled by `factory.taxVault: { programId, publisherKeypair }`. The publisher key can
+only post lists (which the guardian can cancel) and cannot move funds. Mainnet stays on
+distributors, with launches paused, until the vault is audited.
+
 ## Leaderboard, burns and earnings
 
 - **Holder leaderboard** (`/leaderboard/<mint>`): every holder's balance, average cost,
@@ -445,7 +489,8 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # 46 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, holder-pass tree
+npm test          # 71 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, holder-pass and tax-vault trees
+cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
 
@@ -457,7 +502,14 @@ script's header for the validator command):
 | `scripts/mainnet-rehearsal.ts` | A mainnet launch through the site (USDC fee, pool, lock), trades, a distributor cycle (burn, sell, auto-LP, USDC creator reward, payouts), fee collection |
 | `scripts/mainnet-rehearsal-jack.ts` | The same for a TOKEN/JACK launch, incl. the JACK→XNT swap for payouts |
 | `scripts/local-curve-test.ts`, `scripts/curve-rehearsal.ts` | The bonding curve, alone and with the site, crank and distributor |
+| `scripts/local-vault-test.ts`, `scripts/vault-rehearsal.ts` | Tax Vault v1: the program alone, then site + crank, including migrating a distributor token |
+| `scripts/local-vault-v2-test.ts` | Tax Vault v2: a v1 vault upgraded in place, the XNM creator-reward swap, the guardian cancel limit, error cases |
+| `scripts/vault-v2-rehearsal.ts` | The v2 rollout as it happens on testnet: the previous site + v1 program, then the program upgrade and the new site upgrading the vault by itself |
 | `scripts/local-holder-pass-test.ts`, `scripts/local-claims-cycle-test.ts` | Holder passes |
+
+Use the solana 3.x CLI and test validator for the program upgrade tests: the older 2.1
+test validator rejects `solana program extend`, which X1 testnet (solana-core 4.x)
+accepts.
 
 ## Verified vs. not yet verified
 
@@ -468,16 +520,18 @@ and adding liquidity every cycle; the site's figures were checked against the ch
 
 **Live on testnet:** RFLT and CUP with real distribution cycles (payouts, LP burn,
 locked-liquidity maths checked on-chain), a creator's collect-fees and metadata updates
-with a real wallet, the faucet, and the `bonding_curve` program.
+with a real wallet, the faucet, the `bonding_curve` program, and the `tax_vault` program
+(v1), with CUP migrated onto it and paid out by the vault.
 
 **Rehearsed on local copies of the chain:** every launch path (XNT, JACK, bonding curve),
 the locker's attack cases (collecting without the NFT, draining the vault, a fake XDEX
 program, a freezable NFT mint, unlocking early or a forever lock), crash recovery of the
 distributor's journal, and program upgrades against the real lock accounts.
 
-**Not yet:** an independent audit of `lp_locker` and `bonding_curve` (both still
-upgradeable by the team); a JACK-paired launch on mainnet itself; Holder Passes on a
-public network; the bonding curve on mainnet.
+**Not yet:** an independent audit of `lp_locker`, `bonding_curve` and `tax_vault` (all
+still upgradeable by the team); Tax Vault v2 on testnet and the vault on mainnet
+(mainnet launches stay paused until then); a JACK-paired launch on mainnet itself; Holder
+Passes on a public network; the bonding curve on mainnet.
 
 ## Things to know before launching
 
@@ -496,7 +550,8 @@ public network; the bonding curve on mainnet.
   applies to plain wallet-to-wallet transfers.
 - **Scaling:** holders are found with `getProgramAccounts`, and mainnet's public RPC is
   heavily rate-limited (see "RPC and rate limits"). Use a dedicated RPC as usage grows.
-- **Key safety:** the distributor key can withdraw all collected fees, and the creator
-  key controls the fee until you run `lock-fee`. Keep both off shared machines.
+- **Key safety:** on the distributor path, the distributor key can withdraw all
+  collected fees, and the creator key controls the fee until you run `lock-fee`. Keep
+  both off shared machines. Tax Vault tokens have no such key.
 - Paying holders from trading fees can create securities or tax obligations in some
   jurisdictions. That is worth checking before a public launch.

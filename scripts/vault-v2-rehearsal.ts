@@ -13,7 +13,7 @@
  * Start the validator as in scripts/local-vault-v2-test.ts (v1 build loaded upgradeable,
  * XNM + its pool cloned), make a checkout of the old site with node_modules and
  * config.json, then:
- *   LOCAL_RPC=http://127.0.0.1:8999 OLD_SITE=<checkout> UPGRADE_AUTHORITY=<keypair file> \
+ *   LOCAL_RPC=http://127.0.0.1:8999 OLD_SITE=<checkout> UPGRADE_AUTHORITY=<keypair file> [SOLANA_CLI=<3.x solana>] \
  *     npx tsx scripts/vault-v2-rehearsal.ts
  */
 import assert from "node:assert/strict";
@@ -153,7 +153,7 @@ try {
     const prog = (await conn.getAccountInfo(PROGRAM))!;
     const pd = new PublicKey(prog.data.subarray(4, 36));
     const pdLen = (await conn.getAccountInfo(pd))!.data.length - 45;
-    const cli = (args: string[]) => execFileSync("solana", [...args, "--url", RPC, "--keypair", AUTHORITY], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const cli = (args: string[]) => execFileSync(process.env.SOLANA_CLI ?? "solana", [...args, "--url", RPC, "--keypair", AUTHORITY], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     if (size > pdLen) { cli(["program", "extend", PROGRAM.toBase58(), String(size - pdLen)]); ok(`program extended by ${size - pdLen} bytes`); }
     cli(["program", "deploy", "--program-id", PROGRAM.toBase58(), "--upgrade-authority", AUTHORITY, V2_SO]);
     ok(`v2 deployed (${size} bytes)`);
