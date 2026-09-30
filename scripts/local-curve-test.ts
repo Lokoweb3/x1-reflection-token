@@ -243,7 +243,8 @@ assert.ok(mintState.mintAuthority?.equals(auth) && mintState.supply === 0n && mi
 ok(`mint ${mint.toBase58()} (5% tax, mint authority = auth, supply 0)`);
 await fails("someone else opens a curve on the creator's mint", send([createCurveIx(attacker.publicKey, mint, SUPPLY_WHOLE)], [attacker]), /BadMint/);
 await fails("supply below 1,000", send([createCurveIx(creator.publicKey, mint, 999n)], [creator]), /BadSupply/);
-for (const t of [0n, 20n, 499n, 501n, 20_000n]) {
+// The testnet build (what this runs against) also takes 10 and 20 XNT; everything else is refused.
+for (const t of [0n, 9n, 11n, 19n, 21n, 499n, 501n, 20_000n]) {
   await fails(`graduation target ${t} XNT`, send([createCurveIx(creator.publicKey, mint, SUPPLY_WHOLE, t)], [creator]), /BadTarget/);
 }
 await send([createCurveIx(creator.publicKey, mint, SUPPLY_WHOLE)], [creator]);
@@ -263,7 +264,16 @@ ok(`curve created: T=${c.curveTokens / 10n ** 9n} Pn=${c.poolTokensNet / 10n ** 
 }
 
 console.log("2. Trading rules");
-await fails("creator buys on their own curve", send([buyIx(creator.publicKey, mint, 100_000_000n, 0n)], [creator]), /CreatorCannotBuy/);
+{
+  // The testnet build lets the creator buy (for testing); mainnet builds refuse it with CreatorCannotBuy.
+  // Simulated only, so the curve's state below is unchanged.
+  const { blockhash } = await conn.getLatestBlockhash();
+  const tx = new Transaction({ feePayer: creator.publicKey, recentBlockhash: blockhash }).add(buyIx(creator.publicKey, mint, 100_000_000n, 0n));
+  tx.sign(creator);
+  const sim = await conn.simulateTransaction(tx);
+  assert.equal(sim.value.err, null, `creator buy should simulate OK on the testnet build: ${JSON.stringify(sim.value.err)} ${(sim.value.logs ?? []).slice(-3).join(" | ")}`);
+  ok("creator can buy on their own curve (testnet build; mainnet refuses)");
+}
 await fails("early buy over 1% of supply", send([buyIx(buyers[0].publicKey, mint, 5_000_000_000n, 0n)], [buyers[0]]), /TooBigEarly/);
 await fails("zero buy", send([buyIx(buyers[0].publicKey, mint, 0n, 0n)], [buyers[0]]), /ZeroAmount/);
 

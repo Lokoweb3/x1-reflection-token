@@ -101,8 +101,10 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     return firstBuyCost;
   }
 
+  // The testnet program lets a curve's creator buy (for testing); mainnet's refuses it.
+  const creatorCanBuy = cfg.network === "testnet";
   // Each curve's own target is `targetXnt` in its summary (lamports); these are the choices for a new one (whole XNT).
-  const params = () => ({
+  const params = () => ({ creatorCanBuy,
     programId: program.toBase58(), targetsXnt: targetsFor(cfg.network).map(s), defaultTargetXnt: s(DEFAULT_TARGET_XNT), feeBps: Number(FEE_BPS), curveBps: Number(CURVE_BPS),
     depositXnt: s(GRADUATION_DEPOSIT), rewardXnt: s(GRADUATE_REWARD), snipeWindowSecs: SNIPE_WINDOW_SECS, snipeMaxBps: Number(SNIPE_MAX_BPS),
     supplyMin: s(SUPPLY_MIN), supplyMax: s(SUPPLY_MAX), decimals: DECIMALS, now: nowSecs(),
@@ -214,7 +216,7 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     const slip = slippage(body.slippageBps);
     const c = await readCurve(mint);
     if (c.status !== CurveStatus.Trading) throw new Error("This curve is finished; it's graduating to its XDEX pool.");
-    if (c.creator.equals(buyer)) throw new Error("The creator can't buy on their own curve.");
+    if (!creatorCanBuy && c.creator.equals(buyer)) throw new Error("The creator can't buy on their own curve.");
     const q = quoteBuy(c, xntIn, nowSecs());
     if (q.error === "zero") throw new Error("That amount is too small to buy any tokens.");
     if (q.error === "too-big-early") {

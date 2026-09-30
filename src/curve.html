@@ -356,7 +356,7 @@ function createForm() {
       el("p", { class: "hint", id: "splitNote", style: "margin:0" })),
     el("p", { class: "callout", text: tr("No tax while on the curve; the tax starts at graduation. Tokens arrive in your wallet at graduation.") }),
     el("table", { class: "costs", id: "costs" }),
-    el("p", { class: "muted", text: tr("You can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") }),
+    el("p", { class: "muted", text: p.creatorCanBuy ? tr("On testnet the creator can also buy (for testing); on mainnet you can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") : tr("You can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") }),
     el("button", { class: "btn primary go", id: "createBtn", type: "submit", disabled: "" }, tr("Connect a wallet to create")));
   f.addEventListener("input", (ev) => { clampSplit(ev.target); renderCosts(); });
   // "Custom…" shows a box for any other supply in the allowed range.
@@ -448,7 +448,7 @@ async function createCurve(ev) {
   const p = readForm();
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", tr("Liquidity + burn can't be more than {MAX_LP_PLUS_BURN}% of the tax.", { MAX_LP_PLUS_BURN })); return; }
   const target = fmt(p.targetXnt, 0);
-  const ok = confirm(tr("Create {name} ({symbol}) on the bonding curve?\n\n• Supply {supply} (fixed); {curveBps}% sold on the curve\n• Tax {taxBps}% on every transfer once it graduates (can never change)\n• Graduates at {target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee {feeAmount} {feeSymbol}, plus a {depositXnt} XNT graduation deposit (the rest comes back when it finishes)\n\nYou can't buy on your own curve. Your wallet will ask you to approve 1 transaction.{extra}", { name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), curveBps: listData.params.curveBps / 100, taxBps: p.taxBps / 100, target, feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, depositXnt: fmt(units(listData.params.depositXnt), 3), extra: info.taxVault?.launches ? tr("\n\nThe tax is held by the Tax Vault program, not a wallet. After graduation you sign one more transaction to start the tax vault (the tax waits safely until then).") : "" }));
+  const ok = confirm(tr("Create {name} ({symbol}) on the bonding curve?\n\n• Supply {supply} (fixed); {curveBps}% sold on the curve\n• Tax {taxBps}% on every transfer once it graduates (can never change)\n• Graduates at {target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee {feeAmount} {feeSymbol}, plus a {depositXnt} XNT graduation deposit (the rest comes back when it finishes)\n\n{buyNote}Your wallet will ask you to approve 1 transaction.{extra}", { buyNote: listData.params.creatorCanBuy ? "" : tr("You can't buy on your own curve. "), name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), curveBps: listData.params.curveBps / 100, taxBps: p.taxBps / 100, target, feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, depositXnt: fmt(units(listData.params.depositXnt), 3), extra: info.taxVault?.launches ? tr("\n\nThe tax is held by the Tax Vault program, not a wallet. After graduation you sign one more transaction to start the tax vault (the tax waits safely until then).") : "" }));
   if (!ok) return;
   creating = true; renderCosts();
   try {
@@ -593,7 +593,7 @@ function tradeBox(v) {
     const units9 = toUnits(amount.value);
     quote.replaceChildren();
     if (!trading) why = v.statusCode >= 3 ? tr("The curve has graduated; trade on XDEX.") : tr("The curve is full; it's graduating.");
-    else if (isCreator) why = tr("The creator can't buy on their own curve.");
+    else if (isCreator && !v.params?.creatorCanBuy) why = tr("The creator can't buy on their own curve.");
     else if (units9 === null || units9 <= 0n) why = tab === "buy" ? tr("Enter how much XNT to spend.") : tr("Enter how many tokens to sell.");
     else if (tab === "buy") {
       const q = quoteBuy(c, units9, chainNow(), feeBps, snipe);
@@ -621,7 +621,7 @@ function tradeBox(v) {
       }
     }
     if (why) quote.append(el("div", { class: "muted", text: why }));
-    go.disabled = tradeBusy || (!!me && !ready) || !trading || isCreator;
+    go.disabled = tradeBusy || (!!me && !ready) || !trading || (isCreator && !v.params?.creatorCanBuy);
     go.textContent = !me ? tr("Connect wallet") : tradeBusy ? tr("Working…") : tab === "buy" ? tr("Buy {symbol}", { symbol: v.symbol }) : tr("Sell {symbol}", { symbol: v.symbol });
   }
   amount.addEventListener("input", update);

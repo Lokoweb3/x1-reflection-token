@@ -86,7 +86,10 @@ try {
   const view = async (w?: Keypair) => api(`/api/curve/${mint}${w ? `?wallet=${w.publicKey.toBase58()}` : ""}`);
 
   console.log("2. Trading through the site");
-  await signAndSend("/api/curve/buy", { wallet: creator.publicKey.toBase58(), mint, xnt: "0.1" }, creator).then(() => assert.fail("creator buy should fail"), (e) => ok(`creator can't buy (${String(e.message).slice(0, 60)}…)`));
+  // On testnet the site builds a buy for the creator too (built and simulated by the site, not sent).
+  const cb = await api("/api/curve/buy", { wallet: creator.publicKey.toBase58(), mint, xnt: "0.1" });
+  assert.ok(cb.tx, "the site builds the creator's buy on testnet");
+  ok("creator can buy on the testnet site (not sent)");
   await sleep(125_000); // the site enforces the real 2-minute anti-snipe window
   for (const [i, amt] of [["0", "2"], ["1", "3"], ["2", "1.5"], ["0", "4"]] as const) {
     const r = await signAndSend("/api/curve/buy", { wallet: buyers[+i].publicKey.toBase58(), mint, xnt: amt }, buyers[+i]);

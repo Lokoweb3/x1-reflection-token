@@ -164,6 +164,8 @@ pub mod bonding_curve {
     pub fn buy(ctx: Context<Buy>, xnt_in: u64, min_tokens_out: u64) -> Result<()> {
         let curve = &ctx.accounts.curve;
         require!(curve.status == STATUS_TRADING, CurveError::NotTrading);
+        // The creator can't buy their own curve on mainnet; the testnet build allows it for testing.
+        #[cfg(not(feature = "testnet"))]
         require_keys_neq!(ctx.accounts.buyer.key(), curve.creator, CurveError::CreatorCannotBuy);
         require!(xnt_in > 0, CurveError::ZeroAmount);
 
