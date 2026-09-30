@@ -23,12 +23,14 @@ crank anyone can run).
 All upgradeable; upgrade authority `53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy` (one key).
 Hashes are sha256 of `solana program dump`, taken 30 Sep 2026.
 
-| Network | Program | Address | Bytes | sha256 | From today's source? |
+| Network | Program | Address | Bytes | sha256 | Source commit · build flags |
 |---|---|---|---|---|---|
-| testnet | `tax_vault` v3 | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 590,376 | `4d334f40a99974d515169a9d43bb5d6f9705c50c7c5763973638d28293605ea5` | yes (`--features testnet`) |
-| testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,808 | `b9c0eb9c5da4a9bf91b3c5bb766765b498a651f80f08d4c0f64afce750eeff85` | yes (`--features testnet`) |
-| testnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 474,704 | `d1749193963f6560c6428b8697917511d1e1dff0b94028fff3c36379bb6776f4` | no: an earlier revision (before Holder Passes were added to the source) |
-| mainnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 554,776 | `f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b` | yes (no features) |
+| testnet | `tax_vault` v3 | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 590,376 | `4d334f40a99974d515169a9d43bb5d6f9705c50c7c5763973638d28293605ea5` | `7f2097d` (program source unchanged since) · `--features testnet` |
+| testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,808 | `b9c0eb9c5da4a9bf91b3c5bb766765b498a651f80f08d4c0f64afce750eeff85` | `5332c44` (unchanged since) · `--features testnet` |
+| mainnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 554,776 | `f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b` | `fd136f3` (unchanged since) · no features |
+| testnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 474,704 | `d1749193963f6560c6428b8697917511d1e1dff0b94028fff3c36379bb6776f4` | **not reproduced**: deployed from a revision before `fd136f3` (before Holder Passes); no build from the current source matches it |
+
+"Reproduced from source" in the review log below refers to the first three rows only.
 
 `tax_vault` and `bonding_curve` are not on mainnet. XDEX (the DEX all three call):
 testnet `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf`, mainnet
@@ -159,3 +161,18 @@ only, so the deployed programs and their hashes are unchanged.
 **Audit scope:** review the fixed tree, **`e5ea714`** or later (it contains `ce38a49` plus
 the review fixes `5302391` and the README update), and pin cargo-build-sbf 3.1.15 for the
 exact hash check.
+
+### 2026-09-30: second review (ChatGPT), source at `071ac47`
+
+Read the source (TypeScript checks and `npm test` 87/87; no Rust toolchain, so no hash or
+validator runs). Its conclusion: the reviewer guide describes the trust model accurately,
+and **recovery handles an absent publisher but not a malicious one that keeps publishing**.
+Each claim was checked against the code and holds:
+
+| # | Finding | Checked | Disposition |
+|---|---|---|---|
+| A | **A malicious, active publisher can keep recovery closed.** `publish_list` sets `last_publish_at` (lib.rs, `publish_list`); `cancel_list` doesn't touch it; `appoint_publisher` (7 days) and `pay_fallback` (30 days) both run off it. A publisher that keeps publishing, even lists the guardian cancels, never lets either window open. | Confirmed | **Open, to fix before the vault goes to mainnet.** Options for the audit: count only lists that went live (not cancelled ones) for the timers; a guardian "dispute" path after the cancel budget is spent (a public, time-locked publisher change, which moves trust to the creator); and removing the single publisher key (multisig / M-of-N quorum). |
+| B | **Per-wallet entitlements aren't enforced across lists on-chain.** `check_publish` bounds totals (>= active/pending totals and `holders_paid`, <= `holders_funded`) and `pay` checks Merkle proofs, but nothing requires a new list to keep each wallet's previous cumulative. A compromised publisher can move every unpaid holder amount (`holders_funded - holders_paid`, plus new tax for as long as it controls the key) to wallets of its choice; two cancels only delay it. | Confirmed (a documented trust assumption, not an unprivileged exploit) | **Accepted for now; exposure kept small.** The crank pays every list soon after it goes live, so the unpaid amount is normally just dust (30 Sep: CUP 0.0014 XNT, RFLT 0.00056 XNT). A stolen (copied) key can be rotated by the operator with `set_publisher`; a malicious operator can't be. Planned: the watchdog (flags a list that lowers anyone's total during the cancel window), then a publisher quorum or the staking vault (exact on-chain entitlements). |
+| C | **Fallback needs the list data.** `pay_fallback` proves against the active list's root; if every copy of that list is gone, 30 days of waiting recovers nothing. | Confirmed | **Open (operations).** Copies today: the site's `vault-list.json` per token and Pinata. Planned: a second independent IPFS pin and list files in the encrypted backups; anyone can mirror them (the CIDs are on-chain). |
+| D | The list-rebuild override (`allowListRebuild`, `--allow-rebuild`) reopens redistribution of unpaid allocations. | By design | **Policy:** off by default; use only when every copy of the list is lost, and announce it publicly first (it moves unpaid amounts from the wallets that were owed them to current holders). |
+| E | Build provenance should name each deployment's commit and flags. | Agreed | **Fixed** in the table above (`lp_locker` on testnet marked as not reproduced). |
