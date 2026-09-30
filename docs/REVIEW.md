@@ -28,11 +28,13 @@ Hashes are sha256 of `solana program dump`, taken 30 Sep 2026.
 | Network | Program | Address | Bytes | sha256 | Source commit · build flags |
 |---|---|---|---|---|---|
 | testnet | `tax_vault` v3 | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 590,376 | `4d334f40a99974d515169a9d43bb5d6f9705c50c7c5763973638d28293605ea5` | `7f2097d` (program source unchanged since) · `--features testnet` |
-| testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,808 | `b9c0eb9c5da4a9bf91b3c5bb766765b498a651f80f08d4c0f64afce750eeff85` | `5332c44` (unchanged since) · `--features testnet` |
+| testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,840 | `dba5c4564ea50077c5ee241313b57b37a72e3f565298a16d50a31c10279d6e8c` | `bfd6abe` (adds 10 / 20 XNT targets on testnet; deployed 30 Sep 2026) · `--features testnet` |
 | mainnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 554,776 | `f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b` | `fd136f3` (unchanged since) · no features |
 | testnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 474,704 | `d1749193963f6560c6428b8697917511d1e1dff0b94028fff3c36379bb6776f4` | **not reproduced**: deployed from a revision before `fd136f3` (before Holder Passes); no build from the current source matches it |
 
-"Reproduced from source" in the review log below refers to the first three rows only.
+"Reproduced from source" in the review log below refers to the first three rows only; the
+reviews ran against the previous `bonding_curve` build (`b9c0eb9c…`, commit `5332c44`),
+which differs only in the testnet-only 10 and 20 XNT targets.
 
 `tax_vault` and `bonding_curve` are not on mainnet. XDEX (the DEX all three call):
 testnet `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf`, mainnet
