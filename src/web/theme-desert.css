@@ -1,0 +1,129 @@
+/*
+ * 99 + Tax desert theme: fonts and colour tokens, then theme-base.css, then the extras after
+ * the AFTER BASE marker. A trading post at the edge of the dunes: sun-bleached sand panels,
+ * wanted-poster slab headings, terracotta accents and a sunset sky; at night the sky goes
+ * indigo and the stars come out.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Rye&family=Nunito:wght@400;600;700;800&display=swap");
+
+:root {
+  color-scheme: light;
+  --paper: #fbf1dc;        /* bleached sand */
+  --paper-2: #f3e2bf;
+  --desk: #e9a15c;
+  --ink: #3a2213;
+  --ink-2: #5a3a22;
+  --ink-3: #74502f;
+  --red: #b8461f;          /* terracotta */
+  --red-ink: #963815;
+  --amber: #8a5a00;
+  --good: #3f7a3a;         /* saguaro */
+  --rule: rgb(90 50 20 / .5);
+  --rule-soft: rgb(90 50 20 / .18);
+  --mono: "Nunito", system-ui, sans-serif;
+  --poster: "Rye", Georgia, serif;
+  --sky-1: #f7c77a; --sky-2: #ee8a5a; --sky-3: #c65f55; --dune: #d9a066; --dune-2: #c4874f;
+
+  --bg: var(--paper); --bg-2: var(--paper); --surface-1: var(--paper); --glass: var(--paper); --glass-strong: var(--paper);
+  --border: var(--rule); --line: var(--rule-soft); --line-2: var(--rule); --grid: var(--rule-soft); --shadow: transparent;
+  --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-3);
+  --muted: var(--ink-3);
+  --link: var(--red-ink); --accent: var(--red); --pink: var(--red); --cyan: var(--ink); --lime: var(--red); --yellow: var(--red); --gold: var(--amber);
+  --warning: var(--amber); --critical: #b4232f;
+  --receipt: #fbf8ef; --receipt-ink: #1b1824;
+  --glow-pink: none; --glow-cyan: none; --glow-lime: none;
+  /* Chart / split colours, validated on the sand (lightness band, colour-blind separation, contrast). */
+  --holders: #c8323c; --liquidity: #2e6bbf; --creator: #3f8a2f; --burn: #8c5aa8;
+  --series-1: #c8323c; --series-2: #2e6bbf; --series-3: #3f8a2f;
+  --s-hold: #c8323c; --s-pool: #2e6bbf; --s-other: #3f8a2f; --s-burn: #8c5aa8;
+}
+
+/* Night in the desert: chosen with the theme menu (html[data-mode="dark"]), or automatically
+   when the device is in dark mode and the viewer picked "Auto". */
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --paper: #2b1f1a; --paper-2: #35271f; --desk: #150d1f;
+  --ink: #f6e6cc; --ink-2: #e2cba8; --ink-3: #c9ad86;
+  --red: #ff8b5e; --red-ink: #f06e3e; --amber: #f0b45a; --good: #8fd48a;
+  --rule: rgb(246 230 204 / .42); --rule-soft: rgb(246 230 204 / .14);
+  --sky-1: #2a1740; --sky-2: #1c1233; --sky-3: #0e0a1c; --dune: #3a2530; --dune-2: #2a1b25;
+  --link: var(--red);
+  /* Chart colours validated on this surface. */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8f76e0;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8f76e0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-mode="light"]) {
+  color-scheme: dark;
+  --paper: #2b1f1a; --paper-2: #35271f; --desk: #150d1f;
+  --ink: #f6e6cc; --ink-2: #e2cba8; --ink-3: #c9ad86;
+  --red: #ff8b5e; --red-ink: #f06e3e; --amber: #f0b45a; --good: #8fd48a;
+  --rule: rgb(246 230 204 / .42); --rule-soft: rgb(246 230 204 / .14);
+  --sky-1: #2a1740; --sky-2: #1c1233; --sky-3: #0e0a1c; --dune: #3a2530; --dune-2: #2a1b25;
+  --link: var(--red);
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8f76e0;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8f76e0;
+  }
+}
+
+/* AFTER BASE */
+
+/* ---------- sunset sky and dunes behind the page ---------- */
+html {
+  background:
+    radial-gradient(ellipse 120% 30% at 20% 100%, var(--dune) 60%, transparent 61%),
+    radial-gradient(ellipse 110% 26% at 85% 100%, var(--dune-2) 60%, transparent 61%),
+    radial-gradient(circle at 78% 22%, rgb(255 236 170 / .75) 0 60px, transparent 62px),
+    linear-gradient(180deg, var(--sky-1), var(--sky-2) 55%, var(--sky-3)) !important;
+  background-attachment: fixed !important;
+}
+body { box-shadow: 0 30px 80px -30px rgb(80 30 10 / .55) !important; }
+/* The torn receipt edge becomes a wind-carved sand edge. */
+body::after {
+  inset: auto 0 -12px 0 !important; height: 12px !important;
+  background: radial-gradient(ellipse 22px 12px at 50% 0, var(--paper) 98%, transparent) 0 0 / 34px 12px repeat-x !important;
+}
+a { color: var(--link) !important; }
+a:hover { color: var(--red) !important; }
+
+/* Wanted-poster slab for headings; the body stays readable. */
+h1, h2, h3, legend, .display, .logo-word, .t, .stats-card h3, .panel h3 {
+  font-family: var(--poster) !important; font-weight: 400 !important; letter-spacing: .03em !important;
+}
+h1 .hl, .hero h1 .hl { color: var(--red) !important; }
+.tile .v, .stat .v, .metric .v, .yield-panel .v, .nft-card .earned, .nft .ready, .yield .yv, .calc b, .slider b {
+  font-family: var(--poster) !important; font-weight: 400 !important; color: var(--red-ink) !important;
+}
+:root[data-mode="dark"] :is(.tile .v, .stat .v, .metric .v, .yield-panel .v) { color: var(--red) !important; }
+
+/* ---------- sun-bleached boards with nailed corners ---------- */
+.card, .chunk, .panel, .tile, .stat, .tok, .nft, .nft-card, .tag-card, .loop, .final, .g, details, .receipt-side, .yield-panel, .mine-strip, .stat-tiles .tile,
+.disclaimer, fieldset {
+  border: 2px solid var(--rule) !important; border-radius: 4px !important; background: var(--paper) !important;
+  background-image:
+    radial-gradient(circle 2.5px at 9px 9px, var(--ink-3) 98%, transparent), radial-gradient(circle 2.5px at calc(100% - 9px) 9px, var(--ink-3) 98%, transparent) !important;
+  box-shadow: 3px 4px 0 var(--rule-soft) !important;
+}
+.tile.hl, .tile.big, .metric.price, .yield-panel, .final, .tag-card { border-color: var(--red) !important; box-shadow: 4px 5px 0 rgb(184 70 31 / .3) !important; }
+.chunk:hover, .nft-card:hover { border-color: var(--red) !important; }
+header, nav, .topbar, footer { border-bottom-style: solid !important; }
+footer { border-top-style: solid !important; }
+.topbar { background: var(--paper-2) !important; }
+
+/* ---------- buttons: branded leather ---------- */
+.btn, .gate-ok { border: 2px solid var(--ink) !important; border-radius: 4px !important; background: var(--paper) !important; color: var(--ink) !important; box-shadow: 3px 3px 0 var(--ink) !important; }
+.btn:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--ink) !important; }
+.btn.primary, .gate-ok { background: var(--red) !important; color: #fff7ea !important; border-color: var(--red-ink) !important; box-shadow: 3px 3px 0 var(--ink) !important; }
+:root[data-mode="dark"] .btn.primary, :root[data-mode="dark"] .gate-ok { color: #2b1206 !important; }
+@media (prefers-color-scheme: dark) { :root:not([data-mode="light"]) :is(.btn.primary, .gate-ok) { color: #2b1206 !important; } }
+.seg button[aria-pressed="true"] { background: var(--red) !important; color: var(--paper) !important; }
+
+/* ---------- small things ---------- */
+input, select, textarea { border: 2px solid var(--rule) !important; border-radius: 4px !important; background: var(--paper-2) !important; color: var(--ink) !important; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--red) !important; }
+.lbl, .chip, .kind, .tag, .pill, .badge { border-radius: 3px !important; }
+tr.me td, .holders tr.me td { background: rgb(184 70 31 / .1) !important; }
+.tip, .ctip, .wallet-menu, .toast { background: var(--paper) !important; color: var(--ink) !important; border: 2px solid var(--ink) !important; box-shadow: 4px 4px 0 var(--rule) !important; }
+.st.earning, .chg.up, .pill.ok, .stamp { color: var(--good) !important; border-color: var(--good) !important; }

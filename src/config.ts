@@ -70,7 +70,7 @@ export interface Config {
     lockForeverOnly?: boolean;
     /** Pause new launches (step 1 and curve creation); unfinished launches can still be completed. */
     launchesPaused?: { message?: string };
-    theme?: "receipt" | "arcade" | "lunchbag" | "notebook"; // site look (default receipt); preview with ?theme=arcade
+    theme?: "receipt" | "arcade" | "lunchbag" | "notebook" | "space" | "desert" | "casino"; // site look (default receipt); preview with ?theme=arcade
     /**
      * Bonding-curve launches (docs/bonding-curve-spec.md). Without it the Curve pages and
      * routes are off. `crankKeypair`: a wallet that graduates finished curves and delivers

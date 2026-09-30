@@ -265,6 +265,9 @@ header nav { flex-wrap: wrap !important; row-gap: 8px !important; }
 .tp-sw-receipt { background: linear-gradient(135deg, #fbf8ef 60%, #c8102e 60%); }
 .tp-sw-arcade { background: repeating-linear-gradient(0deg, #170d30 0 3px, #221444 3px 4px), #170d30; box-shadow: inset -9px -9px 0 #ffd23f; }
 .tp-sw-lunchbag { background: linear-gradient(90deg, #c9a06a 48%, #b88c55 50%, #c9a06a 52%); box-shadow: inset 0 -9px 0 #ff8a1f; border-radius: 3px; }
+.tp-sw-space { background: radial-gradient(1px 1px at 30% 30%, #fff 60%, transparent 61%), radial-gradient(1px 1px at 70% 60%, #fff 60%, transparent 61%), radial-gradient(circle at 75% 25%, #7c5aff 0 5px, transparent 6px), #0a0e24; box-shadow: inset -9px -9px 0 #ff8a3d; border-radius: 50%; }
+.tp-sw-desert { background: radial-gradient(ellipse 120% 40% at 30% 100%, #d9a066 60%, transparent 61%), radial-gradient(circle at 70% 35%, #ffeab0 0 4px, transparent 5px), linear-gradient(#f7c77a, #ee8a5a 60%, #c65f55); }
+.tp-sw-casino { background: radial-gradient(circle, #0f4a30 55%, transparent 56%), #07130d; border: 3px dashed #e8c15a !important; border-radius: 50%; }
 .tp-sw-notebook { background: repeating-linear-gradient(to bottom, #fbfaf2 0 5px, #9fbde6 5px 6px); box-shadow: inset 5px 0 0 -3px #e66e6e, inset -12px -12px 0 #fff27a; }
 .tp-modes { display: grid; grid-template-columns: repeat(3, 1fr); border: 1.5px solid var(--ink); }
 .tp-modes button { padding: 7px 0; background: transparent; color: var(--ink); border: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; }

@@ -4,15 +4,15 @@
  * `const SITE_THEME = "<factory.theme>";`.
  *
  * Choices live in this browser only (localStorage): the theme (receipt, arcade,
- * lunchbag) and the mode (auto follows the device, or light / dark). A shared link can
+ * lunchbag, notebook, space, desert, casino) and the mode (auto follows the device, or light / dark). A shared link can
  * carry ?theme=… and ?mode=… to set them; ?theme=default clears the theme choice.
  */
 (() => {
   // Page text goes through tr() from /i18n.js (loaded just before this file); English if it's missing.
   const tr = window.tr ?? ((s, v) => (v ? s.replace(/\{(\w+)\}/g, (x, n) => (n in v ? String(v[n]) : x)) : s));
-  const THEMES = [["receipt", tr("Receipt"), tr("Cream paper, monospace")], ["arcade", tr("Arcade"), tr("Pixels and scanlines")], ["lunchbag", tr("Lunch bag"), tr("Kraft paper, marker")], ["notebook", tr("Notebook"), tr("Lined paper, sticky notes")]];
+  const THEMES = [["receipt", tr("Receipt"), tr("Cream paper, monospace")], ["arcade", tr("Arcade"), tr("Pixels and scanlines")], ["lunchbag", tr("Lunch bag"), tr("Kraft paper, marker")], ["notebook", tr("Notebook"), tr("Lined paper, sticky notes")], ["space", tr("Space"), tr("Starfield, mission control")], ["desert", tr("Desert"), tr("Sand, sunset, wanted posters")], ["casino", tr("Casino"), tr("Green felt, gold, poker chips")]];
   const MODES = [["auto", tr("Auto")], ["light", tr("Light")], ["dark", tr("Dark")]];
-  const ALWAYS_DARK = new Set(["arcade"]);
+  const ALWAYS_DARK = new Set(["arcade", "space", "casino"]);
   const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
   const set = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} };
   const valid = (t) => THEMES.some(([id]) => id === t);
@@ -116,7 +116,7 @@
       }
       menu.append(row);
       const n = document.createElement("div"); n.className = "tp-note";
-      n.textContent = locked ? tr("Arcade is always dark.") : mode() === "auto" ? tr("Auto follows your device's light/dark setting.") : tr("Saved in this browser.");
+      n.textContent = locked ? tr("{theme} is always dark.", { theme: THEMES.find(([id]) => id === current())[1] }) : mode() === "auto" ? tr("Auto follows your device's light/dark setting.") : tr("Saved in this browser.");
       menu.append(n);
     };
     render();

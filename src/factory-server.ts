@@ -87,7 +87,7 @@ if (curves) allowRelayProgram(curves.program.toBase58());
 const faucetOn = () => cfg.network === "testnet" && !!cfg.factory?.faucet && !!cfg.factory?.feeToken
   && fs.existsSync(path.isAbsolute(cfg.factory.faucet.keypair) ? cfg.factory.faucet.keypair : path.join(ROOT, cfg.factory.faucet.keypair));
 /** Site themes: each file holds its fonts and colour tokens, then (after the AFTER BASE marker) extras. */
-const THEMES = ["receipt", "arcade", "lunchbag", "notebook"] as const;
+const THEMES = ["receipt", "arcade", "lunchbag", "notebook", "space", "desert", "casino"] as const;
 function themeCss(name: string) {
   const [head, extra = ""] = fs.readFileSync(path.join(ROOT, "src", "web", `theme-${name}.css`), "utf8").split("/* AFTER BASE */");
   return head + fs.readFileSync(path.join(ROOT, "src", "web", "theme-base.css"), "utf8") + extra;

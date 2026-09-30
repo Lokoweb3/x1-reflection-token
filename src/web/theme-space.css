@@ -1,0 +1,118 @@
+/*
+ * 99 + Tax space theme: fonts and colour tokens, then theme-base.css, then the extras after
+ * the AFTER BASE marker. Mission control at night: a starfield behind a dark console, thin
+ * instrument frames, Orbitron readouts and an ignition-orange accent. Always dark.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Exo+2:wght@400;500;600;700&display=swap");
+
+:root {
+  color-scheme: dark;
+  --paper: #111735;        /* console panels */
+  --paper-2: #182048;
+  --desk: #04060f;
+  --ink: #e9eefc;
+  --ink-2: #c3cbe6;
+  --ink-3: #9aa5cc;
+  --red: #ff8a3d;          /* the accent slot: ignition orange */
+  --red-ink: #e8701f;
+  --amber: #ffc46b;
+  --good: #6ff0a8;
+  --rule: rgb(124 212 255 / .55);
+  --rule-soft: rgb(124 212 255 / .18);
+  --mono: "Exo 2", system-ui, sans-serif;
+  --orbit: "Orbitron", "Exo 2", system-ui, sans-serif;
+  --ice: #7cd4ff;
+
+  --bg: var(--paper); --bg-2: var(--paper); --surface-1: var(--paper); --glass: var(--paper); --glass-strong: var(--paper);
+  --border: var(--rule); --line: var(--rule-soft); --line-2: var(--rule); --grid: var(--rule-soft); --shadow: transparent;
+  --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-3);
+  --muted: var(--ink-3);
+  --link: var(--ice); --accent: var(--red); --pink: var(--red); --cyan: var(--ice); --lime: var(--red); --yellow: var(--red); --gold: var(--amber);
+  --warning: var(--amber); --critical: #ff6b81;
+  --receipt: #fbf8ef; --receipt-ink: #1b1824;
+  --glow-pink: none; --glow-cyan: none; --glow-lime: none;
+  /* Chart / split colours, validated on this panel (lightness band, colour-blind separation, contrast). */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #6aa51c; --burn: #8f76e0;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #6aa51c;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #6aa51c; --s-burn: #8f76e0;
+}
+
+/* AFTER BASE */
+
+/* ---------- deep space behind the console ---------- */
+html {
+  background:
+    radial-gradient(1px 1px at 12% 18%, #fff 50%, transparent 51%),
+    radial-gradient(1px 1px at 34% 72%, #cfe6ff 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 58% 26%, #fff 50%, transparent 51%),
+    radial-gradient(1px 1px at 77% 61%, #ffe7c7 50%, transparent 51%),
+    radial-gradient(1px 1px at 88% 12%, #fff 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 6% 88%, #cfe6ff 50%, transparent 51%),
+    radial-gradient(1px 1px at 46% 94%, #fff 50%, transparent 51%),
+    radial-gradient(ellipse 60% 45% at 85% 10%, rgb(124 90 255 / .22), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 5% 70%, rgb(0 170 255 / .14), transparent 70%),
+    var(--desk) !important;
+  background-size: 260px 260px, 310px 310px, 370px 370px, 290px 290px, 410px 410px, 330px 330px, 280px 280px, auto, auto, auto !important;
+  background-attachment: fixed !important;
+}
+body {
+  background: rgb(10 14 36 / .9) !important;
+  border-left: 1px solid rgb(124 212 255 / .25); border-right: 1px solid rgb(124 212 255 / .25);
+  box-shadow: 0 0 80px rgb(0 140 255 / .15) !important;
+}
+/* No torn receipt edge: a thin horizon glow along the bottom instead. */
+body::after {
+  inset: auto 0 0 0 !important; height: 2px !important;
+  background: linear-gradient(90deg, transparent, var(--ice), var(--red), transparent) !important;
+}
+a { color: var(--ice) !important; text-decoration-color: rgb(124 212 255 / .5); }
+a:hover { color: var(--red) !important; }
+
+/* Orbitron readouts for headings, labels and numbers. */
+h1, h2, h3, legend, summary, .display, .logo-word, .btn, .gate-ok, .seg button, .badge, .lbl, .chip, .kind, .tag, .pill, .sticker, .stamp, th, .t,
+nav .links a:not(.btn), header nav a:not(.btn), .mainnav a, .topbar b, .stats-card h3, .panel h3 {
+  font-family: var(--orbit) !important; letter-spacing: .06em !important;
+}
+h1 { font-weight: 800 !important; }
+h1 .hl, .hero h1 .hl { color: var(--red) !important; }
+.tile .v, .stat .v, .metric .v, .yield-panel .v, .nft-card .earned, .nft .ready, .yield .yv, .calc b, .slider b {
+  font-family: var(--orbit) !important; font-weight: 700 !important; color: var(--ice) !important;
+}
+
+/* ---------- instrument panels ---------- */
+.card, .chunk, .panel, .tile, .stat, .tok, .nft, .nft-card, .tag-card, .loop, .final, .g, details, .receipt-side, .yield-panel, .mine-strip, .stat-tiles .tile,
+.disclaimer, fieldset, .art, .nft .thumb, .nft-card .thumb, .tok .logo {
+  border: 1px solid var(--rule) !important; border-radius: 12px !important; background: var(--paper) !important;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .05), 0 10px 30px -18px rgb(0 0 0 / .9) !important;
+}
+.tile.hl, .tile.big, .metric.price, .yield-panel, .final, .tag-card { border-color: var(--red) !important; box-shadow: 0 0 0 1px rgb(255 138 61 / .35), 0 0 28px -8px rgb(255 138 61 / .5) !important; }
+.chunk:hover, .nft-card:hover { border-color: var(--ice) !important; }
+.art, .nft .thumb, .nft-card .thumb { background: #070b1e !important; }
+header, nav, .topbar, footer { border-color: rgb(124 212 255 / .25) !important; border-bottom-style: solid !important; }
+footer { border-top-style: solid !important; }
+table th, table td { border-bottom-style: solid !important; }
+.topbar { background: #070b1e !important; color: var(--ink-2) !important; }
+
+/* ---------- buttons: ignition ---------- */
+.btn, .gate-ok { background: transparent !important; color: var(--ink) !important; border: 1px solid var(--rule) !important; border-radius: 999px !important; box-shadow: none !important; }
+.btn:hover:not(:disabled) { border-color: var(--ice) !important; color: var(--ice) !important; box-shadow: 0 0 16px -4px var(--ice) !important; }
+.btn.primary, .gate-ok { background: linear-gradient(180deg, #ffa05c, var(--red-ink)) !important; color: #1a0c02 !important; border-color: #ffb784 !important; }
+.btn.primary:hover:not(:disabled), .gate-ok:hover { color: #1a0c02 !important; box-shadow: 0 0 22px -2px rgb(255 138 61 / .8) !important; }
+.seg button[aria-pressed="true"] { background: var(--red) !important; color: #1a0c02 !important; }
+
+/* ---------- small things ---------- */
+input, select, textarea, .search input, .toolbar input, .toolbar select, .calc input { background: #070b1e !important; color: var(--ink) !important; border: 1px solid var(--rule) !important; border-radius: 8px !important; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--ice) !important; }
+select option { background: #0a0e24 !important; color: var(--ink) !important; }
+.lbl, .chip, .kind, .tag, .pill, .badge { background: #070b1e !important; color: var(--ink-2) !important; border: 1px solid var(--rule) !important; border-radius: 999px !important; }
+.sticker { color: var(--red) !important; border-color: var(--red) !important; background: #070b1e !important; }
+tr.me td, .holders tr.me td { background: rgb(124 212 255 / .08) !important; }
+.tip, .ctip, .wallet-menu, .toast { background: #0a0e24 !important; color: var(--ink) !important; border: 1px solid var(--ice) !important; border-radius: 10px !important; box-shadow: 0 0 30px -10px var(--ice) !important; }
+.wallet-menu button:hover { background: var(--paper-2) !important; }
+.receipt { color: var(--receipt-ink) !important; background: var(--receipt) !important; }
+.receipt * { color: inherit; }
+.gate { background: rgb(4 6 15 / .92) !important; }
+.gate-box { background: var(--paper) !important; border: 1px solid var(--ice) !important; border-radius: 14px !important; }
+.st.earning, .chg.up, .pill.ok, .stamp { color: var(--good) !important; border-color: var(--good) !important; }
+.steps li.done .dot { background: var(--good) !important; color: #04060f !important; border-color: var(--good) !important; }
+.steps li.active .dot { border-color: var(--red) !important; color: var(--red) !important; }

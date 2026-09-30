@@ -1,0 +1,120 @@
+/*
+ * 99 + Tax casino theme: fonts and colour tokens, then theme-base.css, then the extras after
+ * the AFTER BASE marker. The high-roller table: green baize panels on a dark room, gold-leaf
+ * Art Deco headings, poker-chip buttons and card suits. Always dark.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Limelight&family=Nunito:wght@400;600;700;800&display=swap");
+
+:root {
+  color-scheme: dark;
+  --paper: #0a3421;        /* the felt the tables and charts sit on */
+  --paper-2: #0d3f29;
+  --desk: #07130d;
+  --ink: #f4efdc;
+  --ink-2: #d9d1b4;
+  --ink-3: #b3ab8c;
+  --red: #e8c15a;          /* the accent slot: gold leaf */
+  --red-ink: #caa03a;
+  --amber: #f0b45a;
+  --good: #7fe0a0;
+  --chip-red: #c8283c;
+  --rule: rgb(232 193 90 / .5);
+  --rule-soft: rgb(232 193 90 / .16);
+  --mono: "Nunito", system-ui, sans-serif;
+  --deco: "Limelight", Georgia, serif;
+
+  --bg: var(--paper); --bg-2: var(--paper); --surface-1: var(--paper); --glass: var(--paper); --glass-strong: var(--paper);
+  --border: var(--rule); --line: var(--rule-soft); --line-2: var(--rule); --grid: var(--rule-soft); --shadow: transparent;
+  --text-primary: var(--ink); --text-secondary: var(--ink-2); --text-muted: var(--ink-3);
+  --muted: var(--ink-3);
+  --link: var(--red); --accent: var(--red); --pink: var(--chip-red); --cyan: var(--red); --lime: var(--red); --yellow: var(--red); --gold: var(--red);
+  --warning: var(--amber); --critical: #ff6b7a;
+  --receipt: #fbf8ef; --receipt-ink: #1b1824;
+  --glow-pink: none; --glow-cyan: none; --glow-lime: none;
+  /* Chart / split colours, validated on the felt (lightness band, colour-blind separation, contrast). */
+  --holders: #e93d98; --liquidity: #1b9ed0; --creator: #b8891a; --burn: #8f76e0;
+  --series-1: #e93d98; --series-2: #1b9ed0; --series-3: #b8891a;
+  --s-hold: #e93d98; --s-pool: #1b9ed0; --s-other: #b8891a; --s-burn: #8f76e0;
+}
+
+/* AFTER BASE */
+
+/* ---------- the room and the table ---------- */
+html {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 0%, rgb(232 193 90 / .12), transparent 70%),
+    repeating-linear-gradient(45deg, rgb(255 255 255 / .015) 0 2px, transparent 2px 6px),
+    var(--desk) !important;
+  background-attachment: fixed !important;
+}
+body {
+  background:
+    radial-gradient(ellipse 90% 60% at 50% 30%, #0f4a30, #093020 70%) !important;
+  border-left: 6px solid #3a2414; border-right: 6px solid #3a2414;  /* the table's wooden rail */
+  box-shadow: 0 0 0 2px var(--red-ink), 0 30px 80px -20px #000 !important;
+}
+/* A gold rail along the bottom instead of the torn receipt edge. */
+body::after {
+  inset: auto 0 0 0 !important; height: 4px !important;
+  background: linear-gradient(90deg, #8a6a1f, var(--red), #fff1c2, var(--red), #8a6a1f) !important;
+}
+a { color: var(--red) !important; text-decoration-color: rgb(232 193 90 / .5); }
+a:hover { color: #fff1c2 !important; }
+
+/* Gold-leaf Art Deco headings and numbers. */
+h1, h2, h3, legend, .display, .logo-word, .t, .stats-card h3, .panel h3 {
+  font-family: var(--deco) !important; font-weight: 400 !important; letter-spacing: .04em !important; color: var(--red) !important;
+}
+h1 { background: linear-gradient(180deg, #fff1c2, var(--red) 55%, #b88a26); -webkit-background-clip: text; background-clip: text; color: transparent !important; }
+h1 .hl, .hero h1 .hl { color: var(--chip-red) !important; -webkit-text-fill-color: #ff6b7a; }
+.tile .v, .stat .v, .metric .v, .yield-panel .v, .nft-card .earned, .nft .ready, .yield .yv, .calc b, .slider b {
+  font-family: var(--deco) !important; font-weight: 400 !important; color: var(--red) !important;
+}
+/* Card suits beside section headings. */
+h2::before { content: "♠ "; color: var(--ink-3); font-family: var(--mono); }
+section:nth-of-type(4n+2) h2::before { content: "♥ "; color: #ff6b7a; }
+section:nth-of-type(4n+3) h2::before { content: "♦ "; color: #ff6b7a; }
+section:nth-of-type(4n) h2::before { content: "♣ "; color: var(--ink-3); }
+/* Not on names inside cards, panels and dialogs (a token called "♠ CUP" reads wrong). */
+:is(.tok, .nft, .nft-card, .card, .chunk, .panel, .tile, .gate-box, .receipt, details, .g) h2::before { content: none !important; }
+
+/* ---------- panels: felt with a stitched gold edge ---------- */
+.card, .chunk, .panel, .tile, .stat, .tok, .nft, .nft-card, .tag-card, .loop, .final, .g, details, .receipt-side, .yield-panel, .mine-strip, .stat-tiles .tile,
+.disclaimer, fieldset {
+  border: 1.5px solid var(--rule) !important; border-radius: 10px !important; background: var(--paper) !important;
+  box-shadow: inset 0 0 0 4px var(--paper), inset 0 0 0 5px rgb(232 193 90 / .22), 0 12px 28px -18px #000 !important;
+}
+.tile.hl, .tile.big, .metric.price, .yield-panel, .final, .tag-card { border-color: var(--red) !important; box-shadow: inset 0 0 0 4px var(--paper), inset 0 0 0 5px var(--red), 0 0 30px -10px rgb(232 193 90 / .6) !important; }
+.chunk:hover, .nft-card:hover { border-color: var(--red) !important; }
+.art, .nft .thumb, .nft-card .thumb { background: #051a10 !important; }
+header, nav, .topbar, footer { border-color: rgb(232 193 90 / .35) !important; border-bottom-style: solid !important; }
+footer { border-top-style: solid !important; }
+table th, table td { border-bottom-style: solid !important; }
+.topbar { background: #051a10 !important; color: var(--ink-2) !important; }
+
+/* ---------- buttons: poker chips ---------- */
+.btn, .gate-ok {
+  background: #1a1a1a !important; color: var(--ink) !important; border: 3px dashed #f4efdc !important; border-radius: 999px !important;
+  box-shadow: 0 0 0 2px #1a1a1a, 0 4px 0 2px #000 !important;
+}
+.btn:hover:not(:disabled) { transform: translateY(-1px); }
+.btn.primary, .gate-ok { background: var(--chip-red) !important; color: #fff !important; box-shadow: 0 0 0 2px var(--chip-red), 0 4px 0 2px #5c0f1a !important; }
+.btn.primary:hover:not(:disabled), .gate-ok:hover { box-shadow: 0 0 0 2px var(--chip-red), 0 4px 0 2px #5c0f1a, 0 0 24px rgb(232 193 90 / .5) !important; }
+.seg button[aria-pressed="true"] { background: var(--red) !important; color: #1a1305 !important; }
+
+/* ---------- small things ---------- */
+input, select, textarea, .search input, .toolbar input, .toolbar select, .calc input { background: #051a10 !important; color: var(--ink) !important; border: 1.5px solid var(--rule) !important; border-radius: 8px !important; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--red) !important; }
+select option { background: #07130d !important; color: var(--ink) !important; }
+.lbl, .chip, .kind, .tag, .pill, .badge { background: #051a10 !important; color: var(--ink-2) !important; border: 1px solid var(--rule) !important; border-radius: 999px !important; }
+.sticker { color: var(--red) !important; border-color: var(--red) !important; background: #051a10 !important; }
+tr.me td, .holders tr.me td { background: rgb(232 193 90 / .1) !important; }
+.tip, .ctip, .wallet-menu, .toast { background: #07130d !important; color: var(--ink) !important; border: 1.5px solid var(--red) !important; border-radius: 10px !important; }
+.wallet-menu button:hover { background: var(--paper-2) !important; }
+.receipt { color: var(--receipt-ink) !important; background: var(--receipt) !important; }
+.receipt * { color: inherit; }
+.gate { background: rgb(7 19 13 / .92) !important; }
+.gate-box { background: var(--paper) !important; border: 1.5px solid var(--red) !important; border-radius: 14px !important; }
+.st.earning, .chg.up, .pill.ok, .stamp { color: var(--good) !important; border-color: var(--good) !important; }
+.steps li.done .dot { background: var(--good) !important; color: #07130d !important; border-color: var(--good) !important; }
+.steps li.active .dot { border-color: var(--red) !important; color: var(--red) !important; }
