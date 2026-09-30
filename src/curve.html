@@ -331,7 +331,13 @@ function createForm() {
       el("label", {}, "Telegram ", el("span", { class: "hint", text: "(optional)" }), el("input", { name: "telegram", type: "url", placeholder: "https://t.me/…", maxlength: "200" }))),
     el("fieldset", {}, el("legend", { text: "Supply and tax" }),
       el("div", { class: "row" },
-        el("label", {}, "Total supply", el("input", { name: "supply", inputmode: "numeric", value: "1000000000", required: "" }),
+        el("label", {}, "Total supply",
+          el("select", { name: "supply", id: "supplyPick" }, ...supplyPresets(p).map(([v, t]) => {
+            const o = el("option", { value: v, text: t });
+            if (v === "1000000000") o.setAttribute("selected", "");
+            return o;
+          })),
+          el("input", { name: "supplyCustom", id: "supplyCustom", inputmode: "numeric", placeholder: "e.g. 420000000", "aria-label": "Custom total supply", hidden: "" }),
           el("span", { class: "hint", text: `Whole tokens, ${Number(p.supplyMin).toLocaleString()} to ${Number(p.supplyMax).toLocaleString()}. ${p.curveBps / 100}% is sold on the curve; the rest goes into the pool.` })),
         el("label", {}, "Tax on every transfer after graduation (%)", el("input", { name: "tax", type: "number", min: "1", max: "10", step: "0.5", value: "5", required: "" }))),
       el("div", { class: "row" },
@@ -352,15 +358,29 @@ function createForm() {
     el("p", { class: "muted", text: "You can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward." }),
     el("button", { class: "btn primary go", id: "createBtn", type: "submit", disabled: "" }, "Connect a wallet to create"));
   f.addEventListener("input", (ev) => { clampSplit(ev.target); renderCosts(); });
+  // "Custom…" shows a box for any other supply in the allowed range.
+  f.addEventListener("change", (ev) => {
+    if (ev.target.id !== "supplyPick") return;
+    const box = $("supplyCustom"), custom = ev.target.value === "custom";
+    box.hidden = !custom; box.required = custom;
+    if (custom) box.focus();
+    renderCosts();
+  });
   f.addEventListener("submit", createCurve);
   return el("section", { class: "card", id: "create" }, el("h2", { text: "Create a curve token" }), f);
+}
+/** Total supply choices within the program's range (whole tokens), then "Custom…". */
+function supplyPresets(p) {
+  const names = { 1e6: "1 million", 1e7: "10 million", 1e8: "100 million", 1e9: "1 billion", 1e10: "10 billion" };
+  const inRange = Object.keys(names).map(Number).filter((n) => n >= Number(p.supplyMin) && n <= Number(p.supplyMax));
+  return [...inRange.map((n) => [String(n), `${names[n]} (${n.toLocaleString()})`]), ["custom", "Custom…"]];
 }
 function readForm() {
   const f = $("createForm"), v = Object.fromEntries(new FormData(f));
   return {
     name: String(v.name).trim(), symbol: String(v.symbol).trim(), image: String(v.image).trim(), description: String(v.description).trim(),
     website: String(v.website ?? "").trim(), twitter: String(v.twitter ?? "").trim(), telegram: String(v.telegram ?? "").trim(),
-    supply: String(v.supply).replace(/[,_\s]/g, ""), taxBps: Math.round(Number(v.tax) * 100), targetXnt: String(v.targetXnt ?? ""),
+    supply: String(v.supply === "custom" ? v.supplyCustom ?? "" : v.supply).replace(/[,_\s]/g, ""), taxBps: Math.round(Number(v.tax) * 100), targetXnt: String(v.targetXnt ?? ""),
     autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
   };
 }
