@@ -455,6 +455,20 @@ try {
     for (const [w, c] of file.entries) if ((after.get(w) ?? 0n) > (paid.get(w) ?? 0n)) { assert.equal(after.get(w), BigInt(c)); n++; }
     ok(`crank.ts paid ${n} wallet(s) from the appointed publisher's list; holders paid ${xnt(v2b.holdersPaid)} of ${xnt(v2b.listTotal)} XNT`);
   }
+  console.log("7. The site comes back: it finds the other cranks' transactions on-chain");
+  {
+    await startServer(process.cwd(), cfgNew);
+    const pass0 = (await fresh(`/api/vault/${t1.mint}`)).crank.lastPass?.at;
+    await waitFor("a site crank pass after the restart", async () => (await fresh(`/api/vault/${t1.mint}`)).crank.lastPass?.at !== pass0, 120_000, 1_000);
+    const act = (await fresh(`/api/vault/${t1.mint}`)).activity as { kind: string; by: string | null; signature: string }[];
+    const byRunner = act.filter((a) => a.by === runner.publicKey.toBase58());
+    assert.ok(byRunner.some((a) => a.kind === "payout"), "the payouts crank.ts sent while the site was down are in the activity list");
+    assert.ok(act.some((a) => a.by === newPublisher.publicKey.toBase58() && a.kind === "list"), "the appointed publisher's list is in the activity list");
+    const ev = fs.readFileSync(path.join(dir, "factory", "launches", t1.mint, "state", "events.jsonl"), "utf8");
+    assert.equal(new Set(ev.split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.kind === "payout").map((e) => e.signature)).size,
+      ev.split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.kind === "payout").length, "no payout logged twice");
+    ok(`activity: ${byRunner.length} action(s) by the other wallet's crank.ts, the appointed publisher's list, nothing logged twice`);
+  }
   console.log("\nVault v3 operator-dies drill finished.");
 } catch (e) {
   console.error("\nFAILED:", e instanceof Error ? e.stack ?? e.message : e);

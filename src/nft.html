@@ -179,6 +179,9 @@ table.burns .num { text-align: right; }
 .vault-panel dd .warn { color: var(--warning); font-weight: 600; }
 .vault-panel .vp-run { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; }
 .vault-panel .vp-run .muted { font-size: 12px; flex: 1 1 260px; }
+.vault-panel .vp-activity { margin-top: 12px; }
+.vault-panel .vp-activity h4 { margin: 0 0 6px; font-size: 14px; }
+.vault-panel .vp-activity ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
 .vault-panel ul.vp-log { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
 .vault-panel ul.vp-log .bad { color: var(--critical); }
 .vault-panel ul.vp-log .good { color: var(--lime); }
@@ -403,7 +406,34 @@ function vaultPanel(d, s) {
     ...warns,
     state,
     el("div", { class: "vp-run" }, run, el("span", { class: "muted", text: tr("Anyone can run the vault: your wallet signs the steps that are due (collect, sell, liquidity, creator reward, payouts) and pays their network fees; you earn the crank reward, 1% of the holders' XNT from each sale (up to 0.05 XNT).") })),
-    log, form);
+    log, form, activityList(d, v.activity));
+}
+/** The latest vault actions, whoever sent them (this site, another crank, a visitor): what, when, by whom. */
+function activityList(d, items) {
+  if (!items?.length) return null;
+  const n9 = (x) => fmtUnits(x ?? "0", 9, 6);
+  const what = (a) => ({
+    withdraw: () => tr("Collected the tax"),
+    burn: () => tr("Burned {tokens} tokens", { tokens: n9(a.tokens) }),
+    sell: () => tr("Sold for {xnt} XNT", { xnt: n9(a.xnt) }),
+    "auto-lp": () => tr("Added {xnt} XNT of liquidity", { xnt: n9(a.xnt) }),
+    "creator-reward": () => tr("Creator reward: {reward} {symbol}", { reward: fmtUnits(a.reward ?? "0", a.rewardDecimals ?? 9, 6), symbol: a.rewardSymbol ?? "" }),
+    payout: () => tr("Paid {n} holders {xnt} XNT", { n: a.wallets ?? 0, xnt: n9(a.xnt) }),
+    allocate: () => tr("Published list {epoch}", { epoch: a.epoch ?? "" }),
+    list: () => tr("Published list {epoch}", { epoch: a.epoch ?? "" }),
+    "list-cancelled": () => tr("List {epoch} cancelled", { epoch: a.epoch ?? "" }),
+    publisher: () => tr("Publisher changed"),
+  })[a.kind]?.() ?? a.kind;
+  const at = (s) => relTime(Math.floor(new Date(s).getTime() / 1000));
+  return el("div", { class: "vp-activity" },
+    el("h4", { text: tr("Recent activity") }),
+    el("ul", {}, ...items.map((a) => el("li", {},
+      el("span", { class: "muted", text: at(a.at) }), " ",
+      el("span", { text: what(a) }), " · ",
+      el("span", { class: "muted", text: tr("by") }), " ",
+      a.byLabel ? el("span", { class: "lbl", text: a.byLabel }) : a.by ? link(`${d.explorer}/address/${a.by}`, short(a.by), "mono") : el("span", { text: "?" }), " ",
+      link(`${d.explorer}/tx/${a.signature}`, "↗")))),
+    el("p", { class: "muted", style: "font-size:12px;margin:4px 0 0", text: tr("Every vault transaction counts here, whoever sent it: this site, another crank or a visitor.") }));
 }
 /**
  * A vault token whose vault doesn't exist yet (a curve token after graduation): only the

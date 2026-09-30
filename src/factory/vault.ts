@@ -131,7 +131,9 @@ function saveListFile(l: VaultListFile) {
 }
 
 /** Same line format as src/state.ts logEvent, into this token's own log. */
-function logEvent(mint: string, e: Record<string, unknown>) {
+function logEvent(mint: string, e: Record<string, unknown>) { logEventAt(mint, e); }
+/** logEvent with `at` overridable (a transaction found on-chain later keeps its block time). */
+function logEventAt(mint: string, e: Record<string, unknown>) {
   const dir = stateDirOf(mint);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.appendFileSync(path.join(dir, "events.jsonl"), JSON.stringify({ at: new Date().toISOString(), ...e }) + "\n", { mode: 0o600 });
@@ -254,6 +256,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       listUrl: `/api/vault/${mint}/list`,
       ...(v3Status(v, q) ?? {}),
       crank: { on: !!crank, wallet: crank?.publicKey.toBase58() ?? null, lastPass: status.get(mint) ?? null },
+      activity: activity(mint),
     };
   }
   const listSummary = (l: VaultList | null) => (l ? { epoch: l.epoch, root: l.root, total: l.total, wallets: Object.keys(l.wallets).length,
@@ -311,6 +314,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       // How many more pending lists the guardian (the creator) may cancel in a row (v2); null: no limit / no vault.
       cancelsLeft: v ? cancelsLeft(v) : null,
       ...(v3Status(v, q) ?? {}),
+      activity: v ? activity(mint) : [],
       // Publisher quorum: the newest list's co-signer status and the last rejection.
       ...(q ? { listCheck: listCheck(file?.next ?? file?.active ?? null), listCheckEpoch: (file?.next ?? file?.active)?.epoch ?? null, lastRejected: lastRejected(file) } : {}),
     };
@@ -327,9 +331,12 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
 
   // ---------- event log ----------
   /** Append a confirmed transaction's events to the token's log in the distributor's shapes; `wallet` sent it. */
-  function record(mint: string, v: Vault, signature: string, events: VaultEvent[], wallet: string) {
+  function record(mint: string, v: Vault, signature: string, events: VaultEvent[], wallet: string, at?: string) {
     const payments: [string, string][] = [];
     let fallback = false;
+    // Every entry names the wallet that sent the transaction (for the activity list) and, for a
+    // transaction found on-chain later, when it happened.
+    const logEvent = (m: string, e: Record<string, unknown>) => logEventAt(m, { ...(at ? { at } : {}), ...e, by: wallet });
     for (const e of events) {
       if (e.name === "Collected") {
         const lp = (e.got * BigInt(v.lpBps)) / 10_000n;
@@ -350,6 +357,11 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       } else if (e.name === "Paid" || e.name === "FallbackPaid") {
         payments.push([e.wallet, e.amount.toString()]);
         if (e.name === "FallbackPaid") fallback = true;
+      } else if (e.name === "ListPublished" && wallet !== crank?.publicKey.toBase58()) {
+        // This site logs its own lists as "allocate" when it publishes them; this is someone else's.
+        logEvent(mint, { kind: "list", signature, epoch: e.epoch.toString(), total: e.total.toString(), vault: true });
+      } else if (e.name === "ListCancelled") {
+        logEvent(mint, { kind: "list-cancelled", signature, epoch: e.epoch.toString(), vault: true });
       } else if (e.name === "PublisherChanged") {
         logEvent(mint, { kind: "publisher", signature, old: e.old, new: e.new, byGuardian: e.byGuardian, vault: true });
       }
@@ -364,6 +376,53 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const out = new Set<string>();
     if (!fs.existsSync(f)) return out;
     for (const l of fs.readFileSync(f, "utf8").split("\n")) { const m = /"signature":"([1-9A-HJ-NP-Za-km-z]+)"/.exec(l); if (m) out.add(m[1]); }
+    return out;
+  }
+
+  /**
+   * Add every vault transaction someone else sent (the GitHub crank, scripts/crank.ts, another
+   * publisher) to the token's log, so the stats and the activity list see all of it. Reads the
+   * vault's signatures since the last one indexed; this site's own and visitors' runs are
+   * already logged and skipped.
+   */
+  async function indexChain(mint: string, v: Vault) {
+    const f = path.join(stateDirOf(mint), "vault-index.json");
+    let last: string | undefined;
+    try { last = JSON.parse(fs.readFileSync(f, "utf8")).last; } catch { /* first run */ }
+    const sigs = await conn.getSignaturesForAddress(v.address, { until: last, limit: 50 }, "confirmed");
+    if (!sigs.length) return;
+    const logged = loggedSignatures(mint);
+    for (const s of [...sigs].reverse()) {
+      if (s.err || logged.has(s.signature)) continue;
+      const tx = await conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+      if (!tx?.meta || tx.meta.err) continue;
+      const events = parseEvents(tx.meta.logMessages ?? [], program).filter((e) => e.vault === v.address.toBase58());
+      if (!events.length) continue;
+      const sender = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses }).get(0)!.toBase58();
+      record(mint, v, s.signature, events, sender, s.blockTime ? new Date(s.blockTime * 1000).toISOString() : undefined);
+      logged.add(s.signature);
+    }
+    fs.mkdirSync(stateDirOf(mint), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(f, JSON.stringify({ last: sigs[0].signature }));
+  }
+
+  /** The latest vault actions for the panel: what happened, when, and who sent it. */
+  function activity(mint: string, limit = 12) {
+    const f = path.join(stateDirOf(mint), "events.jsonl");
+    if (!fs.existsSync(f)) return [];
+    const labels: Record<string, string> = { ...(cfg.factory?.taxVault?.labels ?? {}), ...(crank ? { [crank.publicKey.toBase58()]: "99 + Tax" } : {}) };
+    const kinds = new Set(["withdraw", "burn", "sell", "auto-lp", "creator-reward", "payout", "allocate", "list", "list-cancelled", "publisher"]);
+    const out: Record<string, unknown>[] = [];
+    const lines = fs.readFileSync(f, "utf8").trim().split("\n");
+    for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+      let e: Record<string, unknown>;
+      try { e = JSON.parse(lines[i]); } catch { continue; }
+      if (!kinds.has(String(e.kind)) || !e.signature) continue;
+      const by = typeof e.by === "string" ? e.by : e.kind === "allocate" && crank ? crank.publicKey.toBase58() : null;
+      out.push({ at: e.at, kind: e.kind, signature: e.signature, by, byLabel: by ? labels[by] ?? null : null,
+        tokens: e.tokens ?? null, xnt: e.xnt ?? e.total ?? null, wallets: Array.isArray(e.payments) ? e.payments.length : null,
+        epoch: e.epoch ?? null, reward: e.reward ?? null, rewardSymbol: e.rewardSymbol ?? null, rewardDecimals: e.rewardDecimals ?? null });
+    }
     return out;
   }
 
@@ -713,6 +772,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const v = await readVault(t.mint);
     if (!v) { status.set(r.mint, { at: new Date().toISOString(), ok, notes: ["no vault yet (the creator starts it after the LP lock or the curve's graduation)"] }); return; }
     seen.add(r.mint);
+    // Other crankers' transactions into the log first (a failed read only delays it to the next pass).
+    await indexChain(r.mint, v).catch((e) => console.error(`[vault crank] ${r.symbol} index: ${msg(e)}`));
     let vault = v;
     await step("upgrade_vault", async () => { vault = await c.upgrade(t, v, notes); });
     let pool: Awaited<ReturnType<typeof c.poolOf>> | null = null;
