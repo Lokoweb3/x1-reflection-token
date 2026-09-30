@@ -37,6 +37,18 @@ export function sniffImage(b: Buffer): { type: string; ext: string } | null {
 /** Where and how to pin: a Pinata key and its upload API. */
 export interface PinTarget { jwt: string; uploadUrl?: string }
 
+/**
+ * A trustless gateway (content-addressed blocks, open CORS): `?format=raw` returns a
+ * single-block file's bytes, which is what a rewards list is (a raw-codec CID, checked
+ * against its sha256 by parseListFile). ipfs.io and dweb.link now answer scripts with 429
+ * (browsers get a service-worker gateway instead), so this is the working fallback.
+ */
+export const TRUSTLESS_GATEWAY = "https://trustless-gateway.link/ipfs/{cid}?format=raw";
+/** A gateway entry's URL for `cid`: "{cid}" is replaced, else the CID is appended to the base. */
+export const gatewayFor = (g: string, cid: string) => (g.includes("{cid}") ? g.replace("{cid}", cid) : `${g.replace(/\/?$/, "/")}${cid}`);
+/** Tidy a gateway entry: a base gets its trailing "/", a "{cid}" template is kept as it is. */
+export const normGateway = (g: string) => (g.includes("{cid}") ? g : g.replace(/\/?$/, "/"));
+
 /** Upload one file to public IPFS through Pinata (or a stand-in with the same API); returns its content ID. */
 export async function pinFile(t: PinTarget, blob: Blob, filename: string, label: string) {
   const form = new FormData();
@@ -67,7 +79,7 @@ export async function fetchFromGateways(gateways: string[], cid: string, maxByte
   const errors: string[] = [];
   for (const g of gateways) {
     try {
-      const r = await fetch(`${g.replace(/\/?$/, "/")}${cid}`, { signal: AbortSignal.timeout(30_000) });
+      const r = await fetch(gatewayFor(g, cid), { signal: AbortSignal.timeout(30_000) });
       if (!r.ok) { errors.push(`${g}: ${r.status}`); continue; }
       const buf = Buffer.from(await r.arrayBuffer());
       if (buf.length > maxBytes) { errors.push(`${g}: larger than ${maxBytes} bytes`); continue; }

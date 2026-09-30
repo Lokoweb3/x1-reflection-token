@@ -25,6 +25,7 @@ import {
 } from "../taxvault.js";
 import { ACTIVATION_MARGIN_SECS, defaultRules, inFallback, nowSecs, parseListFile, planForCaller, rulesFromJson, type CrankRules, type PayList, type PlannedStep } from "../vault-crank.js";
 import { confirmByPolling, fitComputeLimit } from "../tx.js";
+import { TRUSTLESS_GATEWAY, fetchFromGateways, gatewayFor, normGateway } from "../factory/ipfs.js";
 
 declare const X1Wallet: {
   state: { address: string | null; name: string | null };
@@ -42,7 +43,7 @@ const NETS: Record<Net, { rpc: string; explorer: string }> = {
   testnet: { rpc: "https://rpc.testnet.x1.xyz", explorer: "https://explorer.testnet.x1.xyz" },
   mainnet: { rpc: "https://rpc.mainnet.x1.xyz", explorer: "https://explorer.mainnet.x1.xyz" },
 };
-const GATEWAYS = "https://gateway.pinata.cloud/ipfs/, https://ipfs.io/ipfs/, https://dweb.link/ipfs/";
+const GATEWAYS = `https://gateway.pinata.cloud/ipfs/, ${TRUSTLESS_GATEWAY}, https://ipfs.io/ipfs/`;
 const MICRO_LAMPORTS = 10_000;
 /** Wallets paid per run (one transaction); run again for more. */
 const MAX_PAYS = 6;
@@ -78,7 +79,7 @@ function settings() {
   const net = ($<HTMLSelectElement>("net").value as Net);
   const rpc = $<HTMLInputElement>("rpc").value.trim() || NETS[net].rpc;
   const program = new PublicKey($<HTMLInputElement>("program").value.trim() || TAX_VAULT_PROGRAM_ID.toBase58());
-  const gateways = ($<HTMLInputElement>("gateways").value.trim() || GATEWAYS).split(/[\s,]+/).filter(Boolean).map((g) => g.replace(/\/?$/, "/"));
+  const gateways = ($<HTMLInputElement>("gateways").value.trim() || GATEWAYS).split(/[\s,]+/).filter(Boolean).map(normGateway);
   return { net, rpc, program, gateways, explorer: NETS[net].explorer };
 }
 let conn: Connection;
@@ -96,17 +97,7 @@ interface Loaded {
 }
 let current: Loaded | null = null;
 
-async function fetchCid(cid: string) {
-  const errors: string[] = [];
-  for (const g of S.gateways) {
-    try {
-      const r = await fetch(`${g}${cid}`, { signal: AbortSignal.timeout(30_000) });
-      if (!r.ok) { errors.push(`${new URL(g).host}: HTTP ${r.status}`); continue; }
-      return Buffer.from(await r.arrayBuffer());
-    } catch (e) { errors.push(`${new URL(g).host}: ${msg(e)}`); }
-  }
-  throw new Error(`couldn't fetch ${cid} from IPFS (${errors.join("; ")})`);
-}
+const fetchCid = (cid: string) => fetchFromGateways(S.gateways, cid);
 
 async function load(mint: PublicKey): Promise<Loaded> {
   const addr = PublicKey.findProgramAddressSync([Buffer.from("vault"), mint.toBuffer()], S.program)[0];
@@ -167,7 +158,7 @@ function renderStatus(L: Loaded) {
   // The active list and where it came from.
   const eff = effectiveList(v, now - ACTIVATION_MARGIN_SECS);
   const listRow = !eff ? "no list published yet"
-    : L.list ? el("span", {}, `epoch ${eff.epoch}, ${Object.keys(L.list.wallets).length} wallets, total ${xnt(eff.total)} · `, link(`${S.gateways[0]}${L.list.cid}`, "file on IPFS ↗"), el("span", { class: "good", text: " · matches the on-chain root ✓" }))
+    : L.list ? el("span", {}, `epoch ${eff.epoch}, ${Object.keys(L.list.wallets).length} wallets, total ${xnt(eff.total)} · `, link(gatewayFor(S.gateways[0], L.list.cid), "file on IPFS ↗"), el("span", { class: "good", text: " · matches the on-chain root ✓" }))
     : el("span", { class: "bad", text: `epoch ${eff.epoch}: ${L.listError}` });
   box.querySelector("dl")!.append(row("Rewards list", listRow));
   if (v.pendingEpoch > 0n && now < v.pendingActiveAt) box.querySelector("dl")!.append(row("Next list", `epoch ${v.pendingEpoch} takes over ${when(v.pendingActiveAt)} (the creator can cancel it until then)`));

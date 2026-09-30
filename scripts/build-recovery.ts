@@ -65,12 +65,14 @@ if (argv.includes("--pin")) {
   const sha = crypto.createHash("sha256").update(bytes).digest("hex");
   const cid = await pinFile({ jwt }, new Blob([bytes], { type: "text/html" }), `99tax-recovery-${network}.html`, `99tax recovery page ${network} ${commit}`);
   console.log(`pinned: ${cid}`);
-  for (const g of ["https://gateway.pinata.cloud/ipfs/", "https://ipfs.io/ipfs/", "https://dweb.link/ipfs/"]) {
-    try {
-      const r = await fetch(`${g}${cid}`, { signal: AbortSignal.timeout(60_000) });
-      const got = Buffer.from(await r.arrayBuffer());
-      const ok = r.ok && crypto.createHash("sha256").update(got).digest("hex") === sha;
-      console.log(`  ${ok ? "ok  " : "FAIL"} ${g}${cid}  (HTTP ${r.status}, ${r.headers.get("content-type")})`);
-    } catch (e) { console.log(`  FAIL ${g}${cid}  (${e instanceof Error ? e.message : e})`); }
-  }
+  // Pinata's public gateway won't serve HTML, and ipfs.io / dweb.link answer scripts with 429
+  // (browsers get their service-worker gateway), so check the file is on the IPFS network
+  // through a trustless gateway and print the links that work in a browser.
+  try {
+    const r = await fetch(`https://trustless-gateway.link/ipfs/${cid}?format=car`, { signal: AbortSignal.timeout(90_000) });
+    const n = r.ok ? (await r.arrayBuffer()).byteLength : 0;
+    console.log(`  ${r.ok && n > bytes.length ? "ok  " : "WAIT"} on the IPFS network (trustless-gateway.link: HTTP ${r.status}, ${n} bytes; can take a few minutes after pinning)`);
+  } catch (e) { console.log(`  WAIT trustless-gateway.link: ${e instanceof Error ? e.message : e} (can take a few minutes after pinning)`); }
+  console.log(`open in a browser:\n  https://${cid}.ipfs.dweb.link/\n  https://${cid}.ipfs.inbrowser.link/\n  ipfs://${cid}  (Brave, or a local IPFS node)`);
+  console.log(`sha256 of the file: ${sha} (compare with a local build of the same commit)`);
 }

@@ -36,7 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { DEFAULT_GATEWAY, pinFile } from "../src/factory/ipfs.js";
+import { DEFAULT_GATEWAY, TRUSTLESS_GATEWAY, normGateway, pinFile } from "../src/factory/ipfs.js";
 import { DEFAULT_VERIFY, checkProposal, type VerifyOptions } from "../src/list-verify.js";
 import { SQUADS_PROGRAM_IDS, approveIx, executeIx, memberOf, readProposal, readQuorum, rejectIx } from "../src/squads.js";
 import { TAX_VAULT_PROGRAM_ID, cidFromBytes } from "../src/taxvault.js";
@@ -60,7 +60,7 @@ const network = (flag("network") ?? "testnet") as "testnet" | "mainnet";
 if (network !== "testnet" && network !== "mainnet") usage("--network is testnet or mainnet");
 const squadsProgram = new PublicKey(flag("squads-program") ?? SQUADS_PROGRAM_IDS[network]);
 const taxProgram = new PublicKey(flag("program") ?? TAX_VAULT_PROGRAM_ID);
-const gateways = (flag("ipfs-gateway") ?? `${DEFAULT_GATEWAY},https://ipfs.io/ipfs/`).split(",").filter(Boolean).map((g) => g.replace(/\/?$/, "/"));
+const gateways = (flag("ipfs-gateway") ?? `${DEFAULT_GATEWAY},${TRUSTLESS_GATEWAY},https://ipfs.io/ipfs/`).split(",").filter(Boolean).map(normGateway);
 const pinataJwt = flag("pinata-jwt") ?? process.env.PINATA_JWT ?? "";
 const pinataApi = flag("pinata-api") ?? process.env.PINATA_API_URL;
 const webhook = flag("webhook");

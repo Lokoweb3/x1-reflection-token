@@ -17,7 +17,8 @@
  *                 pins (needs a Pinata key) and publishes rewards lists for the vaults it
  *                 publishes for; a list in fallback ends the fallback
  *   --loop        run again every <seconds> (default: one pass)
- *   --ipfs-gateway where list files are read (default Pinata's gateway, then ipfs.io)
+ *   --ipfs-gateway where list files are read (default Pinata's gateway, then trustless-gateway.link,
+ *                  then ipfs.io); an entry may be a base URL or a template with {cid}
  *   --network     only needed if it can't be told from the pool's XDEX program
  * Env TAX_VAULT_SHORT_WINDOWS=1 matches a program built with `short-windows` (local tests).
  *
@@ -34,7 +35,7 @@ import bs58 from "bs58";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getTokenMetadata, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
 import { XDEX_PROGRAM_IDS, xnt } from "../src/config.js";
-import { DEFAULT_GATEWAY, fetchFromGateways, pinFile } from "../src/factory/ipfs.js";
+import { DEFAULT_GATEWAY, TRUSTLESS_GATEWAY, fetchFromGateways, normGateway, pinFile } from "../src/factory/ipfs.js";
 import {
   TAX_VAULT_PROGRAM_ID, VAULT_DISC, VAULT_VERSION, appointAllowedAt, cidFromBytes, decodeVault, effectiveList, fallbackAt, type Vault, type VaultEvent,
 } from "../src/taxvault.js";
@@ -62,7 +63,7 @@ const mintArgs = (flag("mint") ?? "").split(",").filter(Boolean).map((m) => new 
 if (!has("all") && !mintArgs.length) usage("give --mint <mint> or --all");
 const loopSecs = flag("loop") ? Number(flag("loop")) : 0;
 if (!(loopSecs >= 0)) usage("--loop takes seconds");
-const gateways = (flag("ipfs-gateway") ?? `${DEFAULT_GATEWAY},https://ipfs.io/ipfs/`).split(",").filter(Boolean).map((g) => g.replace(/\/?$/, "/"));
+const gateways = (flag("ipfs-gateway") ?? `${DEFAULT_GATEWAY},${TRUSTLESS_GATEWAY},https://ipfs.io/ipfs/`).split(",").filter(Boolean).map(normGateway);
 const pinataJwt = flag("pinata-jwt") ?? process.env.PINATA_JWT ?? "";
 const pinataApi = flag("pinata-api") ?? process.env.PINATA_API_URL;
 const networkArg = flag("network");

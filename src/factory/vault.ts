@@ -52,7 +52,7 @@ import {
   ACTIVATION_MARGIN_SECS, type CrankRules, type CrankToken, type ListInputsJson, type PayList, dueFrom, inFallback, listFileText, nowSecs, parseListFile, planForCaller,
   readVaultAccount, rulesJson, vaultCrank,
 } from "../vault-crank.js";
-import { fetchFromGateways, gatewayBase, gatewayUrl, ipfsEnabled, pinJson } from "./ipfs.js";
+import { TRUSTLESS_GATEWAY, fetchFromGateways, gatewayBase, gatewayUrl, ipfsEnabled, pinJson } from "./ipfs.js";
 import {
   SQUADS_PROGRAM_IDS, closeIx, executeIx, memberOf, proposalVotes, proposeIxs, quorumJson, readProposal, readQuorum, rejectIx, squadsVaultPda,
   type ProposalStatus as SquadsProposalStatus, type Quorum,
@@ -181,7 +181,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   /** XNT-paired launches only: the vault is TOKEN/wXNT only. */
   const xntPaired = (r: LaunchRecord) => !pairOf(cfg, r).xntPool;
   /** Where list files are read from: this site's gateway, then a public one. */
-  const gateways = [...new Set([gatewayBase(cfg), "https://ipfs.io/ipfs/"])];
+  const gateways = [...new Set([gatewayBase(cfg), TRUSTLESS_GATEWAY, "https://ipfs.io/ipfs/"])];
   const cidUrl = (cid: string | null | undefined) => (cid ? gatewayUrl(cfg, cid) : null);
 
   /** Whether the vault handles this token (its files say so, or a vault was seen on-chain). */
