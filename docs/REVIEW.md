@@ -147,3 +147,15 @@ what was done:
 Also noted by the reviewer, unchanged: testnet `lp_locker` is an older revision than the
 source (documented above); the trust assumptions listed above (single upgrade key,
 off-chain lists, mainnet hot wallet) remain the main risks.
+
+**Post-review verification (Theo, 30 Sep 2026).** Re-checked on `e5ea714`: fixes 1 and 2
+present as described, #3 acknowledged; `npx tsc` clean, `npm test` 87/87. Also ran
+`scripts/local-curve-targets-test.ts` (27/27: in-place upgrade under a live part-bought
+curve, refused targets, the old 20 XNT curve and a new 500 XNT curve graduating exactly with
+the pool opening at the curve's last price, 10,000 XNT pricing), and reproduced all three
+deployed hashes with cargo-build-sbf **3.1.14** as well as 3.1.15. The fixes are off-chain
+only, so the deployed programs and their hashes are unchanged.
+
+**Audit scope:** review the fixed tree, **`e5ea714`** or later (it contains `ce38a49` plus
+the review fixes `5302391` and the README update), and pin cargo-build-sbf 3.1.15 for the
+exact hash check.
