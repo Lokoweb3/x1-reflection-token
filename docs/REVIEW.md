@@ -129,3 +129,21 @@ the "for now" upgradeability note and each vault's publisher).
   reward vault's vesting and claim rules, NFT checks (freezable mints refused).
 
 Questions, or anything that doesn't match the specs: open an issue on the repository.
+
+## Review log
+
+### 2026-09-30: independent review by Theo (Cyberdyne), commit ce38a49
+
+No critical or high findings. Build hashes of all three deployed programs reproduced from
+source; Rust and TypeScript tests and `scripts/local-vault-v3-test.ts` passed. Findings and
+what was done:
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | "Run the vault now" gave `fund_creator` a 240k compute limit; the spec asks for >= 250k (up to ~195k measured when the reward vault is created) | Medium (reported), reliability only | **Fixed**: 260k (`src/vault-crank.ts`, the visitor plan). The site's own crank already asked for 300k and fits it to measured use. |
+| 2 | If the active list's file is unreadable, a new list restarts every wallet from what it was paid on-chain, so amounts allocated but not yet paid are lost to their wallets (they go back into the pot and are re-split over current holders; only rounding dust goes to the largest share) | Low | **Fixed**: the site crank now takes the running totals from its local copy when it matches the on-chain root, else from IPFS (checked against the root), and **refuses to publish** without one (`factory.taxVault.allowListRebuild` overrides). `scripts/crank.ts --publisher` refuses the same way unless `--allow-rebuild`. |
+| 3 | `MAX_CANCELS_IN_ROW = 2`: a compromised publisher can wait out the guardian's two cancels | Info | **Accepted for now, open for the audit.** The limit exists so a hostile creator can't stall payouts forever (the fallback only starts after 30 days without a *published* list). Raising it or letting cancels recharge moves power from the publisher to the creator rather than removing it. The planned fix is removing the single publisher key: a multisig publisher and/or an M-of-N publisher quorum, plus verifiable lists with a watchdog that alerts the guardian during the cancel window. |
+
+Also noted by the reviewer, unchanged: testnet `lp_locker` is an older revision than the
+source (documented above); the trust assumptions listed above (single upgrade key,
+off-chain lists, mainnet hot wallet) remain the main risks.

@@ -85,7 +85,12 @@ export interface Config {
      * v3: each rewards list file is pinned to IPFS (factory.pinataJwt) before it's published;
      * without a Pinata key no new lists are published (payouts of published lists go on).
      */
-    taxVault?: { programId: string; publisherKeypair?: string };
+    /**
+     * allowListRebuild: publish a new list even when the active list's file can't be read
+     * (local copy and IPFS both gone). Each wallet then restarts from what it was paid on-chain
+     * and amounts allocated but not yet paid are re-split over current holders. Off by default.
+     */
+    taxVault?: { programId: string; publisherKeypair?: string; allowListRebuild?: boolean };
     /**
      * Tokens a launch may pair with instead of XNT (XNT is always offered and the default).
      * `xntPool` is that token's deep XNT pool on XDEX: the distributor swaps it to XNT there

@@ -479,7 +479,7 @@ export const inFallback = (v: Vault, now = nowSecs()) => fallbackActive(v, now -
 /**
  * A visitor's steps after the first can't be simulated (each counts on the one before
  * landing), so their compute limits are fixed: measured use on testnet plus a margin
- * (X1 bills the requested units). Sell ~88k, fund_creator up to ~194k, collect ~32k-45k,
+ * (X1 bills the requested units). Sell ~88k, fund_creator up to ~194k (the spec asks for >= 250k), collect ~32k-45k,
  * pay / pay_fallback ~16k-20k per wallet, upgrade ~6k.
  */
 export interface PlannedStep { kind: "upgrade" | "collect" | "sell" | "add_liquidity" | "fund_creator" | "pay" | "pay_fallback"; label: string; ixs: TransactionInstruction[]; units: number }
@@ -550,7 +550,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
     if (q && q.minimumOut > 0n) {
       const info = rewardTokenInfo(env.network, v.rewardMint);
       steps.push({ kind: "fund_creator", label: `Pay the creator reward (${xnt(q.amountIn)} → ${info?.symbol ?? "reward token"})`,
-        ixs: [fundCreatorIx(program, caller, t.mint, v.creatorNft, rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint))], units: 240_000 });
+        ixs: [fundCreatorIx(program, caller, t.mint, v.creatorNft, rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint))], units: 260_000 });
     }
   }
   // 5. pay / pay_fallback a few wallets. Only wallets that already have a PaidRecord: a

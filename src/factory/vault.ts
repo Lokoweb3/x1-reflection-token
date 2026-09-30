@@ -413,8 +413,25 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     if (!rulesOf(r)) { notes.push("no per-launch config yet"); return; }
     if (!v.publisher.equals(crank!.publicKey)) { notes.push(`lists are published by ${v.publisher.toBase58().slice(0, 4)}… (not this site)`); return; }
     if (v.version < VAULT_VERSION) { notes.push("new lists wait for the vault upgrade"); return; }
+    // Every wallet's running total from the active list: the local copy when it matches the
+    // on-chain root, else the IPFS file (checked against the root). Without either, a new list
+    // would drop what was allocated but not yet paid, so don't publish unless the operator allows it.
+    let prev: Record<string, string> | null = {};
+    if (v.listEpoch > 0n) {
+      const root = Buffer.from(v.listRoot).toString("hex");
+      const local = file.active && file.active.root === root ? file.active.wallets : null;
+      const got = local ? null : await listByCid(v, v.listCid, v.listRoot).catch(() => null);
+      prev = local ?? (got ? Object.fromEntries(Object.entries(got.wallets).map(([w, c]) => [w, String(c)])) : null);
+      if (!prev) {
+        if (!cfg.factory?.taxVault?.allowListRebuild) {
+          notes.push(`the active list ${v.listEpoch}'s file can't be read (local copy or IPFS): not publishing a new list, which would drop amounts allocated but not yet paid (factory.taxVault.allowListRebuild overrides)`);
+          return;
+        }
+        notes.push(`the active list's file can't be read: rebuilding from what each wallet was paid (allowListRebuild)`);
+      }
+    }
     // In fallback, publish even a small list: it ends the fallback (the site is alive).
-    const next = await core!.nextList(t, v, file.active?.wallets ?? {}, notes, inFallback(v));
+    const next = await core!.nextList(t, v, prev, notes, inFallback(v));
     if (!next) return;
     file.next = {
       epoch: next.epoch.toString(), root: next.root.toString("hex"), total: next.total.toString(), wallets: next.wallets, builtAt: new Date().toISOString(),

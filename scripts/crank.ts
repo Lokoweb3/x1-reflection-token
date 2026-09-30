@@ -11,6 +11,8 @@
  *                 reward (1% of the holders' XNT from each sale, up to 0.05 XNT)
  *   --all         every vault of the program (--program, default the testnet tax_vault
  *                 D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW)
+ *   --allow-rebuild  with --publisher: publish even when the active list's file can't be read
+ *                 (every wallet restarts from what it was paid; unpaid allocations are re-split)
  *   --publisher   the vault's publisher key (e.g. one the creator appointed): also builds,
  *                 pins (needs a Pinata key) and publishes rewards lists for the vaults it
  *                 publishes for; a list in fallback ends the fallback
@@ -180,7 +182,14 @@ async function crankVault(mint: PublicKey) {
     }
     if (v.pendingEpoch > 0n) { notes.push(`list ${v.pendingEpoch} is pending until ${new Date(v.pendingActiveAt * 1000).toISOString()}`); return; }
     const cur = v.listEpoch > 0n ? await listFile(v, v.listCid, v.listRoot).catch((e) => { log(`  active list: ${msg(e)}`); return null; }) : null;
-    if (v.listEpoch > 0n && !cur) log("  the active list's file isn't readable: the new list starts every wallet from what it was paid on-chain");
+    if (v.listEpoch > 0n && !cur) {
+      // Rebuilding would drop what the lost list allocated but didn't pay yet: only on request.
+      if (!has("allow-rebuild")) {
+        notes.push("the active list's file isn't readable (try another --ipfs-gateway); not publishing a new list, which would drop amounts allocated but not yet paid (--allow-rebuild overrides)");
+        return;
+      }
+      log("  the active list's file isn't readable: --allow-rebuild, so the new list starts every wallet from what it was paid on-chain");
+    }
     const fallback = inFallback(v);
     const pc = vaultCrank({ ...env, signer: publisher });
     const next = await pc.nextList(t, v, v.listEpoch > 0n ? cur?.wallets ?? null : {}, notes, fallback);
