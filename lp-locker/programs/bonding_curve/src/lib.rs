@@ -66,6 +66,10 @@ pub const CURVE_BPS: u64 = 8000;
 /// Graduation targets a creator may pick (whole XNT that goes into the pool). Each curve
 /// stores its own in `target_xnt` (lamports); curves made before this list existed keep
 /// their stored 20 XNT.
+/// The testnet build also offers 10 and 20 XNT, so a curve can be graduated with faucet XNT.
+#[cfg(feature = "testnet")]
+pub const TARGETS_XNT_WHOLE: [u64; 7] = [10, 20, 500, 1_000, 3_000, 5_000, 10_000];
+#[cfg(not(feature = "testnet"))]
 pub const TARGETS_XNT_WHOLE: [u64; 5] = [500, 1_000, 3_000, 5_000, 10_000];
 /// Paid by the creator in `create_curve`: XDEX's pool fee, rents and the reward. The rest
 /// goes back to the creator when the curve finishes.
@@ -1224,8 +1228,12 @@ mod tests {
         for w in TARGETS_XNT_WHOLE {
             assert_eq!(target_lamports(w).unwrap(), w * XNT);
         }
-        assert_eq!(TARGETS_XNT_WHOLE, [500, 1_000, 3_000, 5_000, 10_000]);
-        for w in [0, 20, 499, 501, 20_000, u64::MAX] {
+        #[cfg(feature = "testnet")]
+        let (allowed, refused): (&[u64], &[u64]) = (&[10, 20, 500, 1_000, 3_000, 5_000, 10_000], &[0, 9, 11, 19, 21, 499, 501, 20_000, u64::MAX]);
+        #[cfg(not(feature = "testnet"))]
+        let (allowed, refused): (&[u64], &[u64]) = (&[500, 1_000, 3_000, 5_000, 10_000], &[0, 10, 20, 499, 501, 20_000, u64::MAX]);
+        assert_eq!(&TARGETS_XNT_WHOLE[..], allowed);
+        for &w in refused {
             assert_eq!(code(target_lamports(w).unwrap_err()), u32::from(CurveError::BadTarget), "target {w}");
         }
         // Appended last: every earlier error keeps its code.

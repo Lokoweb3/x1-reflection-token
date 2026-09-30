@@ -238,4 +238,10 @@ test("the graduation target: default 500, only the allowed values", () => {
   for (const bad of [0, 20, 499, 501, 20_000, -500, "500.5", "1e3", "abc", "0x1f4", true]) {
     assert.throws(() => parseTarget(bad), /Graduation target must be 500, 1,000, 3,000, 5,000 or 10,000 XNT/, `should reject ${String(bad)}`);
   }
+  // Testnet also takes 10 and 20 XNT (curves you can graduate with faucet XNT); mainnet doesn't.
+  assert.equal(parseTarget(10, "testnet"), 10n);
+  assert.equal(parseTarget("20", "testnet"), 20n);
+  assert.equal(parseTarget("", "testnet"), 500n, "the default stays 500");
+  for (const bad of [0, 9, 11, 19, 21, 499]) assert.throws(() => parseTarget(bad, "testnet"), /Graduation target must be 10, 20, 500, 1,000, 3,000, 5,000 or 10,000 XNT/);
+  assert.throws(() => parseTarget(10, "mainnet"));
 });

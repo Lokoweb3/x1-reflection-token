@@ -401,7 +401,7 @@ is held only during each cycle), and not while the waiting tax is dust.
 ## Bonding curve (testnet)
 
 The **Curve** tab launches a token with no starting liquidity. Buyers fill a price curve
-with XNT; when the curve's target is raised (**500, 1,000, 3,000, 5,000 or 10,000 XNT**, the
+with XNT; when the curve's target is raised (**500, 1,000, 3,000, 5,000 or 10,000 XNT**, plus **10 or 20 XNT on testnet** for trying a full graduation with faucet XNT; the
 creator's pick, 500 by default; curves made before targets were selectable keep 20 XNT) the
 curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of the supply, locks all the LP forever through `lp_locker`
 (the NFT goes to the creator), and delivers every buyer's tokens to their wallet.

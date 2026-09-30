@@ -144,10 +144,11 @@ async function waitFor(what: string, test: () => Promise<boolean>, ms = 300_000,
   throw new Error(`timed out waiting for: ${what}`);
 }
 const ata = (mint: string, owner: PublicKey) => getAssociatedTokenAddressSync(new PublicKey(mint), owner, false, TOKEN_2022_PROGRAM_ID);
-/** XDEX trades by the buyers: each buys with 2 XNT and sells a third of its tokens (both pay the tax). */
+/** XDEX trades by the buyers: each buys with 2 XNT (5% of a small CURVE_TARGET pool) and sells a third of its tokens (both pay the tax). */
+const TRADE_LAMPORTS = process.env.CURVE_TARGET && Number(process.env.CURVE_TARGET) < 40 ? BigInt(Number(process.env.CURVE_TARGET) * 5e7) : 2n * 10n ** 9n;
 async function trade(mint: string, pool: string) {
   for (const t of buyers) {
-    const q = await quoteBuy(conn, XDEX, new PublicKey(pool), new PublicKey(mint), 2n * 10n ** 9n, 500);
+    const q = await quoteBuy(conn, XDEX, new PublicKey(pool), new PublicKey(mint), TRADE_LAMPORTS, 500, 1000);
     await sendAndConfirmTransaction(conn, new Transaction().add(...(await buildBuy(conn, XDEX, t, q))), [t]);
   }
   for (const t of buyers.slice(0, 2)) {
@@ -173,8 +174,10 @@ try {
   const info = await api("/api/info");
   assert.equal(info.taxVault?.launches, true, "the site makes vault launches");
   ok(`site: curve ${JSON.stringify(info.curve)}, taxVault ${JSON.stringify(info.taxVault)}`);
+  // CURVE_TARGET picks the graduation target (whole XNT; the site's default 500 when unset).
+  const target = process.env.CURVE_TARGET ?? "";
   const params = { name: "Vault Curve", symbol: "VCRV", image: "", description: "curve + tax vault rehearsal", supply: "1000000000", taxBps: 500,
-    autoLpBps: 2500, burnBps: 2500, creator: creator.publicKey.toBase58() };
+    autoLpBps: 2500, burnBps: 2500, creator: creator.publicKey.toBase58(), ...(target ? { targetXnt: target } : {}) };
   const { mint } = await step("/api/curve/create", params, creator);
   const auth = vaultAuthPda(TAX_VAULT, new PublicKey(mint));
   const m = await getMint(conn, new PublicKey(mint), "confirmed", TOKEN_2022_PROGRAM_ID);
@@ -195,7 +198,7 @@ try {
     ok(`buyer ${i} bought with ${amt} XNT`);
   }
   await step("/api/curve/buy", { wallet: buyers[2].publicKey.toBase58(), mint, xnt: "600" }, buyers[2], { curveMint: mint });
-  ok("buyer 2's buy completes the curve (the default 500 XNT target)");
+  ok(`buyer 2's buy completes the curve (${target ? `the ${target} XNT target` : "the default 500 XNT target"})`);
   await waitFor("graduated, delivered and registered", async () => {
     const v = await api(`/api/curve/${mint}`);
     rec = JSON.parse(fs.readFileSync(path.join(launchDir, "launch.json"), "utf8"));

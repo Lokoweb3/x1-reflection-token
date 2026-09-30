@@ -24,7 +24,10 @@ export const FEE_BPS = 100n;
 export const CURVE_BPS = 8000n;
 /** Graduation targets a creator may pick, whole XNT (TARGETS_XNT_WHOLE); each curve stores its own. */
 export const TARGETS_XNT = [500n, 1_000n, 3_000n, 5_000n, 10_000n] as const;
+/** The testnet program also takes 10 and 20 XNT (curves you can graduate with faucet XNT). */
+export const TESTNET_TARGETS_XNT = [10n, 20n, ...TARGETS_XNT] as const;
 export const DEFAULT_TARGET_XNT = 500n;
+export const targetsFor = (network: "mainnet" | "testnet"): readonly bigint[] => (network === "testnet" ? TESTNET_TARGETS_XNT : TARGETS_XNT);
 export const GRADUATION_DEPOSIT = 300_000_000n;
 export const GRADUATE_REWARD = 10_000_000n;
 export const SNIPE_WINDOW_SECS = 120;
@@ -143,12 +146,13 @@ export function transferFee(amount: bigint, taxBps: bigint | number, maxFee = U6
  * A create request's graduation target (whole XNT): one of TARGETS_XNT, DEFAULT_TARGET_XNT
  * when left out. The program refuses anything else (BadTarget).
  */
-export function parseTarget(raw: unknown): bigint {
+export function parseTarget(raw: unknown, network: "mainnet" | "testnet" = "mainnet"): bigint {
   const text = raw === undefined || raw === null ? "" : String(raw).trim().replace(/[,_\s]/g, "");
   if (text === "") return DEFAULT_TARGET_XNT;
   const v = /^\d{1,6}$/.test(text) ? BigInt(text) : -1n;
-  if (!TARGETS_XNT.some((t) => t === v)) {
-    const names = TARGETS_XNT.map((t) => t.toLocaleString("en-US"));
+  const allowed = targetsFor(network);
+  if (!allowed.some((t) => t === v)) {
+    const names = allowed.map((t) => t.toLocaleString("en-US"));
     throw new Error(`Graduation target must be ${names.slice(0, -1).join(", ")} or ${names.at(-1)} XNT.`);
   }
   return v;

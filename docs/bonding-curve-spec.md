@@ -18,7 +18,8 @@ this file first and say so.
   9 decimals.
 - 80% of the supply is sold on the curve; the rest seeds the XDEX pool at graduation.
 - Graduation target: **chosen by the creator per curve** from 500 (the site's default),
-  1,000, 3,000, 5,000 or 10,000 XNT; that XNT goes into the pool. It is stored in the
+  1,000, 3,000, 5,000 or 10,000 XNT (the `testnet` build also takes 10 and 20 XNT, so a
+  curve can be graduated with faucet XNT); that XNT goes into the pool. It is stored in the
   curve (`target_xnt`). Curves created before targets were selectable (the first
   testnet program, fixed 20 XNT) keep their stored 20 XNT through the upgrade: buying,
   graduation and delivery read the target from the account.

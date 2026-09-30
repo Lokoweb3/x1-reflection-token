@@ -44,7 +44,7 @@ import { poolAuthority } from "./xdex.js";
 import { unpackMint } from "@solana/spl-token";
 import { buildCurveStep, validateCurveParams } from "./factory/launch.js";
 import { curveService } from "./factory/curve.js";
-import { DEFAULT_TARGET_XNT, TARGETS_XNT } from "./curve.js";
+import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { buildVaultStep, isVaultLaunch } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
@@ -523,7 +523,7 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
   if (url === "/api/curve/create") {
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
     rateLimit("launch", ip, "launches started");
-    const p = validateCurveParams(body);
+    const p = validateCurveParams(body, cfg.network);
     const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program);
     c.invalidate();
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
@@ -734,7 +734,7 @@ async function getView(url: URL) {
       lockForeverOnly: !!f!.lockForeverOnly,
       launchesPaused: f!.launchesPaused ? (f!.launchesPaused.message ?? "New launches are paused for a short while while we upgrade how the tax is held. Launches already started can still be finished below.") : null,
       // Bonding curve (false when off): the graduation targets a creator may pick, whole XNT.
-      curve: curves ? { targetsXnt: TARGETS_XNT.map(String), defaultTargetXnt: String(DEFAULT_TARGET_XNT) } : false,
+      curve: curves ? { targetsXnt: targetsFor(cfg.network).map(String), defaultTargetXnt: String(DEFAULT_TARGET_XNT) } : false,
       creatorRewardMint: CREATOR_REWARD[cfg.network].rewardMint ?? null, creatorRewardPool: CREATOR_REWARD[cfg.network].swapPool ?? null,
       // Pair tokens a launch may choose besides XNT, with their price (XNT per whole token) for the form.
       quoteTokens: await Promise.all(quoteTokens.map(async (q) => ({
