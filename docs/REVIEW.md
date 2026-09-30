@@ -28,7 +28,7 @@ Hashes are sha256 of `solana program dump`, taken 30 Sep 2026.
 | Network | Program | Address | Bytes | sha256 | Source commit · build flags |
 |---|---|---|---|---|---|
 | testnet | `tax_vault` v3 | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 590,376 | `4d334f40a99974d515169a9d43bb5d6f9705c50c7c5763973638d28293605ea5` | `7f2097d` (program source unchanged since) · `--features testnet` |
-| testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,840 | `dba5c4564ea50077c5ee241313b57b37a72e3f565298a16d50a31c10279d6e8c` | `bfd6abe` (adds 10 / 20 XNT targets on testnet; deployed 30 Sep 2026) · `--features testnet` |
+| testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,184 (account 478,840, zero-padded) | `6fa319a082599f892b9db77565549b8878cafcb39f7e5d949a9bfdae0bdc47dc` (of the first 478,184 bytes) | `b8150df` (testnet-only: 10 / 20 XNT targets, creator may buy; deployed 30 Sep 2026) · `--features testnet` |
 | mainnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 554,776 | `f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b` | `fd136f3` (unchanged since) · no features |
 | testnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 474,704 | `d1749193963f6560c6428b8697917511d1e1dff0b94028fff3c36379bb6776f4` | **not reproduced**: deployed from a revision before `fd136f3` (before Holder Passes); no build from the current source matches it |
 
@@ -55,6 +55,10 @@ sha256sum /tmp/tv/tax_vault.so /tmp/bc/bonding_curve.so /tmp/lpm/lp_locker.so
 solana program dump D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW /tmp/tv-chain.so --url https://rpc.testnet.x1.xyz
 sha256sum /tmp/tv-chain.so    # same hash as the local build
 ```
+
+When a program was upgraded with a build smaller than its account, the dump is
+zero-padded to the account size: compare `head -c <build size> dump.so | sha256sum` and
+check the rest is all zeros.
 
 The `testnet` feature switches network constants (XDEX program and fee tier, reward token
 XNM/USDC.X and its pool). `short-windows` shortens time windows for local tests only and
