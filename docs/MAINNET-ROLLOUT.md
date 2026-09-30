@@ -77,7 +77,9 @@ Each phase ends with a check; stop there if it fails. Launches stay paused until
 1. New publisher key for mainnet (the site's crank signs with it; it can't move tax):
    `sudo -u reflect solana-keygen new --no-bip39-passphrase -o /opt/x1-reflection-token/mainnet/publisher.keypair.json`
    (or the node equivalent if the CLI isn't on the VM), then send it ~0.1 XNT.
-2. `git pull`, then in `mainnet/config.json` under `factory`: add
+2. `sudo -u reflect git pull --ff-only && sudo -u reflect npm install --no-audit --no-fund`
+   (always install after a pull: a new dependency missing on the VM stops the sites from
+   starting), then in `mainnet/config.json` under `factory`: add
    `"taxVault": { "programId": "D9jt…", "publisherKeypair": "mainnet/publisher.keypair.json", "mainnet": true, "beta": true }`
    (`beta` only for path B); remove `quoteTokens` (P8). Keep `launchesPaused`.
 3. `systemctl restart reflect-mainnet-factory`. Check `/api/info` shows the vault and the
