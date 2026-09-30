@@ -51,5 +51,10 @@ jobs:
         run: |
           umask 077
           printf '%s' "$CRANK_KEYPAIR" > "$RUNNER_TEMP/crank.json"
-          npx tsx scripts/crank.ts --rpc "$RPC" --keypair "$RUNNER_TEMP/crank.json" --program "$PROGRAM" --all
+          set -o pipefail
+          # The pass's report also goes to the run's summary page (Actions -> this run).
+          { echo '### Crank pass'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          npx tsx scripts/crank.ts --rpc "$RPC" --keypair "$RUNNER_TEMP/crank.json" --program "$PROGRAM" --all 2>&1 \
+            | grep -v DeprecationWarning | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
           rm -f "$RUNNER_TEMP/crank.json"
