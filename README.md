@@ -505,7 +505,13 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
   creator reward and payouts (`pay`, or `pay_fallback` in fallback).
 - **New lists need a publisher.** If the publisher has published nothing for 7 days, the
   token's creator (its guardian) can appoint a new one, on the NFT page ("Appoint a new
-  publisher", if a copy of the site is up) or by sending `appoint_publisher` themselves.
+  publisher", if a copy of the site is up) or without any site:
+
+  ```bash
+  npx tsx scripts/appoint-publisher.ts --rpc <url> --keypair <creator wallet.json> --mint <mint> --new-publisher <address>   # dry run
+  # add --execute to send it (the program refuses it before the 7 days are up)
+  ```
+
   The new publisher runs the same script with its key and a Pinata key:
 
   ```bash
