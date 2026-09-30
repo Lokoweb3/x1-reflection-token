@@ -332,6 +332,8 @@ let vaultLog = null; // what the last "Run the vault now" did: { mint, lines: [[
  * fallback payouts start), "Run the vault now" for any wallet, and the creator's
  * "Appoint a new publisher" form.
  */
+/** The site's "Tax Vault beta" notice (factory.taxVault.beta), shown in every vault panel. */
+let vaultBeta = false;
 function vaultPanel(d, s) {
   const v = s.vault;
   if (!v) return null;
@@ -374,6 +376,7 @@ function vaultPanel(d, s) {
   // Lists decide who gets the holders' XNT: flag a publisher that isn't this site's key (a
   // creator-chosen one, or one appointed after the site went quiet) and settings that differ.
   const warns = [
+    vaultBeta ? tr("Tax Vault beta: the vault program has been independently reviewed and tested but hasn't had a formal audit yet. Launch and hold at your own risk.") : null,
     v.mismatch,
     v.publisher && !v.sitePublishes ? tr("Rewards lists for this token are published by a wallet that isn't 99 + Tax's, so holder payouts depend on that wallet.") : null,
   ].filter(Boolean).map((t) => el("p", { class: "vp-state warn", text: `⚠ ${t}` }));
@@ -915,7 +918,7 @@ $("search").addEventListener("submit", (ev) => {
 const fromPath = () => { const m = location.pathname.match(/^\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/); if (m) { $("mintInput").value = m[1]; show(m[1]); } else showGallery(); };
 window.addEventListener("popstate", fromPath);
 fromPath();
-api("/api/info").then((i) => { if (i.lockerUpgradeable) $("lockerNote").hidden = false; }).catch(() => {});
+api("/api/info").then((i) => { if (i.lockerUpgradeable) $("lockerNote").hidden = false; vaultBeta = i.taxVault?.beta === true; }).catch(() => {});
 </script>
 </body>
 </html>

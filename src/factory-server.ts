@@ -746,7 +746,7 @@ async function getView(url: URL) {
       // New XNT launches hand their tax to the Tax Vault program (no distributor gas to pre-fund).
       // Their creator reward is swapped on-chain into the network's reward token (XNM on testnet).
       ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR),
-        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58() } } : {}),
+        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true } } : {}),
     };
   }
   if (url.pathname === "/api/launches") {

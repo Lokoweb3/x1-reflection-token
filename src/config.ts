@@ -99,6 +99,10 @@ export interface Config {
      */
     taxVault?: {
       programId: string; publisherKeypair?: string; allowListRebuild?: boolean;
+      /** Vault launches are testnet-only unless this is set (the mainnet rollout switch). */
+      mainnet?: boolean;
+      /** Show the "Tax Vault beta: not formally audited yet" notice on the launch form and vault panels. */
+      beta?: boolean;
       quorum?: { multisig: string; programId?: string; labels?: Record<string, string> };
     };
     /**

@@ -1222,4 +1222,7 @@ I18N.add("es", {
   "Pool too shallow to swap within the price-impact limit": "El pool es demasiado poco profundo para intercambiar dentro del límite de impacto en el precio",
   "Swap amount too small": "Cantidad de intercambio demasiado pequeña",
   "Temporary account {address} exists from an earlier attempt; close it first.": "La cuenta temporal {address} existe por un intento anterior; ciérrala primero.",
+  "Tax Vault beta: the vault program has been independently reviewed and tested but hasn't had a formal audit yet. Launch and hold at your own risk.": "Tax Vault beta: el programa Tax Vault fue revisado de forma independiente y probado, pero aún no tiene una auditoría formal. Lanza y mantén bajo tu propio riesgo.",
+  "Tax Vault beta:": "Tax Vault beta:",
+  "the vault program has been independently reviewed and tested but hasn't had a formal audit yet. Launch and hold at your own risk.": "el programa Tax Vault fue revisado de forma independiente y probado, pero aún no tiene una auditoría formal. Lanza y mantén bajo tu propio riesgo.",
 });

@@ -88,6 +88,10 @@ test("vault curve launches only on testnet with a vault program and a publisher 
   assert.equal(vaultLaunches(config(true)), true);
   assert.equal(vaultLaunches(config(false)), false);
   assert.equal(vaultLaunches(config(true, "mainnet")), false);
+  // The mainnet rollout switch: vault launches on mainnet only once factory.taxVault.mainnet is set.
+  const main = config(true, "mainnet");
+  main.factory!.taxVault = { ...main.factory!.taxVault!, mainnet: true };
+  assert.equal(vaultLaunches(main), true);
 });
 
 test("with the Tax Vault set up, a curve token's tax is withdrawable only by the vault's auth PDA; no distributor key", async () => {

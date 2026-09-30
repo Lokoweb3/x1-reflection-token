@@ -35,8 +35,8 @@ cost: code that hasn't had a formal audit holds real funds. Either way, book the
 
 | # | What | Who | Status |
 |---|---|---|---|
-| P1 | Allow vault launches on mainnet behind a config switch (today `vaultLaunches()` is testnet-only) | dev | to do |
-| P2 | "Unaudited beta" notice on vault tokens and the launch form when that switch is on (path B) | dev | to do |
+| P1 | Allow vault launches on mainnet behind a config switch: `factory.taxVault.mainnet: true` | dev | **done** |
+| P2 | "Unaudited beta" notice on the launch form and every vault panel: `factory.taxVault.beta: true` (path B; English and Spanish) | dev | **done** |
 | P3 | Mainnet rehearsal on a local validator cloning **mainnet** XDEX, `lp_locker`, USDC.X and its XNT pool (`CAJe…`) and Test's accounts: deploy the mainnet build, migrate Test, full crank cycle with the **USDC.X** creator reward, holder payout, a new launch on the vault | dev | to do |
 | P4 | Squads multisig on mainnet (`multisig.mainnet.x1.xyz`), e.g. 2-of-3 (your main wallet, a second device or hardware wallet, a trusted third party); note its **vault address** | owner | to do |
 | P5 | Trial one upgrade through a Squads multisig **on testnet** first, so the process is known before it guards mainnet | owner + dev | to do |
@@ -78,8 +78,8 @@ Each phase ends with a check; stop there if it fails. Launches stay paused until
    `sudo -u reflect solana-keygen new --no-bip39-passphrase -o /opt/x1-reflection-token/mainnet/publisher.keypair.json`
    (or the node equivalent if the CLI isn't on the VM), then send it ~0.1 XNT.
 2. `git pull`, then in `mainnet/config.json` under `factory`: add
-   `"taxVault": { "programId": "D9jt…", "publisherKeypair": "mainnet/publisher.keypair.json" }`
-   plus the P1 switch; remove `quoteTokens` (P8). Keep `launchesPaused`.
+   `"taxVault": { "programId": "D9jt…", "publisherKeypair": "mainnet/publisher.keypair.json", "mainnet": true, "beta": true }`
+   (`beta` only for path B); remove `quoteTokens` (P8). Keep `launchesPaused`.
 3. `systemctl restart reflect-mainnet-factory`. Check `/api/info` shows the vault and the
    reward token **USDC.X**, and launches still paused.
 

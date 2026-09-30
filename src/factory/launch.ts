@@ -158,10 +158,13 @@ export interface LaunchRecord extends LaunchParams {
   taxVault?: boolean;
 }
 
-/** New XNT-paired launches use the Tax Vault: testnet only, and only with a program and a publisher key to create the vault. */
+/**
+ * New XNT-paired launches use the Tax Vault when there's a program and a publisher key to
+ * create the vault: on testnet always, on mainnet only once `factory.taxVault.mainnet` is set.
+ */
 export function vaultLaunches(cfg: Config) {
   const tv = cfg.factory?.taxVault;
-  return cfg.network === "testnet" && !!tv?.programId && !!tv.publisherKeypair;
+  return (cfg.network === "testnet" || tv?.mainnet === true) && !!tv?.programId && !!tv.publisherKeypair;
 }
 /** Whether a launch with this pair would be a vault launch. */
 export const isVaultLaunch = (cfg: Config, pair: Pair) => vaultLaunches(cfg) && !pair.xntPool;
