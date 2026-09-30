@@ -512,8 +512,12 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
   PINATA_JWT=<key> npx tsx scripts/crank.ts --rpc <url> --keypair <wallet.json> --publisher <publisher.json> --all --loop 300
   ```
 
-  Its lists use the same eligibility rules (pinned with each list), start every wallet
-  from what it was already paid, and end any fallback.
+  Its lists use the same eligibility rules (pinned with each list), build on the active
+  list's running totals (read from IPFS and checked against the on-chain root, so nobody
+  loses an amount allocated but not yet paid), and end any fallback. If that file can't be
+  read from any gateway, it won't publish unless you pass `--allow-rebuild` (every wallet
+  then restarts from what it was paid on-chain; the site's equivalent is
+  `factory.taxVault.allowListRebuild`).
 - **If nobody publishes for 30 days**, holders are still paid: anyone running the crank
   pays each wallet of the last list its share of everything funded since (`pay_fallback`).
   New holders who bought after that list aren't in it until a publisher publishes again.
@@ -616,6 +620,11 @@ limit to what it uses (X1 bills requested units), which cut fees ~5–10×. The
 5,000, 10,000 XNT) since 30 Sep 2026, and supply presets on both launch forms. Also live:
 RFLT and CUP's earlier distributor cycles, a creator's collect-fees and metadata updates
 with a real wallet, and the faucet.
+
+**Reviewed:** an independent pre-audit review (Theo, 30 Sep 2026, commit `ce38a49`)
+reproduced the deployed build hashes and found no critical or high issues; two findings
+were fixed in `5302391` and one is open for the audit. See the review log in
+[docs/REVIEW.md](docs/REVIEW.md#review-log).
 
 **Rehearsed on local copies of the chain:** every launch path (XNT, JACK, bonding curve,
 bonding curve on the Tax Vault),
