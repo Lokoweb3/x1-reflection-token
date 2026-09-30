@@ -504,7 +504,9 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
 
   Open it through a subdomain gateway (`https://<cid>.ipfs.dweb.link/` or
   `https://<cid>.ipfs.inbrowser.link/`), `ipfs://<cid>` in Brave or a local node, or any web
-  host: Pinata's public gateway refuses HTML. Anyone can rebuild it and compare:
+  host: Pinata's public gateway refuses HTML. Some antivirus and browser security tools
+  block IPFS gateways, so the site also serves the same bytes at `/recovery`
+  (e.g. https://99tax-testnet.vercel.app/recovery), only if they match the pinned sha256. Anyone can rebuild it and compare:
   `git checkout 5d162a7 && npx tsx scripts/build-recovery.ts --network testnet` prints the
   same sha256 (`src/recovery/pinned.ts` records each pinned copy). Save a copy: it works
   opened from disk too.

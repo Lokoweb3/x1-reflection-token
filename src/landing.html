@@ -502,7 +502,7 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
     renderContracts(info, net);
     $("netLabel").textContent = tr("Live on {net}", { net });
     $("footNet").textContent = net;
-    if (info.taxVault?.recoveryUrl) { $("footRecoveryLink").href = info.taxVault.recoveryUrl; $("footRecovery").hidden = false; }
+    if (info.taxVault?.recoveryUrl) { $("footRecoveryLink").href = info.taxVault.recoveryPath ?? info.taxVault.recoveryUrl; $("footRecovery").hidden = false; }
     const fee = Number(info.feeAmount), feeSym = info.feeSymbol;
     $("feeLede").textContent = fee === 0.99 && feeSym === "USDC" ? tr("99¢ + tax") : tr("{fee} {feeSym} + tax", { fee: fmt(fee), feeSym });
     const rows = [

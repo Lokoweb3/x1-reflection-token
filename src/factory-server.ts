@@ -20,7 +20,7 @@ import path from "node:path";
 import { PublicKey, Transaction } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
-import { recoveryUrl } from "./recovery/pinned.js";
+import { pinnedRecoveryFile, recoveryUrl } from "./recovery/pinned.js";
 import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
@@ -747,7 +747,7 @@ async function getView(url: URL) {
       // New XNT launches hand their tax to the Tax Vault program (no distributor gas to pre-fund).
       // Their creator reward is swapped on-chain into the network's reward token (XNM on testnet).
       ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR),
-        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true, recoveryUrl: recoveryUrl(cfg.network) } } : {}),
+        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true, recoveryUrl: recoveryUrl(cfg.network), recoveryPath: RECOVERY_FILE ? "/recovery" : null } } : {}),
     };
   }
   if (url.pathname === "/api/launches") {
@@ -1324,6 +1324,12 @@ const SECURITY_HEADERS: Record<string, string> = {
   "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
 };
 
+const RECOVERY_FILE = pinnedRecoveryFile(ROOT, cfg.network);
+const RECOVERY_CSP = [
+  "default-src 'none'", "script-src 'unsafe-inline'", "style-src 'unsafe-inline'", "img-src data: https:",
+  "connect-src https: http://127.0.0.1:* http://localhost:*", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'",
+].join("; ");
+
 const server = http.createServer(async (req, res) => {
   if (!allowedHosts.has(req.headers.host ?? "")) { res.writeHead(403).end("Forbidden host"); return; }
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -1356,6 +1362,13 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, page(CURVE_PAGE), "text/html; charset=utf-8"); return;
     }
     if (url.pathname === "/launch") { send(res, 200, page(PAGE), "text/html; charset=utf-8"); return; }
+    // The pinned recovery page, byte-identical to its IPFS copy (checked by sha256 at start).
+    // It talks to X1 RPCs and IPFS gateways itself, so it gets its own connect-src.
+    if (url.pathname === "/recovery" && RECOVERY_FILE) {
+      res.setHeader("content-security-policy", RECOVERY_CSP);
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" }).end(RECOVERY_FILE);
+      return;
+    }
     if (url.pathname === "/theme.js") {
       send(res, 200, `const SITE_THEME = ${JSON.stringify(f!.theme ?? "receipt")};\n`
         + `const SITE_NET = ${JSON.stringify({ network: cfg.network, other: f!.otherNetwork ?? null })};\n` + fs.readFileSync(path.join(ROOT, "src", "web", "theme.js"), "utf8"), "text/javascript; charset=utf-8");

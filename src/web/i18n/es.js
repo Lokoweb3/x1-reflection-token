@@ -647,6 +647,8 @@ I18N.add("es", {
   "You're this vault's guardian: if the publisher stays silent, you can appoint a new one here from {appointAllowedAt}.": "Eres el guardián de esta bóveda: si el publicador sigue sin publicar, puedes designar uno nuevo aquí a partir de {appointAllowedAt}.",
   "Tax Vault": "Tax Vault",
   "If this site is ever down, the vault keeps working from the ": "Si este sitio deja de funcionar, la bóveda sigue funcionando desde la ",
+  "recovery page": "página de recuperación",
+  ", also ": ", también ",
   "recovery page on IPFS ↗": "página de recuperación en IPFS ↗",
   " (any wallet, no server).": " (cualquier billetera, sin servidor).",
   "Recovery page (IPFS)": "Página de recuperación (IPFS)",
