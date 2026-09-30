@@ -666,7 +666,7 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # 96 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths, list verification (publisher quorum)
+npm test          # 102 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths, list verification (publisher quorum), Spanish coverage, IPFS gateways, the served recovery page matching its pin
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
@@ -704,14 +704,20 @@ and adding liquidity every cycle; the site's figures were checked against the ch
 **Live on testnet:** the `tax_vault` program **v3** (upgraded in place from v1 and v2,
 each deployed build checked byte-for-byte against the rehearsed one). **Every testnet token
 runs on it**: CUP (migrated, then upgraded v1 → v2 → v3 by the crank), RFLT (migrated),
-every new launch, and curve tokens (the vault holds their tax from creation). Both testnet
+every new launch, and curve tokens (the vault holds their tax from creation): **Honey**,
+the first live curve, graduated to XDEX with its LP locked and has paid its holder from
+the vault. Both testnet
 distributor services are off. Seen live: collect, burn, sale, auto-liquidity, the XNM creator
 reward, rewards lists pinned to Pinata (the file's hash and Merkle root checked against
 the chain), holder payouts (a new holder paid exactly its list amount 11½ minutes after
 buying), and "Run the vault now" from a browser wallet. Every transaction fits its compute
 limit to what it uses (X1 bills requested units), which cut fees ~5–10×. The
 `bonding_curve` program with selectable graduation targets (500 default, 1,000, 3,000,
-5,000, 10,000 XNT) since 30 Sep 2026, and supply presets on both launch forms. Also live:
+5,000, 10,000 XNT; 10 and 20 XNT on testnet) since 30 Sep 2026, and supply presets on both
+launch forms. The **recovery page** is pinned to IPFS and served at `/recovery`: from it a
+stranger's wallet ran CUP's due steps live and earned the crank reward (appointing and
+fallback were driven from it on a local copy of CUP's vault). A **GitHub Actions keeper**
+runs the crank on a schedule with its own wallet. Also live:
 RFLT and CUP's earlier distributor cycles, a creator's collect-fees and metadata updates
 with a real wallet, and the faucet.
 
@@ -728,8 +734,8 @@ distributor's journal, and program upgrades against the real lock accounts.
 
 **Not yet:** an independent audit of `lp_locker`, `bonding_curve` and `tax_vault` (all
 still upgradeable by the team); the vault on mainnet (mainnet launches stay paused until
-then); a bonding curve created on real testnet (every curve path is rehearsed locally,
-none has run live yet); a JACK-paired launch on mainnet itself; Holder Passes on a public
+then); a second, independent IPFS pin of the rewards lists and the recovery page (today
+they're pinned on one Pinata account, readable through any gateway); a JACK-paired launch on mainnet itself; Holder Passes on a public
 network (testnet `lp_locker` is an older revision without them); the bonding curve on
 mainnet; trustless holder payouts (lists are published by one key; see
 [docs/REVIEW.md](docs/REVIEW.md#trust-assumptions)). The publisher quorum (Squads multisig +

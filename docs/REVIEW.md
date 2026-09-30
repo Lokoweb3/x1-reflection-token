@@ -16,7 +16,10 @@ Off-chain (TypeScript, `src/`): the site and its crank. The pieces that decide m
 `src/vault-crank.ts` (every crank step, the list builder, "Run the vault now"),
 `src/factory/vault.ts` (the site's crank loop, IPFS pinning, views), `src/taxvault.ts`
 (account layouts, instruction encoders, Merkle tree), `scripts/crank.ts` (the standalone
-crank anyone can run). Publisher quorum (not live yet): `src/squads.ts` (Squads v4 reads and
+crank anyone can run), `src/recovery/` (the recovery page: one HTML file pinned to IPFS
+that runs the same `planForCaller` steps from any wallet; `src/recovery/pinned.ts` records
+each pinned copy, which the site also serves at `/recovery` only if the sha256 matches).
+Publisher quorum (not live yet): `src/squads.ts` (Squads v4 reads and
 instructions), `src/list-verify.ts` (the co-signer's checks), `scripts/cosigner.ts`,
 `scripts/setup-publisher-quorum.ts`.
 
@@ -68,7 +71,7 @@ is never deployed.
 
 ```bash
 cd lp-locker && cargo test -p tax_vault && cargo test -p bonding_curve && cargo test -p lp_locker
-cd .. && npm install && npx tsc --noEmit -p . && npm test      # 96 TypeScript tests
+cd .. && npm install && npx tsc --noEmit -p . && npm test      # 102 TypeScript tests
 ```
 
 End-to-end scripts run against a **local validator** that clones the real testnet XDEX,
@@ -82,6 +85,7 @@ the 3.x `solana-test-validator`, as 2.1 rejects `program extend`):
 | `scripts/local-curve-targets-test.ts` | Curve program upgrade under a part-bought old curve, 500 and 10,000 XNT curves, graduation and delivery |
 | `scripts/curve-vault-rehearsal.ts` | A curve token end to end on the Tax Vault, through the site |
 | `scripts/local-vault-test.ts`, `scripts/local-vault-v2-test.ts` | v1 and v2 behaviour and upgrades |
+| `scripts/build-recovery.ts` (+ a browser run) | The recovery page, driven in Chromium with a test wallet: live on testnet a stranger's wallet ran CUP's due steps; on a local validator holding a copy of CUP's vault under the `short-windows` build, the guardian appointed a publisher and a stranger paid holders with `pay_fallback` from the IPFS list. The pinned file is reproducible: a build of the same commit gives the same sha256 |
 | `scripts/publisher-quorum-rehearsal.ts` | The publisher quorum with the real site and the testnet Squads program (cloned): setup, proposals, a co-signer rejection and approval, payouts; a malicious list and a publisher change proposed by the site's key alone are rejected and never reach the chain, `last_publish_at` unmoved |
 
 ## Trust assumptions
