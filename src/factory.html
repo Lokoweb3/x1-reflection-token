@@ -269,7 +269,19 @@ form .row[hidden], .hint[hidden] { display: none; }
         <fieldset>
           <legend>Supply and tax</legend>
           <div class="row">
-            <label>Total supply <input name="supply" inputmode="numeric" value="1000000000" required><span class="hint">Whole tokens, 1,000 to 1,000,000,000,000.</span></label>
+            <label>Total supply
+              <select name="supply" id="supplyPick">
+                <option value="1000000">1 million (1,000,000)</option>
+                <option value="10000000">10 million (10,000,000)</option>
+                <option value="100000000">100 million (100,000,000)</option>
+                <option value="1000000000" selected>1 billion (1,000,000,000)</option>
+                <option value="10000000000">10 billion (10,000,000,000)</option>
+                <option value="100000000000">100 billion (100,000,000,000)</option>
+                <option value="1000000000000">1 trillion (1,000,000,000,000)</option>
+                <option value="custom">Custom…</option>
+              </select>
+              <input name="supplyCustom" id="supplyCustom" inputmode="numeric" placeholder="e.g. 420000000" aria-label="Custom total supply" hidden>
+              <span class="hint">Whole tokens, 1,000 to 1,000,000,000,000.</span></label>
             <label>Tax on every transfer (%) <input name="tax" type="number" min="1" max="10" step="0.5" value="5" required></label>
           </div>
           <div class="row">
@@ -437,7 +449,7 @@ W.onChange(() => { renderWallet(); loadMine(); loadDistribute(); });
 const form = document.getElementById("launchForm");
 function readForm() {
   const v = Object.fromEntries(new FormData(form));
-  const supply = String(v.supply).replace(/[,_\s]/g, "");
+  const supply = String(v.supply === "custom" ? v.supplyCustom ?? "" : v.supply).replace(/[,_\s]/g, "");
   const poolTokens = /^\d+$/.test(supply) ? supply : ""; // always 100% of the supply
   return {
     name: String(v.name).trim(), symbol: String(v.symbol).trim(), image: String(v.image).trim(), description: String(v.description).trim(),
@@ -506,6 +518,14 @@ function clampSplit(changed) {
   if (mine + val(other) > MAX_LP_PLUS_BURN) other.value = MAX_LP_PLUS_BURN - mine;
 }
 form.addEventListener("input", (ev) => { clampSplit(ev.target); renderForm(); });
+// "Custom…" shows a box for any other supply in the allowed range.
+form.addEventListener("change", (ev) => {
+  if (ev.target.id !== "supplyPick") return;
+  const box = document.getElementById("supplyCustom"), custom = ev.target.value === "custom";
+  box.hidden = !custom; box.required = custom;
+  if (custom) box.focus();
+  renderForm();
+});
 form.addEventListener("change", (ev) => { clampSplit(ev.target); renderForm(); });
 // Switching the pair resets the pool amount to about 10 XNT's worth of the new pair token,
 // so a JACK pool never starts from the XNT default (10 JACK is thousands of XNT).
