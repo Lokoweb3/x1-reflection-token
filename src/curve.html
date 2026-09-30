@@ -284,9 +284,9 @@ function listView() {
   search.addEventListener("input", renderList);
   $("out").replaceChildren(
     el("h1", { text: "Bonding curve" }),
-    el("p", { class: "lede" }, "Launch with no starting liquidity. Buyers fill a price curve with XNT; when ",
-      el("b", { text: `${fmt(units(listData.params.targetXnt), 0)} XNT` }),
-      " is raised, the curve graduates: it creates the XDEX pool with that XNT, locks the liquidity forever, and every buyer receives their tokens. From then on it's a normal 99 + Tax token paying its holders."),
+    el("p", { class: "lede" }, "Launch with no starting liquidity. Buyers fill a price curve with XNT; when the curve's target is raised (",
+      el("b", { text: `${targetList()} XNT` }),
+      ", the creator picks), the curve graduates: it creates the XDEX pool with that XNT, locks the liquidity forever, and every buyer receives their tokens. From then on it's a normal 99 + Tax token paying its holders."),
     el("div", { class: "toolbar" }, seg, search),
     el("div", { id: "list" }),
     createForm());
@@ -297,6 +297,21 @@ function listView() {
 
 // ---------- create form ----------
 const MAX_LP_PLUS_BURN = 55; // 10% goes to the creator; holders keep at least 35%
+/** Graduation targets a new curve can pick (whole XNT); each curve shows its own afterwards. */
+const targetsOf = () => listData?.params?.targetsXnt ?? ["500", "1000", "3000", "5000", "10000"];
+const targetList = () => { const t = targetsOf().map((v) => fmt(v, 0)); return `${t[0]} to ${t.at(-1)}`; };
+/**
+ * create_curve's setup (src/curve.ts curveSetup): the curve's start price and its end price,
+ * which is the XDEX pool's opening price (the target against the pool's tokens after tax).
+ */
+function setupPrices(supplyWhole, taxBps, targetWhole) {
+  const S = BigInt(supplyWhole) * 10n ** 9n, T = (S * 8000n) / BPS, Pg = S - T;
+  const Pn = Pg - ceilDiv(Pg * BigInt(taxBps), BPS);
+  if (Pn <= 0n || T <= Pn) return null;
+  const a = (Pn * T) / (T - Pn), R = BigInt(targetWhole) * 10n ** 9n;
+  const x0 = (R * (a - Pn)) / Pn, y0 = a + T;
+  return { start: Number(x0) / Number(y0), end: Number(R) / Number(Pn) };
+}
 function createForm() {
   const p = listData.params;
   const f = el("form", { id: "createForm", autocomplete: "off" },
@@ -320,6 +335,15 @@ function createForm() {
           el("span", { class: "hint", text: `Whole tokens, ${Number(p.supplyMin).toLocaleString()} to ${Number(p.supplyMax).toLocaleString()}. ${p.curveBps / 100}% is sold on the curve; the rest goes into the pool.` })),
         el("label", {}, "Tax on every transfer after graduation (%)", el("input", { name: "tax", type: "number", min: "1", max: "10", step: "0.5", value: "5", required: "" }))),
       el("div", { class: "row" },
+        el("label", {}, "Graduates at",
+          el("select", { name: "targetXnt", "aria-describedby": "targetNote" }, ...targetsOf().map((t) => {
+            const o = el("option", { value: String(t), text: `${fmt(t, 0)} XNT` });
+            if (String(t) === String(p.defaultTargetXnt ?? "500")) o.setAttribute("selected", "");
+            return o;
+          })),
+          el("span", { class: "hint", text: "XNT raised on the curve that goes into the XDEX pool. A higher target is a longer curve and a deeper pool." })),
+        el("p", { class: "hint", id: "targetNote", style: "margin:0;align-self:center", "aria-live": "polite" })),
+      el("div", { class: "row" },
         el("label", {}, "Share of the tax added to liquidity (%)", el("input", { name: "autoLp", type: "number", min: "0", max: "50", step: "5", value: "25", required: "" })),
         el("label", {}, "Share of the tax burned (%)", el("input", { name: "burn", type: "number", min: "0", max: "50", step: "5", value: "25", required: "" }))),
       el("p", { class: "hint", id: "splitNote", style: "margin:0" })),
@@ -336,7 +360,7 @@ function readForm() {
   return {
     name: String(v.name).trim(), symbol: String(v.symbol).trim(), image: String(v.image).trim(), description: String(v.description).trim(),
     website: String(v.website ?? "").trim(), twitter: String(v.twitter ?? "").trim(), telegram: String(v.telegram ?? "").trim(),
-    supply: String(v.supply).replace(/[,_\s]/g, ""), taxBps: Math.round(Number(v.tax) * 100),
+    supply: String(v.supply).replace(/[,_\s]/g, ""), taxBps: Math.round(Number(v.tax) * 100), targetXnt: String(v.targetXnt ?? ""),
     autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
   };
 }
@@ -356,6 +380,11 @@ function renderCosts() {
   const tax = p.taxBps / 100, lp = tax * p.autoLpBps / 10000, burn = tax * p.burnBps / 10000, creator = tax * creatorPct / 100;
   $("splitNote").textContent = `After graduation every transfer pays ${fmt(tax, 2)}%: about ${fmt(Math.max(0, tax - lp - burn - creator), 2)}% goes to holders in XNT, ${fmt(lp, 2)}% is added to liquidity`
     + (burn > 0 ? `, ${fmt(burn, 2)}% of the tokens are burned` : "") + `, and ${fmt(creator, 2)}% is your creator reward.`;
+  const supplyOk = /^\d{4,11}$/.test(p.supply) && BigInt(p.supply) >= BigInt(listData.params.supplyMin) && BigInt(p.supply) <= BigInt(listData.params.supplyMax);
+  const pr = supplyOk && p.taxBps >= 100 && p.taxBps <= 1000 ? setupPrices(p.supply, p.taxBps, p.targetXnt) : null;
+  $("targetNote").textContent = pr
+    ? `Starts at ${sig(pr.start)} XNT per token (market cap ${compact(pr.start * Number(p.supply))} XNT) and ends at ${sig(pr.end)} XNT, the XDEX pool's opening price (market cap ${compact(pr.end * Number(p.supply))} XNT).`
+    : "";
   const dep = units(listData.params.depositXnt);
   const rows = [
     ["Launch fee", info ? `${info.feeAmount} ${info.feeSymbol}` : "…"],
@@ -397,7 +426,7 @@ async function createCurve(ev) {
   if (creating || !W.state.address) return;
   const p = readForm();
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax.`); return; }
-  const target = fmt(units(listData.params.targetXnt), 0);
+  const target = fmt(p.targetXnt, 0);
   const ok = confirm(`Create ${p.name} (${p.symbol}) on the bonding curve?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed); ${listData.params.curveBps / 100}% sold on the curve\n• Tax ${p.taxBps / 100}% on every transfer once it graduates (can never change)\n• Graduates at ${target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee ${info.feeAmount} ${info.feeSymbol}, plus a ${fmt(units(listData.params.depositXnt), 3)} XNT graduation deposit (the rest comes back when it finishes)\n\nYou can't buy on your own curve. Your wallet will ask you to approve 1 transaction.${info.taxVault?.launches ? "\n\nThe tax is held by the Tax Vault program, not a wallet. After graduation you sign one more transaction to start the tax vault (the tax waits safely until then)." : ""}`);
   if (!ok) return;
   creating = true; renderCosts();

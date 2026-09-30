@@ -9,10 +9,13 @@
  *     --clone-upgradeable-program 5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C \
  *     --maybe-clone 3FzzbxwpdJKxRW1yNT7UPYmna17SwC9PRmskMa8A2BuY \
  *     --maybe-clone DwhWUT38Dwth5e1NYAJ2SSacYSaLEvct3kMndM7VSbcS \
- *     --bpf-program CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY lp-locker/target/curve-test/bonding_curve.so
+ *     --bpf-program CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY lp-locker/target/curve2-test/bonding_curve.so
  *   LOCAL_RPC=http://127.0.0.1:8999 npx tsx scripts/local-curve-test.ts
  *
- * The program must be built with `--features "testnet short-windows"` (5 s anti-snipe window).
+ * The program must be built with `--features "testnet short-windows"` (5 s anti-snipe window),
+ * from the source with selectable graduation targets (create_curve(supply, target)); the
+ * curve here graduates at the default 500 XNT. scripts/local-curve-targets-test.ts covers
+ * the other targets and the upgrade over curves made by the first (fixed 20 XNT) program.
  */
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -36,7 +39,8 @@ const LOCKER = new PublicKey("5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C");
 const AMM_CONFIG = new PublicKey("3FzzbxwpdJKxRW1yNT7UPYmna17SwC9PRmskMa8A2BuY");
 const CREATE_POOL_FEE = new PublicKey("DwhWUT38Dwth5e1NYAJ2SSacYSaLEvct3kMndM7VSbcS");
 const FEE_RECEIVER = new PublicKey("53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy");
-const GRADUATION_DEPOSIT = 300_000_000n, GRADUATE_REWARD = 10_000_000n, TARGET_XNT = 20_000_000_000n;
+const GRADUATION_DEPOSIT = 300_000_000n, GRADUATE_REWARD = 10_000_000n;
+const TARGET_WHOLE = 500n, TARGET_XNT = TARGET_WHOLE * 10n ** 9n;
 const SNIPE_WINDOW_SECS = 5;
 const TAX_BPS = 500;
 const SUPPLY_WHOLE = 1_000_000_000n;
@@ -58,9 +62,9 @@ const m = (pubkey: PublicKey, isSigner: boolean, isWritable: boolean) => ({ pubk
 const ix = (name: string, keys: ReturnType<typeof m>[], args: Buffer = Buffer.alloc(0)) =>
   new TransactionInstruction({ programId: PROGRAM, keys, data: Buffer.concat([disc(`global:${name}`), args]) });
 
-const createCurveIx = (creator: PublicKey, mint: PublicKey, supplyWhole: bigint) => ix("create_curve", [
+const createCurveIx = (creator: PublicKey, mint: PublicKey, supplyWhole: bigint, targetWhole = TARGET_WHOLE) => ix("create_curve", [
   m(creator, true, true), m(mint, false, true), m(curvePda(mint), false, true), m(authPda(mint), false, true), m(SystemProgram.programId, false, false),
-], u64(supplyWhole));
+], u64(supplyWhole, targetWhole));
 const buyIx = (buyer: PublicKey, mint: PublicKey, xntIn: bigint, minOut: bigint) => {
   const curve = curvePda(mint);
   return ix("buy", [
@@ -227,7 +231,7 @@ console.log("bonding_curve end-to-end (local validator)");
 const creator = Keypair.generate(), attacker = Keypair.generate(), crank = Keypair.generate();
 const buyers = [Keypair.generate(), Keypair.generate(), Keypair.generate(), Keypair.generate()];
 await Promise.all([creator, attacker, crank].map((k) => fund(k.publicKey, 20)));
-for (const b of buyers) await fund(b.publicKey, 40);
+for (const b of buyers) await fund(b.publicKey, 1_000);
 await fund(FEE_RECEIVER, 1); // exists on the real networks; on a fresh local ledger it must exist to take small fees
 
 console.log("1. Create the token and the curve");
@@ -239,9 +243,13 @@ assert.ok(mintState.mintAuthority?.equals(auth) && mintState.supply === 0n && mi
 ok(`mint ${mint.toBase58()} (5% tax, mint authority = auth, supply 0)`);
 await fails("someone else opens a curve on the creator's mint", send([createCurveIx(attacker.publicKey, mint, SUPPLY_WHOLE)], [attacker]), /BadMint/);
 await fails("supply below 1,000", send([createCurveIx(creator.publicKey, mint, 999n)], [creator]), /BadSupply/);
+for (const t of [0n, 20n, 499n, 501n, 20_000n]) {
+  await fails(`graduation target ${t} XNT`, send([createCurveIx(creator.publicKey, mint, SUPPLY_WHOLE, t)], [creator]), /BadTarget/);
+}
 await send([createCurveIx(creator.publicKey, mint, SUPPLY_WHOLE)], [creator]);
 let c = await readCurve(mint);
 assert.equal(c.supply, S); assert.equal(c.curveTokens, S * 8000n / 10000n); assert.equal(c.status, 0); assert.equal(c.taxBps, TAX_BPS);
+assert.equal(c.targetXnt, TARGET_XNT, "the chosen target is stored");
 assert.equal(await bal(auth), GRADUATION_DEPOSIT);
 const X0 = c.virtualXnt, Y0 = c.virtualTokens, K0 = X0 * Y0;
 ok(`curve created: T=${c.curveTokens / 10n ** 9n} Pn=${c.poolTokensNet / 10n ** 9n} x0=${xnt(X0)} y0=${Y0 / 10n ** 9n}; auth holds the 0.3 deposit`);
@@ -256,7 +264,7 @@ ok(`curve created: T=${c.curveTokens / 10n ** 9n} Pn=${c.poolTokensNet / 10n ** 
 
 console.log("2. Trading rules");
 await fails("creator buys on their own curve", send([buyIx(creator.publicKey, mint, 100_000_000n, 0n)], [creator]), /CreatorCannotBuy/);
-await fails("early buy over 1% of supply", send([buyIx(buyers[0].publicKey, mint, 500_000_000n, 0n)], [buyers[0]]), /TooBigEarly/);
+await fails("early buy over 1% of supply", send([buyIx(buyers[0].publicKey, mint, 5_000_000_000n, 0n)], [buyers[0]]), /TooBigEarly/);
 await fails("zero buy", send([buyIx(buyers[0].publicKey, mint, 0n, 0n)], [buyers[0]]), /ZeroAmount/);
 
 // Invariants after every trade.
@@ -302,20 +310,20 @@ const small = await buy(buyers[0], 30_000_000n);
 ok(`early small buy allowed: ${small.out / 10n ** 9n} tokens for 0.03 XNT`);
 const wait = Number(c.createdAt) + SNIPE_WINDOW_SECS + 1;
 while ((await chainTime()) < BigInt(wait)) await sleep(500);
-const big = await buy(buyers[0], 500_000_000n);
-ok(`after the ${SNIPE_WINDOW_SECS}s window the same 0.5 XNT buy goes through (${big.out / 10n ** 9n} tokens)`);
+const big = await buy(buyers[0], 5_000_000_000n);
+ok(`after the ${SNIPE_WINDOW_SECS}s window the same 5 XNT buy goes through (${big.out / 10n ** 9n} tokens)`);
 
 console.log("3. Many buys and sells by several wallets (invariants checked after each)");
 let seed = 42;
 const rnd = () => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
 let trades = 0;
-while (c.raisedXnt < 17_000_000_000n) {
+while (c.raisedXnt < (TARGET_XNT * 85n) / 100n) {
   const b = buyers[Math.floor(rnd() * buyers.length)];
   const p = await readPosition(curveKey, b.publicKey);
   if (p && p.balance > 0n && rnd() < 0.3) {
     await sell(b, (p.balance * BigInt(Math.floor(rnd() * 90) + 10)) / 100n);
   } else {
-    await buy(b, BigInt(Math.floor((0.2 + rnd() * 1.8) * 1e9)), 50n);
+    await buy(b, BigInt(Math.floor((5 + rnd() * 45) * 1e9)), 50n); // 1-10% of the target
   }
   trades++;
 }
@@ -340,11 +348,12 @@ console.log("5. The last buy fills exactly to T");
 {
   c = await readCurve(mint);
   const last = buyers[2];
-  const q = quoteBuy(c, 10_000_000_000n);
+  const offer = TARGET_XNT / 2n;
+  const q = quoteBuy(c, offer);
   assert.ok(q.complete);
   const before = await bal(last.publicKey);
   const hadPos = !!(await readPosition(curveKey, last.publicKey));
-  const sig = await send([buyIx(last.publicKey, mint, 10_000_000_000n, q.out)], [last]);
+  const sig = await send([buyIx(last.publicKey, mint, offer, q.out)], [last]);
   tracked.add(last.publicKey.toBase58());
   const { fee } = await txStats(sig);
   await checkInvariants("final buy");
@@ -354,7 +363,7 @@ console.log("5. The last buy fills exactly to T");
   assert.ok(hadPos, "final buyer already had a position");
   assert.equal(before - (await bal(last.publicKey)) - fee, q.xntIn, "final buyer paid only what the fill cost");
   assert.ok(c.raisedXnt <= TARGET_XNT && TARGET_XNT - c.raisedXnt < 10n, `raised ${c.raisedXnt}`);
-  ok(`offered 10 XNT, paid ${xnt(q.xntIn)} for the last ${q.out / 10n ** 9n} tokens; status Complete, raised ${xnt(c.raisedXnt)} (target ${xnt(TARGET_XNT)})`);
+  ok(`offered ${xnt(offer)} XNT, paid ${xnt(q.xntIn)} for the last ${q.out / 10n ** 9n} tokens; status Complete, raised ${xnt(c.raisedXnt)} (target ${xnt(TARGET_XNT)})`);
 }
 await fails("buy after Complete", send([buyIx(buyers[0].publicKey, mint, 100_000_000n, 0n)], [buyers[0]]), /NotTrading/);
 await fails("sell after Complete", send([sellIx(buyers[0].publicKey, mint, 1n, 0n)], [buyers[0]]), /NotTrading/);

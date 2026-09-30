@@ -18,7 +18,7 @@ import { Config, loadKeypair, toBaseUnits } from "../config.js";
 import { sendAndConfirm, sign, simulate, withPriority } from "../tx.js";
 import {
   CURVE_BPS, CURVE_DISC, CurveStatus, DECIMALS, FEE_BPS, GRADUATE_REWARD, GRADUATION_DEPOSIT, POSITION_DISC, POSITION_LEN, SNIPE_MAX_BPS, SNIPE_WINDOW_SECS,
-  STATUS_NAMES, SUPPLY_MAX, SUPPLY_MIN, TARGET_XNT, buyIx, curvePda, decodeCurve, decodePosition, deliverIx, graduateLockIx, graduatePoolIx,
+  DEFAULT_TARGET_XNT, STATUS_NAMES, SUPPLY_MAX, SUPPLY_MIN, TARGETS_XNT, buyIx, curvePda, decodeCurve, decodePosition, deliverIx, graduateLockIx, graduatePoolIx,
   marketCapOf, parseEvents, positionPda, priceOf, progressOf, quoteBuy, quoteSell, sellIx, x0Of, y0Of, type Curve, type Position,
 } from "../curve.js";
 import { readLaunch, registerLaunch } from "./launch.js";
@@ -101,8 +101,9 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     return firstBuyCost;
   }
 
+  // Each curve's own target is `targetXnt` in its summary (lamports); these are the choices for a new one (whole XNT).
   const params = () => ({
-    programId: program.toBase58(), targetXnt: s(TARGET_XNT), feeBps: Number(FEE_BPS), curveBps: Number(CURVE_BPS),
+    programId: program.toBase58(), targetsXnt: TARGETS_XNT.map(s), defaultTargetXnt: s(DEFAULT_TARGET_XNT), feeBps: Number(FEE_BPS), curveBps: Number(CURVE_BPS),
     depositXnt: s(GRADUATION_DEPOSIT), rewardXnt: s(GRADUATE_REWARD), snipeWindowSecs: SNIPE_WINDOW_SECS, snipeMaxBps: Number(SNIPE_MAX_BPS),
     supplyMin: s(SUPPLY_MIN), supplyMax: s(SUPPLY_MAX), decimals: DECIMALS, now: nowSecs(),
   });

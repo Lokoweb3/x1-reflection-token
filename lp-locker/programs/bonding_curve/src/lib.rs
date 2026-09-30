@@ -7,8 +7,8 @@
 //! * `buy` / `sell` move XNT between traders and `auth` (a system-owned, never-allocated
 //!   PDA that holds every lamport of the curve). 1% of each trade goes to `FEE_RECEIVER`.
 //! * The buy that reaches `T` is filled exactly to `T` and completes the curve.
-//! * `graduate_pool` mints the pool's share to `auth`, wraps `TARGET_XNT` and creates the
-//!   XDEX pool with `auth` as creator. The virtual reserves are chosen so the pool opens at
+//! * `graduate_pool` mints the pool's share to `auth`, wraps the curve's `target_xnt` (chosen
+//!   at creation from `TARGETS_XNT_WHOLE`) and creates the XDEX pool with `auth` as creator. The virtual reserves are chosen so the pool opens at
 //!   the curve's final price. `graduate_lock` locks all the LP forever in `lp_locker`, gives
 //!   the lock NFT to the creator and pays the caller a small reward.
 //! * `deliver` mints each buyer's tokens to their wallet; after the last one the mint
@@ -63,8 +63,10 @@ pub const XDEX_CREATE_POOL_FEE: Pubkey = pubkey!("SKc6b6zAv2kkB9EtitjppbzPVR48bC
 pub const FEE_RECEIVER: Pubkey = pubkey!("53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy");
 pub const FEE_BPS: u64 = 100;
 pub const CURVE_BPS: u64 = 8000;
-/// XNT (lamports) that goes into the pool at graduation.
-pub const TARGET_XNT: u64 = 20_000_000_000;
+/// Graduation targets a creator may pick (whole XNT that goes into the pool). Each curve
+/// stores its own in `target_xnt` (lamports); curves made before this list existed keep
+/// their stored 20 XNT.
+pub const TARGETS_XNT_WHOLE: [u64; 5] = [500, 1_000, 3_000, 5_000, 10_000];
 /// Paid by the creator in `create_curve`: XDEX's pool fee, rents and the reward. The rest
 /// goes back to the creator when the curve finishes.
 pub const GRADUATION_DEPOSIT: u64 = 300_000_000;
@@ -100,12 +102,14 @@ const LOCKER_LOCK_DISC: [u8; 8] = [0x15, 0x13, 0xd0, 0x2b, 0xed, 0x3e, 0xff, 0x5
 pub mod bonding_curve {
     use super::*;
 
-    /// Open a curve for `mint` (see `check_curve_mint` for what the mint must look like).
-    pub fn create_curve(ctx: Context<CreateCurve>, supply_whole: u64) -> Result<()> {
+    /// Open a curve for `mint` (see `check_curve_mint` for what the mint must look like)
+    /// that graduates at `target_whole` XNT, one of `TARGETS_XNT_WHOLE`.
+    pub fn create_curve(ctx: Context<CreateCurve>, supply_whole: u64, target_whole: u64) -> Result<()> {
         require!((MIN_SUPPLY_WHOLE..=MAX_SUPPLY_WHOLE).contains(&supply_whole), CurveError::BadSupply);
         let supply = supply_whole.checked_mul(10u64.pow(DECIMALS as u32)).ok_or(CurveError::BadSupply)?;
+        let target = target_lamports(target_whole)?;
         let fee = check_curve_mint(&ctx.accounts.mint.to_account_info(), &ctx.accounts.auth.key(), &ctx.accounts.creator.key())?;
-        let s = math::setup(supply, TARGET_XNT, |a| fee.calculate_fee(a))?;
+        let s = math::setup(supply, target, |a| fee.calculate_fee(a))?;
 
         system_program::transfer(
             CpiContext::new(
@@ -126,7 +130,7 @@ pub mod bonding_curve {
         c.curve_tokens = s.t;
         c.pool_tokens_gross = s.pg;
         c.pool_tokens_net = s.pn;
-        c.target_xnt = TARGET_XNT;
+        c.target_xnt = target;
         c.virtual_xnt = s.x0;
         c.virtual_tokens = s.y0;
         c.tokens_sold = 0;
@@ -267,8 +271,8 @@ pub mod bonding_curve {
         Ok(())
     }
 
-    /// Complete -> PoolCreated: mint the pool's tokens to `auth`, wrap TARGET_XNT and
-    /// create the XDEX pool with `auth` as its creator.
+    /// Complete -> PoolCreated: mint the pool's tokens to `auth`, wrap the curve's target_xnt
+    /// and create the XDEX pool with `auth` as its creator.
     pub fn graduate_pool(ctx: Context<GraduatePool>) -> Result<()> {
         let a = &ctx.accounts;
         require!(a.curve.status == STATUS_COMPLETE, CurveError::WrongStatus);
@@ -298,15 +302,15 @@ pub mod bonding_curve {
             a.curve.pool_tokens_gross,
         )?;
 
-        // TARGET_XNT, wrapped.
+        // The curve's own target (20 XNT for curves made before targets were selectable), wrapped.
+        let (pool_tokens, pool_xnt) = pool_amounts(&a.curve);
         create_ata(&a.associated_token_program, &auth, &a.auth_wxnt, &auth, &a.native_mint, &sys, &tok, auth_seeds)?;
-        pay_from_auth(&sys, &auth, &a.auth_wxnt.to_account_info(), TARGET_XNT, auth_seeds)?;
+        pay_from_auth(&sys, &auth, &a.auth_wxnt.to_account_info(), pool_xnt, auth_seeds)?;
         token::sync_native(CpiContext::new(tok.clone(), token::SyncNative { account: a.auth_wxnt.to_account_info() }))?;
 
         // XDEX `initialize`, same accounts and data as buildCreatePool in src/xdex.ts.
         let token_is_0 = mint0 == mint;
-        let (amount0, amount1) =
-            if token_is_0 { (a.curve.pool_tokens_gross, TARGET_XNT) } else { (TARGET_XNT, a.curve.pool_tokens_gross) };
+        let (amount0, amount1) = if token_is_0 { (pool_tokens, pool_xnt) } else { (pool_xnt, pool_tokens) };
         let mut data = Vec::with_capacity(32);
         data.extend_from_slice(&XDEX_INITIALIZE_DISC);
         data.extend_from_slice(&amount0.to_le_bytes());
@@ -588,6 +592,19 @@ pub mod bonding_curve {
 
 // ---------- Helpers ----------
 
+/// A creator's graduation target in lamports; `BadTarget` unless it is in TARGETS_XNT_WHOLE.
+pub fn target_lamports(target_whole: u64) -> Result<u64> {
+    require!(TARGETS_XNT_WHOLE.contains(&target_whole), CurveError::BadTarget);
+    target_whole.checked_mul(10u64.pow(DECIMALS as u32)).ok_or_else(|| error!(CurveError::BadTarget))
+}
+
+/// What graduate_pool deposits into XDEX: (tokens before the transfer fee, XNT lamports).
+/// The XNT is the curve's stored target, so curves of every target (and those made with
+/// the old fixed 20 XNT) graduate with their own.
+pub fn pool_amounts(curve: &Curve) -> (u64, u64) {
+    (curve.pool_tokens_gross, curve.target_xnt)
+}
+
 /// The mint must be a fresh 9-decimal Token-2022 tax token that only this curve's `auth`
 /// can mint: supply 0, no freeze authority, only TransferFeeConfig / MetadataPointer /
 /// TokenMetadata, an immutable fee of 100..=1000 bps, and token metadata whose update
@@ -850,6 +867,8 @@ pub struct Curve {
     pub pool_tokens_gross: u64,
     /// What the XDEX vault receives after the transfer fee.
     pub pool_tokens_net: u64,
+    /// Lamports that go into the pool at graduation: the creator's pick from
+    /// TARGETS_XNT_WHOLE (20 XNT on curves made before targets were selectable).
     pub target_xnt: u64,
     /// Current x (starts at x0).
     pub virtual_xnt: u64,
@@ -1154,14 +1173,36 @@ pub enum CurveError {
     MathOverflow,
     #[msg("Curve auth would not cover the open positions' deposits; top it up and retry")]
     InsufficientReserve,
+    #[msg("Graduation target must be 500, 1,000, 3,000, 5,000 or 10,000 XNT")]
+    BadTarget,
 }
 
 #[cfg(test)]
 mod tests {
     use super::math::{buy, ceil_div, sell, setup, Setup};
-    use super::{FEE_BPS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE, TARGET_XNT};
+    use super::{
+        pool_amounts, target_lamports, Curve, CurveError, FEE_BPS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE, SNIPE_MAX_BPS,
+        STATUS_COMPLETE, STATUS_TRADING, TARGETS_XNT_WHOLE,
+    };
+    use anchor_lang::prelude::*;
+    use anchor_lang::{AccountDeserialize, AccountSerialize};
 
-    const R: u64 = TARGET_XNT;
+    const XNT: u64 = 1_000_000_000;
+    /// The fixed target of curves created before targets were selectable.
+    const OLD_TARGET: u64 = 20 * XNT;
+
+    /// Every allowed target in lamports, plus the old 20 XNT (still stored in older curves).
+    fn targets() -> Vec<u64> {
+        let mut t: Vec<u64> = TARGETS_XNT_WHOLE.iter().map(|w| target_lamports(*w).unwrap()).collect();
+        t.push(OLD_TARGET);
+        t
+    }
+
+    /// Flooring `a` in setup leaves the full curve up to R * T / a^2 lamports short of R (143
+    /// at 10,000 XNT with the minimum supply, 3 at 20 XNT); auth's GRADUATION_DEPOSIT covers it.
+    fn max_short(r: u64) -> u128 {
+        10 + r as u128 / 50_000_000_000
+    }
 
     fn fee_fn(bps: u64) -> impl Fn(u64) -> Option<u64> {
         move |a| Some(((a as u128 * bps as u128 + 9_999) / 10_000) as u64)
@@ -1171,76 +1212,179 @@ mod tests {
         s.x0 as u128 * s.y0 as u128
     }
 
+    fn code(e: anchor_lang::error::Error) -> u32 {
+        match e {
+            anchor_lang::error::Error::AnchorError(a) => a.error_code_number,
+            other => panic!("not an Anchor error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn targets_are_checked() {
+        for w in TARGETS_XNT_WHOLE {
+            assert_eq!(target_lamports(w).unwrap(), w * XNT);
+        }
+        assert_eq!(TARGETS_XNT_WHOLE, [500, 1_000, 3_000, 5_000, 10_000]);
+        for w in [0, 20, 499, 501, 20_000, u64::MAX] {
+            assert_eq!(code(target_lamports(w).unwrap_err()), u32::from(CurveError::BadTarget), "target {w}");
+        }
+        // Appended last: every earlier error keeps its code.
+        assert_eq!(u32::from(CurveError::InsufficientReserve), 6012);
+        assert_eq!(u32::from(CurveError::BadTarget), 6013);
+    }
+
     #[test]
     fn setup_ends_at_target_and_pool_price() {
-        for supply_whole in [MIN_SUPPLY_WHOLE, 1_000_000, 1_000_000_000, 7_777_777_777, MAX_SUPPLY_WHOLE] {
-            for bps in [100u64, 500, 1000] {
-                let s = setup(supply_whole * 1_000_000_000, R, fee_fn(bps)).unwrap();
-                assert_eq!(s.t + s.pg, supply_whole * 1_000_000_000);
-                // Buying everything raises (at most) R, short by only a few lamports.
-                let end_x = ceil_div(k0(&s), s.a as u128).unwrap();
-                let raised = end_x - s.x0 as u128;
-                assert!(raised <= R as u128 && R as u128 - raised < 10, "raised {raised} for {supply_whole}/{bps}");
-                // Final curve price == pool opening price R / Pn (relative error < 1e-9).
-                let lhs = end_x * s.pn as u128; // x_end / a  vs  R / Pn
-                let rhs = R as u128 * s.a as u128;
-                let diff = lhs.abs_diff(rhs);
-                assert!(diff * 1_000_000_000 < rhs, "price mismatch {supply_whole}/{bps}");
+        for r in targets() {
+            for supply_whole in [MIN_SUPPLY_WHOLE, 1_000_000, 1_000_000_000, 7_777_777_777, MAX_SUPPLY_WHOLE] {
+                for bps in [100u64, 500, 1000] {
+                    let s = setup(supply_whole * XNT, r, fee_fn(bps)).unwrap();
+                    assert_eq!(s.t + s.pg, supply_whole * XNT);
+                    // Buying everything raises (at most) R, short by only a few lamports.
+                    let end_x = ceil_div(k0(&s), s.a as u128).unwrap();
+                    let raised = end_x - s.x0 as u128;
+                    assert!(raised <= r as u128 && r as u128 - raised <= max_short(r), "raised {raised} of {r} for {supply_whole}/{bps}");
+                    // The end of the curve fits a u64 (it becomes virtual_xnt).
+                    assert!(end_x <= u64::MAX as u128);
+                    // Final curve price == pool opening price R / Pn (relative error < 1e-9).
+                    let lhs = end_x * s.pn as u128; // x_end / a  vs  R / Pn
+                    let rhs = r as u128 * s.a as u128;
+                    let diff = lhs.abs_diff(rhs);
+                    assert!(diff * 1_000_000_000 < rhs, "price mismatch {r}/{supply_whole}/{bps}");
+                }
             }
         }
     }
 
     #[test]
     fn buys_and_sells_keep_k_and_favour_the_curve() {
-        let s = setup(1_000_000_000 * 1_000_000_000, R, fee_fn(500)).unwrap();
-        let k = k0(&s);
-        let (mut x, mut y, mut sold, mut raised) = (s.x0, s.y0, 0u64, 0u64);
-        let mut seed = 12345u64;
-        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
-        let mut held: u64 = 0;
-        for i in 0..2_000 {
-            if i % 3 == 2 && held > 0 {
-                let t_in = rnd() % held + 1;
-                let q = sell(x, y, k, t_in).unwrap();
-                assert!(q.x as u128 * q.y as u128 >= k);
-                assert_eq!(q.fee + q.out, q.gross);
-                x = q.x; y = q.y; sold -= t_in; held -= t_in; raised -= q.gross;
-            } else {
-                let q = buy(x, y, k, sold, s.t, rnd() % 50_000_000 + 1).unwrap();
-                assert!(q.x as u128 * q.y as u128 >= k);
-                assert!(q.fee * 10_000 >= q.xnt_in * FEE_BPS);
-                x = q.x; y = q.y; sold += q.out; held += q.out; raised += q.net;
-                assert!(!q.complete);
+        for r in targets() {
+            let s = setup(1_000_000_000 * XNT, r, fee_fn(500)).unwrap();
+            let k = k0(&s);
+            let (mut x, mut y, mut sold, mut raised) = (s.x0, s.y0, 0u64, 0u64);
+            let mut seed = 12345u64;
+            let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+            let mut held: u64 = 0;
+            // Buys of up to R/400 each: 2,000 trades stay short of completion.
+            for i in 0..2_000 {
+                if i % 3 == 2 && held > 0 {
+                    let t_in = rnd() % held + 1;
+                    let q = sell(x, y, k, t_in).unwrap();
+                    assert!(q.x as u128 * q.y as u128 >= k);
+                    assert_eq!(q.fee + q.out, q.gross);
+                    x = q.x; y = q.y; sold -= t_in; held -= t_in; raised -= q.gross;
+                } else {
+                    let q = buy(x, y, k, sold, s.t, rnd() % (r / 400) + 1).unwrap();
+                    assert!(q.x as u128 * q.y as u128 >= k);
+                    assert!(q.fee * 10_000 >= q.xnt_in * FEE_BPS);
+                    x = q.x; y = q.y; sold += q.out; held += q.out; raised += q.net;
+                    assert!(!q.complete);
+                }
+                assert_eq!(x - s.x0, raised);
+                assert_eq!(y + sold, s.y0);
             }
-            assert_eq!(x - s.x0, raised);
-            assert_eq!(y + sold, s.y0);
+            // Round trip: a buy then selling it all back never returns more than was paid.
+            let b = buy(x, y, k, sold, s.t, r / 20).unwrap();
+            let sq = sell(b.x, b.y, k, b.out).unwrap();
+            assert!(sq.out < b.xnt_in && sq.gross <= b.net);
         }
-        // Round trip: a buy then selling it all back never returns more than was paid.
-        let b = buy(x, y, k, sold, s.t, 1_000_000_000).unwrap();
-        let sq = sell(b.x, b.y, k, b.out).unwrap();
-        assert!(sq.out < b.xnt_in && sq.gross <= b.net);
     }
 
     #[test]
     fn last_buy_fills_exactly_to_t() {
-        let s = setup(1_000_000 * 1_000_000_000, R, fee_fn(1000)).unwrap();
-        let k = k0(&s);
-        let q = buy(s.x0, s.y0, k, 0, s.t, 1_000 * 1_000_000_000).unwrap();
-        assert!(q.complete);
-        assert_eq!(q.out, s.t);
-        assert_eq!(q.y, s.a);
-        assert!(q.xnt_in < 1_000 * 1_000_000_000);
-        assert!(q.net <= R && R - q.net < 10);
-        assert!(q.fee * 10_000 >= q.xnt_in * FEE_BPS);
-        // Offering exactly the quoted amount completes too, and charges the same.
-        let q2 = buy(s.x0, s.y0, k, 0, s.t, q.xnt_in).unwrap();
-        assert!(q2.complete);
-        assert_eq!(q2.xnt_in, q.xnt_in);
+        for r in targets() {
+            for supply_whole in [MIN_SUPPLY_WHOLE, 1_000_000, MAX_SUPPLY_WHOLE] {
+                let s = setup(supply_whole * XNT, r, fee_fn(1000)).unwrap();
+                let k = k0(&s);
+                let q = buy(s.x0, s.y0, k, 0, s.t, 2 * r).unwrap();
+                assert!(q.complete);
+                assert_eq!(q.out, s.t);
+                assert_eq!(q.y, s.a);
+                assert!(q.xnt_in < 2 * r);
+                assert!(q.net <= r && (r - q.net) as u128 <= max_short(r), "net {} of {r}", q.net);
+                assert!(q.fee * 10_000 >= q.xnt_in * FEE_BPS);
+                // Offering exactly the quoted amount completes too, and charges the same.
+                let q2 = buy(s.x0, s.y0, k, 0, s.t, q.xnt_in).unwrap();
+                assert!(q2.complete);
+                assert_eq!(q2.xnt_in, q.xnt_in);
+                // Any offer at all completes without overflow.
+                let q3 = buy(s.x0, s.y0, k, 0, s.t, u64::MAX).unwrap();
+                assert_eq!((q3.out, q3.xnt_in), (q.out, q.xnt_in));
+            }
+        }
+    }
+
+    #[test]
+    fn many_buys_to_completion_for_every_target_and_supply_bound() {
+        for r in targets() {
+            for supply_whole in [MIN_SUPPLY_WHOLE, MAX_SUPPLY_WHOLE] {
+                let s = setup(supply_whole * XNT, r, fee_fn(500)).unwrap();
+                let k = k0(&s);
+                let (mut x, mut y, mut sold) = (s.x0, s.y0, 0u64);
+                let mut n = 0;
+                loop {
+                    // ~50 buys; the one that reaches T completes the curve.
+                    let q = buy(x, y, k, sold, s.t, r / 50 + 7).unwrap();
+                    x = q.x; y = q.y; sold += q.out; n += 1;
+                    if q.complete { break; }
+                }
+                assert_eq!(sold, s.t);
+                assert!(n > 40 && n < 60, "{n} buys");
+                let raised = x - s.x0;
+                assert!(raised <= r && (r - raised) as u128 <= max_short(r));
+                // The pool opens at R / Pn: the curve's last price x / y matches it.
+                let (lhs, rhs) = (x as u128 * s.pn as u128, r as u128 * y as u128);
+                assert!(lhs.abs_diff(rhs) * 1_000_000_000 < rhs);
+                // The anti-snipe cap is on tokens (1% of supply), the same for every target.
+                assert_eq!((s.t + s.pg) as u128 * SNIPE_MAX_BPS as u128 / 10_000, (supply_whole * XNT / 100) as u128);
+            }
+        }
     }
 
     #[test]
     fn supply_bounds_do_not_overflow() {
-        assert!(setup(MAX_SUPPLY_WHOLE * 1_000_000_000, R, fee_fn(100)).is_ok());
-        assert!(setup(MIN_SUPPLY_WHOLE * 1_000_000_000, R, fee_fn(1000)).is_ok());
+        for r in targets() {
+            assert!(setup(MAX_SUPPLY_WHOLE * XNT, r, fee_fn(100)).is_ok());
+            assert!(setup(MAX_SUPPLY_WHOLE * XNT, r, fee_fn(1000)).is_ok());
+            assert!(setup(MIN_SUPPLY_WHOLE * XNT, r, fee_fn(100)).is_ok());
+            assert!(setup(MIN_SUPPLY_WHOLE * XNT, r, fee_fn(1000)).is_ok());
+        }
+    }
+
+    /// A curve account as the old program wrote it (fixed 20 XNT target), read back by this
+    /// one: same layout, and it graduates with the target stored in the account.
+    #[test]
+    fn old_20_xnt_curve_graduates_with_its_stored_target() {
+        let supply = 1_000_000_000 * XNT;
+        let s = setup(supply, OLD_TARGET, fee_fn(500)).unwrap();
+        let old = Curve {
+            mint: Pubkey::new_unique(), creator: Pubkey::new_unique(), supply, curve_tokens: s.t,
+            pool_tokens_gross: s.pg, pool_tokens_net: s.pn, target_xnt: OLD_TARGET, virtual_xnt: s.x0, virtual_tokens: s.y0,
+            tokens_sold: 0, raised_xnt: 0, created_at: 1_700_000_000, status: STATUS_TRADING, positions: 0, delivered: 0,
+            pool: Pubkey::default(), lock_nft: Pubkey::default(), tax_bps: 500, bump: 254, auth_bump: 253,
+        };
+        let mut data = Vec::new();
+        old.try_serialize(&mut data).unwrap();
+        assert_eq!(data.len(), 8 + Curve::INIT_SPACE);
+        assert_eq!(Curve::INIT_SPACE, 225, "the Curve layout must not change");
+        assert_eq!(u64::from_le_bytes(data[104..112].try_into().unwrap()), OLD_TARGET, "target_xnt at offset 104");
+
+        let mut c = Curve::try_deserialize(&mut &data[..]).unwrap();
+        // Part bought before the upgrade, the rest after, as the buy handler applies it.
+        for xnt_in in [5 * XNT, 4 * XNT, 100 * XNT] {
+            let q = buy(c.virtual_xnt, c.virtual_tokens, c.k0().unwrap(), c.tokens_sold, c.curve_tokens, xnt_in).unwrap();
+            c.virtual_xnt = q.x;
+            c.virtual_tokens = q.y;
+            c.tokens_sold += q.out;
+            c.raised_xnt += q.net;
+            if q.complete { c.status = STATUS_COMPLETE; }
+        }
+        assert_eq!(c.status, STATUS_COMPLETE);
+        assert_eq!(c.tokens_sold, c.curve_tokens);
+        assert!(c.raised_xnt <= OLD_TARGET && OLD_TARGET - c.raised_xnt < 10, "raised {}", c.raised_xnt);
+        // graduate_pool deposits the stored 20 XNT (not any of the new targets) and the pool's tokens.
+        assert_eq!(pool_amounts(&c), (s.pg, OLD_TARGET));
+        let (lhs, rhs) = (c.virtual_xnt as u128 * c.pool_tokens_net as u128, OLD_TARGET as u128 * c.virtual_tokens as u128);
+        assert!(lhs.abs_diff(rhs) * 1_000_000_000 < rhs, "old curve ends at its pool's opening price");
     }
 }

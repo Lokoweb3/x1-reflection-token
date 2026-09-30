@@ -45,7 +45,7 @@ import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
-  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, TARGET_XNT as CURVE_TARGET_XNT, authPda, createCurveIx, curvePda, curveSetup, decodeCurve,
+  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, authPda, createCurveIx, curvePda, curveSetup, decodeCurve, parseTarget,
 } from "../curve.js";
 
 const U64_MAX = 2n ** 64n - 1n;
@@ -402,12 +402,16 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
   return { ixs, signers: [mintKp], record };
 }
 
-/** Curve launches: the same token checks as a normal launch, with the curve's own supply range. */
+/**
+ * Curve launches: the same token checks as a normal launch, with the curve's own supply
+ * range and a graduation target (`targetXnt`, whole XNT, default 500) recorded as poolXnt.
+ */
 export function validateCurveParams(raw: Record<string, unknown>): LaunchParams {
-  // The pool fields are fixed for a curve (the program seeds the pool at graduation), so
-  // fill them in before the shared checks.
+  // The pool fields follow from the curve (the program seeds the pool with the target at
+  // graduation), so fill them in before the shared checks.
   const supply = String(raw.supply ?? "").trim();
-  const p = validateParams({ ...raw, poolTokens: supply, poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null, quote: "XNT" });
+  const target = parseTarget(raw.targetXnt);
+  const p = validateParams({ ...raw, poolTokens: supply, poolXnt: target.toString(), lockDays: null, quote: "XNT" });
   if (BigInt(p.supply) > CURVE_SUPPLY_MAX) throw new Error(`Supply must be a whole number from 1,000 to ${CURVE_SUPPLY_MAX.toLocaleString("en-US")}`);
   return p;
 }
@@ -424,13 +428,14 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
   const vault = vaultLaunches(cfg);
   const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault);
   const mint = mintKp.publicKey;
-  ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply)));
-  const setup = curveSetup(BigInt(p.supply), p.taxBps);
+  const target = parseTarget(p.poolXnt); // validateCurveParams put the target there
+  ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply), target));
+  const setup = curveSetup(BigInt(p.supply), p.taxBps, target);
   const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint).pool;
   const record: LaunchRecord = {
     ...p, kind: "curve", curve: curvePda(curveProgram, mint).toBase58(),
     // What the program puts into the pool at graduation (tokens before the transfer fee).
-    poolTokens: fromBaseUnits(setup.Pg, DECIMALS), poolXnt: fromBaseUnits(CURVE_TARGET_XNT, 9), lockDays: null,
+    poolTokens: fromBaseUnits(setup.Pg, DECIMALS), poolXnt: target.toString(), lockDays: null,
     mint: mint.toBase58(), distributor: withdrawAuthority.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
     ...(vault ? { taxVault: true } : {}),
   };

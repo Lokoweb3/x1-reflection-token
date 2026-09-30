@@ -17,7 +17,11 @@ this file first and say so.
   metadata, **mint authority = the curve's `auth` PDA**, freeze authority None, supply 0,
   9 decimals.
 - 80% of the supply is sold on the curve; the rest seeds the XDEX pool at graduation.
-- Graduation target: **20 XNT goes into the pool** (testnet).
+- Graduation target: **chosen by the creator per curve** from 500 (the site's default),
+  1,000, 3,000, 5,000 or 10,000 XNT; that XNT goes into the pool. It is stored in the
+  curve (`target_xnt`). Curves created before targets were selectable (the first
+  testnet program, fixed 20 XNT) keep their stored 20 XNT through the upgrade: buying,
+  graduation and delivery read the target from the account.
 - Fee: **1% of the XNT** on every curve buy and sell, to `FEE_RECEIVER`.
 - The creator may not buy on their own curve (`buyer != creator`).
 - Anti-sniping: for the first 120 s after creation, one buy may take at most 1% of the
@@ -39,7 +43,7 @@ this file first and say so.
 | `FEE_RECEIVER` | `53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy` |
 | `FEE_BPS` | `100` |
 | `CURVE_BPS` | `8000` |
-| `TARGET_XNT` | `20_000_000_000` lamports (XNT that goes into the pool) |
+| `TARGETS_XNT_WHOLE` | `[500, 1_000, 3_000, 5_000, 10_000]` whole XNT, the graduation targets `create_curve` accepts (same with or without feature `testnet`). Replaces the old fixed `TARGET_XNT` (20 XNT), which older curves still hold in `target_xnt` |
 | `GRADUATION_DEPOSIT` | `300_000_000` lamports, paid by the creator in `create_curve`; covers XDEX's pool fee, rents and the reward; the rest is refunded to the creator when the curve finishes |
 | `GRADUATE_REWARD` | `10_000_000` lamports |
 | `SNIPE_WINDOW_SECS` | `120` (feature `short-windows`: `5`, for local tests only) |
@@ -66,7 +70,7 @@ pub struct Curve {
     pub curve_tokens: u64,       // T = S * CURVE_BPS / 10000
     pub pool_tokens_gross: u64,  // S - T, minted to auth and deposited into XDEX
     pub pool_tokens_net: u64,    // what the XDEX vault receives after the transfer fee
-    pub target_xnt: u64,         // TARGET_XNT
+    pub target_xnt: u64,         // lamports into the pool at graduation: target_whole * 1e9 (20e9 on older curves)
     pub virtual_xnt: u64,        // current x (starts at x0)
     pub virtual_tokens: u64,     // current y (starts at y0)
     pub tokens_sold: u64,
@@ -92,7 +96,7 @@ pub struct Position {
 
 ## Curve maths (u128, rounding always favours the curve)
 
-Setup in `create_curve` (S = supply base units, R = TARGET_XNT):
+Setup in `create_curve` (S = supply base units, R = target_whole * 10^9):
 
 ```
 T  = S * CURVE_BPS / 10000
@@ -103,6 +107,12 @@ y0 = a + T
 x0 = R * (a - Pn) / Pn        (floor)
 k  = x0 * y0                  (u128, recomputed from current x, y each time as x*y is NOT stored)
 ```
+
+Because `a` is floored, buying the whole curve raises up to about `R * T / a²` lamports
+less than R (at most 3 at 20 XNT, 143 at 10,000 XNT with the minimum supply); `graduate_pool`
+still wraps exactly R and the graduation deposit covers the difference. The last curve price
+matches the pool's opening price R / Pn to better than 1e-9 for every target and supply.
+All intermediate products fit u128 (x0 * y0 < 1e32 at 10,000 XNT and the maximum supply).
 
 Invariant: the curve keeps `k0 = x0 * y0` fixed; the program recomputes it from `x0`,
 which is derivable (`x0 = virtual_xnt - raised_xnt`), so k0 = (virtual_xnt - raised_xnt) * y0
@@ -145,8 +155,13 @@ extensions `[ImmutableOwner, TransferFeeAmount]` (165 + 1 + TLVs; compute with
 
 Account lists in this exact order (w = writable, s = signer).
 
-1. `create_curve(supply_whole: u64)`
+1. `create_curve(supply_whole: u64, target_whole: u64)`
    creator(w,s), mint(w), curve(w, init), auth(w), system_program.
+   `target_whole` must be in `TARGETS_XNT_WHOLE` (`BadTarget` otherwise); the curve is set
+   up for R = target_whole × 10^9 lamports and stores it in `target_xnt`. (The first testnet
+   program took `supply_whole` only and used a fixed 20 XNT.)
+   The site's `POST /api/curve/create` takes `targetXnt` (whole XNT, default 500) and refuses
+   other values before building the transaction; `/api/info` lists the choices under `curve`.
    Checks the mint as described above (Token-2022 owner, decimals 9, supply 0, mint
    authority == auth, no freeze, extensions ⊆ {TransferFeeConfig, MetadataPointer,
    TokenMetadata}, fee config authority None, 100 ≤ bps ≤ 1000). Transfers
@@ -175,7 +190,7 @@ Account lists in this exact order (w = writable, s = signer).
    xdex_program, amm_config, xdex_authority, pool(w), lp_mint(w), vault0(w), vault1(w),
    create_pool_fee(w), observation(w), native_mint, token_program, token_2022_program,
    associated_token_program, system_program, rent.
-   Mints `Pg` to auth_token, wraps TARGET_XNT into auth_wxnt, then CPIs XDEX `initialize`
+   Mints `Pg` to auth_token, wraps the curve's `target_xnt` into auth_wxnt, then CPIs XDEX `initialize`
    with creator = auth (same account order as `buildCreatePool` in `src/xdex.ts`,
    open_time 0). Checks xdex_program/amm_config/create_pool_fee against the constants and
    `pool == PDA(["pool", amm_config, mint0, mint1], XDEX)` with mints sorted like
@@ -183,7 +198,7 @@ Account lists in this exact order (w = writable, s = signer).
    *Implementation:* auth_wxnt and auth_token are empty after the CPI and are closed back
    to auth. At the end auth must still hold `positions × token-account deposit + rent
    minimum of a 0-byte account`, else `InsufficientReserve` (anyone can top auth up and
-   retry). Needs a compute-budget instruction (220k–245k CU measured locally, varies with PDA bumps).
+   retry). Needs a compute-budget instruction (220k–255k CU measured locally, varies with PDA bumps).
 
 5. `graduate_lock()` — status PoolCreated → Graduated
    caller(w,s), curve(w), auth(w), creator(w) [== curve.creator], nft_mint(w) [PDA],
@@ -258,5 +273,6 @@ Delivered { curve, owner, tokens }
 
 `BadMint, BadSupply, BadTax, NotTrading, CreatorCannotBuy, ZeroAmount, Slippage,
 TooBigEarly, InsufficientBalance, WrongStatus, WrongAccount, MathOverflow,
-InsufficientReserve` (codes 6000.. in this order; `InsufficientReserve` = 6012 was added
-by the implementation, see graduate_pool).
+InsufficientReserve, BadTarget` (codes 6000.. in this order; `InsufficientReserve` = 6012
+was added by the implementation, see graduate_pool; `BadTarget` = 6013 came with
+selectable targets, see create_curve).

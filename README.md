@@ -395,8 +395,9 @@ is held only during each cycle), and not while the waiting tax is dust.
 ## Bonding curve (testnet)
 
 The **Curve** tab launches a token with no starting liquidity. Buyers fill a price curve
-with XNT; when **20 XNT** is raised the curve **graduates**: it creates the XDEX pool with
-that XNT and the last 20% of the supply, locks all the LP forever through `lp_locker`
+with XNT; when the curve's target is raised (**500, 1,000, 3,000, 5,000 or 10,000 XNT**, the
+creator's pick, 500 by default; curves made before targets were selectable keep 20 XNT) the
+curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of the supply, locks all the LP forever through `lp_locker`
 (the NFT goes to the creator), and delivers every buyer's tokens to their wallet.
 
 - **Tokens are created at graduation.** During the curve, balances live in the curve, so
@@ -416,7 +417,9 @@ that XNT and the last 20% of the supply, locks all the LP forever through `lp_lo
 - Spec: [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). Tests:
   `scripts/local-curve-test.ts` (program end to end), `scripts/curve-rehearsal.ts`
   (site + program + crank + distributor) and `scripts/curve-vault-rehearsal.ts` (site +
-  curve + Tax Vault v3). Enabled by `factory.curve.programId`; off on mainnet until audited.
+  curve + Tax Vault v3), `scripts/local-curve-targets-test.ts` (the selectable-target upgrade
+  over a live 20 XNT curve, with the site). Enabled by `factory.curve.programId`; off on
+  mainnet until audited.
 
 ## Tax Vault (testnet)
 
@@ -574,6 +577,7 @@ script's header for the validator command):
 | `scripts/mainnet-rehearsal.ts` | A mainnet launch through the site (USDC fee, pool, lock), trades, a distributor cycle (burn, sell, auto-LP, USDC creator reward, payouts), fee collection |
 | `scripts/mainnet-rehearsal-jack.ts` | The same for a TOKEN/JACK launch, incl. the JACK→XNT swap for payouts |
 | `scripts/local-curve-test.ts`, `scripts/curve-rehearsal.ts` | The bonding curve, alone and with the site, crank and distributor |
+| `scripts/local-curve-targets-test.ts` | Selectable graduation targets: the old curve program upgraded in place under a part-bought 20 XNT curve (which still graduates with 20 XNT), then 500 and 10,000 XNT curves created through the site; the 500 one bought to graduation, pool, lock and delivery checked |
 | `scripts/curve-vault-rehearsal.ts` | A curve token on the Tax Vault (v3): the vault's auth PDA as withdraw authority from creation, graduation and registration as a vault token, the tax waiting until the creator starts the vault through the site, then the site's vault crank (collect, sell, XNM creator reward, list, payouts) and "Run the vault now" from a visitor's wallet |
 | `scripts/local-vault-test.ts`, `scripts/vault-rehearsal.ts` | Tax Vault v1: the program alone, then site + crank, including migrating a distributor token |
 | `scripts/local-vault-v2-test.ts` | Tax Vault v2: a v1 vault upgraded in place, the XNM creator-reward swap, the guardian cancel limit, error cases |

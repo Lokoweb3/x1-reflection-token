@@ -44,6 +44,7 @@ import { poolAuthority } from "./xdex.js";
 import { unpackMint } from "@solana/spl-token";
 import { buildCurveStep, validateCurveParams } from "./factory/launch.js";
 import { curveService } from "./factory/curve.js";
+import { DEFAULT_TARGET_XNT, TARGETS_XNT } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { buildVaultStep, isVaultLaunch } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
@@ -731,7 +732,9 @@ async function getView(url: URL) {
       // Until the locker is made immutable, pages say so next to "locked forever" claims.
       lockerUpgradeable: lockerAuthority !== null, lockerAuthority,
       lockForeverOnly: !!f!.lockForeverOnly,
-      launchesPaused: f!.launchesPaused ? (f!.launchesPaused.message ?? "New launches are paused for a short while while we upgrade how the tax is held. Launches already started can still be finished below.") : null, curve: !!curves,
+      launchesPaused: f!.launchesPaused ? (f!.launchesPaused.message ?? "New launches are paused for a short while while we upgrade how the tax is held. Launches already started can still be finished below.") : null,
+      // Bonding curve (false when off): the graduation targets a creator may pick, whole XNT.
+      curve: curves ? { targetsXnt: TARGETS_XNT.map(String), defaultTargetXnt: String(DEFAULT_TARGET_XNT) } : false,
       creatorRewardMint: CREATOR_REWARD[cfg.network].rewardMint ?? null, creatorRewardPool: CREATOR_REWARD[cfg.network].swapPool ?? null,
       // Pair tokens a launch may choose besides XNT, with their price (XNT per whole token) for the form.
       quoteTokens: await Promise.all(quoteTokens.map(async (q) => ({

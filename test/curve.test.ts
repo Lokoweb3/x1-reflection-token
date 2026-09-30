@@ -3,23 +3,27 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import {
-  CURVE_DISC, CURVE_LEN, EVENT, FEE_RECEIVER, IX, TARGET_XNT, applyBuy, applySell, authPda, buyIx, createCurveIx, curvePda, curveSetup,
-  decodeCurve, deliverIx, graduateLockIx, graduatePoolIx, k0Of, parseEvents, positionPda, priceOf, quoteBuy, quoteSell, sellIx,
+  CURVE_DISC, CURVE_LEN, DEFAULT_TARGET_XNT, EVENT, FEE_RECEIVER, IX, TARGETS_XNT, applyBuy, applySell, authPda, buyIx, createCurveIx, curvePda, curveSetup,
+  decodeCurve, deliverIx, graduateLockIx, graduatePoolIx, k0Of, parseEvents, parseTarget, poolOpenPrice, positionPda, priceOf, quoteBuy, quoteSell, sellIx,
   transferFee, type Curve, type CurveState,
 } from "../src/curve.js";
 
 const sha8 = (s: string) => crypto.createHash("sha256").update(s).digest().subarray(0, 8);
 const XNT = 1_000_000_000n;
+/** The default target in lamports (the old fixed target was 20 XNT). */
+const R = DEFAULT_TARGET_XNT * XNT;
 
 /** A fresh curve as create_curve sets it up. */
-function fresh(supplyWhole = 1_000_000_000n, taxBps = 500, createdAt = 0): CurveState & { x0: bigint; y0: bigint; Pn: bigint } {
-  const s = curveSetup(supplyWhole, taxBps);
+function fresh(supplyWhole = 1_000_000_000n, taxBps = 500, createdAt = 0, targetWhole = DEFAULT_TARGET_XNT): CurveState & { x0: bigint; y0: bigint; Pn: bigint } {
+  const s = curveSetup(supplyWhole, taxBps, targetWhole);
   return { supply: s.S, curveTokens: s.T, virtualXnt: s.x0, virtualTokens: s.y0, tokensSold: 0n, raisedXnt: 0n, createdAt, x0: s.x0, y0: s.y0, Pn: s.Pn };
 }
+/** Flooring `a` leaves a full curve up to R*T/a² lamports short of R (143 at 10,000 XNT, minimum supply); the program's deposit covers it. */
+const maxShort = (r: bigint) => 10n + r / 50_000_000_000n;
 const LATER = 10_000; // past the anti-sniping window
 
 test("setup for 1e9 tokens at 5% tax", () => {
-  const s = curveSetup(1_000_000_000n, 500);
+  const s = curveSetup(1_000_000_000n, 500, DEFAULT_TARGET_XNT);
   assert.equal(s.S, 1_000_000_000n * XNT);
   assert.equal(s.T, 800_000_000n * XNT);
   assert.equal(s.Pg, 200_000_000n * XNT);
@@ -27,9 +31,10 @@ test("setup for 1e9 tokens at 5% tax", () => {
   // a = Pn*T/(T-Pn) = 190e6*800e6/610e6 tokens, floored in base units
   assert.equal(s.a, (190_000_000n * XNT * 800_000_000n * XNT) / (610_000_000n * XNT));
   assert.equal(s.y0, s.a + s.T);
-  assert.equal(s.x0, (TARGET_XNT * (s.a - s.Pn)) / s.Pn);
-  // Sanity: a ≈ 249.18 M tokens and x0 ≈ 6.2295 XNT of virtual XNT.
-  assert.ok(Math.abs(Number(s.x0) / 1e9 - 6.2295) < 0.001 && Math.abs(Number(s.a) / 1e18 - 0.24918) < 0.00001, `x0 ${Number(s.x0) / 1e9}`);
+  assert.equal(s.x0, (R * (s.a - s.Pn)) / s.Pn);
+  // Sanity: a ≈ 249.18 M tokens and x0 ≈ 155.74 XNT of virtual XNT (6.2295 at the old 20 XNT).
+  assert.ok(Math.abs(Number(s.x0) / 1e9 - 155.7377) < 0.001 && Math.abs(Number(s.a) / 1e18 - 0.24918) < 0.00001, `x0 ${Number(s.x0) / 1e9}`);
+  assert.ok(Math.abs(Number(curveSetup(1_000_000_000n, 500, 20n).x0) / 1e9 - 6.2295) < 0.001);
 });
 
 test("Token-2022 fee rounds up and respects the max", () => {
@@ -49,20 +54,20 @@ test("start price and completion price", () => {
   assert.ok(q.complete);
   const end = applyBuy(c, q);
   assert.equal(end.tokensSold, c.curveTokens);
-  const open = Number(TARGET_XNT) / Number(c.Pn);
+  const open = Number(R) / Number(c.Pn);
   assert.ok(Math.abs(priceOf(end) / open - 1) < 1e-6, `end ${priceOf(end)} vs pool ${open}`);
-  // It raised (about) the target: never less than the target minus rounding.
-  assert.ok(end.raisedXnt >= TARGET_XNT - 2n && end.raisedXnt <= TARGET_XNT + 1_000n, `raised ${end.raisedXnt}`);
+  // It raised the target, short by rounding only.
+  assert.ok(end.raisedXnt <= R && R - end.raisedXnt <= maxShort(R), `raised ${end.raisedXnt}`);
   assert.ok(end.virtualXnt * end.virtualTokens >= k0Of(c));
 });
 
 test("final partial fill hits exactly T and charges only what it needs", () => {
   let c: CurveState = fresh();
-  c = applyBuy(c, quoteBuy(c, 15n * XNT, LATER));
-  const q = quoteBuy(c, 50n * XNT, LATER);
+  c = applyBuy(c, quoteBuy(c, 400n * XNT, LATER));
+  const q = quoteBuy(c, 500n * XNT, LATER);
   assert.ok(q.complete);
   assert.equal(c.tokensSold + q.out, c.curveTokens);
-  assert.ok(q.xntIn < 50n * XNT);
+  assert.ok(q.xntIn < 500n * XNT);
   assert.equal(q.xntIn, q.net + q.fee);
   assert.equal(q.xntIn, (q.net * 10_000n + 9_899n) / 9_900n);
   // Paying exactly that amount again also completes with the same tokens.
@@ -119,9 +124,10 @@ test("instruction data and account order", () => {
   assert.deepEqual(IX.deliver, sha8("global:deliver"));
   assert.deepEqual(CURVE_DISC, sha8("account:Curve"));
 
-  const cc = createCurveIx(program, user, mint, 1_000_000_000n);
-  assert.equal(cc.data.length, 16);
+  const cc = createCurveIx(program, user, mint, 1_000_000_000n, 3_000n);
+  assert.equal(cc.data.length, 24); // create_curve(supply_whole: u64, target_whole: u64)
   assert.equal(cc.data.readBigUInt64LE(8), 1_000_000_000n);
+  assert.equal(cc.data.readBigUInt64LE(16), 3_000n);
   assert.deepEqual(cc.keys.map((k) => k.pubkey.toBase58()).slice(0, 4),
     [user, mint, curvePda(program, mint), authPda(program, mint)].map((k) => k.toBase58()));
   assert.ok(cc.keys[0].isSigner && cc.keys[0].isWritable && !cc.keys[1].isSigner);
@@ -151,7 +157,7 @@ test("curve account decodes and events parse from logs", () => {
   CURVE_DISC.copy(buf, 0);
   mint.toBuffer().copy(buf, 8); creator.toBuffer().copy(buf, 40);
   let o = 72;
-  for (const v of [100n, 80n, 20n, 19n, TARGET_XNT, 5n, 6n, 7n, 8n]) { buf.writeBigUInt64LE(v, o); o += 8; }
+  for (const v of [100n, 80n, 20n, 19n, 10_000n * XNT, 5n, 6n, 7n, 8n]) { buf.writeBigUInt64LE(v, o); o += 8; }
   buf.writeBigInt64LE(1_700_000_000n, o); o += 8;
   buf[o] = 3; o += 1;
   buf.writeUInt32LE(4, o); o += 4;
@@ -161,6 +167,7 @@ test("curve account decodes and events parse from logs", () => {
   const c: Curve = decodeCurve(new PublicKey(mint), buf);
   assert.equal(c.supply, 100n); assert.equal(c.raisedXnt, 8n); assert.equal(c.status, 3);
   assert.equal(c.positions, 4); assert.equal(c.delivered, 9n); assert.equal(c.taxBps, 500); assert.equal(c.createdAt, 1_700_000_000);
+  assert.equal(c.targetXnt, 10_000n * XNT, "each curve's own target is read from the account");
 
   const ev = Buffer.alloc(8 + 64 + 1 + 8 * 7 + 8);
   EVENT.Trade.copy(ev, 0);
@@ -184,8 +191,51 @@ test("setup holds across the supply and tax range", () => {
       const q = quoteBuy(c, 10_000n * XNT, LATER);
       assert.ok(q.complete);
       const end = applyBuy(c, q);
-      const open = Number(TARGET_XNT) / Number(c.Pn);
+      const open = Number(R) / Number(c.Pn);
       assert.ok(Math.abs(priceOf(end) / open - 1) < 1e-6, `supply ${supply} tax ${tax}`);
     }
+  }
+});
+
+test("every target, at the supply bounds: ends at the target and the pool's opening price", () => {
+  // The old fixed 20 XNT too: curves created before targets were selectable keep it.
+  for (const target of [...TARGETS_XNT, 20n]) {
+    const r = target * XNT;
+    for (const supply of [1_000n, 10_000_000_000n]) {
+      for (const tax of [100, 1000]) {
+        let c = fresh(supply, tax, 0, target);
+        const s = curveSetup(supply, tax, target);
+        const pool = { targetXnt: r, poolTokensNet: s.Pn };
+        // Partial buys first: the price rises from the start price, nothing completes.
+        const start = priceOf(c);
+        for (let i = 0; i < 10; i++) c = applyBuy(c, quoteBuy(c, r / 20n, LATER));
+        assert.ok(priceOf(c) > start && c.tokensSold < c.curveTokens);
+        assert.ok(c.raisedXnt < r, `raised ${c.raisedXnt} of ${r}`);
+        // Then one buy fills it.
+        const q = quoteBuy(c, 2n * r, LATER);
+        assert.ok(q.complete && q.xntIn < 2n * r);
+        const end = applyBuy(c, q);
+        assert.equal(end.tokensSold, end.curveTokens);
+        assert.ok(end.raisedXnt <= r && r - end.raisedXnt <= maxShort(r), `target ${target} supply ${supply}: raised ${end.raisedXnt}`);
+        assert.ok(Math.abs(priceOf(end) / poolOpenPrice(pool) - 1) < 1e-9, `target ${target} supply ${supply} tax ${tax}`);
+        // Everything fits the program's u64 fields and its u128 k.
+        assert.ok(end.virtualXnt < 2n ** 64n && k0Of(c) < 2n ** 128n);
+        // The anti-snipe cap is 1% of the supply whatever the target.
+        assert.equal(q.maxEarly, supply * XNT / 100n);
+      }
+    }
+  }
+});
+
+test("the graduation target: default 500, only the allowed values", () => {
+  assert.deepEqual(TARGETS_XNT, [500n, 1_000n, 3_000n, 5_000n, 10_000n]);
+  for (const raw of [undefined, null, "", "  "]) assert.equal(parseTarget(raw), 500n);
+  assert.equal(parseTarget(500), 500n);
+  assert.equal(parseTarget("1000"), 1_000n);
+  assert.equal(parseTarget("3,000"), 3_000n);
+  assert.equal(parseTarget(" 5000 "), 5_000n);
+  assert.equal(parseTarget(10_000), 10_000n);
+  for (const bad of [0, 20, 499, 501, 20_000, -500, "500.5", "1e3", "abc", "0x1f4", true]) {
+    assert.throws(() => parseTarget(bad), /Graduation target must be 500, 1,000, 3,000, 5,000 or 10,000 XNT/, `should reject ${String(bad)}`);
   }
 });

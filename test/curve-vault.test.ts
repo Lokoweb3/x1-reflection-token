@@ -20,8 +20,8 @@ import type { Config } from "../src/config.js";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curve-vault-test-"));
 process.env.REFLECT_FACTORY_DIR = dir;
 process.env.PINATA_JWT = "";
-const { buildCurveStep, buildVaultStep, launchStatus, vaultLaunches, vaultManaged } = await import("../src/factory/launch.js");
-const { CURVE_DISC, CURVE_LEN, CurveStatus, authPda, curvePda } = await import("../src/curve.js");
+const { buildCurveStep, buildVaultStep, launchStatus, validateCurveParams, vaultLaunches, vaultManaged } = await import("../src/factory/launch.js");
+const { CURVE_DISC, CURVE_LEN, CurveStatus, IX: CURVE_IX, authPda, curvePda, curveSetup } = await import("../src/curve.js");
 const { IX, vaultAuthPda, vaultPda } = await import("../src/taxvault.js");
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -76,7 +76,7 @@ function fakeConn(accounts = new Map<string, { owner: PublicKey; data: Buffer }>
 
 const params = {
   creator: creator.toBase58(), name: "Vault Curve", symbol: "VCRV", description: "", image: "", supply: "1000000000", taxBps: 500,
-  autoLpBps: 2500, burnBps: 2500, poolTokens: "1000000000", poolXnt: "20", lockDays: null, quote: "XNT",
+  autoLpBps: 2500, burnBps: 2500, poolTokens: "1000000000", poolXnt: "500", lockDays: null, quote: "XNT",
 };
 const withdrawAuthorityOf = (ixs: TransactionInstruction[]) => {
   const ix = ixs.find((i) => i.programId.equals(TOKEN_2022_PROGRAM_ID) && i.data[0] === 26 && i.data[1] === 0)!;
@@ -153,4 +153,29 @@ test("after graduation the creator starts the vault with the curve's pool and lo
   s = await launchStatus(fakeConn(accounts), cfg, record);
   assert.equal("vault" in s && s.vault, true, "started");
   await assert.rejects(buildVaultStep(fakeConn(accounts), cfg, record, nft.toBase58()), /already started/);
+});
+
+test("a curve create request picks its graduation target: default 500, only the allowed values", async () => {
+  const raw = { creator: creator.toBase58(), name: "Target Curve", symbol: "TGT", description: "", image: "", supply: "1000000000", taxBps: 500, autoLpBps: 2500, burnBps: 2500 };
+  assert.equal(validateCurveParams(raw).poolXnt, "500", "default 500 XNT");
+  assert.equal(validateCurveParams({ ...raw, targetXnt: "" }).poolXnt, "500");
+  for (const t of [500, 1000, 3000, 5000, 10000]) assert.equal(validateCurveParams({ ...raw, targetXnt: t }).poolXnt, String(t));
+  assert.equal(validateCurveParams({ ...raw, targetXnt: "10,000" }).poolXnt, "10000");
+  for (const bad of [0, 20, 499, 501, 20000, "lots"]) {
+    assert.throws(() => validateCurveParams({ ...raw, targetXnt: bad }), /Graduation target must be 500, 1,000, 3,000, 5,000 or 10,000 XNT/, `should reject ${bad}`);
+  }
+  // A client can't sneak another pool amount in: poolXnt always follows the target.
+  assert.equal(validateCurveParams({ ...raw, poolXnt: "20" }).poolXnt, "500");
+
+  // create_curve carries (supply, target) and the launch record keeps the target as the pool's XNT.
+  const p = validateCurveParams({ ...raw, targetXnt: "10000" });
+  const { ixs, record } = await buildCurveStep(fakeConn(), config(true), p, "http://127.0.0.1:1", CURVE);
+  const create = ixs.at(-1)!;
+  assert.ok(create.programId.equals(CURVE) && create.data.subarray(0, 8).equals(CURVE_IX.createCurve));
+  assert.equal(create.data.length, 24);
+  assert.equal(create.data.readBigUInt64LE(8), 1_000_000_000n);
+  assert.equal(create.data.readBigUInt64LE(16), 10_000n);
+  assert.equal(record.poolXnt, "10000");
+  assert.equal(record.poolTokens, "200000000", "the pool's share (S - T) before the transfer fee");
+  assert.equal(curveSetup(1_000_000_000n, 500, 10_000n).Pg, 200_000_000n * 10n ** 9n);
 });

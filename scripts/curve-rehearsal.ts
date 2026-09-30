@@ -5,7 +5,8 @@
  * the curve and deliver every buyer's tokens, and checks the result on-chain. Nothing
  * touches a real network.
  *
- * Start the validator first (see scripts/local-curve-test.ts), then:
+ * Start the validator first (see scripts/local-curve-test.ts; the selectable-target build,
+ * curve2-test), then:
  *   LOCAL_RPC=http://127.0.0.1:8999 CURVE_PROGRAM=<id> npx tsx scripts/curve-rehearsal.ts
  */
 import assert from "node:assert/strict";
@@ -48,7 +49,7 @@ async function signAndSend(p: string, body: Record<string, unknown>, signer: Key
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curve-rehearsal-"));
 const payer = Keypair.generate(), crank = Keypair.generate(), creator = Keypair.generate();
 const buyers = [Keypair.generate(), Keypair.generate(), Keypair.generate()];
-for (const k of [payer, crank, creator, ...buyers]) await fund(k.publicKey, k === crank ? 2 : 60);
+for (const k of [payer, crank, creator, ...buyers]) await fund(k.publicKey, k === crank ? 2 : 700);
 const feeMint = await createMint(conn, payer, payer.publicKey, null, 6);
 const creatorFee = getAssociatedTokenAddressSync(feeMint, creator.publicKey);
 await sendAndConfirmTransaction(conn, new Transaction().add(createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, creatorFee, creator.publicKey, feeMint)), [payer]);
@@ -76,6 +77,7 @@ for (let i = 0; i < 60 && !(await fetch(SITE + "/api/info").then((r) => r.ok).ca
 
 try {
   console.log("1. Create a curve token through the site (launch fee in the local fee token)");
+  // No targetXnt: the site's default, 500 XNT.
   const params = { name: "Curve Rehearsal", symbol: "CRV", image: "", description: "rehearsal", supply: "1000000000", taxBps: 500, autoLpBps: 2500, burnBps: 2500, creator: creator.publicKey.toBase58() };
   const { mint } = await signAndSend("/api/curve/create", params, creator);
   const m = await getMint(conn, new PublicKey(mint), "confirmed", TOKEN_2022_PROGRAM_ID);
@@ -94,7 +96,7 @@ try {
   ok(`buyer 1 sold 50M tokens back (quote ${JSON.stringify(s.quote).slice(0, 80)}…)`);
   let v = await view(buyers[0]);
   ok(`progress: raised ${v.curve?.raisedXnt ?? v.raisedXnt ?? JSON.stringify(v).slice(0, 0)} | status ${v.curve?.status ?? v.status}`);
-  const fin = await signAndSend("/api/curve/buy", { wallet: buyers[2].publicKey.toBase58(), mint, xnt: "30" }, buyers[2]);
+  const fin = await signAndSend("/api/curve/buy", { wallet: buyers[2].publicKey.toBase58(), mint, xnt: "600" }, buyers[2]);
   ok(`final buy completes the curve (quote ${JSON.stringify(fin.quote).slice(0, 90)}…)`);
 
   console.log("3. The site's crank graduates the curve and delivers tokens");

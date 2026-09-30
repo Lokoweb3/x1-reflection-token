@@ -22,7 +22,9 @@ export const LOCKER_PROGRAM_ID = new PublicKey("5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2
 export const FEE_RECEIVER = new PublicKey("53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy");
 export const FEE_BPS = 100n;
 export const CURVE_BPS = 8000n;
-export const TARGET_XNT = 20_000_000_000n;
+/** Graduation targets a creator may pick, whole XNT (TARGETS_XNT_WHOLE); each curve stores its own. */
+export const TARGETS_XNT = [500n, 1_000n, 3_000n, 5_000n, 10_000n] as const;
+export const DEFAULT_TARGET_XNT = 500n;
 export const GRADUATION_DEPOSIT = 300_000_000n;
 export const GRADUATE_REWARD = 10_000_000n;
 export const SNIPE_WINDOW_SECS = 120;
@@ -137,8 +139,24 @@ export function transferFee(amount: bigint, taxBps: bigint | number, maxFee = U6
   return fee > maxFee ? maxFee : fee;
 }
 
-/** create_curve's setup from the supply (whole tokens) and the mint's tax. */
-export function curveSetup(supplyWhole: bigint, taxBps: number, maxFee = U64_MAX, target = TARGET_XNT) {
+/**
+ * A create request's graduation target (whole XNT): one of TARGETS_XNT, DEFAULT_TARGET_XNT
+ * when left out. The program refuses anything else (BadTarget).
+ */
+export function parseTarget(raw: unknown): bigint {
+  const text = raw === undefined || raw === null ? "" : String(raw).trim().replace(/[,_\s]/g, "");
+  if (text === "") return DEFAULT_TARGET_XNT;
+  const v = /^\d{1,6}$/.test(text) ? BigInt(text) : -1n;
+  if (!TARGETS_XNT.some((t) => t === v)) {
+    const names = TARGETS_XNT.map((t) => t.toLocaleString("en-US"));
+    throw new Error(`Graduation target must be ${names.slice(0, -1).join(", ")} or ${names.at(-1)} XNT.`);
+  }
+  return v;
+}
+
+/** create_curve's setup from the supply (whole tokens), the mint's tax and the target (whole XNT). */
+export function curveSetup(supplyWhole: bigint, taxBps: number, targetWhole: bigint, maxFee = U64_MAX) {
+  const target = targetWhole * ONE;
   const S = supplyWhole * ONE;
   const T = (S * CURVE_BPS) / BPS;
   const Pg = S - T;
@@ -215,7 +233,7 @@ export const marketCapOf = (c: Pick<CurveState, "virtualXnt" | "virtualTokens" |
 /** Share of the curve's tokens sold, 0..1. */
 export const progressOf = (c: Pick<CurveState, "tokensSold" | "curveTokens">) =>
   c.curveTokens > 0n ? Number((c.tokensSold * 1_000_000n) / c.curveTokens) / 1_000_000 : 0;
-/** The XDEX pool's opening price (XNT per whole token): TARGET into the pool against the net tokens. */
+/** The XDEX pool's opening price (XNT per whole token): the curve's target into the pool against the net tokens. */
 export const poolOpenPrice = (c: Pick<Curve, "targetXnt" | "poolTokensNet">) => Number(c.targetXnt) / Number(c.poolTokensNet);
 
 // ---------- instructions ----------
@@ -227,9 +245,9 @@ const u64s = (d: Buffer, ...vals: bigint[]) => {
   return b;
 };
 
-export function createCurveIx(programId: PublicKey, creator: PublicKey, mint: PublicKey, supplyWhole: bigint) {
+export function createCurveIx(programId: PublicKey, creator: PublicKey, mint: PublicKey, supplyWhole: bigint, targetWhole: bigint) {
   return new TransactionInstruction({
-    programId, data: u64s(IX.createCurve, supplyWhole),
+    programId, data: u64s(IX.createCurve, supplyWhole, targetWhole),
     keys: [m(creator, true, true), m(mint, false, true), m(curvePda(programId, mint), false, true), m(authPda(programId, mint), false, true),
       m(SystemProgram.programId, false, false)],
   });

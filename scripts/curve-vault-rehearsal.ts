@@ -26,7 +26,7 @@
  *     --clone AvNDf423kEmWNP6AZHFV7DkNG4YRgt6qbdyyryjaa4PQ --clone 6XESNUXbGNT6x3zaB51Axk7Jh6Ba58LFJukkfPUzzSwA \
  *     --clone 5GUzsG219nDBZJvS2xN5L8gQr43G9owzMhEL1X3a6soS --clone FQG6rKgbDCBxVxWZimckZpBMedkGC7RqBLXGMQ379sr2 \
  *     --clone 5nwh3vHNEyhGRA2Hc2o24ekTvqVSr7Dm7C3rkPH7GkP --clone CdQJoNNF1UpYekqzaXKekDc5hsrD6zzuZEMQv8hLavfc \
- *     --bpf-program CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY lp-locker/target/curve-test/bonding_curve.so \
+ *     --bpf-program CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY lp-locker/target/curve2-test/bonding_curve.so \
  *     --bpf-program D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW lp-locker/target/vault3-test/tax_vault.so
  * then:
  *   LOCAL_RPC=http://127.0.0.1:9301 npx tsx scripts/curve-vault-rehearsal.ts
@@ -85,7 +85,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curve-vault-rehearsal-"));
 const payer = Keypair.generate(), crank = Keypair.generate(), publisher = Keypair.generate(), creator = Keypair.generate(), visitor = Keypair.generate();
 const buyers = [Keypair.generate(), Keypair.generate(), Keypair.generate()];
 const fund = async (k: PublicKey, sol: number) => conn.confirmTransaction(await conn.requestAirdrop(k, sol * LAMPORTS_PER_SOL), "confirmed");
-for (const k of [payer, creator, ...buyers]) await fund(k.publicKey, 80);
+for (const k of [payer, creator, ...buyers]) await fund(k.publicKey, 800);
 for (const k of [crank, publisher, visitor]) await fund(k.publicKey, 5);
 const feeMint = await createMint(conn, payer, payer.publicKey, null, 6);
 const creatorFee = getAssociatedTokenAddressSync(feeMint, creator.publicKey);
@@ -172,7 +172,7 @@ try {
   console.log("1. Create a curve token through a site with the Tax Vault set up");
   const info = await api("/api/info");
   assert.equal(info.taxVault?.launches, true, "the site makes vault launches");
-  ok(`site: curve ${info.curve}, taxVault ${JSON.stringify(info.taxVault)}`);
+  ok(`site: curve ${JSON.stringify(info.curve)}, taxVault ${JSON.stringify(info.taxVault)}`);
   const params = { name: "Vault Curve", symbol: "VCRV", image: "", description: "curve + tax vault rehearsal", supply: "1000000000", taxBps: 500,
     autoLpBps: 2500, burnBps: 2500, creator: creator.publicKey.toBase58() };
   const { mint } = await step("/api/curve/create", params, creator);
@@ -194,8 +194,8 @@ try {
     await step("/api/curve/buy", { wallet: buyers[+i].publicKey.toBase58(), mint, xnt: amt }, buyers[+i], { curveMint: mint });
     ok(`buyer ${i} bought with ${amt} XNT`);
   }
-  await step("/api/curve/buy", { wallet: buyers[2].publicKey.toBase58(), mint, xnt: "30" }, buyers[2], { curveMint: mint });
-  ok("buyer 2's buy completes the curve");
+  await step("/api/curve/buy", { wallet: buyers[2].publicKey.toBase58(), mint, xnt: "600" }, buyers[2], { curveMint: mint });
+  ok("buyer 2's buy completes the curve (the default 500 XNT target)");
   await waitFor("graduated, delivered and registered", async () => {
     const v = await api(`/api/curve/${mint}`);
     rec = JSON.parse(fs.readFileSync(path.join(launchDir, "launch.json"), "utf8"));
