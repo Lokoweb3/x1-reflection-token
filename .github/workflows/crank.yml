@@ -1,0 +1,55 @@
+# Tax Vault crank on GitHub Actions: every 10 minutes, one pass of scripts/crank.ts over
+# every vault token (collect, sell, burn, liquidity, creator reward, pay holders from the
+# published list, fallback payouts). No server needed; anyone can fork the repo and run
+# their own. It never publishes lists (that needs the publisher key).
+#
+# Setup (repository Settings -> Secrets and variables -> Actions):
+#   secret   CRANK_KEYPAIR  the JSON key file of a wallet made just for this, with ~0.05 XNT
+#                           for fees (it earns the crank reward on sales). Never your main wallet.
+#   variable CRANK_RPC      optional; default https://rpc.testnet.x1.xyz
+#   variable CRANK_PROGRAM  optional; the tax_vault program id (default: the testnet one)
+# Without the secret the job skips itself. GitHub may delay scheduled runs by a few minutes.
+name: Tax Vault crank
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: tax-vault-crank
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crank:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      HAS_KEY: ${{ secrets.CRANK_KEYPAIR != '' }}
+    steps:
+      - name: Skip without a crank wallet
+        if: env.HAS_KEY != 'true'
+        run: echo "No CRANK_KEYPAIR secret set; nothing to do."
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+      - uses: actions/setup-node@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - if: env.HAS_KEY == 'true'
+        run: npm ci --no-audit --no-fund
+      - name: One crank pass over every vault
+        if: env.HAS_KEY == 'true'
+        env:
+          CRANK_KEYPAIR: ${{ secrets.CRANK_KEYPAIR }}
+          RPC: ${{ vars.CRANK_RPC || 'https://rpc.testnet.x1.xyz' }}
+          PROGRAM: ${{ vars.CRANK_PROGRAM || 'D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW' }}
+        run: |
+          umask 077
+          printf '%s' "$CRANK_KEYPAIR" > "$RUNNER_TEMP/crank.json"
+          npx tsx scripts/crank.ts --rpc "$RPC" --keypair "$RUNNER_TEMP/crank.json" --program "$PROGRAM" --all
+          rm -f "$RUNNER_TEMP/crank.json"

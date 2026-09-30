@@ -493,6 +493,9 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
   instructions anyone can send; whoever sends a sale earns the crank reward (1% of the
   holders' XNT from it, up to 0.05 XNT). The list files are on IPFS and their CIDs are
   on-chain; a file is only used if it gives the on-chain Merkle root.
+- **A free scheduled crank on GitHub Actions** is included (`.github/workflows/crank.yml`):
+  add a secret `CRANK_KEYPAIR` (a wallet made just for this, with ~0.05 XNT) and it runs
+  every 10 minutes. Anyone can fork the repo and run their own.
 - **Anyone can run the crank** with only an RPC and a funded wallet:
 
   ```bash
