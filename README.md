@@ -499,11 +499,15 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
 
   | Network | CID | Open |
   |---|---|---|
-  | testnet | `RECOVERY_TESTNET_CID` | `https://ipfs.io/ipfs/RECOVERY_TESTNET_CID` |
+  | testnet | `bafybeidzdlu2ggduswbtr637qnsfxgvjx5ogakxkihuamexkgvpjd5aska` (built from `5d162a7`, sha256 `17f0150b…`) | https://bafybeidzdlu2ggduswbtr637qnsfxgvjx5ogakxkihuamexkgvpjd5aska.ipfs.dweb.link/ |
+  | mainnet | pinned at the mainnet rollout | |
 
-  Anyone can rebuild it and compare: `npx tsx scripts/build-recovery.ts --network testnet`
-  (prints the file's sha256; the footer names the commit it was built from). Save a copy:
-  it works from any IPFS gateway or web host, or opened from disk.
+  Open it through a subdomain gateway (`https://<cid>.ipfs.dweb.link/` or
+  `https://<cid>.ipfs.inbrowser.link/`), `ipfs://<cid>` in Brave or a local node, or any web
+  host: Pinata's public gateway refuses HTML. Anyone can rebuild it and compare:
+  `git checkout 5d162a7 && npx tsx scripts/build-recovery.ts --network testnet` prints the
+  same sha256 (`src/recovery/pinned.ts` records each pinned copy). Save a copy: it works
+  opened from disk too.
 - **Always, with no one's permission:** collecting the tax, burning, selling, adding
   liquidity, the creator reward and paying holders from a published list are program
   instructions anyone can send; whoever sends a sale earns the crank reward (1% of the

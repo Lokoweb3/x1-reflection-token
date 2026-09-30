@@ -425,7 +425,7 @@ body.gated { overflow: hidden; }
 <footer>
   <div class="wrap">
     <span>99 + Tax · tax tokens on X1 that pay holders in XNT · <span id="footNet"></span></span>
-    <span><a href="https://github.com/Lokoweb3/x1-reflection-token" target="_blank" rel="noopener">Open source on GitHub</a> · Estimates only. Crypto is volatile and nothing is guaranteed. Not financial advice. <a href="#disclaimer">Disclaimer</a></span>
+    <span><a href="https://github.com/Lokoweb3/x1-reflection-token" target="_blank" rel="noopener">Open source on GitHub</a><span id="footRecovery" hidden> · <a id="footRecoveryLink" target="_blank" rel="noopener">Recovery page (IPFS)</a></span> · Estimates only. Crypto is volatile and nothing is guaranteed. Not financial advice. <a href="#disclaimer">Disclaimer</a></span>
   </div>
 </footer>
 
@@ -502,6 +502,7 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
     renderContracts(info, net);
     $("netLabel").textContent = tr("Live on {net}", { net });
     $("footNet").textContent = net;
+    if (info.taxVault?.recoveryUrl) { $("footRecoveryLink").href = info.taxVault.recoveryUrl; $("footRecovery").hidden = false; }
     const fee = Number(info.feeAmount), feeSym = info.feeSymbol;
     $("feeLede").textContent = fee === 0.99 && feeSym === "USDC" ? tr("99¢ + tax") : tr("{fee} {feeSym} + tax", { fee: fmt(fee), feeSym });
     const rows = [

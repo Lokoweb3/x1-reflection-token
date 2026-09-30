@@ -337,6 +337,8 @@ let vaultLog = null; // what the last "Run the vault now" did: { mint, lines: [[
  */
 /** The site's "Tax Vault beta" notice (factory.taxVault.beta), shown in every vault panel. */
 let vaultBeta = false;
+/** The pinned recovery page (IPFS): keeps the vault running if this site is down. */
+let recoveryUrl = null;
 function vaultPanel(d, s) {
   const v = s.vault;
   if (!v) return null;
@@ -406,6 +408,7 @@ function vaultPanel(d, s) {
     ...warns,
     state,
     el("div", { class: "vp-run" }, run, el("span", { class: "muted", text: tr("Anyone can run the vault: your wallet signs the steps that are due (collect, sell, liquidity, creator reward, payouts) and pays their network fees; you earn the crank reward, 1% of the holders' XNT from each sale (up to 0.05 XNT).") })),
+    recoveryUrl ? el("p", { class: "muted", style: "font-size:12px;margin:8px 0 0" }, tr("If this site is ever down, the vault keeps working from the "), el("a", { href: recoveryUrl, target: "_blank", rel: "noopener", text: tr("recovery page on IPFS ↗") }), tr(" (any wallet, no server).")) : null,
     log, form, activityList(d, v.activity));
 }
 /** The latest vault actions, whoever sent them (this site, another crank, a visitor): what, when, by whom. */
@@ -948,7 +951,7 @@ $("search").addEventListener("submit", (ev) => {
 const fromPath = () => { const m = location.pathname.match(/^\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/); if (m) { $("mintInput").value = m[1]; show(m[1]); } else showGallery(); };
 window.addEventListener("popstate", fromPath);
 fromPath();
-api("/api/info").then((i) => { if (i.lockerUpgradeable) $("lockerNote").hidden = false; vaultBeta = i.taxVault?.beta === true; }).catch(() => {});
+api("/api/info").then((i) => { if (i.lockerUpgradeable) $("lockerNote").hidden = false; vaultBeta = i.taxVault?.beta === true; recoveryUrl = i.taxVault?.recoveryUrl ?? null; }).catch(() => {});
 </script>
 </body>
 </html>

@@ -20,6 +20,7 @@ import path from "node:path";
 import { PublicKey, Transaction } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
+import { recoveryUrl } from "./recovery/pinned.js";
 import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
@@ -746,7 +747,7 @@ async function getView(url: URL) {
       // New XNT launches hand their tax to the Tax Vault program (no distributor gas to pre-fund).
       // Their creator reward is swapped on-chain into the network's reward token (XNM on testnet).
       ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR),
-        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true } } : {}),
+        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true, recoveryUrl: recoveryUrl(cfg.network) } } : {}),
     };
   }
   if (url.pathname === "/api/launches") {
