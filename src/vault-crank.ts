@@ -544,7 +544,7 @@ export interface PlannedStep { kind: "upgrade" | "collect" | "sell" | "add_liqui
  * The estimate is the crank reward the sale would earn (1% of the holders' part, capped).
  */
 export async function planForCaller(conn: Connection, env: { program: PublicKey; xdex: PublicKey; network: "mainnet" | "testnet" }, v: Vault, t: { mint: PublicKey; taxBps: number },
-  caller: PublicKey, list: PayList | null, opts: { maxPays: number; minPayout: bigint }) {
+  caller: PublicKey, list: PayList | null, opts: { maxPays: number; minPayout: bigint; includeNew?: boolean }) {
   const { program, xdex } = env;
   const steps: PlannedStep[] = [];
   const notes: string[] = [];
@@ -609,7 +609,8 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   }
   // 5. pay / pay_fallback a few wallets. Only wallets that already have a PaidRecord: a
   // visitor earns nothing for paying, so they never pay a record's rent (the site crank
-  // and scripts/crank.ts create new records).
+  // and scripts/crank.ts create new records). `includeNew` (the recovery page, when the
+  // visitor opts in) pays new wallets too, the caller paying each new record's rent.
   let recordsRent = 0n;
   const now = nowSecs();
   const eff = effectiveList(v, now - ACTIVATION_MARGIN_SECS);
@@ -617,7 +618,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   if (list && eff && !waitingActivation && eff.root.toString("hex") === list.root) {
     const fallback = inFallback(v, now);
     const due = (await dueFrom(conn, program, v, list.wallets, { fallback, minPayout: opts.minPayout, listTotal: eff.total }))
-      .filter((d) => d.recordExists).slice(0, opts.maxPays);
+      .filter((d) => d.recordExists || opts.includeNew).slice(0, opts.maxPays);
     if (due.length) {
       const { proofs } = buildVaultTree(v.address, list.wallets);
       const build = fallback ? payFallbackIx : payIx;

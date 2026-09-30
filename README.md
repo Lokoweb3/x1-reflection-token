@@ -488,6 +488,22 @@ the vault is audited.
 
 Tax Vault tokens don't depend on this site, its server or its keys (v3):
 
+- **The recovery page: open a link, connect a wallet, click.** One self-contained HTML
+  file on IPFS (`src/recovery`) that talks only to an X1 RPC, IPFS gateways and the
+  visitor's wallet. It lists every vault, shows its state and recovery windows, fetches
+  the active rewards list by its on-chain CID (checked against the on-chain root), and
+  runs the steps due now (collect, sell, add liquidity, creator reward, `pay`, or
+  `pay_fallback` in fallback), with the visitor earning the crank reward. The creator can
+  appoint a new publisher from it once the 7 days are up. It can't publish new lists (see
+  below). Pinned copies:
+
+  | Network | CID | Open |
+  |---|---|---|
+  | testnet | `RECOVERY_TESTNET_CID` | `https://ipfs.io/ipfs/RECOVERY_TESTNET_CID` |
+
+  Anyone can rebuild it and compare: `npx tsx scripts/build-recovery.ts --network testnet`
+  (prints the file's sha256; the footer names the commit it was built from). Save a copy:
+  it works from any IPFS gateway or web host, or opened from disk.
 - **Always, with no one's permission:** collecting the tax, burning, selling, adding
   liquidity, the creator reward and paying holders from a published list are program
   instructions anyone can send; whoever sends a sale earns the crank reward (1% of the
@@ -664,6 +680,7 @@ script's header for the validator command):
 | `scripts/vault-v2-rehearsal.ts` | The v2 rollout as it happens on testnet: the previous site + v1 program, then the program upgrade and the new site upgrading the vault by itself |
 | `scripts/local-vault-v3-test.ts` | Tax Vault v3 program alone: v1/v2 vaults upgraded, list CIDs, appointing a publisher, `pay_fallback` maths and error cases |
 | `scripts/vault-v3-rehearsal.ts` | The "operator dies" drill: previous site + v2 program, v3 deployed, the new site upgrades the vault and publishes lists to IPFS (a local stand-in), "Run the vault now" from a visitor's wallet; then the site stops and another wallet keeps holders paid with `scripts/crank.ts` from the IPFS list, through fallback, until the creator's appointed publisher publishes again |
+| `scripts/build-recovery.ts --short-windows` | The recovery page, driven in a real browser with a test wallet: on testnet a stranger's wallet ran CUP's due steps (collect, sell, liquidity, creator reward) and earned the crank reward; on a local validator holding a copy of CUP's vault under the short-windows program, the guardian appointed a new publisher and a stranger paid holders with `pay_fallback` from the IPFS list |
 | `scripts/publisher-quorum-rehearsal.ts` | The publisher quorum: the site with a plain key, then a 2-of-3 Squads multisig set up by `scripts/setup-publisher-quorum.ts` and made the publisher; the site's proposals, a co-signer rejection and a new list, the co-signer's approval, execution and payouts; a malicious list and a publisher change proposed by the site's key alone rejected by the co-signer and never on-chain, the recovery clocks unmoved |
 | `scripts/local-holder-pass-test.ts`, `scripts/local-claims-cycle-test.ts` | Holder passes |
 

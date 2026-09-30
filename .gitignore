@@ -16,3 +16,6 @@ logo-options/
 # Vercel front door: generated config holds the backend secret
 .vercel-site*/
 .vercel/
+
+# Built recovery pages (scripts/build-recovery.ts); pinned copies are listed in the README
+dist/

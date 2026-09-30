@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>99 + Tax Recovery</title>
+<meta name="description" content="Keep any 99 + Tax vault running with nothing but an X1 RPC, IPFS and your wallet.">
+<style>
+:root {
+  --bg: #f3f2ee; --panel: #fbfaf7; --ink: #1d1f1c; --ink-2: #4a4d47; --ink-3: #74786f; --rule: #d9d6cc;
+  --accent: #c2410c; --accent-ink: #fff; --good: #1d7a3a; --bad: #b42318; --open: #fdecd9;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #151614; --panel: #1d1f1c; --ink: #eceae3; --ink-2: #c4c1b8; --ink-3: #8f8c83; --rule: #34362f;
+    --accent: #f08a4b; --accent-ink: #1a0d05; --good: #5cc57f; --bad: #f47a6e; --open: #3a2616; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 28px 16px 64px; }
+header { border-bottom: 3px solid var(--accent); padding-bottom: 14px; margin-bottom: 22px; }
+.kicker { font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+h1 { font-size: 28px; line-height: 1.15; margin: 8px 0 6px; text-wrap: balance; }
+h2 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin: 30px 0 10px; }
+h3 { margin: 0 0 10px; font-size: 20px; }
+p { margin: 6px 0; max-width: 68ch; }
+.lede { color: var(--ink-2); }
+.muted { color: var(--ink-3); }
+.good { color: var(--good); }
+.bad { color: var(--bad); }
+a { color: var(--accent); }
+code, .mono, input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+section.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; margin-top: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row > input { flex: 1 1 280px; min-width: 0; }
+input, select { background: var(--bg); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; }
+select { font: inherit; }
+button { font: inherit; font-weight: 600; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 14px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.wicon { width: 18px; height: 18px; }
+details { margin-top: 10px; }
+summary { cursor: pointer; color: var(--ink-2); }
+.settings { display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; align-items: center; margin-top: 10px; }
+.settings input { width: 100%; }
+@media (max-width: 560px) { .settings { grid-template-columns: 1fr; } }
+ul.vaults { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-weight: 400; padding: 5px 10px; }
+dl { margin: 0; display: grid; gap: 4px; }
+.kv { display: grid; grid-template-columns: 150px 1fr; gap: 10px; }
+.kv dt { color: var(--ink-3); }
+.kv dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) { .kv { grid-template-columns: 1fr; gap: 0; } .kv + .kv { margin-top: 6px; } }
+.windows { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+@media (max-width: 560px) { .windows { grid-template-columns: 1fr; } }
+.win { border: 1px dashed var(--rule); border-radius: 6px; padding: 10px; display: grid; gap: 2px; font-size: 14px; }
+.win.open { background: var(--open); border: 1px solid var(--accent); }
+ol.steps { margin: 8px 0; padding-left: 22px; }
+ol.log { list-style: none; padding: 0; margin: 0; font-size: 14px; display: grid; gap: 4px; }
+.how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (max-width: 700px) { .how { grid-template-columns: 1fr; } }
+.how div { border-top: 2px solid var(--ink); padding-top: 8px; font-size: 14px; color: var(--ink-2); }
+.how b { display: block; color: var(--ink); }
+.note { border-left: 3px solid var(--accent); padding: 4px 12px; margin-top: 10px; color: var(--ink-2); }
+footer { margin-top: 40px; font-size: 13px; color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="kicker">Break glass · no server needed</div>
+    <h1>99 + Tax Recovery</h1>
+    <p class="lede">Keeps any 99 + Tax vault running if the 99 + Tax site is gone. This page is one file on IPFS. It talks only to an X1 RPC, IPFS gateways and your wallet, and the program decides every amount: whoever runs it can't take anything.</p>
+  </header>
+
+  <div class="how">
+    <div><b>Anyone: run the vault</b>Collect the tax, sell it, add liquidity, pay the creator reward and pay holders from the published list. You earn the crank reward.</div>
+    <div><b>Creator, after 7 days: appoint</b>If no rewards list is published for 7 days, the token's creator appoints a new publisher.</div>
+    <div><b>Anyone, after 30 days: fallback</b>If still no list, running the vault pays holders their share of everything funded, from the last list.</div>
+  </div>
+
+  <h2>1 · Choose a vault</h2>
+  <section class="panel">
+    <div class="row">
+      <select id="net" aria-label="Network"><option value="testnet">X1 Testnet</option><option value="mainnet">X1 Mainnet</option></select>
+      <button type="button" id="find">List every vault</button>
+    </div>
+    <ul class="vaults" id="vaults"></ul>
+    <div class="row" style="margin-top:10px">
+      <input id="mint" placeholder="or paste the token (mint) address" autocomplete="off" spellcheck="false" aria-label="Token mint address">
+      <button type="button" id="open">Open</button>
+    </div>
+    <details>
+      <summary>Connection settings</summary>
+      <div class="settings">
+        <label for="rpc">X1 RPC</label><input id="rpc" spellcheck="false">
+        <label for="program">Tax Vault program</label><input id="program" spellcheck="false">
+        <label for="gateways">IPFS gateways</label><input id="gateways" spellcheck="false">
+      </div>
+      <p class="muted">Leave blank for the defaults. If a public RPC is slow or limits you, paste your own.</p>
+    </details>
+  </section>
+
+  <h2>2 · Vault status</h2>
+  <section class="panel" id="status"><p class="muted">Choose a vault above.</p></section>
+
+  <div id="actions" hidden>
+    <h2>3 · Act</h2>
+    <section class="panel">
+      <div class="row" id="wallet"></div>
+      <p class="muted" id="walletNote"></p>
+      <div class="row" style="margin-top:8px">
+        <button type="button" id="plan" class="primary">Check what's due</button>
+        <label class="muted"><input type="checkbox" id="includeNew"> also pay wallets never paid before (you pay each one's ~0.0015 XNT record rent)</label>
+      </div>
+      <div id="plans"></div>
+      <div id="appointBox" hidden>
+        <h3 style="margin-top:18px;font-size:16px">Appoint a new publisher</h3>
+        <p class="muted" id="appointNote"></p>
+        <div class="row">
+          <input id="newPublisher" placeholder="new publisher's wallet address" spellcheck="false" autocomplete="off" aria-label="New publisher address">
+          <button type="button" id="appoint">Appoint</button>
+        </div>
+        <p class="note" id="appointConfirm" hidden></p>
+      </div>
+    </section>
+  </div>
+
+  <h2>Activity</h2>
+  <section class="panel"><ol class="log" id="log"><li class="muted placeholder">Nothing yet.</li></ol></section>
+
+  <p class="note">This page can't publish <em>new</em> rewards lists (that needs a holder snapshot and an IPFS upload). The appointed publisher does that with <code>scripts/crank.ts --publisher</code> from the open-source repo; until then, fallback payouts keep holders paid.</p>
+
+  <footer>
+    Built from github.com/Lokoweb3/x1-reflection-token (src/recovery) · commit <span class="mono">__COMMIT__</span> · Tax Vault program <span class="mono">D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW</span>. Save a copy of this file: it works from any IPFS gateway or web host.
+  </footer>
+</main>
+<script>window.RECOVERY_NET = "__NET__";</script>
+<script>__WALLET__</script>
+<script>__APP__</script>
+</body>
+</html>
