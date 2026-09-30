@@ -1,22 +1,28 @@
 # 99 + Tax: tax tokens on X1 that pay holders in XNT
 
 **99 + Tax** is a launchpad for tax tokens on the X1 blockchain. Every trade of a 99 + Tax
-token pays a small tax (1–10%), and a distributor turns that tax into:
+token pays a small tax (1–10%), and the **Tax Vault program** (testnet; a per-token
+distributor on mainnet until the vault is audited) turns that tax into:
 
 - **XNT paid straight to holders' wallets**, in proportion to their balance (at least 35%
   of the tax),
 - **permanent liquidity**: tokens + XNT added to the pool, with the LP tokens burned,
 - **burned tokens**, so the supply only goes down,
-- a **10% creator reward**, paid in USDC.X on mainnet (XNM on testnet with Tax Vault v2)
-  and vesting over 7 days.
+- a **10% creator reward**, paid in USDC.X on mainnet (XNM on testnet) and vesting over
+  7 days.
 
 Anyone can launch one in a few wallet approvals. The whole supply goes into the pool
 (no dev bag), the launch liquidity is locked forever in an NFT, and the tax can never be
 changed.
 
-On testnet the tax is held by the **Tax Vault** program: no server key can move it (see
-[Tax Vault](#tax-vault-testnet)). **Mainnet launches are paused** until the vault is
-audited and deployed there, so that the site never holds a key to anyone's tax.
+On testnet **every token's tax is held by the Tax Vault** program (v3): no server key can
+move it, and holders keep getting paid if the site disappears (see
+[Tax Vault](#tax-vault-testnet) and [If 99 + Tax goes offline](#if-99--tax-goes-offline)).
+**Mainnet launches are paused** until the vault is audited and deployed there, so that the
+site never holds a key to anyone's tax.
+
+**Reviewing the code?** Start with [docs/REVIEW.md](docs/REVIEW.md): scope, deployed
+program hashes and how to reproduce them, tests, trust assumptions and what to look at.
 
 | | |
 |---|---|
@@ -444,7 +450,7 @@ rules checked on-chain. Anyone can crank it; the site's crank does it automatica
   the vault (hands over the withdraw authority once the old wallet is drained). CUP was
   migrated this way.
 
-**v2** (built and rehearsed; the testnet program is being upgraded to it):
+**v2** (live on testnet since 29 Sep 2026):
 
 - the creator reward is **swapped into the network's reward token** before it is
   deposited: **XNM** on testnet (pool `6XES…`), **USDC.X** on mainnet (pool `CAJe…`),
@@ -454,8 +460,8 @@ rules checked on-chain. Anyone can crank it; the site's crank does it automatica
 - `upgrade_vault` converts a v1 vault in place (480 → 552 bytes); the crank runs it by
   itself, and older XNT rewards stay claimable next to the new token.
 
-**v3** (built and rehearsed; not deployed yet): the vault keeps working if 99 + Tax
-disappears (see the next section).
+**v3** (live on testnet since 29 Sep 2026; every testnet vault is v3): the vault keeps
+working if 99 + Tax disappears (see the next section).
 
 - every rewards list file is **pinned to IPFS** before it is published, and its CID is
   stored on-chain next to the list's Merkle root, so anyone can pay from it without the
@@ -564,7 +570,7 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # 84 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths
+npm test          # 87 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
@@ -603,9 +609,13 @@ runs on it**: CUP (migrated, then upgraded v1 → v2 → v3 by the crank), RFLT 
 every new launch, and curve tokens (the vault holds their tax from creation). Both testnet
 distributor services are off. Seen live: collect, burn, sale, auto-liquidity, the XNM creator
 reward, rewards lists pinned to Pinata (the file's hash and Merkle root checked against
-the chain), holder payouts, and "Run the vault now" from a browser wallet. Also live: RFLT
-and CUP's earlier distributor cycles, a creator's collect-fees and metadata updates with a
-real wallet, the faucet and the `bonding_curve` program.
+the chain), holder payouts (a new holder paid exactly its list amount 11½ minutes after
+buying), and "Run the vault now" from a browser wallet. Every transaction fits its compute
+limit to what it uses (X1 bills requested units), which cut fees ~5–10×. The
+`bonding_curve` program with selectable graduation targets (500 default, 1,000, 3,000,
+5,000, 10,000 XNT) since 30 Sep 2026, and supply presets on both launch forms. Also live:
+RFLT and CUP's earlier distributor cycles, a creator's collect-fees and metadata updates
+with a real wallet, and the faucet.
 
 **Rehearsed on local copies of the chain:** every launch path (XNT, JACK, bonding curve,
 bonding curve on the Tax Vault),
@@ -615,8 +625,11 @@ distributor's journal, and program upgrades against the real lock accounts.
 
 **Not yet:** an independent audit of `lp_locker`, `bonding_curve` and `tax_vault` (all
 still upgradeable by the team); the vault on mainnet (mainnet launches stay paused until
-then); a curve token graduating onto the vault on testnet itself (rehearsed locally); a JACK-paired launch on mainnet itself; Holder
-Passes on a public network; the bonding curve on mainnet.
+then); a bonding curve created on real testnet (every curve path is rehearsed locally,
+none has run live yet); a JACK-paired launch on mainnet itself; Holder Passes on a public
+network (testnet `lp_locker` is an older revision without them); the bonding curve on
+mainnet; trustless holder payouts (lists are published by one key; see
+[docs/REVIEW.md](docs/REVIEW.md#trust-assumptions)).
 
 ## Things to know before launching
 
