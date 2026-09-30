@@ -406,19 +406,45 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     fs.writeFileSync(f, JSON.stringify({ last: sigs[0].signature }));
   }
 
+  /** Senders of log entries written before entries named them (signature -> wallet), found on-chain once. */
+  const sendersPath = (mint: string) => path.join(stateDirOf(mint), "vault-senders.json");
+  function readSenders(mint: string): Record<string, string> {
+    try { return JSON.parse(fs.readFileSync(sendersPath(mint), "utf8")); } catch { return {}; }
+  }
+  async function backfillSenders(mint: string, max = 12) {
+    const f = path.join(stateDirOf(mint), "events.jsonl");
+    if (!fs.existsSync(f)) return;
+    const known = readSenders(mint);
+    const missing: string[] = [];
+    const lines = fs.readFileSync(f, "utf8").trim().split("\n");
+    for (let i = lines.length - 1; i >= 0 && missing.length < max; i--) {
+      let e: Record<string, unknown>;
+      try { e = JSON.parse(lines[i]); } catch { continue; }
+      const sig = typeof e.signature === "string" ? e.signature : null;
+      if (sig && typeof e.by !== "string" && !known[sig] && !missing.includes(sig)) missing.push(sig);
+    }
+    if (!missing.length) return;
+    for (const sig of missing) {
+      const tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+      if (tx?.meta) known[sig] = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses }).get(0)!.toBase58();
+    }
+    fs.writeFileSync(sendersPath(mint), JSON.stringify(known));
+  }
+
   /** The latest vault actions for the panel: what happened, when, and who sent it. */
   function activity(mint: string, limit = 12) {
     const f = path.join(stateDirOf(mint), "events.jsonl");
     if (!fs.existsSync(f)) return [];
     const labels: Record<string, string> = { ...(cfg.factory?.taxVault?.labels ?? {}), ...(crank ? { [crank.publicKey.toBase58()]: "99 + Tax" } : {}) };
     const kinds = new Set(["withdraw", "burn", "sell", "auto-lp", "creator-reward", "payout", "allocate", "list", "list-cancelled", "publisher"]);
+    const senders = readSenders(mint);
     const out: Record<string, unknown>[] = [];
     const lines = fs.readFileSync(f, "utf8").trim().split("\n");
     for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
       let e: Record<string, unknown>;
       try { e = JSON.parse(lines[i]); } catch { continue; }
       if (!kinds.has(String(e.kind)) || !e.signature) continue;
-      const by = typeof e.by === "string" ? e.by : e.kind === "allocate" && crank ? crank.publicKey.toBase58() : null;
+      const by = typeof e.by === "string" ? e.by : senders[String(e.signature)] ?? (e.kind === "allocate" && crank ? crank.publicKey.toBase58() : null);
       out.push({ at: e.at, kind: e.kind, signature: e.signature, by, byLabel: by ? labels[by] ?? null : null,
         tokens: e.tokens ?? null, xnt: e.xnt ?? e.total ?? null, wallets: Array.isArray(e.payments) ? e.payments.length : null,
         epoch: e.epoch ?? null, reward: e.reward ?? null, rewardSymbol: e.rewardSymbol ?? null, rewardDecimals: e.rewardDecimals ?? null });
@@ -774,6 +800,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     seen.add(r.mint);
     // Other crankers' transactions into the log first (a failed read only delays it to the next pass).
     await indexChain(r.mint, v).catch((e) => console.error(`[vault crank] ${r.symbol} index: ${msg(e)}`));
+    await backfillSenders(r.mint).catch((e) => console.error(`[vault crank] ${r.symbol} senders: ${msg(e)}`));
     let vault = v;
     await step("upgrade_vault", async () => { vault = await c.upgrade(t, v, notes); });
     let pool: Awaited<ReturnType<typeof c.poolOf>> | null = null;
