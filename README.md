@@ -522,6 +522,67 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
   pays each wallet of the last list its share of everything funded since (`pay_fallback`).
   New holders who bought after that list aren't in it until a publisher publishes again.
 
+## Publisher quorum and running a co-signer
+
+**Optional, per token, off by default.** Tokens keep the site's single publisher key (as
+everything above describes) unless their vault's publisher is switched to the multisig
+below; switching one token doesn't affect any other.
+
+Rewards lists decide who gets the holders' XNT, and the program can only check their totals.
+To take that decision away from a single key without changing the program, a vault's
+publisher can be a **Squads v4 multisig** (its vault PDA): a list only goes on-chain once 2
+of its members approved it. Design: [docs/tax-vault-spec.md](docs/tax-vault-spec.md#publisher-quorum-squads-no-program-change).
+
+- **Members:** the site's crank key (proposes, votes, executes), an independent
+  **co-signer** (votes, executes) and optionally a cold **backup**; threshold 2, no config
+  authority (membership changes need the multisig itself), no time lock.
+- **The site** builds and pins each list as before, then proposes it (one Squads vault
+  transaction holding just the `publish_list`) and approves it; it executes it once the
+  co-signer approved. A rejected or stale proposal is dropped and a new list built. The token
+  page shows the multisig (members, threshold) and each list's co-signer status.
+- **Every list file carries its inputs** (snapshot slot, each eligible wallet's balance, the
+  pot, the previous list), so anyone can recompute it.
+- **The co-signer** approves only a single `publish_list` whose file (fetched by the CID in
+  the instruction) matches the root, keeps every wallet at or above its previous total and
+  what it was paid, fits the vault's totals, equals the allocation recomputed from its
+  inputs, pays no excluded wallet and whose balances match the chain. Anything else it
+  rejects, with the reason as its vote's memo, and alerts. A rejected proposal never reaches
+  the chain, so it doesn't restart the recovery clocks.
+
+Set up (dry run first; `--execute` needs the vault's current publisher key, i.e. on the
+machine that has the site's key):
+
+```bash
+npx tsx scripts/setup-publisher-quorum.ts --rpc <url> --keypair <payer.json> --create-key <new-file.json> \
+  --site <site key> --cosigner <co-signer key> [--backup <cold key>] --mint <mint>[,<mint>...] [--publisher <site key file>] [--execute]
+```
+
+then set `factory.taxVault.quorum = { "multisig": "<multisig address>" }` in the site's
+config.json (optional `labels` name the members on the page) and restart it.
+
+**Running a co-signer** needs only its own key (a member of the multisig, with ~0.01 XNT for
+fees) and an RPC; run it on another machine than the site, by someone else:
+
+```bash
+npx tsx scripts/cosigner.ts --rpc https://rpc.testnet.x1.xyz --keypair <co-signer.json> --multisig <address> \
+  [--webhook <url>] [--pinata-jwt <own key>] [--ipfs-gateway <url>,...] [--loop 20]
+```
+
+It checks every pending proposal, approves or rejects it, executes approved lists if the
+site doesn't, and with `--pinata-jwt` pins a second copy of every approved list file.
+`--dry-run` only reports; `--strict` also rejects flagged lists (balances moved since the
+snapshot, a large share for a new wallet, an old snapshot); `--allow-rule-change` /
+`--allow-rebuild` accept a change of eligibility rules / a list that doesn't build on the
+last one (announce those first). Rejections and flags go to stdout and `--webhook`.
+
+**Before switching, know that it's meant to be hard to undo.** Going back to a single-key
+publisher needs a `set_publisher` approved through the multisig, which the co-signer
+refuses by design, or the guardian's `appoint_publisher` after 7 days without a list. If
+the co-signer is offline, **new lists stop** (wallets on the current list are still paid);
+after 7 days the guardian can appoint a publisher, after 30 the fallback opens. The
+guarantee holds while at least 2 members are honest: two colluding members are still a
+single point of control.
+
 ## Leaderboard, burns and earnings
 
 - **Holder leaderboard** (`/leaderboard/<mint>`): every holder's balance, average cost,
@@ -574,7 +635,7 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # 87 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths
+npm test          # 96 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths, list verification (publisher quorum)
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
@@ -594,6 +655,7 @@ script's header for the validator command):
 | `scripts/vault-v2-rehearsal.ts` | The v2 rollout as it happens on testnet: the previous site + v1 program, then the program upgrade and the new site upgrading the vault by itself |
 | `scripts/local-vault-v3-test.ts` | Tax Vault v3 program alone: v1/v2 vaults upgraded, list CIDs, appointing a publisher, `pay_fallback` maths and error cases |
 | `scripts/vault-v3-rehearsal.ts` | The "operator dies" drill: previous site + v2 program, v3 deployed, the new site upgrades the vault and publishes lists to IPFS (a local stand-in), "Run the vault now" from a visitor's wallet; then the site stops and another wallet keeps holders paid with `scripts/crank.ts` from the IPFS list, through fallback, until the creator's appointed publisher publishes again |
+| `scripts/publisher-quorum-rehearsal.ts` | The publisher quorum: the site with a plain key, then a 2-of-3 Squads multisig set up by `scripts/setup-publisher-quorum.ts` and made the publisher; the site's proposals, a co-signer rejection and a new list, the co-signer's approval, execution and payouts; a malicious list and a publisher change proposed by the site's key alone rejected by the co-signer and never on-chain, the recovery clocks unmoved |
 | `scripts/local-holder-pass-test.ts`, `scripts/local-claims-cycle-test.ts` | Holder passes |
 
 Use the solana 3.x CLI and test validator for the program upgrade tests: the older 2.1
@@ -638,7 +700,9 @@ then); a bonding curve created on real testnet (every curve path is rehearsed lo
 none has run live yet); a JACK-paired launch on mainnet itself; Holder Passes on a public
 network (testnet `lp_locker` is an older revision without them); the bonding curve on
 mainnet; trustless holder payouts (lists are published by one key; see
-[docs/REVIEW.md](docs/REVIEW.md#trust-assumptions)).
+[docs/REVIEW.md](docs/REVIEW.md#trust-assumptions)). The publisher quorum (Squads multisig +
+co-signer, [above](#publisher-quorum-and-running-a-co-signer)) is implemented and rehearsed
+on a local validator only; no testnet vault uses it yet.
 
 ## Things to know before launching
 

@@ -196,7 +196,7 @@ async function crankVault(mint: PublicKey) {
     if (!next) { notes.push("no new list (not enough new XNT for holders yet)"); return; }
     if (!pinataJwt) { notes.push("a new list is due but there's no Pinata key (--pinata-jwt or PINATA_JWT): not published"); return; }
     const text = listFileText({ mint: mint.toBase58(), vault: v.address.toBase58(), epoch: next.epoch.toString(), root: next.root.toString("hex"),
-      total: next.total.toString(), wallets: next.wallets, rules: rulesJson(t.rules) });
+      total: next.total.toString(), wallets: next.wallets, rules: rulesJson(t.rules), inputs: next.inputs });
     // No pin, no publish: the list file must be on IPFS before its CID goes on-chain.
     const cid = await pinFile({ jwt: pinataJwt, uploadUrl: pinataApi }, new Blob([text], { type: "application/json" }), `${t.symbol}-list-${next.epoch}.json`, `99tax ${t.symbol} rewards list ${next.epoch}`);
     log(`  list ${next.epoch}: ${xnt(next.allocated)} new across ${next.holders} holder(s), total ${xnt(next.total)}, pinned as ${cid}${fallback ? " (ends the fallback)" : ""}`);

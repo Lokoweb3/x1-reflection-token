@@ -174,6 +174,7 @@ table.burns .num { text-align: right; }
 .vault-panel dd a.mono { white-space: nowrap; }
 .vault-panel .vp-state { font-size: 13px; margin: 0 0 10px; }
 .vault-panel .vp-state.warn { color: var(--warning); font-weight: 600; }
+.vault-panel dd .warn { color: var(--warning); font-weight: 600; }
 .vault-panel .vp-run { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; }
 .vault-panel .vp-run .muted { font-size: 12px; flex: 1 1 260px; }
 .vault-panel ul.vp-log { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
@@ -336,8 +337,27 @@ function vaultPanel(d, s) {
   const now = Date.now() / 1000;
   const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
   const rows = [];
-  if (v.publisher) {
+  if (v.publisher && v.quorum) {
+    // Publisher quorum: the publisher is a Squads multisig's vault; a list goes live only with `threshold` approvals.
+    const q = v.quorum;
+    rows.push(["Publisher", el("span", { title: "Rewards lists are published by a Squads multisig: each list needs this many of its members' approvals. An independent co-signer re-checks every list (nobody's total drops, the split matches the holders' balances) before approving it." },
+      addr(q.multisig), el("span", { class: "lbl", text: `${q.threshold}-of-${q.voters} multisig` }))]);
+    rows.push(["Members", el("span", {}, ...q.members.filter((m) => m.vote).flatMap((m, i) => [i ? ", " : "", addr(m.key), ` ${m.label}`]))]);
+    const c = v.listCheck;
+    if (c) {
+      const who = (xs) => xs.map((x) => x.label).join(", ");
+      rows.push([`List ${v.listCheckEpoch ?? ""}`.trim(), el("span", { class: c.cosigner === "rejected" ? "warn" : "", text:
+        c.cosigner === "checked" ? `✓ checked and approved by ${who(c.approvedBy)}`
+        : c.cosigner === "rejected" ? `✗ rejected by ${who(c.rejectedBy)}${c.reason ? `: ${c.reason}` : ""}`
+        : `waiting for the co-signer's check (Squads #${c.index})` })]);
+    }
+    if (v.lastRejected && (!c || c.cosigner !== "rejected")) {
+      rows.push(["Last rejected list", el("span", { class: "muted", title: when(Date.parse(v.lastRejected.at) / 1000), text: `${v.lastRejected.epoch}${v.lastRejected.reason ? `: ${v.lastRejected.reason}` : ""}` })]);
+    }
+  } else if (v.publisher) {
     rows.push(["Publisher", el("span", {}, addr(v.publisher), el("span", { class: "lbl", text: v.sitePublishes ? "99 + Tax" : "Not 99 + Tax" }))]);
+  }
+  if (v.publisher) {
     rows.push(["Last list published", el("span", { title: when(v.lastPublishAt), text: relTime(v.lastPublishAt) })]);
     // The active list's file on IPFS: its address is stored on-chain, so it's readable without this site.
     if (v.listCid) rows.push(["List file (IPFS)", link(v.listCidUrl, `${v.listCid.slice(0, 10)}…${v.listCid.slice(-6)} ↗`, "mono")]);

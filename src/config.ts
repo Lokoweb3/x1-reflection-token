@@ -90,7 +90,17 @@ export interface Config {
      * (local copy and IPFS both gone). Each wallet then restarts from what it was paid on-chain
      * and amounts allocated but not yet paid are re-split over current holders. Off by default.
      */
-    taxVault?: { programId: string; publisherKeypair?: string; allowListRebuild?: boolean };
+    /**
+     * quorum: the publisher quorum (docs/tax-vault-spec.md "Publisher quorum"): the Squads v4
+     * multisig whose vault (index 0) is the publisher of some vaults, with the publisher key
+     * as a member. For those vaults the crank proposes each list and publishes it once the
+     * co-signer approved; vaults whose publisher is the key itself are unchanged. `programId`
+     * defaults to the network's Squads program; `labels` names members on the pages.
+     */
+    taxVault?: {
+      programId: string; publisherKeypair?: string; allowListRebuild?: boolean;
+      quorum?: { multisig: string; programId?: string; labels?: Record<string, string> };
+    };
     /**
      * Tokens a launch may pair with instead of XNT (XNT is always offered and the default).
      * `xntPool` is that token's deep XNT pool on XDEX: the distributor swaps it to XNT there

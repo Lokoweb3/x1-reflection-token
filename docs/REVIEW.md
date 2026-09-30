@@ -16,7 +16,9 @@ Off-chain (TypeScript, `src/`): the site and its crank. The pieces that decide m
 `src/vault-crank.ts` (every crank step, the list builder, "Run the vault now"),
 `src/factory/vault.ts` (the site's crank loop, IPFS pinning, views), `src/taxvault.ts`
 (account layouts, instruction encoders, Merkle tree), `scripts/crank.ts` (the standalone
-crank anyone can run).
+crank anyone can run). Publisher quorum (not live yet): `src/squads.ts` (Squads v4 reads and
+instructions), `src/list-verify.ts` (the co-signer's checks), `scripts/cosigner.ts`,
+`scripts/setup-publisher-quorum.ts`.
 
 ## Deployed programs
 
@@ -60,7 +62,7 @@ is never deployed.
 
 ```bash
 cd lp-locker && cargo test -p tax_vault && cargo test -p bonding_curve && cargo test -p lp_locker
-cd .. && npm install && npx tsc --noEmit -p . && npm test      # 87 TypeScript tests
+cd .. && npm install && npx tsc --noEmit -p . && npm test      # 96 TypeScript tests
 ```
 
 End-to-end scripts run against a **local validator** that clones the real testnet XDEX,
@@ -74,6 +76,7 @@ the 3.x `solana-test-validator`, as 2.1 rejects `program extend`):
 | `scripts/local-curve-targets-test.ts` | Curve program upgrade under a part-bought old curve, 500 and 10,000 XNT curves, graduation and delivery |
 | `scripts/curve-vault-rehearsal.ts` | A curve token end to end on the Tax Vault, through the site |
 | `scripts/local-vault-test.ts`, `scripts/local-vault-v2-test.ts` | v1 and v2 behaviour and upgrades |
+| `scripts/publisher-quorum-rehearsal.ts` | The publisher quorum with the real site and the testnet Squads program (cloned): setup, proposals, a co-signer rejection and approval, payouts; a malicious list and a publisher change proposed by the site's key alone are rejected and never reach the chain, `last_publish_at` unmoved |
 
 ## Trust assumptions
 
@@ -89,6 +92,9 @@ the "for now" upgradeability note and each vault's publisher).
    holders, can't go below what was already allocated or paid, each wallet is paid at most
    its leaf, never twice; a 10-minute delay lets the guardian (the token's creator) cancel,
    at most 2 times in a row. It can **not** check that the split between holders is fair.
+   With the publisher quorum (implemented, not live yet) the publisher is a 2-of-N Squads
+   multisig and an independent co-signer re-checks each list off-chain before it can be
+   published (see findings A and B below).
 3. **Operator loss.** After 7 days without a published list the guardian may appoint a new
    publisher; after 30 days anyone can pay from the last list scaled to everything funded
    (`pay_fallback`). The creator-appointed publisher is trusted like the original.
@@ -171,8 +177,8 @@ Each claim was checked against the code and holds:
 
 | # | Finding | Checked | Disposition |
 |---|---|---|---|
-| A | **A malicious, active publisher can keep recovery closed.** `publish_list` sets `last_publish_at` (lib.rs, `publish_list`); `cancel_list` doesn't touch it; `appoint_publisher` (7 days) and `pay_fallback` (30 days) both run off it. A publisher that keeps publishing, even lists the guardian cancels, never lets either window open. | Confirmed | **Open, to fix before the vault goes to mainnet.** Options for the audit: count only lists that went live (not cancelled ones) for the timers; a guardian "dispute" path after the cancel budget is spent (a public, time-locked publisher change, which moves trust to the creator); and removing the single publisher key (multisig / M-of-N quorum). |
-| B | **Per-wallet entitlements aren't enforced across lists on-chain.** `check_publish` bounds totals (>= active/pending totals and `holders_paid`, <= `holders_funded`) and `pay` checks Merkle proofs, but nothing requires a new list to keep each wallet's previous cumulative. A compromised publisher can move every unpaid holder amount (`holders_funded - holders_paid`, plus new tax for as long as it controls the key) to wallets of its choice; two cancels only delay it. | Confirmed (a documented trust assumption, not an unprivileged exploit) | **Accepted for now; exposure kept small.** The crank pays every list soon after it goes live, so the unpaid amount is normally just dust (30 Sep: CUP 0.0014 XNT, RFLT 0.00056 XNT). A stolen (copied) key can be rotated by the operator with `set_publisher`; a malicious operator can't be. Planned: the watchdog (flags a list that lowers anyone's total during the cancel window), then a publisher quorum or the staking vault (exact on-chain entitlements). |
+| A | **A malicious, active publisher can keep recovery closed.** `publish_list` sets `last_publish_at` (lib.rs, `publish_list`); `cancel_list` doesn't touch it; `appoint_publisher` (7 days) and `pay_fallback` (30 days) both run off it. A publisher that keeps publishing, even lists the guardian cancels, never lets either window open. | Confirmed | **Mitigated off-chain, implemented and rehearsed on a local validator only (no testnet vault uses it yet).** The publisher quorum ([spec](tax-vault-spec.md#publisher-quorum-squads-no-program-change)): the vault's publisher is a 2-of-N Squads v4 multisig (site key, independent co-signer, optional backup), so the site's key alone can't publish; a list the co-signer rejects never reaches `publish_list` and doesn't move `last_publish_at` (`scripts/publisher-quorum-rehearsal.ts` step F checks this). Still true: 2 colluding members could keep the windows closed; the on-chain options (timers counting only lists that went live, a guardian dispute path) stay open for the audit. |
+| B | **Per-wallet entitlements aren't enforced across lists on-chain.** `check_publish` bounds totals (>= active/pending totals and `holders_paid`, <= `holders_funded`) and `pay` checks Merkle proofs, but nothing requires a new list to keep each wallet's previous cumulative. A compromised publisher can move every unpaid holder amount (`holders_funded - holders_paid`, plus new tax for as long as it controls the key) to wallets of its choice; two cancels only delay it. | Confirmed (a documented trust assumption, not an unprivileged exploit) | **Mitigated off-chain with the publisher quorum, implemented and rehearsed on a local validator only.** Every list file now carries its inputs (snapshot slot, balances, pot, previous list) and the co-signer (`scripts/cosigner.ts`, checks in `src/list-verify.ts`) approves only a single `publish_list` whose list keeps every wallet at or above its previous total and PaidRecord, fits the totals, equals the allocation recomputed from its inputs, pays no excluded wallet and matches on-chain balances; otherwise it rejects with the reason and alerts. The guarantee is off-chain: it holds while 2 members are honest. Exposure is still kept small (the crank pays each list soon after it goes live). An on-chain per-wallet check (or the staking vault) remains the long-term fix. |
 | C | **Fallback needs the list data.** `pay_fallback` proves against the active list's root; if every copy of that list is gone, 30 days of waiting recovers nothing. | Confirmed | **Open (operations).** Copies today: the site's `vault-list.json` per token and Pinata. Planned: a second independent IPFS pin and list files in the encrypted backups; anyone can mirror them (the CIDs are on-chain). |
 | D | The list-rebuild override (`allowListRebuild`, `--allow-rebuild`) reopens redistribution of unpaid allocations. | By design | **Policy:** off by default; use only when every copy of the list is lost, and announce it publicly first (it moves unpaid amounts from the wallets that were owed them to current holders). |
 | E | Build provenance should name each deployment's commit and flags. | Agreed | **Fixed** in the table above (`lp_locker` on testnet marked as not reproduced). |

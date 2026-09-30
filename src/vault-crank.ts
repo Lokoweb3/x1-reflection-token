@@ -17,7 +17,9 @@
  *
  * List files (v3) are pinned to IPFS before they're published and their CID goes on-chain,
  * so anyone can pay from them without the site: `listFileText` is the pinned bytes and
- * `parseListFile` checks a fetched file against the on-chain root.
+ * `parseListFile` checks a fetched file against the on-chain root. A file also carries the
+ * list's inputs (snapshot slot, every eligible balance, the pot, the previous list), so a
+ * co-signer (src/list-verify.ts) can recompute it with `listFromInputs`.
  */
 import crypto from "node:crypto";
 import bs58 from "bs58";
@@ -29,7 +31,7 @@ import { outcome, sendAndConfirm, sign, simulate, withPriority } from "./tx.js";
 import { decodePool, maxLpFor, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "./xdex.js";
 import {
   CID_CODEC, CRANK_REWARD_BPS, CRANK_REWARD_CAP, MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, PAID_RECORD_DISC, PAID_RECORD_LEN, RENT_EXEMPT_EMPTY,
-  VAULT_VERSION, addLiquidityIx, buildVaultTree, cidToBytes, collectIx, decodePaidRecord, decodeVault, effectiveList, errorOf, fallbackActive,
+  VAULT_VERSION, addLiquidityIx, buildVaultTree, cidFromBytes, cidToBytes, collectIx, decodePaidRecord, decodeVault, effectiveList, errorOf, fallbackActive,
   fallbackEntitled, fundCreatorIx, paidRecordPda, parseEvents, payFallbackIx, payIx, poolAccountsFrom, publishListIx, rewardImpactBps,
   rewardPoolAccountsFrom, rewardTokenInfo, sellBuckets, sellImpactBps, sellIx, upgradeVaultIx, vaultAuthPda, vaultPda,
   type Vault, type VaultEvent, type VaultPoolAccounts,
@@ -92,13 +94,39 @@ export const defaultRules = (supply: bigint): CrankRules => ({
   minHarvest: toBaseUnits(DEFAULT_MIN_HARVEST_XNT, 9), minPayout: toBaseUnits("0.001", 9), minCycle: toBaseUnits("0.01", 9),
   minHolding: supply / 1_000_000n, excludeOwners: [], excludeOffCurve: true,
 });
-/** Who earns: the rules' exclusions plus the burn addresses, the vault's auth PDA and XDEX's pool authority. */
-export const eligibilityFor = (rules: CrankRules, auth: PublicKey, xdex: PublicKey): EligibilityRules => ({
-  excluded: new Set([...rules.excludeOwners, ...BURN_OWNERS, auth.toBase58(), poolAuthority(xdex).toBase58()]),
+/**
+ * Who earns: the rules' exclusions plus the burn addresses, the vault's auth PDA, XDEX's pool
+ * authority and `also` (the publisher, e.g. a multisig vault).
+ */
+export const eligibilityFor = (rules: CrankRules, auth: PublicKey, xdex: PublicKey, also: string[] = []): EligibilityRules => ({
+  excluded: new Set([...rules.excludeOwners, ...BURN_OWNERS, auth.toBase58(), poolAuthority(xdex).toBase58(), ...also]),
   excludeOffCurve: rules.excludeOffCurve, minHolding: rules.minHolding,
 });
 
+/** The publisher among the excluded wallets when it's a PDA (a multisig vault); none for a plain key. */
+export const publisherExclusion = (publisher: PublicKey) => (PublicKey.isOnCurve(publisher.toBytes()) ? [] : [publisher.toBase58()]);
+
 // ---------- list files ----------
+/**
+ * What a list was computed from (docs/tax-vault-spec.md "Lists carry their inputs"); amounts
+ * are base-unit strings, pairs sorted by wallet. `listFromInputs` recomputes the entries.
+ */
+export interface ListInputsJson {
+  /** Slot the balances were read at. */
+  slot: string;
+  /** The vault's holders_funded the pot was taken from. */
+  holdersFunded: string;
+  /** max(list_total, pending_total, holders_paid) when built: the total is topped up to it. */
+  floor: string;
+  /** New XNT split pro-rata over `balances`: holdersFunded − Σ start. */
+  pot: string;
+  /** The list this one builds on (its entries are every wallet's start), or null for the first. */
+  prev: { epoch: string; root: string; cid: string | null } | null;
+  /** On-chain PaidRecords above the previous list's amount (after a fallback; usually empty). */
+  paid: [string, string][];
+  /** Every eligible wallet's balance used (token base units). */
+  balances: [string, string][];
+}
 /** A published list's file, as pinned to IPFS (entries sorted by wallet). */
 export interface ListFileJson {
   version: 1;
@@ -109,11 +137,14 @@ export interface ListFileJson {
   total: string;
   entries: [string, string][];
   rules?: RulesJson;
+  inputs?: ListInputsJson;
 }
+const byWallet = <T>([x]: [string, T], [y]: [string, T]) => (x < y ? -1 : x > y ? 1 : 0);
 /** The exact bytes pinned for a list (its CID addresses these). */
-export function listFileText(a: { mint: string; vault: string; epoch: string; root: string; total: string; wallets: Record<string, string>; rules?: RulesJson }) {
-  const entries = Object.entries(a.wallets).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
-  const f: ListFileJson = { version: 1, mint: a.mint, vault: a.vault, epoch: a.epoch, root: a.root, total: a.total, entries, ...(a.rules ? { rules: a.rules } : {}) };
+export function listFileText(a: { mint: string; vault: string; epoch: string; root: string; total: string; wallets: Record<string, string>; rules?: RulesJson; inputs?: ListInputsJson }) {
+  const entries = Object.entries(a.wallets).sort(byWallet);
+  const f: ListFileJson = { version: 1, mint: a.mint, vault: a.vault, epoch: a.epoch, root: a.root, total: a.total, entries, ...(a.rules ? { rules: a.rules } : {}),
+    ...(a.inputs ? { inputs: a.inputs } : {}) };
   return JSON.stringify(f);
 }
 /**
@@ -155,7 +186,8 @@ export function composeList(prev: Record<string, string> | null, paid: Map<strin
   let total = 0n;
   for (const x of wallets.values()) total += x;
   if (total < floor && wallets.size) {
-    const pick = [...(shares.size ? shares : wallets).entries()].sort((a, b) => (b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : 0))[0][0];
+    // Ties go to the smaller address, so anyone recomputing the list gets the same one.
+    const pick = [...(shares.size ? shares : wallets).entries()].sort((a, b) => (b[1] > a[1] ? 1 : b[1] < a[1] ? -1 : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))[0][0];
     const add = floor - total;
     wallets.set(pick, wallets.get(pick)! + add);
     allocated += add; total = floor;
@@ -163,6 +195,16 @@ export function composeList(prev: Record<string, string> | null, paid: Map<strin
   const out: Record<string, string> = {};
   for (const [w, x] of wallets) if (x > 0n) out[w] = x.toString();
   return { wallets: out, total, allocated, startTotal: [...start.values()].reduce((a, b) => a + b, 0n) };
+}
+
+/**
+ * A list's entries recomputed from its inputs and the previous list's entries (`prev`, null
+ * for the first list or a rebuild): the same composeList / allocate the builder runs.
+ */
+export function listFromInputs(prev: Record<string, string> | null, inputs: ListInputsJson) {
+  const paid = new Map(inputs.paid.map(([w, x]) => [w, BigInt(x)] as [string, bigint]));
+  const balances = new Map(inputs.balances.map(([w, x]) => [w, BigInt(x)] as [string, bigint]));
+  return composeList(prev, paid, allocate(balances, BigInt(inputs.pot)), BigInt(inputs.floor));
 }
 
 /** Every PaidRecord of a vault: wallet -> cumulative XNT paid. */
@@ -438,27 +480,39 @@ export function vaultCrank(env: CrankEnv) {
    * The next list: the holder pool's XNT not yet in anyone's total (holders_funded minus
    * every wallet's starting total) split over eligible holders. Null when that's under the
    * token's minCycle and `force` isn't set (a publisher ending a fallback publishes anyway).
-   * `prev` is the active list's totals (null when unknown: then it's rebuilt from the paid records).
+   * `prev` is the active list's totals (null when unknown: then it's rebuilt from the paid
+   * records). The result carries its `inputs` for the pinned file (listFromInputs gives the
+   * same wallets back).
    */
   async function nextList(t: CrankToken, v: Vault, prev: Record<string, string> | null, notes: string[], force = false) {
     const paid = await readPaidRecords(conn, program, v.address);
     let start = 0n;
     const seen = new Map<string, bigint>();
     for (const [w, c] of Object.entries(prev ?? {})) seen.set(w, BigInt(c));
-    for (const [w, p] of paid) if (p > (seen.get(w) ?? 0n)) seen.set(w, p);
+    const paidAbove: [string, string][] = [];
+    for (const [w, p] of paid) if (p > (seen.get(w) ?? 0n)) { seen.set(w, p); paidAbove.push([w, p.toString()]); }
     for (const x of seen.values()) start += x;
     const pot = v.holdersFunded > start ? v.holdersFunded - start : 0n;
     if (pot < t.rules.minCycle && !force) return null;
+    const slot = await conn.getSlot("confirmed");
     const rows = await scanTokenAccounts(conn, t.mint);
-    const balances = eligibleBalances(rows, eligibilityFor(t.rules, vaultAuthPda(program, t.mint), xdex));
-    const shares = allocate(balances, pot);
+    // A publisher that is a PDA (a multisig vault) never earns; a plain-key publisher is unchanged.
+    const balances = eligibleBalances(rows, eligibilityFor(t.rules, vaultAuthPda(program, t.mint), xdex, publisherExclusion(v.publisher)));
     const floor = [v.listTotal, v.pendingTotal, v.holdersPaid].reduce((a, b) => (b > a ? b : a), 0n);
-    const c = composeList(prev, paid, shares, floor);
+    // The list it builds on: the active one, or a due pending one publish_list will activate first.
+    const eff = effectiveList(v, nowSecs() - ACTIVATION_MARGIN_SECS);
+    const inputs: ListInputsJson = {
+      slot: String(slot), holdersFunded: v.holdersFunded.toString(), floor: floor.toString(), pot: pot.toString(),
+      // null also for a list rebuilt without the previous one's entries (allowRebuild).
+      prev: prev && eff ? { epoch: eff.epoch.toString(), root: eff.root.toString("hex"), cid: cidFromBytes(eff.cid) } : null,
+      paid: paidAbove.sort(byWallet), balances: [...balances].map(([w, b]) => [w, b.toString()] as [string, string]).sort(byWallet),
+    };
+    const c = listFromInputs(prev, inputs);
     if (!Object.keys(c.wallets).length) { notes.push(balances.size ? "nothing to allocate yet" : "no eligible holders yet"); return null; }
     if (c.total > v.holdersFunded) throw new Error(`list total ${c.total} is above holders_funded ${v.holdersFunded}`);
     if (c.allocated === 0n && !force) return null;
     const epoch = (v.listEpoch > v.pendingEpoch ? v.listEpoch : v.pendingEpoch) + 1n;
-    return { epoch, total: c.total, wallets: c.wallets, allocated: c.allocated, holders: shares.size, root: buildVaultTree(v.address, c.wallets).root };
+    return { epoch, total: c.total, wallets: c.wallets, allocated: c.allocated, holders: allocate(balances, pot).size, root: buildVaultTree(v.address, c.wallets).root, inputs };
   }
 
   /** publish_list with the file's CID (pin first: no pin, no publish). Returns the signature and active time. */

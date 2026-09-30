@@ -609,3 +609,129 @@ No behaviour changes; these pin down details the draft left open.
 5. Error codes: `PublisherActive` = 6022, `FallbackNotActive` = 6023.
 6. Deploying v3 over the live v2 program: the v3 .so is 590,376 bytes vs 568,896 bytes of
    program data, so `solana program extend <program> 21480` first.
+
+# Publisher quorum (Squads, no program change)
+
+Everything above stays. This removes the single publisher key (review findings A and B in
+docs/REVIEW.md) **without changing the program**: the vault's `publisher` becomes a Squads
+v4 vault PDA, so `publish_list` only runs when a quorum of independent keys signed off on
+the list. Squads executes an approved vault transaction with that PDA as the signer, so
+`publish_list` and `set_publisher` work unchanged.
+
+## Setup
+
+| | |
+|---|---|
+| Squads v4 program | testnet `DDL3Xp6ie85DXgiPkXJ7abUyS2tGv4CGEod2DeQXQ941` · mainnet `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf` (official). The client passes the id explicitly everywhere (`@sqds/multisig`, `programId`). |
+| publisher | the multisig's vault PDA, index 0 (`["multisig", multisig, "vault", 0u8]`) |
+| members | the site's crank key (Initiate, Vote, Execute); an independent **co-signer** (Vote, Execute); optionally a cold **backup** (Initiate, Vote, Execute) |
+| threshold | 2 |
+| config authority | none (autonomous: adding/removing members or changing the threshold needs the multisig itself) |
+| time lock | 0 |
+| rent collector | the site's key (closing finished proposals returns their rent to it) |
+
+`scripts/setup-publisher-quorum.ts` creates the multisig (dry run by default) and, with
+`--execute` and the current publisher's key, sends `set_publisher(vault PDA)` for the given
+mints. The site finds the multisig in `factory.taxVault.quorum: { multisig, programId? }`.
+A vault whose publisher is a plain key keeps today's behaviour exactly.
+
+## Lists carry their inputs
+
+The pinned list file (`listFileText`) keeps every field it had (`parseListFile` and
+`scripts/crank.ts` read old and new files alike) and adds `inputs`:
+
+```
+inputs: {
+  slot,            // slot the balances were read at
+  holdersFunded,   // the vault's holders_funded the pot was taken from
+  floor,           // max(list_total, pending_total, holders_paid) when built
+  pot,             // XNT split pro-rata: holdersFunded - sum(start)
+  prev,            // { epoch, root, cid } of the list it builds on, or null (first list)
+  paid,            // [wallet, paid] for PaidRecords above the previous list's amount (usually none; after a fallback)
+  balances,        // [wallet, balance] of every eligible wallet used, sorted by wallet
+}
+```
+
+**Deterministic allocation** (`composeList` over `allocate`): `start(w) = max(prev(w),
+paid(w))`; `share(w) = floor(pot * balance(w) / sum(balances))`; `cumulative(w) = start(w)
++ share(w)`; if the sum is under `floor`, the difference goes to the largest share (ties:
+the smaller wallet address); zero entries are dropped. Anyone holding the file, the previous
+file and the chain can recompute it.
+
+## Site crank (publisher is a Squads vault whose members include the site key)
+
+1. Build and pin the list exactly as today (no pin, no proposal).
+2. One transaction: `vault_transaction_create` (message: the single `publish_list`, payer =
+   the vault PDA), `proposal_create`, `proposal_approve` by the site key. `vault-list.json`
+   `next.proposal` records `{ multisig, index, status }`; history event `proposed`.
+3. Each pass: read the proposal. **Approved** (threshold met): execute it (`vault_transaction_execute`,
+   the site pays the fee); the list is then pending on-chain as before (`published`).
+   **Executed** (by the co-signer): the same. **Rejected / Cancelled**, or **rejected by any
+   other member** (a single rejection is final for the site: it adds its own rejection so the
+   proposal closes), or **stale** (the vault's epoch reached the list's, or its total no
+   longer fits `check_publish`): history `rejected` / `dropped`, `next` cleared, a new list is
+   built next pass. Rent of finished proposals is reclaimed with
+   `vault_transaction_accounts_close`.
+4. Payouts are unchanged (anyone can `pay`), except that the site doesn't `pay_fallback` while
+   its proposal waits (that could pay a wallet past the proposed totals, which the co-signer
+   refuses).
+5. Execution races: the co-signer may execute first; the site reads the proposal back rather
+   than interpreting the error (Squads' and tax_vault's Anchor error codes overlap).
+
+Found while rehearsing, applies to plain-key publishers too: a list that allocates nothing new
+(one that ends a fallback after `pay_fallback` already paid everything funded) owes nobody
+anything, so no `pay` activates it and the crank used to wait on it forever. When a due
+pending list owes nobody anything, the crank now builds the next list on it (`publish_list`
+activates the due list first; `inputs.prev` names it).
+
+## Co-signer (`scripts/cosigner.ts`, shared checks in `src/list-verify.ts`)
+
+Runs anywhere with its own key and an RPC. For every Active proposal of the multisig it
+hasn't voted on:
+
+- the vault transaction must be **exactly one** instruction: `publish_list` of the
+  configured `tax_vault` program, accounts `[the multisig's vault PDA (signer), a vault
+  account of that program whose publisher is that PDA]`; vault index 0, no ephemeral
+  signers, no lookup tables, no other account keys;
+- the list file is fetched by the instruction's CID; a raw-codec CID must hash to the
+  bytes; the entries must give the instruction's root; file `epoch`/`total`/`vault` equal the
+  instruction's;
+- **totals**: `total == sum(entries)`, `total <= holders_funded`, `total >= max(list_total,
+  pending_total, holders_paid)`, `epoch > max(list_epoch, pending_epoch)`; a pending list
+  that isn't due yet is refused (the site never replaces one);
+- **nobody loses**: every wallet of the previous list (the on-chain active list, fetched by
+  its CID and checked against its root; `inputs.prev` must name it) keeps at least its
+  cumulative, and every wallet at least its on-chain PaidRecord;
+- **allocation**: recomputed from `inputs` with the pinned rules must equal the entries
+  exactly; `inputs.pot == inputs.holdersFunded - sum(start)`, `inputs.holdersFunded <=
+  holders_funded`; `inputs.floor` between `list_total` and today's `max(list_total,
+  pending_total, holders_paid)`; `inputs.paid` never above today's PaidRecord;
+- **eligibility**: no stated balance for an excluded wallet (the rules' owners, burn
+  addresses, the vault's auth PDA, XDEX's pool authority, the publisher PDA), for an
+  off-curve owner when the rules exclude them, or under `minHolding`; no excluded wallet's
+  cumulative grows; the eligibility rules equal the previous list's (a change needs
+  `--allow-rule-change`);
+- **balances vs chain**: the stated balances are compared with today's eligible balances;
+  a wallet that moved more than the tolerance (default 5% and at least `minHolding`) is
+  flagged; more than 10% of the stated weight moved fails;
+- **flags** (reported, not a failure unless `--strict`): moved wallets, a wallet new to the
+  list getting more than 25% of the pot, an old snapshot, a CID that can't be hash-checked
+  (dag-pb).
+
+Pass: approve (and execute once the threshold is met); optionally pin the same bytes to
+its own IPFS provider (second copy). Fail: reject with the reason as the vote's memo, log it
+and post it to `--webhook`. It executes only proposals it approved.
+
+## What this changes and what it doesn't
+
+- A stolen or malicious site key alone can't publish: every list needs the co-signer's
+  (or the backup's) approval. It can't rotate the publisher either (`set_publisher` would
+  need a vault transaction the co-signer refuses).
+- A rejected proposal never reaches `publish_list`, so it doesn't touch `last_publish_at`:
+  **an operator that only proposes bad lists no longer keeps recovery closed** (finding A).
+  Once 7 days pass without a published list, the guardian can appoint as before.
+- Per-wallet entitlements across lists are checked by the co-signer before a list can go
+  live (finding B), off-chain: the guarantee holds as long as 2 of the members are honest.
+- The program is unchanged; the guardian's cancel, the delay, the fallback and appointing
+  work as before. The guardian can still appoint a plain key after 7 days of silence (the
+  quorum then ends for that vault).

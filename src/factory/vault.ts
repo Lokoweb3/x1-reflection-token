@@ -33,20 +33,30 @@
  * site stops publishing for that token and pays from that publisher's lists (read from IPFS).
  * Every step is guarded: a failure is logged and the pass goes on with the next step or
  * token, never crashing the server; passes never overlap.
+ *
+ * Publisher quorum (factory.taxVault.quorum): when a vault's publisher is the configured
+ * Squads multisig's vault and the crank key is a member, step 4 proposes the pinned list as a
+ * Squads vault transaction (one publish_list) and approves it; later passes execute it once
+ * the co-signer approved (scripts/cosigner.ts), or drop it when a member rejected it or it
+ * went stale, and build a new one. vault-list.json's `next.proposal` tracks it.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, loadKeypair, toBaseUnits, xnt } from "../config.js";
 import {
-  REWARD_MINT, VAULT_VERSION, appointAllowedAt, appointPublisherIx, cancelsLeft, cidFromBytes, effectiveList, fallbackAt, fallbackActive,
-  parseEvents, rewardTokenInfo, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent,
+  REWARD_MINT, VAULT_VERSION, appointAllowedAt, appointPublisherIx, cancelsLeft, cidFromBytes, cidToBytes, effectiveList, fallbackAt, fallbackActive,
+  parseEvents, publishListIx, rewardTokenInfo, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent,
 } from "../taxvault.js";
 import {
-  ACTIVATION_MARGIN_SECS, type CrankRules, type CrankToken, type PayList, inFallback, listFileText, nowSecs, parseListFile, planForCaller,
+  ACTIVATION_MARGIN_SECS, type CrankRules, type CrankToken, type ListInputsJson, type PayList, dueFrom, inFallback, listFileText, nowSecs, parseListFile, planForCaller,
   readVaultAccount, rulesJson, vaultCrank,
 } from "../vault-crank.js";
 import { fetchFromGateways, gatewayBase, gatewayUrl, ipfsEnabled, pinJson } from "./ipfs.js";
+import {
+  SQUADS_PROGRAM_IDS, closeIx, executeIx, memberOf, proposalVotes, proposeIxs, quorumJson, readProposal, readQuorum, rejectIx, squadsVaultPda,
+  type ProposalStatus as SquadsProposalStatus, type Quorum,
+} from "../squads.js";
 import { DECIMALS, type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged } from "./launch.js";
 
 /** Crank pass interval; TAX_VAULT_PASS_SECS shortens it for local rehearsals (short-windows builds). */
@@ -69,6 +79,22 @@ export interface VaultList {
   /** Set once the publish transaction is confirmed (or seen on-chain). */
   publishedAt?: string;
   activeAt?: number;
+  /** What the list was computed from (pinned with it; see ListInputsJson). */
+  inputs?: ListInputsJson;
+  /** Publisher quorum: the Squads proposal carrying this list's publish_list. */
+  proposal?: ListProposal;
+}
+export interface ListProposal {
+  multisig: string;
+  index: string;
+  status: SquadsProposalStatus;
+  approved: string[];
+  rejected: string[];
+  proposedAt: string;
+  signature: string;
+  executedSignature?: string;
+  /** A rejecting member's memo (the co-signer's reason). */
+  reason?: string | null;
 }
 export interface VaultListFile {
   version: 1;
@@ -78,7 +104,10 @@ export interface VaultListFile {
   active: VaultList | null;
   /** The next list: saved before it's sent, then pending on-chain until its active time. */
   next: VaultList | null;
-  history: { at: string; epoch: string; root: string; total: string; event: "published" | "active" | "cancelled" | "dropped" | "adopted"; signature?: string; cid?: string }[];
+  history: {
+    at: string; epoch: string; root: string; total: string; event: "published" | "active" | "cancelled" | "dropped" | "adopted" | "proposed" | "rejected";
+    signature?: string; cid?: string; proposal?: string; reason?: string;
+  }[];
 }
 
 const launchDir = (mint: string) => path.join(FACTORY_DIR, "launches", mint);
@@ -123,6 +152,28 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   const core = crank ? vaultCrank({ conn, program, xdex, network: cfg.network, signer: crank, microLamports: opts.microLamports,
     onTx: (t, v, signature, events) => record(t.mint.toBase58(), v, signature, events, crank!.publicKey.toBase58()) }) : null;
 
+  // ---------- publisher quorum (Squads) ----------
+  const qc = cfg.factory?.taxVault?.quorum;
+  const squadsProgram = qc ? new PublicKey(qc.programId ?? SQUADS_PROGRAM_IDS[cfg.network]) : null;
+  const multisig = qc ? new PublicKey(qc.multisig) : null;
+  /** The quorum's vault PDA: a vault whose publisher is this is published through the multisig. */
+  const quorumVault = squadsProgram && multisig ? squadsVaultPda(squadsProgram, multisig) : null;
+  let quorumCache: { at: number; q: Promise<Quorum | null> } | null = null;
+  /** The configured multisig (cached 20 s), if `publisher` is its vault; else null. */
+  async function quorumFor(publisher: PublicKey, fresh = false): Promise<Quorum | null> {
+    if (!quorumVault || !publisher.equals(quorumVault)) return null;
+    if (fresh || !quorumCache || Date.now() - quorumCache.at > 20_000) {
+      const q = readQuorum(conn, squadsProgram!, multisig!);
+      q.catch(() => { quorumCache = null; });
+      quorumCache = { at: Date.now(), q };
+    }
+    return quorumCache.q;
+  }
+  /** How the site publishes for this vault: its own key, the quorum (it's a member who may propose), or not at all. */
+  const publishMode = (v: Vault, q: Quorum | null): "key" | "quorum" | null =>
+    !crank ? null : v.publisher.equals(crank.publicKey) ? "key" : q && memberOf(q, crank.publicKey)?.initiate ? "quorum" : null;
+  const labelOf = (key: string) => qc?.labels?.[key] ?? (crank && key === crank.publicKey.toBase58() ? "99 + Tax" : "co-signer");
+
   const authOf = (mint: string) => vaultAuthPda(program, new PublicKey(mint));
   const addrOf = (mint: string) => vaultPda(program, new PublicKey(mint));
   /** XNT-paired launches only: the vault is TOKEN/wXNT only. */
@@ -154,7 +205,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   }
 
   /** v3 status for the pages: who publishes, since when, and when appointing / fallback open up. */
-  function v3Status(v: Vault | null) {
+  function v3Status(v: Vault | null, q: Quorum | null = null) {
     if (!v || v.version < 3) return null;
     const now = nowSecs();
     const cid = cidFromBytes(v.listCid), pendingCid = cidFromBytes(v.pendingCid);
@@ -163,15 +214,35 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       appointAllowedAt: appointAllowedAt(v), fallbackAt: fallbackAt(v), fallbackActive: fallbackActive(v, now),
       fallbackPaid: v.fallbackPaid.toString(), listCid: cid, listCidUrl: cidUrl(cid), pendingCid, pendingCidUrl: cidUrl(pendingCid),
       // The site's own key still publishes (false once the guardian appointed someone else).
-      sitePublishes: !!crank && v.publisher.equals(crank.publicKey),
+      sitePublishes: publishMode(v, q) !== null,
+      // Publisher quorum: the publisher is a Squads multisig's vault (threshold of the members).
+      quorum: q ? { ...quorumJson(q), members: q.members.map((m) => ({ ...m, label: labelOf(m.key) })) } : null,
     };
   }
+  /** Whether a list went through the quorum, and what the other members said. */
+  function listCheck(l: VaultList | null) {
+    const p = l?.proposal;
+    if (!p) return null;
+    const site = crank?.publicKey.toBase58();
+    const by = p.approved.filter((k) => k !== site);
+    const against = p.rejected.filter((k) => k !== site);
+    return {
+      index: p.index, status: p.status, approvedBy: by.map((k) => ({ key: k, label: labelOf(k) })), rejectedBy: against.map((k) => ({ key: k, label: labelOf(k) })),
+      reason: p.reason ?? null, cosigner: against.length ? "rejected" : by.length ? "checked" : "waiting",
+    };
+  }
+  /** The last list a member rejected (with its reason), for the pages. */
+  const lastRejected = (file: VaultListFile | null) => {
+    const h = [...(file?.history ?? [])].reverse().find((x) => x.event === "rejected");
+    return h ? { epoch: h.epoch, at: h.at, reason: h.reason ?? null, proposal: h.proposal ?? null } : null;
+  };
 
   /** GET /api/vault/<mint>: the vault's state and totals, and what the crank last did. */
   async function view(mintStr: string) {
     const mint = new PublicKey(mintStr).toBase58();
     if (!isVaultMint(mint)) throw new Error("This token's tax isn't held by the Tax Vault.");
     const v = await cachedVault(mint);
+    const q = v ? await quorumFor(v.publisher).catch(() => null) : null;
     const file = readListFile(mint);
     return {
       mint, programId: program.toBase58(), vault: addrOf(mint).toBase58(), auth: authOf(mint).toBase58(),
@@ -179,13 +250,14 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       // When the pending list starts paying (unix seconds), if one is waiting.
       nextListAt: v && v.pendingEpoch > 0n ? v.pendingActiveAt : null,
       latestList: file ? listSummary(file.next ?? file.active) : null,
+      lastRejected: lastRejected(file),
       listUrl: `/api/vault/${mint}/list`,
-      ...(v3Status(v) ?? {}),
+      ...(v3Status(v, q) ?? {}),
       crank: { on: !!crank, wallet: crank?.publicKey.toBase58() ?? null, lastPass: status.get(mint) ?? null },
     };
   }
   const listSummary = (l: VaultList | null) => (l ? { epoch: l.epoch, root: l.root, total: l.total, wallets: Object.keys(l.wallets).length,
-    builtAt: l.builtAt, publishedAt: l.publishedAt ?? null, activeAt: l.activeAt ?? null, cid: l.cid ?? null, cidUrl: cidUrl(l.cid) } : null);
+    builtAt: l.builtAt, publishedAt: l.publishedAt ?? null, activeAt: l.activeAt ?? null, cid: l.cid ?? null, cidUrl: cidUrl(l.cid), check: listCheck(l) } : null);
 
   /** GET /api/vault/<mint>/list: the latest rewards list with every wallet's cumulative total. */
   async function listView(mintStr: string) {
@@ -198,12 +270,14 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const isNext = latest === file.next;
     const listStatus = !isNext ? "active"
       : v && v.listEpoch.toString() === latest.epoch ? "active"
-      : latest.publishedAt ? "pending" : "draft";
+      : latest.publishedAt ? "pending" : latest.proposal ? "proposed" : "draft";
     return {
       mint, vault: addrOf(mint).toBase58(), status: listStatus, epoch: latest.epoch, root: latest.root, total: latest.total,
       activeAt: latest.activeAt ?? null, builtAt: latest.builtAt, publishedAt: latest.publishedAt ?? null, signature: latest.signature ?? null,
       // v3: the same list as a file on IPFS (its CID is on-chain), so it can be read without this site.
       cid: latest.cid ?? null, cidUrl: cidUrl(latest.cid),
+      // Publisher quorum: the Squads proposal and the co-signer's verdict.
+      check: listCheck(latest), lastRejected: lastRejected(file),
       wallets: Object.entries(latest.wallets).map(([wallet, cumulative]) => ({ wallet, cumulative }))
         .sort((a, b) => (BigInt(b.cumulative) > BigInt(a.cumulative) ? 1 : BigInt(b.cumulative) < BigInt(a.cumulative) ? -1 : a.wallet.localeCompare(b.wallet))),
       // While a new list waits for its time, the one paying now.
@@ -219,6 +293,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   async function badge(mint: string) {
     if (!isVaultMint(mint)) return null;
     const v = await cachedVault(mint).catch(() => null);
+    const q = v ? await quorumFor(v.publisher).catch(() => null) : null;
+    const file = q ? readListFile(mint) : null;
     let r: LaunchRecord | null = null;
     try { r = readLaunch(mint); } catch { /* no record */ }
     const creator = r?.creator ?? null;
@@ -234,7 +310,9 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       version: v?.version ?? null,
       // How many more pending lists the guardian (the creator) may cancel in a row (v2); null: no limit / no vault.
       cancelsLeft: v ? cancelsLeft(v) : null,
-      ...(v3Status(v) ?? {}),
+      ...(v3Status(v, q) ?? {}),
+      // Publisher quorum: the newest list's co-signer status and the last rejection.
+      ...(q ? { listCheck: listCheck(file?.next ?? file?.active ?? null), listCheckEpoch: (file?.next ?? file?.active)?.epoch ?? null, lastRejected: lastRejected(file) } : {}),
     };
   }
 
@@ -331,10 +409,27 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
    * have (another publisher's) is read from IPFS by its on-chain CID. Returns false when the
    * file and the chain disagree in a way the crank can't repair (lists and pays stop).
    */
-  async function syncList(t: CrankToken, v: Vault, file: VaultListFile, notes: string[]): Promise<boolean> {
+  async function syncList(t: CrankToken, v: Vault, file: VaultListFile, notes: string[], q: Quorum | null): Promise<boolean> {
     const hex = (b: Buffer) => b.toString("hex");
     const n = file.next;
     if (n) {
+      if (n.proposal && !n.publishedAt) {
+        // A quorum list reaches the chain through its proposal (followProposal); it's seen here once executed.
+        if ((v.pendingEpoch.toString() === n.epoch && hex(v.pendingRoot) === n.root) || (v.listEpoch.toString() === n.epoch && hex(v.listRoot) === n.root)) {
+          n.publishedAt = new Date().toISOString();
+          n.activeAt = v.pendingEpoch.toString() === n.epoch ? v.pendingActiveAt : n.activeAt;
+          n.proposal.status = "Executed";
+          // Who approved it (the co-signer may have executed it before the site saw it approved), then its rent back.
+          if (q && q.multisig.toBase58() === n.proposal.multisig) {
+            const st = await readProposal(conn, q.program, q.multisig, BigInt(n.proposal.index)).catch(() => null);
+            if (st) { n.proposal.approved = st.approved; n.proposal.rejected = st.rejected; await reclaim(t, v, q, BigInt(n.proposal.index), notes); }
+          }
+          file.history.push({ at: n.publishedAt, epoch: n.epoch, root: n.root, total: n.total, event: "published", signature: n.proposal.executedSignature, cid: n.cid, proposal: n.proposal.index });
+          saveListFile(file);
+          logEvent(file.mint, { kind: "allocate", signature: n.proposal.executedSignature ?? n.proposal.signature, xnt: n.allocated ?? "0", holders: n.holders ?? 0, epoch: n.epoch, cid: n.cid, vault: true });
+          notes.push(`list ${n.epoch} published through the quorum (proposal #${n.proposal.index})`);
+        } else return true;
+      }
       if (v.listEpoch.toString() === n.epoch && hex(v.listRoot) === n.root) {
         file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "active", cid: n.cid });
         file.active = { ...n, publishedAt: n.publishedAt ?? new Date().toISOString() };
@@ -357,8 +452,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
         const floor = v.listEpoch > v.pendingEpoch ? v.listEpoch : v.pendingEpoch;
         const minTotal = [v.listTotal, v.pendingTotal, v.holdersPaid].reduce((a, b) => (b > a ? b : a), 0n);
         if (BigInt(n.epoch) > floor && BigInt(n.total) >= minTotal && BigInt(n.total) <= v.holdersFunded && v.pendingEpoch === 0n
-            && (file.active?.root ?? hex(Buffer.alloc(32))) === hex(v.listRoot) && v.publisher.equals(crank!.publicKey)) {
-          await publish(t, v, file, notes); // saved but never landed: pin (if needed) and send the same list again
+            && (file.active?.root ?? hex(Buffer.alloc(32))) === hex(v.listRoot) && publishMode(v, q) !== null) {
+          await publish(t, v, file, notes, q); // saved but never landed: pin (if needed) and send (or propose) the same list again
         } else {
           file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event: "dropped", cid: n.cid });
           file.next = null;
@@ -384,12 +479,15 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     return true;
   }
 
-  /** Pin the next list's file (no pin, no publish: retried next pass), then publish_list with its CID. */
-  async function publish(t: CrankToken, v: Vault, file: VaultListFile, notes: string[]) {
+  /**
+   * Pin the next list's file (no pin, no publish: retried next pass), then publish_list with
+   * its CID, or with a publisher quorum propose it (the co-signer checks it first).
+   */
+  async function publish(t: CrankToken, v: Vault, file: VaultListFile, notes: string[], q: Quorum | null) {
     const n = file.next!;
     if (!n.cid) {
       if (!ipfsEnabled(cfg)) throw new Error("no Pinata key (factory.pinataJwt): the list can't be pinned, so it isn't published");
-      const text = listFileText({ mint: file.mint, vault: file.vault, epoch: n.epoch, root: n.root, total: n.total, wallets: n.wallets, rules: rulesJson(t.rules) });
+      const text = listFileText({ mint: file.mint, vault: file.vault, epoch: n.epoch, root: n.root, total: n.total, wallets: n.wallets, rules: rulesJson(t.rules), inputs: n.inputs });
       try {
         n.cid = await pinJson(cfg, text, `${t.symbol}-list-${n.epoch}.json`, `99tax ${t.symbol} rewards list ${n.epoch}`);
       } catch (e) {
@@ -397,6 +495,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       }
       saveListFile(file); // the CID is kept: the next try publishes the same file
     }
+    if (publishMode(v, q) === "quorum") return propose(t, v, file, notes, q!);
     const { signature, activeAt } = await core!.publish(t, v, { epoch: BigInt(n.epoch), total: BigInt(n.total), root: Buffer.from(n.root, "hex"), cid: n.cid, wallets: Object.keys(n.wallets).length });
     n.signature = signature;
     n.publishedAt = new Date().toISOString();
@@ -408,19 +507,28 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   }
 
   /** Allocate the holder pool's new XNT over eligible holders and publish the new totals. */
-  async function listStep(r: LaunchRecord, t: CrankToken, v: Vault, file: VaultListFile, notes: string[]) {
-    if (file.next || v.pendingEpoch > 0n) return; // one list at a time: a new one would restart the wait
+  async function listStep(r: LaunchRecord, t: CrankToken, v: Vault, file: VaultListFile, notes: string[], q: Quorum | null) {
+    if (file.next?.proposal && !file.next.publishedAt) { await followProposal(t, v, file, notes, q); return; }
+    // One list at a time: a new one would restart the wait. Except a due pending list that owes
+    // nobody anything (one that ended a fallback after pay_fallback had paid everything): no
+    // `pay` can activate it, so the next list builds on it (publish_list activates it first).
+    const stuck = (file.next || v.pendingEpoch > 0n) ? await unpayablePending(v, file) : null;
+    if ((file.next || v.pendingEpoch > 0n) && !stuck) return;
     if (!rulesOf(r)) { notes.push("no per-launch config yet"); return; }
-    if (!v.publisher.equals(crank!.publicKey)) { notes.push(`lists are published by ${v.publisher.toBase58().slice(0, 4)}… (not this site)`); return; }
+    if (!publishMode(v, q)) {
+      notes.push(q ? `lists are published by a Squads multisig this site's key can't propose to` : `lists are published by ${v.publisher.toBase58().slice(0, 4)}… (not this site)`);
+      return;
+    }
     if (v.version < VAULT_VERSION) { notes.push("new lists wait for the vault upgrade"); return; }
     // Every wallet's running total from the active list: the local copy when it matches the
     // on-chain root, else the IPFS file (checked against the root). Without either, a new list
     // would drop what was allocated but not yet paid, so don't publish unless the operator allows it.
     let prev: Record<string, string> | null = {};
-    if (v.listEpoch > 0n) {
-      const root = Buffer.from(v.listRoot).toString("hex");
-      const local = file.active && file.active.root === root ? file.active.wallets : null;
-      const got = local ? null : await listByCid(v, v.listCid, v.listRoot).catch(() => null);
+    const eff = effectiveList(v, nowSecs() - ACTIVATION_MARGIN_SECS);
+    if (eff) {
+      const root = eff.root.toString("hex");
+      const local = stuck?.root === root ? stuck.wallets : file.active && file.active.root === root ? file.active.wallets : null;
+      const got = local ? null : await listByCid(v, eff.cid, eff.root).catch(() => null);
       prev = local ?? (got ? Object.fromEntries(Object.entries(got.wallets).map(([w, c]) => [w, String(c)])) : null);
       if (!prev) {
         if (!cfg.factory?.taxVault?.allowListRebuild) {
@@ -433,13 +541,131 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     // In fallback, publish even a small list: it ends the fallback (the site is alive).
     const next = await core!.nextList(t, v, prev, notes, inFallback(v));
     if (!next) return;
+    if (stuck) {
+      file.history.push({ at: new Date().toISOString(), epoch: stuck.epoch, root: stuck.root, total: stuck.total, event: "active", cid: stuck.cid, proposal: stuck.proposal?.index });
+      file.active = stuck;
+    }
     file.next = {
       epoch: next.epoch.toString(), root: next.root.toString("hex"), total: next.total.toString(), wallets: next.wallets, builtAt: new Date().toISOString(),
-      allocated: next.allocated.toString(), holders: next.holders,
+      allocated: next.allocated.toString(), holders: next.holders, inputs: next.inputs,
     };
     saveListFile(file); // the list is on disk (and served) before it's pinned and published
     console.log(`[vault crank] ${r.symbol}: list ${next.epoch}: ${xnt(next.allocated)} across ${next.holders} holder(s), total ${xnt(next.total)}`);
-    await publish(t, v, file, notes);
+    await publish(t, v, file, notes, q);
+  }
+
+  /** file.next when it's the vault's pending list, due, and owes nobody anything; else null. */
+  async function unpayablePending(v: Vault, file: VaultListFile) {
+    const n = file.next;
+    if (!n?.publishedAt || v.pendingEpoch.toString() !== n.epoch || v.pendingRoot.toString("hex") !== n.root) return null;
+    if (nowSecs() < v.pendingActiveAt + ACTIVATION_MARGIN_SECS) return null;
+    const owed = await dueFrom(conn, program, v, n.wallets, { fallback: false, minPayout: 0n, listTotal: v.pendingTotal });
+    return owed.length ? null : n;
+  }
+
+  // ---------- publisher quorum ----------
+  /**
+   * Propose the pinned next list: one transaction with vault_transaction_create (the single
+   * publish_list, signed by the multisig's vault), proposal_create and the site's approval.
+   */
+  async function propose(t: CrankToken, v: Vault, file: VaultListFile, notes: string[], quorum: Quorum) {
+    const n = file.next!;
+    const q = (await quorumFor(v.publisher, true)) ?? quorum; // a fresh transaction index
+    const index = q.transactionIndex + 1n;
+    const ix = publishListIx(program, q.vault, t.mint, Buffer.from(n.root, "hex"), BigInt(n.epoch), BigInt(n.total), cidToBytes(n.cid!));
+    const ixs = proposeIxs(q.program, q.multisig, index, crank!.publicKey, ix, `99tax ${t.symbol} list ${n.epoch} ${n.cid}`);
+    const { signature } = await core!.send(t, v, `propose list ${n.epoch} to the quorum (Squads #${index}, ${Object.keys(n.wallets).length} wallets, total ${xnt(BigInt(n.total))}, ${n.cid})`, ixs, 300_000);
+    quorumCache = null;
+    n.proposal = { multisig: q.multisig.toBase58(), index: index.toString(), status: "Active", approved: [crank!.publicKey.toBase58()], rejected: [],
+      proposedAt: new Date().toISOString(), signature };
+    file.history.push({ at: n.proposal.proposedAt, epoch: n.epoch, root: n.root, total: n.total, event: "proposed", signature, cid: n.cid, proposal: n.proposal.index });
+    saveListFile(file);
+    notes.push(`proposed list ${n.epoch} (Squads #${index}, ${q.threshold} of ${q.voters} approvals needed)`);
+  }
+
+  /** Drop the next list (a new one is built next pass). */
+  function dropNext(file: VaultListFile, event: "rejected" | "dropped", reason: string, notes: string[]) {
+    const n = file.next!;
+    file.history.push({ at: new Date().toISOString(), epoch: n.epoch, root: n.root, total: n.total, event, cid: n.cid, proposal: n.proposal?.index, reason });
+    file.next = null;
+    saveListFile(file);
+    notes.push(`list ${n.epoch} ${event}: ${reason}`);
+    console.log(`[vault crank] list ${n.epoch} (proposal #${n.proposal?.index ?? "-"}) ${event}: ${reason}`);
+  }
+
+  /** Close a finished proposal's accounts (their rent goes back to the rent collector); best effort. */
+  async function reclaim(t: CrankToken, v: Vault, q: Quorum, index: bigint, notes: string[]) {
+    if (!q.rentCollector) return;
+    await core!.send(t, v, `close Squads #${index} (rent back)`, [closeIx(q.program, q.multisig, index, q.rentCollector)], 60_000)
+      .catch((e) => notes.push(`closing Squads #${index} failed: ${msg(e).slice(0, 120)}`));
+  }
+
+  /**
+   * The next list's proposal, each pass: execute it once approved (threshold met), or drop it
+   * when it was rejected / cancelled, another member rejected it (the site adds its own
+   * rejection so it closes), or the vault moved past it (stale).
+   */
+  async function followProposal(t: CrankToken, v: Vault, file: VaultListFile, notes: string[], quorum: Quorum | null) {
+    const n = file.next!, p = n.proposal!;
+    const q = quorum && quorum.multisig.toBase58() === p.multisig ? quorum : null;
+    if (!q) { dropNext(file, "dropped", "the vault's publisher is no longer this multisig", notes); return; }
+    const index = BigInt(p.index);
+    const st = await readProposal(conn, q.program, q.multisig, index);
+    if (!st) {
+      // Never landed, or closed before the site saw it executed (syncList would have caught that).
+      dropNext(file, "dropped", `proposal #${index} not found on-chain`, notes);
+      return;
+    }
+    p.status = st.status; p.approved = st.approved; p.rejected = st.rejected;
+    const site = crank!.publicKey.toBase58();
+    const onChain = v.listEpoch > v.pendingEpoch ? v.listEpoch : v.pendingEpoch;
+    const minTotal = [v.listTotal, v.pendingTotal, v.holdersPaid].reduce((a, b) => (b > a ? b : a), 0n);
+    const stale = onChain >= BigInt(n.epoch) ? `the vault is at list ${onChain} already`
+      : BigInt(n.total) < minTotal ? `its total is under what the vault already allocated or paid (${minTotal})`
+      : BigInt(n.total) > v.holdersFunded ? "its total is above holders_funded" : null;
+    const others = st.rejected.filter((k) => k !== site);
+    if (st.status === "Rejected" || st.status === "Cancelled" || (st.status === "Active" && others.length)) {
+      const votes = await proposalVotes(conn, q.program, q.multisig, index).catch(() => []);
+      const why = votes.find((x) => x.vote === "reject" && x.member !== site)?.memo ?? null;
+      p.reason = why;
+      if (st.status === "Active" && !st.rejected.includes(site)) {
+        // One member's rejection is final for the site: add ours so the proposal closes (and can't pass later).
+        await core!.send(t, v, `reject Squads #${index} (rejected by ${others.map((k) => labelOf(k)).join(", ")})`,
+          [rejectIx(q.program, q.multisig, index, crank!.publicKey, `closing: rejected by ${others.join(", ")}`)], 60_000)
+          .catch((e) => notes.push(`rejecting Squads #${index} failed: ${msg(e).slice(0, 120)}`));
+      }
+      const closed = await readProposal(conn, q.program, q.multisig, index).catch(() => null);
+      if (closed?.status === "Rejected" || closed?.status === "Cancelled") await reclaim(t, v, q, index, notes);
+      dropNext(file, "rejected", `${st.status === "Cancelled" ? "cancelled" : `rejected by ${others.map((k) => `${labelOf(k)} ${k.slice(0, 4)}…`).join(", ") || "the members"}`}${why ? `: ${why}` : ""}`, notes);
+      return;
+    }
+    if (stale && st.status !== "Executed") {
+      dropNext(file, "dropped", `stale (${stale}); proposal #${index} left ${st.status}`, notes);
+      return;
+    }
+    if (st.status === "Approved") {
+      try {
+        const ix = await executeIx(conn, q.program, q.multisig, index, crank!.publicKey);
+        const { signature, events } = await core!.send(t, v, `execute Squads #${index}: publish_list epoch ${n.epoch} (${n.cid})`, [ix], 200_000);
+        p.status = "Executed"; p.executedSignature = signature;
+        const pub = events.find((e) => e.name === "ListPublished");
+        if (pub?.name === "ListPublished") n.activeAt = pub.activeAt;
+        saveListFile(file);
+        notes.push(`list ${n.epoch} approved (${st.approved.length} of ${q.threshold}) and published`);
+        await reclaim(t, v, q, index, notes);
+      } catch (e) {
+        // The co-signer may have executed it first (Squads' and tax_vault's error codes overlap,
+        // so read the proposal rather than the error). A list the vault no longer accepts is
+        // caught as stale by the next pass.
+        const now = await readProposal(conn, q.program, q.multisig, index).catch(() => null);
+        if (now?.status === "Executed" || !now) { p.status = "Executed"; saveListFile(file); notes.push(`list ${n.epoch} was executed by another member`); return; }
+        throw e;
+      }
+      return;
+    }
+    if (st.status === "Executed") { saveListFile(file); return; } // syncList records it once the chain shows it
+    saveListFile(file);
+    notes.push(`list ${n.epoch} waits for the co-signer (Squads #${index}: ${st.approved.length} of ${q.threshold} approvals)`);
   }
 
   /** The list `pay` checks now (a due pending list counts), from vault-list.json or IPFS; null if none. */
@@ -462,8 +688,12 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     if (!eff.pending && v.pendingEpoch > 0n && now >= v.pendingActiveAt) return;
     const list = await payList(v, file);
     if (!list) { notes.push("the list to pay isn't in vault-list.json or on IPFS"); return; }
+    const fallback = inFallback(v, now);
+    // While a quorum proposal waits, pay_fallback could pay a wallet past the totals it proposes
+    // (the co-signer would then refuse it): leave fallback payments until it's decided.
+    if (fallback && file.next?.proposal && !file.next.publishedAt) { notes.push("fallback payments wait for the proposed list"); return; }
     // (A due pending list with nobody owed minPayoutXnt: core.pay pays the largest amount owed so it takes over.)
-    await core!.pay(t, v, list, inFallback(v, now) ? "fallback" : "pay", notes);
+    await core!.pay(t, v, list, fallback ? "fallback" : "pay", notes);
   }
 
   /** One token's pass. Each step is on its own: a failed sale doesn't stop payouts. */
@@ -497,9 +727,10 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       const now = await readVault(t.mint);
       if (!now) return;
       const file: VaultListFile = readListFile(r.mint) ?? { version: 1, mint: r.mint, vault: now.address.toBase58(), active: null, next: null, history: [] };
-      if (!(await syncList(t, now, file, notes))) return;
+      const q = await quorumFor(now.publisher, true);
+      if (!(await syncList(t, now, file, notes, q))) return;
       const fresh = (await readVault(t.mint)) ?? now; // a re-sent list changes the pending fields
-      await listStep(r, t, fresh, file, notes);
+      await listStep(r, t, fresh, file, notes, q);
       const latest = (await readVault(t.mint)) ?? fresh;
       await payStep(t, latest, file, notes);
     });
