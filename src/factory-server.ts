@@ -93,6 +93,7 @@ function themeCss(name: string) {
 }
 const WALLET_JS = path.join(ROOT, "src", "web", "wallet.js");
 const COUNTDOWN_JS = path.join(ROOT, "src", "web", "countdown.js");
+const I18N_JS = path.join(ROOT, "src", "web", "i18n.js");
 const WEB3_BUNDLE = path.join(ROOT, "node_modules", "@solana", "web3.js", "lib", "index.iife.min.js");
 const opts = { microLamports: cfg.distribution.priorityMicroLamports };
 /** Tax Vault: on only when factory.taxVault.programId is set (the crank also needs publisherKeypair). */
@@ -1369,6 +1370,16 @@ const server = http.createServer(async (req, res) => {
     if (brand || url.pathname === "/favicon.ico") {
       const file = path.join(ROOT, "src", "web", "brand", brand ? brand[1] : "logo-64.png");
       res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=86400" }).end(fs.readFileSync(file));
+      return;
+    }
+    // Page translations: the language helper, and one dictionary per language (src/web/i18n/<lang>.js).
+    if (url.pathname === "/i18n.js") { send(res, 200, fs.readFileSync(I18N_JS, "utf8"), "text/javascript; charset=utf-8"); return; }
+    const dict = /^\/i18n\/([a-z]{2})\.js$/.exec(url.pathname);
+    if (dict) {
+      const file = path.join(ROOT, "src", "web", "i18n", `${dict[1]}.js`);
+      if (!fs.existsSync(file)) { res.writeHead(404).end("Not found"); return; }
+      // ~120 KB, so browsers keep it a few minutes; a stale copy only leaves new strings in English.
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=300" }).end(fs.readFileSync(file, "utf8"));
       return;
     }
     if (url.pathname === "/countdown.js") { send(res, 200, fs.readFileSync(COUNTDOWN_JS, "utf8"), "text/javascript"); return; }

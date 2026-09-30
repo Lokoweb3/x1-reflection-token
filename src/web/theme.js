@@ -8,8 +8,10 @@
  * carry ?theme=… and ?mode=… to set them; ?theme=default clears the theme choice.
  */
 (() => {
-  const THEMES = [["receipt", "Receipt", "Cream paper, monospace"], ["arcade", "Arcade", "Pixels and scanlines"], ["lunchbag", "Lunch bag", "Kraft paper, marker"], ["notebook", "Notebook", "Lined paper, sticky notes"]];
-  const MODES = [["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]];
+  // Page text goes through tr() from /i18n.js (loaded just before this file); English if it's missing.
+  const tr = window.tr ?? ((s, v) => (v ? s.replace(/\{(\w+)\}/g, (x, n) => (n in v ? String(v[n]) : x)) : s));
+  const THEMES = [["receipt", tr("Receipt"), tr("Cream paper, monospace")], ["arcade", tr("Arcade"), tr("Pixels and scanlines")], ["lunchbag", tr("Lunch bag"), tr("Kraft paper, marker")], ["notebook", tr("Notebook"), tr("Lined paper, sticky notes")]];
+  const MODES = [["auto", tr("Auto")], ["light", tr("Light")], ["dark", tr("Dark")]];
   const ALWAYS_DARK = new Set(["arcade"]);
   const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
   const set = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} };
@@ -45,7 +47,7 @@
       if (a.classList.contains("has-logo")) continue;
       const img = document.createElement("img");
       img.src = "/brand/logo-wide-120.png"; img.alt = ""; img.className = "brand-logo"; img.width = 88; img.height = 48;
-      a.setAttribute("aria-label", "99 + Tax home");
+      a.setAttribute("aria-label", tr("99 + Tax home"));
       a.classList.add("has-logo");
       a.prepend(img);
     }
@@ -60,7 +62,7 @@
     const host = document.querySelector("header nav") || document.querySelector("nav .links") || document.querySelector(".mainnav");
     if (!net || !host || document.getElementById("netToggle")) return;
     const wrap = document.createElement("div");
-    wrap.className = "net-toggle"; wrap.id = "netToggle"; wrap.setAttribute("role", "group"); wrap.setAttribute("aria-label", "Network");
+    wrap.className = "net-toggle"; wrap.id = "netToggle"; wrap.setAttribute("role", "group"); wrap.setAttribute("aria-label", tr("Network"));
     const path = location.pathname.replace(/^\/(nft|leaderboard|curve)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
     for (const id of ["mainnet", "testnet"]) {
       const here = id === net.network;
@@ -71,8 +73,8 @@
       el.textContent = id === "mainnet" ? "Mainnet" : "Testnet";
       el.className = `net-${id}`;
       if (here) el.setAttribute("aria-current", "true");
-      if (url) { el.href = url; el.title = `Open the ${id} site`; }
-      else if (!here) { el.setAttribute("aria-disabled", "true"); el.title = `No ${id} site linked`; }
+      if (url) { el.href = url; el.title = tr("Open the {network} site", { network: id }); }
+      else if (!here) { el.setAttribute("aria-disabled", "true"); el.title = tr("No {network} site linked", { network: id }); }
       wrap.append(el);
     }
     host.append(wrap);
@@ -85,14 +87,15 @@
     const d = document.createElement("details");
     d.className = "theme-picker"; d.id = "themePicker";
     const s = document.createElement("summary");
-    s.setAttribute("aria-label", "Change theme");
-    s.innerHTML = '<span aria-hidden="true">◐</span> Theme';
+    s.setAttribute("aria-label", tr("Change theme"));
+    s.innerHTML = '<span aria-hidden="true">◐</span> ';
+    s.append(tr("Theme"));
     const menu = document.createElement("div");
     menu.className = "tp-menu";
     d.append(s, menu);
     const render = () => {
       menu.replaceChildren();
-      const h1 = document.createElement("div"); h1.className = "tp-h"; h1.textContent = "Theme"; menu.append(h1);
+      const h1 = document.createElement("div"); h1.className = "tp-h"; h1.textContent = tr("Theme"); menu.append(h1);
       for (const [id, name, note] of THEMES) {
         const b = document.createElement("button");
         b.type = "button"; b.className = "tp-opt"; b.setAttribute("aria-pressed", String(current() === id));
@@ -101,8 +104,8 @@
         b.onclick = () => { set("99tax-theme", id === SITE_THEME ? null : id); apply(); render(); };
         menu.append(b);
       }
-      const h2 = document.createElement("div"); h2.className = "tp-h"; h2.textContent = "Mode"; menu.append(h2);
-      const row = document.createElement("div"); row.className = "tp-modes"; row.setAttribute("role", "group"); row.setAttribute("aria-label", "Light or dark");
+      const h2 = document.createElement("div"); h2.className = "tp-h"; h2.textContent = tr("Mode"); menu.append(h2);
+      const row = document.createElement("div"); row.className = "tp-modes"; row.setAttribute("role", "group"); row.setAttribute("aria-label", tr("Light or dark"));
       const locked = ALWAYS_DARK.has(current());
       for (const [id, name] of MODES) {
         const b = document.createElement("button");
@@ -113,13 +116,46 @@
       }
       menu.append(row);
       const n = document.createElement("div"); n.className = "tp-note";
-      n.textContent = locked ? "Arcade is always dark." : mode() === "auto" ? "Auto follows your device's light/dark setting." : "Saved in this browser.";
+      n.textContent = locked ? tr("Arcade is always dark.") : mode() === "auto" ? tr("Auto follows your device's light/dark setting.") : tr("Saved in this browser.");
       menu.append(n);
     };
     render();
     host.append(d);
     // composedPath() is fixed at dispatch, so a click on an option still counts as inside
     // after render() has replaced that option.
+    document.addEventListener("click", (ev) => { if (d.open && !ev.composedPath().includes(d)) d.open = false; });
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && d.open) { d.open = false; s.focus(); } });
+  }
+  // ---------- language menu ----------
+  // Same look as the theme menu; the choice is kept by /i18n.js and the page reloads in it.
+  function langMenu() {
+    const host = document.querySelector("header nav") || document.querySelector("nav .links") || document.querySelector(".mainnav");
+    const i18n = window.I18N;
+    if (!host || !i18n || document.getElementById("langPicker")) return;
+    const d = document.createElement("details");
+    d.className = "theme-picker lang-picker"; d.id = "langPicker";
+    const s = document.createElement("summary");
+    const here = i18n.langs.find(([id]) => id === i18n.lang) ?? i18n.langs[0];
+    s.setAttribute("aria-label", tr("Language: {name}", { name: here[1] }));
+    s.textContent = here[0].toUpperCase();
+    const menu = document.createElement("div");
+    menu.className = "tp-menu";
+    const h = document.createElement("div"); h.className = "tp-h"; h.textContent = tr("Language"); menu.append(h);
+    for (const [id, name] of i18n.langs) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "tp-opt"; b.lang = id; b.setAttribute("aria-pressed", String(id === i18n.lang));
+      b.innerHTML = '<span class="tp-sw tp-sw-lang" aria-hidden="true"></span><span><b></b></span>';
+      b.querySelector(".tp-sw").textContent = id.toUpperCase(); b.querySelector("b").textContent = name;
+      b.onclick = () => { if (id !== i18n.lang) i18n.setLang(id); else d.open = false; };
+      menu.append(b);
+    }
+    d.append(s, menu);
+    // Theme and language menus sit together, so they wrap onto a new line as a pair.
+    const prefs = document.createElement("span");
+    prefs.className = "site-prefs";
+    const theme = document.getElementById("themePicker");
+    if (theme?.parentElement === host) { theme.replaceWith(prefs); prefs.append(theme); } else host.append(prefs);
+    prefs.append(d);
     document.addEventListener("click", (ev) => { if (d.open && !ev.composedPath().includes(d)) d.open = false; });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && d.open) { d.open = false; s.focus(); } });
   }
@@ -132,14 +168,14 @@
     const box = document.createElement("div"); box.className = "site-empty";
     const p = document.createElement("p"); p.textContent = message; box.append(p);
     const row = document.createElement("div"); row.className = "site-empty-actions";
-    const launch = document.createElement("a"); launch.className = "btn primary"; launch.href = action?.href ?? "/launch"; launch.textContent = action?.text ?? "Launch the first one →";
+    const launch = document.createElement("a"); launch.className = "btn primary"; launch.href = action?.href ?? "/launch"; launch.textContent = action?.text ?? tr("Launch the first one →");
     row.append(launch);
     if (net?.network === "mainnet" && net.other?.url) {
-      const t = document.createElement("a"); t.className = "btn"; t.textContent = "Try it free on testnet →";
+      const t = document.createElement("a"); t.className = "btn"; t.textContent = tr("Try it free on testnet →");
       t.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard|curve)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
       row.append(t);
       const n = document.createElement("p"); n.className = "site-empty-note";
-      n.textContent = "Testnet has live example tokens, NFTs and payouts, plus a faucet for free test XNT.";
+      n.textContent = tr("Testnet has live example tokens, NFTs and payouts, plus a faucet for free test XNT.");
       box.append(row, n);
     } else box.append(row);
     return box;
@@ -148,6 +184,8 @@
   // ---------- phone tables ----------
   // Tables with 4+ columns become stacked cards on phones (CSS in theme-base.css): each
   // cell gets its column's name as a label. Pages redraw tables, so this re-runs on changes.
+  // Columns that take a whole row on a phone card (by header, in English or the page's language).
+  const FULL = new Set(["wallet", "token", "name", tr("Wallet"), tr("Token"), tr("Name")].map((x) => x.toLowerCase()));
   function labelTables() {
     for (const t of document.querySelectorAll("table")) {
       if (t.closest(".receipt, #contracts") || t.id === "costTable") continue;
@@ -163,7 +201,7 @@
           const n = r.cells.length === 1 ? "" : names[i] ?? "";
           if (c.dataset.label !== n) c.dataset.label = n;
           c.classList.toggle("stack-hide", n === "#");
-          c.classList.toggle("stack-full", /^(wallet|token|name)$/i.test(n) || r.cells.length === 1);
+          c.classList.toggle("stack-full", FULL.has(n.toLowerCase()) || r.cells.length === 1);
         });
       }
     }
@@ -183,13 +221,14 @@
     const b = document.createElement("button");
     b.type = "button"; b.id = "mnavBtn"; b.className = "mnav-btn";
     b.setAttribute("aria-controls", host.id); b.setAttribute("aria-expanded", "false");
-    b.innerHTML = '<span aria-hidden="true">☰</span> Menu';
+    b.innerHTML = '<span aria-hidden="true">☰</span> ';
+    b.append(tr("Menu"));
     b.onclick = () => { const open = host.classList.toggle("open"); b.setAttribute("aria-expanded", String(open)); b.firstChild.textContent = open ? "✕" : "☰"; };
     host.before(b);
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && host.classList.contains("open")) b.click(); });
   }
   const mount = () => {
-    brandLogo(); netToggle(); build(); phoneMenu(); labelTables();
+    brandLogo(); netToggle(); build(); langMenu(); phoneMenu(); labelTables();
     new MutationObserver(queueTables).observe(document.body, { childList: true, subtree: true });
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();

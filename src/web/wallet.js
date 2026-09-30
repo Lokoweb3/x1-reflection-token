@@ -4,6 +4,8 @@
 // browser) and reconnects to it silently on the next page; wallets only allow that for
 // sites the viewer already approved, so it never pops a prompt on its own.
 window.X1Wallet = (() => {
+  // Messages go through tr() from /i18n.js; English if it's missing.
+  const tr = window.tr ?? ((s, v) => (v ? s.replace(/\{(\w+)\}/g, (x, n) => (n in v ? String(v[n]) : x)) : s));
   const standard = [];
   const state = { address: null, name: null, active: null, account: null, legacy: null };
   const listeners = new Set();
@@ -34,12 +36,12 @@ window.X1Wallet = (() => {
     if (choice.standard) {
       const r = await choice.standard.features["standard:connect"].connect(silent ? { silent: true } : undefined);
       const account = r?.accounts?.[0] ?? choice.standard.accounts?.[0];
-      if (!account) throw new Error("The wallet didn't share an account.");
+      if (!account) throw new Error(tr("The wallet didn't share an account."));
       Object.assign(state, { active: choice.standard, account, legacy: null, address: account.address, name: choice.name });
     } else {
       const r = await choice.legacy.connect(silent ? { onlyIfTrusted: true } : undefined);
       const pk = r?.publicKey ?? choice.legacy.publicKey;
-      if (!pk) throw new Error("The wallet didn't share an account.");
+      if (!pk) throw new Error(tr("The wallet didn't share an account."));
       Object.assign(state, { active: null, account: null, legacy: choice.legacy, address: pk.toString(), name: choice.name });
     }
     remember(choice.name);
@@ -71,7 +73,7 @@ window.X1Wallet = (() => {
     if (window.solanaWeb3) return Promise.resolve();
     return new Promise((ok, fail) => {
       const s = document.createElement("script");
-      s.src = "/vendor/web3.js"; s.onload = ok; s.onerror = () => fail(new Error("Could not load web3.js"));
+      s.src = "/vendor/web3.js"; s.onload = ok; s.onerror = () => fail(new Error(tr("Could not load web3.js")));
       document.head.append(s);
     });
   }
@@ -81,7 +83,7 @@ window.X1Wallet = (() => {
   // only test/dev chains on the mainnet site, or when the wallet has 0 XNT on this site's
   // network (usually it's set to the other one). SITE_NET comes from /theme.js.
   const siteNet = () => (typeof SITE_NET === "object" && SITE_NET ? SITE_NET : null);
-  const netName = (n) => (n === "mainnet" ? "X1 Mainnet" : "X1 Testnet");
+  const netName = (n) => (n === "mainnet" ? tr("X1 Mainnet") : tr("X1 Testnet"));
   function showNetWarning(text) {
     document.getElementById("netWarn")?.remove();
     if (!text) return;
@@ -92,11 +94,11 @@ window.X1Wallet = (() => {
     if (net?.other?.url) {
       const a = document.createElement("a");
       a.href = net.other.url.replace(/\/$/, "") + location.pathname.replace(/^\/(nft|leaderboard|curve)\/[1-9A-HJ-NP-Za-km-z]{32,44}$/, "/$1");
-      a.textContent = `Open the ${net.other.network} site →`;
+      a.textContent = tr("Open the {network} site →", { network: net.other.network });
       bar.append(" ", a);
     }
     const x = document.createElement("button");
-    x.type = "button"; x.className = "net-warn-x"; x.setAttribute("aria-label", "Dismiss"); x.textContent = "✕";
+    x.type = "button"; x.className = "net-warn-x"; x.setAttribute("aria-label", tr("Dismiss")); x.textContent = "✕";
     x.onclick = () => { bar.remove(); try { sessionStorage.setItem("99tax-netwarn-" + state.address, "1"); } catch {} };
     bar.append(x);
     (document.querySelector(".topbar") ?? document.body.firstElementChild)?.after(bar);
@@ -107,13 +109,13 @@ window.X1Wallet = (() => {
     try { if (sessionStorage.getItem("99tax-netwarn-" + state.address)) return; } catch {}
     const chains = state.account?.chains ?? [];
     if (net.network === "mainnet" && chains.length && chains.every((c) => /testnet|devnet/i.test(c))) {
-      showNetWarning(`Your wallet looks set to a test network, but this is the ${netName(net.network)} site. Switch your wallet to ${netName(net.network)} before signing anything.`);
+      showNetWarning(tr("Your wallet looks set to a test network, but this is the {network} site. Switch your wallet to {network} before signing anything.", { network: netName(net.network) }));
       return;
     }
     try {
       const r = await fetch(`/api/balance/${state.address}`).then((x) => x.json());
       if (typeof r.xnt === "number" && r.xnt === 0) {
-        showNetWarning(`This wallet has no XNT on ${netName(net.network)}. If your wallet is set to ${net.network === "mainnet" ? "testnet" : "mainnet"}, switch it to ${netName(net.network)} (every transaction here needs a little XNT for fees).`);
+        showNetWarning(tr("This wallet has no XNT on {network}. If your wallet is set to {other}, switch it to {network} (every transaction here needs a little XNT for fees).", { network: netName(net.network), other: net.network === "mainnet" ? "testnet" : "mainnet" }));
       } else showNetWarning(null);
     } catch { /* no hint if the check fails */ }
   }
@@ -126,7 +128,7 @@ window.X1Wallet = (() => {
       const net = siteNet();
       // A wallet on the other network can't find this network's blockhash or accounts.
       if (net && /blockhash|simulat|not found|cluster|genesis|network|insufficient/i.test(m)) {
-        throw new Error(`${m} (Check that your wallet is set to ${netName(net.network)}.)`);
+        throw new Error(`${m} ${tr("(Check that your wallet is set to {network}.)", { network: netName(net.network) })}`);
       }
       throw e;
     }
@@ -149,7 +151,7 @@ window.X1Wallet = (() => {
       }
     } catch (e) {
       const m = String(e?.message ?? e), net = siteNet();
-      if (net && /blockhash|simulat|not found|cluster|genesis|network|insufficient/i.test(m)) throw new Error(`${m} (Check that your wallet is set to ${netName(net.network)}.)`);
+      if (net && /blockhash|simulat|not found|cluster|genesis|network|insufficient/i.test(m)) throw new Error(`${m} ${tr("(Check that your wallet is set to {network}.)", { network: netName(net.network) })}`);
       throw e;
     }
     const out = [];
@@ -163,7 +165,7 @@ window.X1Wallet = (() => {
       const [out] = await state.active.features["solana:signTransaction"].signTransaction(input);
       return out.signedTransaction;
     }
-    if (!state.legacy) throw new Error("Connect a wallet first.");
+    if (!state.legacy) throw new Error(tr("Connect a wallet first."));
     await loadWeb3();
     const signed = await state.legacy.signTransaction(window.solanaWeb3.Transaction.from(bytes));
     return signed.serialize({ requireAllSignatures: true });

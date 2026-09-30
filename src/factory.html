@@ -211,6 +211,7 @@ form .row[hidden], .hint[hidden] { display: none; }
 .paused-note { border: 2px dashed var(--line, #999); padding: 18px; margin: 8px 0 16px; font-size: 16px; }
 </style>
 <link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
 <script src="/theme.js"></script>
 </head>
 <body>
@@ -405,7 +406,7 @@ function toast(kind, ...parts) {
 async function api(url, body) {
   const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
   const j = await r.json().catch(() => ({ error: r.statusText }));
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  if (!r.ok) throw new Error(tr(j.error || r.statusText)); // server messages are English; tr() maps known ones
   return j;
 }
 
@@ -413,24 +414,24 @@ async function api(url, body) {
 function renderWallet() {
   const area = document.getElementById("walletArea");
   if (W.state.address) {
-    const b = el("button", { class: "btn small", type: "button", text: "Disconnect" });
+    const b = el("button", { class: "btn small", type: "button", text: tr("Disconnect") });
     b.onclick = () => W.disconnect();
     area.replaceChildren(el("span", { class: "sub mono", text: short(W.state.address) }), b);
   } else {
-    const b = el("button", { class: "btn primary", type: "button", text: "Connect wallet" });
+    const b = el("button", { class: "btn primary", type: "button", text: tr("Connect wallet") });
     b.onclick = openWalletMenu;
     area.replaceChildren(b);
   }
   const btn = document.getElementById("launchBtn");
   btn.disabled = !W.state.address || running;
-  btn.textContent = W.state.address ? (running ? "Launching…" : "Launch token") : "Connect a wallet to launch";
+  btn.textContent = W.state.address ? (running ? tr("Launching…") : tr("Launch token")) : tr("Connect a wallet to launch");
 }
 function openWalletMenu(ev) {
   ev.stopPropagation();
   document.getElementById("walletMenu")?.remove();
   const choices = W.choices();
-  const go = (c) => W.connect(c).catch((e) => toast("error", "Wallet connection failed: " + (e.message || e)));
-  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  const go = (c) => W.connect(c).catch((e) => toast("error", tr("Wallet connection failed: ") + (e.message || e)));
+  if (!choices.length) { toast("error", tr("No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload.")); return; }
   if (choices.length === 1) { go(choices[0]); return; }
   const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
   for (const c of choices) {
@@ -467,7 +468,7 @@ function pairOf(symbol) {
 /** "0.0118 JACK (≈ 10 XNT)", or just "10 XNT". */
 function pairAmount(amount, pair) {
   const a = `${fmt(amount || 0, 9)} ${pair.symbol}`;
-  return pair.symbol === "XNT" ? a : `${a}${pair.priceXnt ? ` (≈ ${fmt(Number(amount || 0) * pair.priceXnt, 4)} XNT)` : ""}`;
+  return pair.symbol === "XNT" ? a : `${a}${pair.priceXnt ? tr(" (≈ {amount} XNT)", { amount: fmt(Number(amount || 0) * pair.priceXnt, 4) }) : ""}`;
 }
 function renderForm() {
   const p = readForm();
@@ -479,29 +480,29 @@ function renderForm() {
   hs.textContent = isFinite(holdersPct) ? `${fmt(Math.max(0, holdersPct), 2)}%` : "–";
   hs.classList.toggle("bad", over);
   document.getElementById("taxSplit").textContent = over
-    ? `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax; ${creatorPct}% goes to you and holders always keep at least 35%.`
-    : `Every transfer pays ${fmt(tax, 2)}%: about ${fmt(tax - lp - burn - creator, 2)}% goes to holders in XNT, ${fmt(lp, 2)}% is added to the pool's liquidity (LP burned)` +
-      (burn > 0 ? `, ${fmt(burn, 2)}% of the tokens are burned` : "") + `, and ${fmt(creator, 2)}% is your creator reward.`;
+    ? tr("Liquidity + burn can't be more than {MAX_LP_PLUS_BURN}% of the tax; {creatorPct}% goes to you and holders always keep at least 35%.", { MAX_LP_PLUS_BURN, creatorPct })
+    : tr("Every transfer pays {tax}%: about {tax2}% goes to holders in XNT, {lp}% is added to the pool's liquidity (LP burned)", { tax: fmt(tax, 2), tax2: fmt(tax - lp - burn - creator, 2), lp: fmt(lp, 2) }) +
+      (burn > 0 ? tr(", {burn}% of the tokens are burned", { burn: fmt(burn, 2) }) : "") + tr(", and {creator}% is your creator reward.", { creator: fmt(creator, 2) });
   const pair = pairOf(p.quote);
   const price = Number(p.poolXnt) / Number(p.poolTokens || 0);
   const sig = (n) => n.toLocaleString(undefined, { maximumSignificantDigits: 3 });
   document.getElementById("priceNote").textContent = isFinite(price) && price > 0
-    ? `Starting price ≈ ${sig(price)} ${pair.symbol} per token` + (pair.symbol !== "XNT" && pair.priceXnt ? ` (≈ ${sig(price * pair.priceXnt)} XNT)` : "") : "";
-  document.getElementById("poolAmtLabel").textContent = `${pair.symbol} into the pool`;
-  document.getElementById("poolStepNote").textContent = `Your tokens + ${pair.symbol} become the starting liquidity`;
+    ? tr("Starting price ≈ {price} {symbol} per token", { price: sig(price), symbol: pair.symbol }) + (pair.symbol !== "XNT" && pair.priceXnt ? tr(" (≈ {price} XNT)", { price: sig(price * pair.priceXnt) }) : "") : "";
+  document.getElementById("poolAmtLabel").textContent = tr("{symbol} into the pool", { symbol: pair.symbol });
+  document.getElementById("poolStepNote").textContent = tr("Your tokens + {symbol} become the starting liquidity", { symbol: pair.symbol });
   const amtHint = document.getElementById("poolAmtHint");
   amtHint.hidden = pair.symbol === "XNT";
   amtHint.textContent = pair.symbol === "XNT" ? "" : pair.priceXnt
-    ? `≈ ${fmt(Number(p.poolXnt || 0) * pair.priceXnt, 4)} XNT at today's ${pair.symbol} price (1 ${pair.symbol} ≈ ${fmt(pair.priceXnt, 2)} XNT). Comes from your ${pair.symbol}.`
-    : `Comes from your ${pair.symbol}.`;
+    ? tr("≈ {poolXnt} XNT at today's {symbol} price (1 {symbol} ≈ {priceXnt} XNT). Comes from your {symbol}.", { poolXnt: fmt(Number(p.poolXnt || 0) * pair.priceXnt, 4), symbol: pair.symbol, priceXnt: fmt(pair.priceXnt, 2) })
+    : tr("Comes from your {symbol}.", { symbol: pair.symbol });
   const costs = document.getElementById("costs");
   const rows = [
-    ["Launch fee", info ? `${info.feeAmount} ${info.feeSymbol}` : "…"],
-    [`${pair.symbol} into the pool`, pairAmount(p.poolXnt, pair)],
-    ["XDEX pool creation fee", info?.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "…"],
+    [tr("Launch fee"), info ? `${info.feeAmount} ${info.feeSymbol}` : "…"],
+    [tr("{symbol} into the pool", { symbol: pair.symbol }), pairAmount(p.poolXnt, pair)],
+    [tr("XDEX pool creation fee"), info?.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "…"],
     // A Tax Vault launch (XNT pair) has no distributor wallet: the vault crank pays its own fees.
-    ...(info?.taxVault?.launches && pair.symbol === "XNT" ? [] : [["Distributor gas (funds its payouts)", info ? `${info.gasXnt} XNT` : "…"]]),
-    ["Account rent and network fees", "≈ 0.03 XNT"],
+    ...(info?.taxVault?.launches && pair.symbol === "XNT" ? [] : [[tr("Distributor gas (funds its payouts)"), info ? `${info.gasXnt} XNT` : "…"]]),
+    [tr("Account rent and network fees"), tr("≈ 0.03 XNT")],
   ];
   costs.replaceChildren(...rows.map(([a, b]) => el("tr", {}, el("td", { text: a }), el("td", { text: b }))));
 }
@@ -543,7 +544,7 @@ function vaultStepShown(on) {
   let li = list.querySelector('li[data-step="vault"]');
   if (on && !li) {
     li = el("li", { "data-step": "vault" }, el("span", { class: "dot", text: "4" }),
-      el("div", {}, el("div", { class: "t", text: "Start the tax vault" }), el("div", { class: "muted", text: "The vault program, not a wallet, holds and splits the tax" })));
+      el("div", {}, el("div", { class: "t", text: tr("Start the tax vault") }), el("div", { class: "muted", text: tr("The vault program, not a wallet, holds and splits the tax") })));
     list.insertBefore(li, list.querySelector('li[data-step="registered"]'));
   } else if (!on && li) li.remove();
   list.querySelector('li[data-step="registered"] .dot').textContent = on ? "5" : "4";
@@ -556,18 +557,18 @@ function setSteps(status, active, errorStep) {
   }
 }
 async function signAndSend(label, build, vaultMint) {
-  toast("info", `${label}: preparing and simulating…`);
+  toast("info", tr("{label}: preparing and simulating…", { label }));
   const { tx, ...rest } = await build();
-  toast("info", `${label}: approve it in your wallet…`);
+  toast("info", tr("{label}: approve it in your wallet…", { label }));
   const signed = await W.sign(W.b64ToBytes(tx));
-  toast("info", `${label}: sending…`);
+  toast("info", tr("{label}: sending…", { label }));
   const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), vaultMint });
-  toast("success", `${label} confirmed. `, link(`${info.explorer}/tx/${signature}`, "View transaction ↗"));
+  toast("success", tr("{label} confirmed. ", { label }), link(`${info.explorer}/tx/${signature}`, tr("View transaction ↗")));
   return { signature, ...rest };
 }
 /** Write the lock receipt image into the LP NFT, on-chain (optional; small rent). */
 function printReceipt(mint) {
-  return signAndSend("Print receipt NFT", () => api("/api/launch/receipt", { mint, creator: W.state.address }));
+  return signAndSend(tr("Print receipt NFT"), () => api("/api/launch/receipt", { mint, creator: W.state.address }));
 }
 async function statusOf(mint) {
   const mine = await api(`/api/launches?creator=${W.state.address}`);
@@ -578,17 +579,17 @@ async function continueLaunch(mint) {
   let status = await statusOf(mint);
   let step = "pool";
   try {
-    if (!status.pool) { step = "pool"; setSteps(status, "pool"); await signAndSend("Create pool", () => api("/api/launch/pool", { mint, creator })); status = { ...status, pool: true }; }
+    if (!status.pool) { step = "pool"; setSteps(status, "pool"); await signAndSend(tr("Create pool"), () => api("/api/launch/pool", { mint, creator })); status = { ...status, pool: true }; }
     if (!status.lock) {
       step = "lock"; setSteps(status, "lock");
-      await signAndSend("Lock LP", () => api("/api/launch/lock", { mint, creator }));
+      await signAndSend(tr("Lock LP"), () => api("/api/launch/lock", { mint, creator }));
       status = { ...status, lock: true };
-      await printReceipt(mint).catch((e) => toast("info", `Receipt not printed (${e.message || e}). You can print it later from “Your launches”.`));
+      await printReceipt(mint).catch((e) => toast("info", tr("Receipt not printed ({message}). You can print it later from “Your launches”.", { message: e.message || e })));
     }
     if (status.taxVault && !status.vault) {
       // Only the creator can start the vault, so nobody else can set who publishes its lists.
       step = "vault"; setSteps(status, "vault");
-      await signAndSend("Start the tax vault", () => api("/api/launch/vault", { mint, creator }), mint);
+      await signAndSend(tr("Start the tax vault"), () => api("/api/launch/vault", { mint, creator }), mint);
       status = { ...status, vault: true };
     }
     step = "registered"; setSteps(status, "registered");
@@ -596,10 +597,10 @@ async function continueLaunch(mint) {
     status = { ...status, registered: true };
     setSteps(status);
     showResult(mint);
-    toast("success", "Your token is live. ", link(`${info.explorer}/address/${mint}`, "View token ↗"));
+    toast("success", tr("Your token is live. "), link(`${info.explorer}/address/${mint}`, tr("View token ↗")));
   } catch (e) {
     setSteps(status, null, step);
-    toast("error", `Launch paused at "${step}": ${e.message || e}. You can continue it from “Your launches”.`);
+    toast("error", tr("Launch paused at \"{step}\": {message}. You can continue it from “Your launches”.", { step, message: e.message || e }));
   }
   loadMine(); loadTokens();
 }
@@ -608,39 +609,39 @@ async function startCurveVault(mint) {
   if (running) return;
   running = true; renderWallet();
   try {
-    await signAndSend("Start the tax vault", () => api("/api/launch/vault", { mint, creator: W.state.address }), mint);
-  } catch (e) { toast("error", `Start the tax vault failed: ${e.message || e}`); }
+    await signAndSend(tr("Start the tax vault"), () => api("/api/launch/vault", { mint, creator: W.state.address }), mint);
+  } catch (e) { toast("error", tr("Start the tax vault failed: {message}", { message: e.message || e })); }
   running = false; renderWallet();
   loadMine();
 }
 function showResult(mint) {
-  document.getElementById("launchResult").replaceChildren(el("p", { class: "sub" }, "Token: ", link(`${info.explorer}/address/${mint}`, mint, "mono")));
+  document.getElementById("launchResult").replaceChildren(el("p", { class: "sub" }, tr("Token: "), link(`${info.explorer}/address/${mint}`, mint, "mono")));
 }
 form.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   if (running || !W.state.address) return;
   const p = readForm();
-  const lock = p.lockDays === null ? "locked FOREVER" : `locked for ${p.lockDays} days`;
-  if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", `Liquidity + burn can't be more than ${MAX_LP_PLUS_BURN}% of the tax.`); return; }
+  const lock = p.lockDays === null ? tr("locked FOREVER") : tr("locked for {lockDays} days", { lockDays: p.lockDays });
+  if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", tr("Liquidity + burn can't be more than {MAX_LP_PLUS_BURN}% of the tax.", { MAX_LP_PLUS_BURN })); return; }
   const pair = pairOf(p.quote);
-  const ok = confirm(`Launch ${p.name} (${p.symbol})?\n\n• Supply ${Number(p.supply).toLocaleString()} (fixed)\n• Tax ${p.taxBps / 100}% on every transfer (can never change)${p.burnBps ? `, ${p.burnBps / 100}% of it burned` : ""}\n• Pool: ${Number(p.poolTokens).toLocaleString()} tokens + ${pairAmount(p.poolXnt, pair)}, LP ${lock}${pair.symbol !== "XNT" ? `\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT` : ""}\n• Launch fee ${info.feeAmount} ${info.feeSymbol}\n• Your creator reward: ${(info.creatorBps ?? 1000) / 100}% of the tax, paid in ${info.taxVault?.launches && pair.symbol === "XNT" ? info.taxVault.rewardSymbol : info.creatorRewardSymbol ?? "USDC"}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n${info.taxVault?.launches && pair.symbol === "XNT" ? "The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault." : "Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain)."}`);
+  const ok = confirm(tr("Launch {name} ({symbol})?\n\n• Supply {supply} (fixed)\n• Tax {taxBps}% on every transfer (can never change){extra}\n• Pool: {poolTokens} tokens + {poolXnt}, LP {lock}{extra2}\n• Launch fee {feeAmount} {feeSymbol}\n• Your creator reward: {creatorBps}% of the tax, paid in {rewardSymbol}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n{extra3}", { name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), taxBps: p.taxBps / 100, extra: p.burnBps ? tr(", {burnBps}% of it burned", { burnBps: p.burnBps / 100 }) : "", poolTokens: Number(p.poolTokens).toLocaleString(), poolXnt: pairAmount(p.poolXnt, pair), lock, extra2: pair.symbol !== "XNT" ? tr("\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT") : "", feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, creatorBps: (info.creatorBps ?? 1000) / 100, rewardSymbol: info.taxVault?.launches && pair.symbol === "XNT" ? info.taxVault.rewardSymbol : info.creatorRewardSymbol ?? "USDC", extra3: info.taxVault?.launches && pair.symbol === "XNT" ? tr("The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault.") : tr("Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain).") }));
   if (!ok) return;
   running = true; renderWallet();
   document.getElementById("launchResult").replaceChildren();
   setSteps({}, "token");
   try {
-    const { mint } = await signAndSend("Create token", () => api("/api/launch/token", { ...p, creator: W.state.address }));
+    const { mint } = await signAndSend(tr("Create token"), () => api("/api/launch/token", { ...p, creator: W.state.address }));
     await continueLaunch(mint);
   } catch (e) {
     setSteps({}, null, "token");
-    toast("error", `Create token failed: ${e.message || e}`);
+    toast("error", tr("Create token failed: {message}", { message: e.message || e }));
   } finally {
     running = false; renderWallet();
   }
 });
 
 // ---------- Lists ----------
-function lockText(days) { return days === null ? "Forever" : `${days} days`; }
+function lockText(days) { return days === null ? tr("Forever") : tr("{days} days", { days }); }
 // A creator reward just vested: reload "Your launches" so its Claim button appears.
 document.addEventListener("countdown-done", () => setTimeout(loadMine, 4000));
 // ---------- Testnet faucet for the launch-fee token ----------
@@ -650,41 +651,41 @@ async function loadFaucet() {
   try { f = await api(`/api/faucet${W.state.address ? `?wallet=${W.state.address}` : ""}`); } catch { box.hidden = true; return; }
   if (!f.enabled) { box.hidden = true; return; }
   const gives = `${f.amount} ${f.symbol}` + (Number(f.xntAmount) > 0 ? ` + ${f.xntAmount} XNT` : "");
-  const b = el("button", { class: "btn small", type: "button", text: `Get ${gives} free` });
-  let note = `Testnet only. One claim per wallet every 24 hours.`;
-  if (!W.state.address) { b.disabled = true; note = "Connect a wallet to claim."; }
-  else if (f.nextClaimAt) { b.disabled = true; note = `Already claimed; next claim ${new Date(f.nextClaimAt).toLocaleString()}.`; }
-  else if (f.empty) { b.disabled = true; note = f.balance < Number(f.amount) ? `The faucet is out of ${f.symbol} right now.` : "The faucet is out of XNT right now."; }
-  else if (!f.remainingToday) { b.disabled = true; note = "Today's faucet limit is reached; try again tomorrow."; }
+  const b = el("button", { class: "btn small", type: "button", text: tr("Get {gives} free", { gives }) });
+  let note = tr("Testnet only. One claim per wallet every 24 hours.");
+  if (!W.state.address) { b.disabled = true; note = tr("Connect a wallet to claim."); }
+  else if (f.nextClaimAt) { b.disabled = true; note = tr("Already claimed; next claim {date}.", { date: new Date(f.nextClaimAt).toLocaleString() }); }
+  else if (f.empty) { b.disabled = true; note = f.balance < Number(f.amount) ? tr("The faucet is out of {symbol} right now.", { symbol: f.symbol }) : tr("The faucet is out of XNT right now."); }
+  else if (!f.remainingToday) { b.disabled = true; note = tr("Today's faucet limit is reached; try again tomorrow."); }
   b.onclick = async () => {
     b.disabled = true;
-    toast("info", `Sending ${gives}…`);
+    toast("info", tr("Sending {gives}…", { gives }));
     try {
       const r = await api("/api/faucet", { wallet: W.state.address });
-      toast("success", `Sent ${gives} to your wallet. `, link(`${info.explorer}/tx/${r.signature}`, "View transaction ↗"));
-    } catch (e) { toast("error", `Faucet: ${e.message || e}`); }
+      toast("success", tr("Sent {gives} to your wallet. ", { gives }), link(`${info.explorer}/tx/${r.signature}`, tr("View transaction ↗")));
+    } catch (e) { toast("error", tr("Faucet: {message}", { message: e.message || e })); }
     loadFaucet();
   };
   // Anyone can top the faucet up from their own wallet (their wallet signs).
-  const tokIn = el("input", { type: "number", min: "0", step: "any", placeholder: `${f.symbol} amount`, "aria-label": `${f.symbol} to add to the faucet` });
-  const xntIn = el("input", { type: "number", min: "0", step: "any", placeholder: "XNT for fees", "aria-label": "XNT to add for faucet fees" });
-  const fund = el("button", { class: "btn small primary", type: "button", text: "Top up faucet" });
+  const tokIn = el("input", { type: "number", min: "0", step: "any", placeholder: tr("{symbol} amount", { symbol: f.symbol }), "aria-label": tr("{symbol} to add to the faucet", { symbol: f.symbol }) });
+  const xntIn = el("input", { type: "number", min: "0", step: "any", placeholder: tr("XNT for fees"), "aria-label": tr("XNT to add for faucet fees") });
+  const fund = el("button", { class: "btn small primary", type: "button", text: tr("Top up faucet") });
   fund.disabled = !W.state.address;
-  if (!W.state.address) fund.title = "Connect a wallet first";
+  if (!W.state.address) fund.title = tr("Connect a wallet first");
   fund.onclick = async () => {
     fund.disabled = true;
     try {
-      await signAndSend("Top up the faucet", () => api("/api/faucet/fund", { wallet: W.state.address, tokens: tokIn.value, xnt: xntIn.value }));
+      await signAndSend(tr("Top up the faucet"), () => api("/api/faucet/fund", { wallet: W.state.address, tokens: tokIn.value, xnt: xntIn.value }));
       tokIn.value = ""; xntIn.value = "";
-    } catch (e) { toast("error", `Top up failed: ${e.message || e}`); }
+    } catch (e) { toast("error", tr("Top up failed: {message}", { message: e.message || e })); }
     loadFaucet();
   };
   const topup = el("details", { class: "faucet-topup" },
-    el("summary", { text: "Top up the faucet" }),
-    el("div", { class: "muted", text: `Faucet holds ${fmt(f.balance, 4)} ${f.symbol} and ${fmt(f.xnt, 4)} XNT. Each claim gives ${gives} and costs about 0.004 XNT in fees. Address: ${short(f.address)}` }),
+    el("summary", { text: tr("Top up the faucet") }),
+    el("div", { class: "muted", text: tr("Faucet holds {balance} {symbol} and {xnt} XNT. Each claim gives {gives} and costs about 0.004 XNT in fees. Address: {address}", { balance: fmt(f.balance, 4), symbol: f.symbol, xnt: fmt(f.xnt, 4), gives, address: short(f.address) }) }),
     el("div", { class: "faucet-row" }, tokIn, xntIn, fund));
   box.replaceChildren(
-    el("div", { class: "faucet-main" }, el("div", {}, el("b", { text: `Need ${f.symbol} or XNT to try a launch?` }), el("div", { class: "muted", text: note })), b),
+    el("div", { class: "faucet-main" }, el("div", {}, el("b", { text: tr("Need {symbol} or XNT to try a launch?", { symbol: f.symbol }) }), el("div", { class: "muted", text: note })), b),
     topup);
   box.hidden = false;
 }
@@ -693,14 +694,14 @@ W.onChange(() => loadFaucet());
 // ---------- Logo: upload straight to IPFS (nothing kept on this site), or paste a link ----------
 function showLogoPreview(url, note) {
   const box = document.getElementById("logoPreview");
-  if (!url) { box.replaceChildren("No logo"); return; }
-  const img = el("img", { src: url, alt: "Token logo preview" });
+  if (!url) { box.replaceChildren(tr("No logo")); return; }
+  const img = el("img", { src: url, alt: tr("Token logo preview") });
   img.onload = () => {
     const hint = document.getElementById("logoHint");
     hint.textContent = img.naturalWidth && Math.abs(img.naturalWidth - img.naturalHeight) > 2
-      ? `This image is ${img.naturalWidth}×${img.naturalHeight}; a square one looks best in wallets.` : (note || "Looks good. Wallets and explorers show it next to your token.");
+      ? tr("This image is {naturalWidth}×{naturalHeight}; a square one looks best in wallets.", { naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight }) : (note || tr("Looks good. Wallets and explorers show it next to your token."));
   };
-  img.onerror = () => { box.replaceChildren("Can't load that image"); document.getElementById("logoHint").textContent = "Check the link: it must open the image itself."; };
+  img.onerror = () => { box.replaceChildren(tr("Can't load that image")); document.getElementById("logoHint").textContent = tr("Check the link: it must open the image itself."); };
   box.replaceChildren(img);
 }
 function setupLogo() {
@@ -708,14 +709,14 @@ function setupLogo() {
   const file = document.getElementById("logoFile");
   const btn = document.getElementById("logoUploadBtn");
   btn.hidden = !info?.logoUpload;
-  if (!info?.logoUpload) document.getElementById("logoHint").textContent = "A square image (PNG, JPG, WebP or GIF) hosted anywhere public, e.g. uploaded to IPFS.";
+  if (!info?.logoUpload) document.getElementById("logoHint").textContent = tr("A square image (PNG, JPG, WebP or GIF) hosted anywhere public, e.g. uploaded to IPFS.");
   input.addEventListener("change", () => {
     const v = input.value.trim();
     // Wallets often won't show SVG logos (they can carry scripts), so refuse them here too.
     if (/\.svgz?(?:[?#].*)?$/i.test(v)) {
-      document.getElementById("logoPreview").replaceChildren("SVG not allowed");
-      document.getElementById("logoHint").textContent = "SVG logos aren't shown by many wallets. Use a PNG, JPG, WebP or GIF.";
-      input.setCustomValidity("Use a PNG, JPG, WebP or GIF, not an SVG.");
+      document.getElementById("logoPreview").replaceChildren(tr("SVG not allowed"));
+      document.getElementById("logoHint").textContent = tr("SVG logos aren't shown by many wallets. Use a PNG, JPG, WebP or GIF.");
+      input.setCustomValidity(tr("Use a PNG, JPG, WebP or GIF, not an SVG."));
       return;
     }
     input.setCustomValidity("");
@@ -726,28 +727,28 @@ function setupLogo() {
     file.value = "";
     if (!f) return;
     const max = info?.maxLogoBytes ?? 500000;
-    if (f.size > max) { toast("error", `That image is ${Math.round(f.size / 1000)} KB; the limit is ${max / 1000} KB.`); return; }
+    if (f.size > max) { toast("error", tr("That image is {size} KB; the limit is {max} KB.", { size: Math.round(f.size / 1000), max: max / 1000 })); return; }
     const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = fail; r.readAsDataURL(f); });
-    btn.classList.add("busy"); btn.firstChild.textContent = "Uploading…";
+    btn.classList.add("busy"); btn.firstChild.textContent = tr("Uploading…");
     try {
       const r = await api("/api/upload-logo", { name: f.name.replace(/\.[^.]+$/, ""), data });
       input.value = r.url;
-      showLogoPreview(r.url, "Uploaded to IPFS. It stays there even if this site goes away.");
-      toast("success", "Logo uploaded to IPFS.");
-    } catch (e) { toast("error", `Upload failed: ${e.message || e}`); }
-    btn.classList.remove("busy"); btn.firstChild.textContent = "Upload image";
+      showLogoPreview(r.url, tr("Uploaded to IPFS. It stays there even if this site goes away."));
+      toast("success", tr("Logo uploaded to IPFS."));
+    } catch (e) { toast("error", tr("Upload failed: {message}", { message: e.message || e })); }
+    btn.classList.remove("busy"); btn.firstChild.textContent = tr("Upload image");
   });
 }
 
 async function loadMine() {
   const host = document.getElementById("myLaunches");
-  if (!W.state.address) { host.replaceChildren("Connect a wallet to see your launches."); return; }
+  if (!W.state.address) { host.replaceChildren(tr("Connect a wallet to see your launches.")); return; }
   try {
     const mine = await api(`/api/launches?creator=${W.state.address}`);
-    if (!mine.length) { host.replaceChildren("No launches from this wallet yet."); return; }
+    if (!mine.length) { host.replaceChildren(tr("No launches from this wallet yet.")); return; }
     // One stacked card per launch, so every button fits the narrow column (no sideways scroll).
     host.replaceChildren(el("div", { class: "launches" }, ...mine.map(launchCard)));
-  } catch (e) { host.replaceChildren("Couldn't load your launches: " + e.message); }
+  } catch (e) { host.replaceChildren(tr("Couldn't load your launches: ") + e.message); }
 }
 function launchCard(l) {
   const s = l.status;
@@ -762,18 +763,18 @@ function launchCard(l) {
   // Launch progress (and the next step if it isn't finished).
   if (l.kind === "curve") {
     // Curve tokens graduate on their own (the curve creates the pool and the lock); nothing to continue here.
-    const curveStatus = ["On the curve", "Graduating", "Graduating", "Delivering tokens", "Live"][s.curveStatus ?? -1] ?? "Not started (the create transaction was not sent)";
-    const open = el("a", { class: "btn small", href: `/curve/${l.mint}`, text: "Open curve" });
+    const curveStatus = [tr("On the curve"), tr("Graduating"), tr("Graduating"), tr("Delivering tokens"), tr("Live")][s.curveStatus ?? -1] ?? tr("Not started (the create transaction was not sent)");
+    const open = el("a", { class: "btn small", href: `/curve/${l.mint}`, text: tr("Open curve") });
     // A Tax Vault curve token, graduated: the creator starts its vault (the tax waits safely until then).
     const startVault = s.taxVault && s.lock && !s.vault
-      ? btn("Start the tax vault", "primary", () => startCurveVault(l.mint), false, "Sign init_vault: the Tax Vault program then holds and pays out the tax")
+      ? btn(tr("Start the tax vault"), "primary", () => startCurveVault(l.mint), false, tr("Sign init_vault: the Tax Vault program then holds and pays out the tax"))
       : null;
-    rows.push(row("Status", startVault ? "Graduated: start the tax vault (the tax waits safely until then)" : s.registered ? "Live" : curveStatus, s.token ? open : null, startVault));
+    rows.push(row(tr("Status"), startVault ? tr("Graduated: start the tax vault (the tax waits safely until then)") : s.registered ? tr("Live") : curveStatus, s.token ? open : null, startVault));
   } else {
     const cont = s.token && !s.registered
-      ? btn("Continue", "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })
+      ? btn(tr("Continue"), "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })
       : null;
-    rows.push(row("Status", s.registered ? "Live" : !s.token ? "Not started (step 1 was not sent)" : `${done} of ${s.taxVault ? 5 : 4} steps done`, cont));
+    rows.push(row(tr("Status"), s.registered ? tr("Live") : !s.token ? tr("Not started (step 1 was not sent)") : tr("{done} of {n} steps done", { done, n: s.taxVault ? 5 : 4 }), cont));
   }
 
   // Trading fees: the NFT holder can collect them any time they're worth a transaction.
@@ -783,10 +784,10 @@ function launchCard(l) {
     const netFee = fe.networkFee ? Number(fe.networkFee) / 1e9 : null;
     // A JACK pool's fees are tokens + JACK; worth is their XNT value.
     const pairFees = fe.quote && fe.quote !== "XNT";
-    rows.push(row("Trading fees", [`${pairFees ? "≈ " : ""}${fmt(Number(fe.worth) / 1e9, 6)} XNT ready${pairFees ? ` (paid as ${l.symbol} + ${fe.quote})` : ""}`, mineNft ? null : el("span", { class: "muted", text: ` · only the NFT holder (${short(fe.holder)}) can collect` }),
-      netFee !== null ? el("div", { class: "muted", text: `Network fee to collect ≈ ${fmt(netFee, 6)} XNT` }) : null],
-      mineNft ? btn("Collect fees", "primary", () => collectFees(l.lockNft), !fe.collectable,
-        fe.collectable ? "" : netFee !== null && Number(fe.worth) > 0 ? "Fees ready are less than the network fee to collect them; wait for more trading" : "Nothing worth collecting yet; fees grow as people trade") : null));
+    rows.push(row(tr("Trading fees"), [tr("{extra}{worth} XNT ready{extra2}", { extra: pairFees ? "≈ " : "", worth: fmt(Number(fe.worth) / 1e9, 6), extra2: pairFees ? tr(" (paid as {symbol} + {quote})", { symbol: l.symbol, quote: fe.quote }) : "" }), mineNft ? null : el("span", { class: "muted", text: tr(" · only the NFT holder ({holder}) can collect", { holder: short(fe.holder) }) }),
+      netFee !== null ? el("div", { class: "muted", text: tr("Network fee to collect ≈ {netFee} XNT", { netFee: fmt(netFee, 6) }) }) : null],
+      mineNft ? btn(tr("Collect fees"), "primary", () => collectFees(l.lockNft), !fe.collectable,
+        fe.collectable ? "" : netFee !== null && Number(fe.worth) > 0 ? tr("Fees ready are less than the network fee to collect them; wait for more trading") : tr("Nothing worth collecting yet; fees grow as people trade")) : null));
   }
 
   // Creator rewards: ready now, vesting, and a live countdown to the next part.
@@ -797,27 +798,27 @@ function launchCard(l) {
     const amt = (v) => fmt(Number(v) / 10 ** (rw.decimals ?? 9), 6);
     const ready = BigInt(rw.claimable) > 0n;
     const mineNft = !!l.nftHolder && l.nftHolder === W.state.address;
-    rows.push(row(rws.length > 1 ? `Creator rewards (${rw.symbol})` : "Creator rewards", [`${amt(rw.claimable)} ${rw.symbol} ready`, el("span", { class: "muted", text: ` · ${amt(rw.vesting)} vesting` }),
-      mineNft ? null : el("span", { class: "muted", text: ` · only the NFT holder (${l.nftHolder ? short(l.nftHolder) : "nobody"}) can claim` }),
-      rw.nextUnlock ? el("div", { class: "muted" }, `Next ${amt(rw.nextAmount ?? "0")} ${rw.symbol} in `, Countdown.el(rw.nextUnlock)) : null],
-      mineNft ? btn("Claim", "primary", () => claimRewards(l.mint, rw.mint), !ready, ready ? "" : "Nothing has vested yet") : null));
+    rows.push(row(rws.length > 1 ? tr("Creator rewards ({symbol})", { symbol: rw.symbol }) : tr("Creator rewards"), [tr("{claimable} {symbol} ready", { claimable: amt(rw.claimable), symbol: rw.symbol }), el("span", { class: "muted", text: tr(" · {vesting} vesting", { vesting: amt(rw.vesting) }) }),
+      mineNft ? null : el("span", { class: "muted", text: tr(" · only the NFT holder ({nftHolder}) can claim", { nftHolder: l.nftHolder ? short(l.nftHolder) : tr("nobody") }) }),
+      rw.nextUnlock ? el("div", { class: "muted" }, tr("Next {nextAmount} {symbol} in ", { nextAmount: amt(rw.nextAmount ?? "0"), symbol: rw.symbol }), Countdown.el(rw.nextUnlock)) : null],
+      mineNft ? btn(tr("Claim"), "primary", () => claimRewards(l.mint, rw.mint), !ready, ready ? "" : tr("Nothing has vested yet")) : null));
   }
 
   // The receipt, if it hasn't been printed into the NFT yet.
   const print = s.lock && !l.receipt
-    ? btn("Print receipt", "", async () => { if (running) return; running = true; try { await printReceipt(l.mint); } catch (e) { toast("error", `Print receipt failed: ${e.message || e}`); } running = false; loadMine(); }, false, "Write the lock receipt image into your LP NFT, on-chain")
+    ? btn(tr("Print receipt"), "", async () => { if (running) return; running = true; try { await printReceipt(l.mint); } catch (e) { toast("error", tr("Print receipt failed: {message}", { message: e.message || e })); } running = false; loadMine(); }, false, tr("Write the lock receipt image into your LP NFT, on-chain"))
     : null;
 
   // Edit the token's logo, description and links (creator only; needs IPFS uploads).
-  const editBtn = s.token && info?.logoUpload ? btn("Update metadata", "", () => {
+  const editBtn = s.token && info?.logoUpload ? btn(tr("Update metadata"), "", () => {
     const box = card.querySelector(".lc-edit");
     box.hidden = !box.hidden;
   }) : null;
   const card = el("div", { class: "lc" },
     el("div", { class: "lc-head" },
-      l.receipt ? el("a", { href: `/nft/${l.lockNft}`, title: "View your LP-lock NFT" }, el("img", { src: l.receipt, alt: "LP lock receipt", class: "lc-thumb" })) : null,
+      l.receipt ? el("a", { href: `/nft/${l.lockNft}`, title: tr("View your LP-lock NFT") }, el("img", { src: l.receipt, alt: tr("LP lock receipt"), class: "lc-thumb" })) : null,
       el("div", {}, el("div", { class: "lc-title" }, link(`${info.explorer}/address/${l.mint}`, l.symbol), el("span", { class: "muted", text: ` ${l.name}` })),
-        el("div", { class: "muted" }, short(l.mint), l.lockNft ? el("span", {}, " · ", el("a", { href: `/nft/${l.lockNft}`, text: "View NFT" })) : null)),
+        el("div", { class: "muted" }, short(l.mint), l.lockNft ? el("span", {}, " · ", el("a", { href: `/nft/${l.lockNft}`, text: tr("View NFT") })) : null)),
       print, editBtn),
     ...rows,
     s.token && info?.logoUpload ? metadataEditor(l) : null);
@@ -827,55 +828,55 @@ function launchCard(l) {
 /** Inline editor: logo (upload or link), description, links. Saves to IPFS + one signed update. */
 function metadataEditor(l) {
   const f = (name, label, value, attrs = {}) => el("label", {}, label, el("input", { name, value: value ?? "", ...attrs }));
-  const preview = el("div", { class: "logo-preview" }, l.image ? el("img", { src: l.image, alt: "Current logo" }) : "No logo");
+  const preview = el("div", { class: "logo-preview" }, l.image ? el("img", { src: l.image, alt: tr("Current logo") }) : tr("No logo"));
   const image = el("input", { name: "image", value: l.image ?? "", placeholder: "https://… (PNG, JPG, WebP or GIF)" });
   const file = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: "" });
-  const upload = el("label", { class: "btn small" }, "Upload image", file);
-  const setPreview = (url) => preview.replaceChildren(url ? el("img", { src: url, alt: "Logo preview" }) : "No logo");
+  const upload = el("label", { class: "btn small" }, tr("Upload image"), file);
+  const setPreview = (url) => preview.replaceChildren(url ? el("img", { src: url, alt: tr("Logo preview") }) : tr("No logo"));
   image.addEventListener("change", () => setPreview(image.value.trim()));
   file.addEventListener("change", async () => {
     const fl = file.files?.[0]; file.value = "";
     if (!fl) return;
-    if (fl.size > (info?.maxLogoBytes ?? 500000)) { toast("error", "That image is too large (500 KB max)."); return; }
+    if (fl.size > (info?.maxLogoBytes ?? 500000)) { toast("error", tr("That image is too large (500 KB max).")); return; }
     const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = fail; r.readAsDataURL(fl); });
-    upload.firstChild.textContent = "Uploading…";
+    upload.firstChild.textContent = tr("Uploading…");
     try { const r = await api("/api/upload-logo", { name: fl.name.replace(/\.[^.]+$/, ""), data }); image.value = r.url; setPreview(r.url); }
-    catch (e) { toast("error", `Upload failed: ${e.message || e}`); }
-    upload.firstChild.textContent = "Upload image";
+    catch (e) { toast("error", tr("Upload failed: {message}", { message: e.message || e })); }
+    upload.firstChild.textContent = tr("Upload image");
   });
   const desc = el("textarea", { name: "description", maxlength: "500" }); desc.value = l.description ?? "";
-  const website = f("website", "Website", l.website, { type: "url", placeholder: "https://…" });
-  const twitter = f("twitter", "X (Twitter)", l.twitter, { type: "url", placeholder: "https://x.com/…" });
-  const telegram = f("telegram", "Telegram", l.telegram, { type: "url", placeholder: "https://t.me/…" });
-  const save = el("button", { class: "btn small primary", type: "button", text: "Save to IPFS & update token" });
+  const website = f("website", tr("Website"), l.website, { type: "url", placeholder: "https://…" });
+  const twitter = f("twitter", tr("X (Twitter)"), l.twitter, { type: "url", placeholder: "https://x.com/…" });
+  const telegram = f("telegram", tr("Telegram"), l.telegram, { type: "url", placeholder: "https://t.me/…" });
+  const save = el("button", { class: "btn small primary", type: "button", text: tr("Save to IPFS & update token") });
   save.onclick = async () => {
     if (running) return;
     running = true; save.disabled = true;
     try {
       const val = (x) => x.querySelector("input").value.trim();
-      await signAndSend("Update token metadata", () => api("/api/launch/metadata", {
+      await signAndSend(tr("Update token metadata"), () => api("/api/launch/metadata", {
         mint: l.mint, creator: W.state.address, image: image.value.trim(), description: desc.value.trim(),
         website: val(website), twitter: val(twitter), telegram: val(telegram),
       }));
       await api("/api/launch/metadata/confirm", { mint: l.mint });
-      toast("success", "Token metadata updated. Wallets may take a little while to refresh.");
-    } catch (e) { toast("error", `Update failed: ${e.message || e}`); }
+      toast("success", tr("Token metadata updated. Wallets may take a little while to refresh."));
+    } catch (e) { toast("error", tr("Update failed: {message}", { message: e.message || e })); }
     running = false; save.disabled = false; loadMine();
   };
   return el("div", { class: "lc-edit", hidden: "" },
     el("div", { class: "logo-row" }, preview, el("div", { class: "logo-controls" }, upload, image)),
-    el("label", {}, "Description", desc),
+    el("label", {}, tr("Description"), desc),
     el("div", { class: "socials" }, website, twitter, telegram),
-    el("div", { class: "muted", text: "Saved to IPFS; your wallet signs one small transaction to point the token at it." }),
+    el("div", { class: "muted", text: tr("Saved to IPFS; your wallet signs one small transaction to point the token at it.") }),
     save);
 }
 async function collectFees(nftMint) {
   if (running) return;
   running = true; renderWallet();
   try {
-    await signAndSend("Collect trading fees", () => api("/api/nft/collect", { nftMint, holder: W.state.address }));
+    await signAndSend(tr("Collect trading fees"), () => api("/api/nft/collect", { nftMint, holder: W.state.address }));
   } catch (e) {
-    toast("error", `Collect failed: ${e.message || e}`);
+    toast("error", tr("Collect failed: {message}", { message: e.message || e }));
   } finally {
     running = false; renderWallet(); loadMine();
   }
@@ -884,9 +885,9 @@ async function claimRewards(mint, rewardMint) {
   if (running) return;
   running = true; renderWallet();
   try {
-    await signAndSend("Claim creator rewards", () => api("/api/launch/claim-reward", { mint, holder: W.state.address, rewardMint }));
+    await signAndSend(tr("Claim creator rewards"), () => api("/api/launch/claim-reward", { mint, holder: W.state.address, rewardMint }));
   } catch (e) {
-    toast("error", `Claim failed: ${e.message || e}`);
+    toast("error", tr("Claim failed: {message}", { message: e.message || e }));
   } finally {
     running = false; renderWallet(); loadMine();
   }
@@ -898,49 +899,49 @@ let distInfo = null;
 function taxProgress(worth, threshold) {
   if (!threshold) return null;
   const pct = Math.min(100, (worth / threshold) * 100);
-  return el("div", { class: "tax-prog", title: `Tax is collected (and a payout runs) once it's worth ${fmt(threshold, 4)} XNT` },
+  return el("div", { class: "tax-prog", title: tr("Tax is collected (and a payout runs) once it's worth {threshold} XNT", { threshold: fmt(threshold, 4) }) },
     el("div", { class: "tax-bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(pct)) }, el("span", { style: `width:${pct}%` })),
-    el("span", { class: "muted", text: pct >= 100 ? "enough for a payout" : `${pct.toFixed(0)}% of the ${fmt(threshold, 3)} XNT needed for the next payout` }));
+    el("span", { class: "muted", text: pct >= 100 ? tr("enough for a payout") : tr("{pct}% of the {threshold} XNT needed for the next payout", { pct: pct.toFixed(0), threshold: fmt(threshold, 3) }) }));
 }
 async function loadDistribute() {
   const t = document.getElementById("distTable");
-  try { distInfo = await api("/api/distribute/list"); } catch (e) { t.replaceChildren(el("tr", {}, el("td", { class: "empty", text: "Couldn't load: " + e.message }))); return; }
-  document.getElementById("rewardLine").textContent = `you earn ${distInfo.rewardPct}% of that payout (up to ${distInfo.rewardCapXnt} XNT)`;
-  t.replaceChildren(el("tr", {}, el("th", { text: "Token" }), el("th", { text: "Tax waiting" }), el("th", { text: "Status" }), el("th", {})));
+  try { distInfo = await api("/api/distribute/list"); } catch (e) { t.replaceChildren(el("tr", {}, el("td", { class: "empty", text: tr("Couldn't load: ") + e.message }))); return; }
+  document.getElementById("rewardLine").textContent = tr("you earn {rewardPct}% of that payout (up to {rewardCapXnt} XNT)", { rewardPct: distInfo.rewardPct, rewardCapXnt: distInfo.rewardCapXnt });
+  t.replaceChildren(el("tr", {}, el("th", { text: tr("Token") }), el("th", { text: tr("Tax waiting") }), el("th", { text: tr("Status") }), el("th", {})));
   for (const k of distInfo.tokens) {
     const worth = Number(k.worthLamports) / 1e9;
-    const b = el("button", { class: "btn small primary", type: "button", text: `Distribute now (${distInfo.tipXnt} XNT tip)` });
+    const b = el("button", { class: "btn small primary", type: "button", text: tr("Distribute now ({tipXnt} XNT tip)", { tipXnt: distInfo.tipXnt }) });
     b.disabled = !k.ready || !W.state.address || running;
-    b.title = !W.state.address ? "Connect a wallet first" : (k.reason ?? "");
+    b.title = !W.state.address ? tr("Connect a wallet first") : tr(k.reason ?? "");
     b.onclick = () => distributeNow(k);
-    const last = k.lastRun ? ` · last run ${new Date(k.lastRun.at).toLocaleTimeString()}${k.lastRun.ok === false ? " (failed)" : ""}` : "";
+    const last = k.lastRun ? tr(" · last run {time}{extra}", { time: new Date(k.lastRun.at).toLocaleTimeString(), extra: k.lastRun.ok === false ? tr(" (failed)") : "" }) : "";
     t.append(el("tr", {},
       el("td", {}, link(`${info.explorer}/address/${k.mint}`, `${k.symbol}`), " ", el("span", { class: "muted", text: short(k.mint) })),
-      el("td", {}, `${fmt(Number(k.waiting) / 10 ** k.decimals, 2)} ${k.symbol} ≈ ${fmt(worth, 4)} XNT`, taxProgress(worth, Number(k.thresholdLamports) / 1e9)),
-      el("td", { class: "muted", text: (k.ready ? "Ready" : k.reason) + last }),
+      el("td", {}, tr("{waiting} {symbol} ≈ {worth} XNT", { waiting: fmt(Number(k.waiting) / 10 ** k.decimals, 2), symbol: k.symbol, worth: fmt(worth, 4) }), taxProgress(worth, Number(k.thresholdLamports) / 1e9)),
+      el("td", { class: "muted", text: (k.ready ? tr("Ready") : tr(k.reason)) + last }),
       el("td", {}, b)));
   }
 }
 async function distributeNow(k) {
   if (running) return;
-  if (!confirm(`Pay a ${distInfo.tipXnt} XNT tip to run ${k.symbol}'s distribution now?\n\nThe tip goes to the token's distributor wallet as gas. You earn ${distInfo.rewardPct}% of the holder payout this run makes (up to ${distInfo.rewardCapXnt} XNT), paid in the same run. The payouts otherwise follow the token's normal rules.`)) return;
+  if (!confirm(tr("Pay a {tipXnt} XNT tip to run {symbol}'s distribution now?\n\nThe tip goes to the token's distributor wallet as gas. You earn {rewardPct}% of the holder payout this run makes (up to {rewardCapXnt} XNT), paid in the same run. The payouts otherwise follow the token's normal rules.", { tipXnt: distInfo.tipXnt, symbol: k.symbol, rewardPct: distInfo.rewardPct, rewardCapXnt: distInfo.rewardCapXnt }))) return;
   running = true; renderWallet();
   const logEl = document.getElementById("distLog");
   try {
-    const { signature } = await signAndSend(`Tip for ${k.symbol}`, () => api("/api/distribute/tip", { mint: k.mint, payer: W.state.address }));
+    const { signature } = await signAndSend(tr("Tip for {symbol}", { symbol: k.symbol }), () => api("/api/distribute/tip", { mint: k.mint, payer: W.state.address }));
     await api("/api/distribute/run", { mint: k.mint, signature });
-    toast("info", `${k.symbol}: distribution running…`);
+    toast("info", tr("{symbol}: distribution running…", { symbol: k.symbol }));
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 4000));
       const st = await api(`/api/distribute/status?mint=${k.mint}`);
       logEl.replaceChildren(...(st.lastRun?.summary ?? []).map((l) => el("div", { text: l })));
       if (st.lastRun && st.lastRun.ok !== null) {
-        toast(st.lastRun.ok ? "success" : "error", `${k.symbol}: distribution ${st.lastRun.ok ? "finished" : "failed"}. `, link(`${info.explorer}/address/${k.mint}`, "View token ↗"));
+        toast(st.lastRun.ok ? "success" : "error", tr("{symbol}: distribution {extra}. ", { symbol: k.symbol, extra: st.lastRun.ok ? tr("finished") : tr("failed") }), link(`${info.explorer}/address/${k.mint}`, tr("View token ↗")));
         break;
       }
     }
   } catch (e) {
-    toast("error", `Distribute now failed: ${e.message || e}`);
+    toast("error", tr("Distribute now failed: {message}", { message: e.message || e }));
   } finally {
     running = false; renderWallet(); loadDistribute();
   }
@@ -949,21 +950,21 @@ async function distributeNow(k) {
 async function loadTokens() {
   const t = document.getElementById("tokens");
   const tokens = await api("/api/tokens").catch(() => []);
-  t.replaceChildren(el("tr", {}, el("th", { text: "Token" }), el("th", { text: "Tax" }), el("th", { text: "To liquidity" }), el("th", { text: "Burned" }), el("th", { text: "LP lock" }),
-    el("th", { text: "Launched" }), el("th", { text: "Pool" }), el("th", { text: "Creator" })));
-  if (!tokens.length) { t.append(el("tr", {}, el("td", { colspan: 8, class: "empty", text: "No tokens launched yet." }))); return; }
+  t.replaceChildren(el("tr", {}, el("th", { text: tr("Token") }), el("th", { text: tr("Tax") }), el("th", { text: tr("To liquidity") }), el("th", { text: tr("Burned") }), el("th", { text: tr("LP lock") }),
+    el("th", { text: tr("Launched") }), el("th", { text: tr("Pool") }), el("th", { text: tr("Creator") })));
+  if (!tokens.length) { t.append(el("tr", {}, el("td", { colspan: 8, class: "empty", text: tr("No tokens launched yet.") }))); return; }
   for (const k of tokens) {
     const img = safeImg(k.image);
     t.append(el("tr", {},
       el("td", {}, img ? el("img", { src: img, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : null, link(`${info.explorer}/address/${k.mint}`, `${k.name} (${k.symbol})`)),
       el("td", { text: `${k.taxBps / 100}%` }),
-      el("td", { text: `${k.autoLpBps / 100}% of tax` }),
-      el("td", { text: k.burnBps ? `${k.burnBps / 100}% of tax` : "–" }),
+      el("td", { text: tr("{autoLpBps}% of tax", { autoLpBps: k.autoLpBps / 100 }) }),
+      el("td", { text: k.burnBps ? tr("{burnBps}% of tax", { burnBps: k.burnBps / 100 }) : "–" }),
       el("td", { text: lockText(k.lockDays) }),
       el("td", { class: "muted", text: new Date(k.registeredAt).toLocaleDateString() }),
       el("td", {}, link(`${info.explorer}/address/${k.pool}`, short(k.pool), "mono")),
       el("td", {}, link(`${info.explorer}/address/${k.creator}`, short(k.creator), "mono"),
-        k.creatorExcluded ? el("span", { class: "muted", text: " (no rewards)", title: "The creator kept part of the supply, so their wallet earns no holder rewards" }) : null)));
+        k.creatorExcluded ? el("span", { class: "muted", text: tr(" (no rewards)"), title: tr("The creator kept part of the supply, so their wallet earns no holder rewards") }) : null)));
   }
 }
 
@@ -975,14 +976,14 @@ async function loadTokens() {
     if (info.launchesPaused) {
       const form = document.getElementById("launchForm");
       form.hidden = true;
-      form.insertAdjacentElement("beforebegin", Object.assign(document.createElement("div"), { className: "paused-note", textContent: info.launchesPaused }));
+      form.insertAdjacentElement("beforebegin", Object.assign(document.createElement("div"), { className: "paused-note", textContent: tr(info.launchesPaused) }));
     }
     if (info.lockForeverOnly) {
       for (const n of document.querySelectorAll("[data-forever]")) n.textContent = n.dataset.forever;
       const sel = form.querySelector('select[name="lock"]');
       for (const o of [...sel.options]) if (o.value !== "forever") o.remove();
-      sel.value = "forever"; sel.title = "Every launch on this site locks its liquidity forever";
-      sel.insertAdjacentElement("afterend", Object.assign(document.createElement("span"), { className: "hint", textContent: "Always forever on this site: the LP can never be withdrawn, only its fees." }));
+      sel.value = "forever"; sel.title = tr("Every launch on this site locks its liquidity forever");
+      sel.insertAdjacentElement("afterend", Object.assign(document.createElement("span"), { className: "hint", textContent: tr("Always forever on this site: the LP can never be withdrawn, only its fees.") }));
       renderForm();
     }
     if (info.lockerUpgradeable) document.getElementById("lockerNoteLi").hidden = false;
@@ -991,16 +992,16 @@ async function loadTokens() {
       const sel = form.elements.quote;
       for (const q of info.quoteTokens) sel.append(el("option", { value: q.symbol, text: q.symbol }));
       document.getElementById("pairRow").hidden = false;
-      document.getElementById("pairHint").textContent = `Pair your token with XNT or ${info.quoteTokens.map((q) => q.symbol).join(" or ")}. `
-        + "A pair other than XNT goes into the pool from your wallet; XDEX's pool fee and the distributor's gas are still XNT, and holders are paid in XNT.";
+      document.getElementById("pairHint").textContent = tr("Pair your token with XNT or {list}. ", { list: info.quoteTokens.map((q) => q.symbol).join(tr(" or ")) })
+        + tr("A pair other than XNT goes into the pool from your wallet; XDEX's pool fee and the distributor's gas are still XNT, and holders are paid in XNT.");
     }
     document.getElementById("creatorShare").textContent = `${(info.creatorBps ?? 1000) / 100}%`;
     document.getElementById("creatorHint").textContent =
-      `Fixed. Paid in ${info.taxVault?.launches ? info.taxVault.rewardSymbol : info.creatorRewardSymbol}`
+      tr("Fixed. Paid in {rewardSymbol}", { rewardSymbol: info.taxVault?.launches ? info.taxVault.rewardSymbol : info.creatorRewardSymbol })
       // Tax Vault launches (XNT pairs) get the network's reward token; other pairs keep the usual one.
-      + (info.taxVault?.launches && info.quoteTokens?.length && info.taxVault.rewardSymbol !== info.creatorRewardSymbol ? ` (${info.creatorRewardSymbol} for tokens paired with ${info.quoteTokens.map((q) => q.symbol).join(" or ")})` : "")
-      + ", vests 7 days, claimed with your LP-lock NFT (whoever holds it can claim).";
-  } catch (e) { toast("error", "Couldn't reach the factory server: " + e.message); }
+      + (info.taxVault?.launches && info.quoteTokens?.length && info.taxVault.rewardSymbol !== info.creatorRewardSymbol ? tr(" ({creatorRewardSymbol} for tokens paired with {list})", { creatorRewardSymbol: info.creatorRewardSymbol, list: info.quoteTokens.map((q) => q.symbol).join(tr(" or ")) }) : "")
+      + tr(", vests 7 days, claimed with your LP-lock NFT (whoever holds it can claim).");
+  } catch (e) { toast("error", tr("Couldn't reach the factory server: ") + e.message); }
   renderWallet(); renderForm(); loadTokens(); loadDistribute(); loadFaucet(); setupLogo();
 })();
 

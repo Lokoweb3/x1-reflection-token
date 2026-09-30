@@ -240,6 +240,7 @@ body.gated { overflow: hidden; }
 .stats-empty .l { font-size: 17px; }
 </style>
 <link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
 <script src="/theme.js"></script>
 </head>
 <body>
@@ -457,14 +458,14 @@ function renderSplit() {
   $("barC").style.width = `${(toCreator / tax) * 100}%`;
   $("barL").style.display = toLp > 0 ? "" : "none";
   $("barB").style.display = toBurn > 0 ? "" : "none";
-  $("legH").textContent = `${fmt(toHolders, 2)}% to holders in XNT`;
-  $("legL").textContent = `${fmt(toLp, 2)}% to liquidity (LP burned)`;
-  $("legB").textContent = `${fmt(toBurn, 2)}% of tokens burned`;
-  $("legC").textContent = `${fmt(toCreator, 2)}% to the creator (USDC)`;
+  $("legH").textContent = tr("{toHolders}% to holders in XNT", { toHolders: fmt(toHolders, 2) });
+  $("legL").textContent = tr("{toLp}% to liquidity (LP burned)", { toLp: fmt(toLp, 2) });
+  $("legB").textContent = tr("{toBurn}% of tokens burned", { toBurn: fmt(toBurn, 2) });
+  $("legC").textContent = tr("{toCreator}% to the creator (USDC)", { toCreator: fmt(toCreator, 2) });
   $("legBWrap").style.display = toBurn > 0 ? "" : "none";
-  $("bar").setAttribute("aria-label", `Of a ${fmt(tax, 1)}% tax: ${fmt(toHolders, 2)}% to holders, ${fmt(toLp, 2)}% to liquidity, ${fmt(toBurn, 2)}% burned, ${fmt(toCreator, 2)}% to the creator`);
+  $("bar").setAttribute("aria-label", tr("Of a {tax}% tax: {toHolders}% to holders, {toLp}% to liquidity, {toBurn}% burned, {toCreator}% to the creator", { tax: fmt(tax, 1), toHolders: fmt(toHolders, 2), toLp: fmt(toLp, 2), toBurn: fmt(toBurn, 2), toCreator: fmt(toCreator, 2) }));
   const vol = Number(String($("vol").value).replace(/[, ]/g, ""));
-  $("calcOut").textContent = isFinite(vol) && vol >= 0 ? `${fmt(vol * toHolders / 100, 2)} XNT a day` : "–";
+  $("calcOut").textContent = isFinite(vol) && vol >= 0 ? tr("{vol} XNT a day", { vol: fmt(vol * toHolders / 100, 2) }) : "–";
 }
 for (const id of ["tax", "lp", "burn", "vol"]) $(id).addEventListener("input", renderSplit);
 renderSplit();
@@ -474,17 +475,17 @@ function renderContracts(info, net) {
   $("contractsNet").textContent = net;
   const addr = (a) => el("a", { class: "addr", href: `${info.explorer}/address/${a}`, target: "_blank", rel: "noopener", text: a });
   const rows = [
-    ["LP locker program", info.lockerUpgradeable
-      ? `Locks launch liquidity in NFTs and holds creator rewards. Still upgradeable by ${info.lockerAuthority ? info.lockerAuthority.slice(0, 4) + "…" + info.lockerAuthority.slice(-4) : "the team"} until its audit.`
-      : "Locks launch liquidity in NFTs and holds creator rewards. Immutable: no one can change it.", info.lockerProgram],
-    ["XDEX program", "The DEX every token's pool lives on (not run by 99 + Tax).", info.xdexProgram],
-    [`Launch fee token (${info.feeSymbol})`, `The ${info.feeAmount} ${info.feeSymbol} launch fee is paid in this token.`, info.feeMint],
-    ["Launch fee receiver", "The 99 + Tax wallet that receives launch fees.", info.feeReceiver],
+    [tr("LP locker program"), info.lockerUpgradeable
+      ? tr("Locks launch liquidity in NFTs and holds creator rewards. Still upgradeable by {lockerAuthority} until its audit.", { lockerAuthority: info.lockerAuthority ? info.lockerAuthority.slice(0, 4) + "…" + info.lockerAuthority.slice(-4) : tr("the team") })
+      : tr("Locks launch liquidity in NFTs and holds creator rewards. Immutable: no one can change it."), info.lockerProgram],
+    [tr("XDEX program"), tr("The DEX every token's pool lives on (not run by 99 + Tax)."), info.xdexProgram],
+    [tr("Launch fee token ({feeSymbol})", { feeSymbol: info.feeSymbol }), tr("The {feeAmount} {feeSymbol} launch fee is paid in this token.", { feeAmount: info.feeAmount, feeSymbol: info.feeSymbol }), info.feeMint],
+    [tr("Launch fee receiver"), tr("The 99 + Tax wallet that receives launch fees."), info.feeReceiver],
   ];
-  if (info.creatorRewardMint) rows.push([`Creator reward token (${info.creatorRewardSymbol})`, "Creator rewards are swapped into this and vest in the locker.", info.creatorRewardMint]);
-  if (info.creatorRewardPool) rows.push(["Creator reward swap pool", `The XDEX pool used to swap XNT into ${info.creatorRewardSymbol}.`, info.creatorRewardPool]);
+  if (info.creatorRewardMint) rows.push([tr("Creator reward token ({creatorRewardSymbol})", { creatorRewardSymbol: info.creatorRewardSymbol }), tr("Creator rewards are swapped into this and vest in the locker."), info.creatorRewardMint]);
+  if (info.creatorRewardPool) rows.push([tr("Creator reward swap pool"), tr("The XDEX pool used to swap XNT into {creatorRewardSymbol}.", { creatorRewardSymbol: info.creatorRewardSymbol }), info.creatorRewardPool]);
   const trs = rows.filter((r) => r[2]).map(([what, note, a]) => el("tr", {}, el("td", {}, el("span", { class: "what", text: what }), el("span", { class: "note", text: note })), el("td", {}, addr(a))));
-  if (info.sourceUrl) trs.push(el("tr", {}, el("td", {}, el("span", { class: "what", text: "Source code" }), el("span", { class: "note", text: "The site, distributor and locker program." })),
+  if (info.sourceUrl) trs.push(el("tr", {}, el("td", {}, el("span", { class: "what", text: tr("Source code") }), el("span", { class: "note", text: tr("The site, distributor and locker program.") })),
     el("td", {}, el("a", { href: info.sourceUrl, target: "_blank", rel: "noopener", text: info.sourceUrl.replace(/^https:\/\//, "") }))));
   $("contractsTable").replaceChildren(...trs);
 }
@@ -494,33 +495,33 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
 (async () => {
   try {
     const info = await getJson("/api/info");
-    const net = info.network === "mainnet" ? "X1 mainnet" : "X1 testnet";
+    const net = info.network === "mainnet" ? tr("X1 mainnet") : tr("X1 testnet");
     if (info.lockerUpgradeable) $("lockerNoteFaq").hidden = false;
     // Sites that only allow forever locks (mainnet) drop the "or until a date" wording.
     if (info.lockForeverOnly) for (const n of document.querySelectorAll("[data-forever]")) n.textContent = n.dataset.forever;
     renderContracts(info, net);
-    $("netLabel").textContent = `Live on ${net}`;
+    $("netLabel").textContent = tr("Live on {net}", { net });
     $("footNet").textContent = net;
     const fee = Number(info.feeAmount), feeSym = info.feeSymbol;
-    $("feeLede").textContent = fee === 0.99 && feeSym === "USDC" ? "99¢ + tax" : `${fmt(fee)} ${feeSym} + tax`;
+    $("feeLede").textContent = fee === 0.99 && feeSym === "USDC" ? tr("99¢ + tax") : tr("{fee} {feeSym} + tax", { fee: fmt(fee), feeSym });
     const rows = [
-      ["Launch fee", `Flat, paid once in ${feeSym}`, `${fmt(fee)} ${feeSym}`],
-      ["Starting liquidity", "Your XNT, paired with your tokens in the pool. It stays in your token.", "You choose"],
-      ["XDEX pool creation", "Charged by XDEX, not by us", info.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "–"],
-      ["Distributor gas", "Pays for your token's first payouts, then refills itself from the tax", `${info.gasXnt} XNT`],
-      ["Rent and network fees", "Standard X1 account rent", "≈ 0.03 XNT"],
+      [tr("Launch fee"), tr("Flat, paid once in {feeSym}", { feeSym }), `${fmt(fee)} ${feeSym}`],
+      [tr("Starting liquidity"), tr("Your XNT, paired with your tokens in the pool. It stays in your token."), tr("You choose")],
+      [tr("XDEX pool creation"), tr("Charged by XDEX, not by us"), info.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "–"],
+      [tr("Distributor gas"), tr("Pays for your token's first payouts, then refills itself from the tax"), `${info.gasXnt} XNT`],
+      [tr("Rent and network fees"), tr("Standard X1 account rent"), tr("≈ 0.03 XNT")],
     ];
     $("costTable").replaceChildren(...rows.map(([a, n, b]) => el("tr", {}, el("td", {}, a, el("span", { class: "note", text: n })), el("td", { text: b }))));
     loadTokens(info);
   } catch {
-    $("netLabel").textContent = "Launchpad offline";
+    $("netLabel").textContent = tr("Launchpad offline");
   }
   try {
     const s = await getJson("/api/stats");
     // A brand-new site: one friendly line instead of four zeros.
     if (!s.tokens) {
       $("statsRow").replaceChildren(el("div", { class: "stat stats-empty" }, el("span", { class: "hole" }),
-        el("div", { class: "l" }, "Brand new: no tokens launched yet. ", el("a", { href: "/launch", text: "Be the first →" }))));
+        el("div", { class: "l" }, tr("Brand new: no tokens launched yet. "), el("a", { href: "/launch", text: tr("Be the first →") }))));
       return;
     }
     $("sTokens").textContent = fmt(s.tokens, 0);
@@ -533,10 +534,10 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
 async function loadTokens(info) {
   const t = $("tokenTable");
   const tokens = await getJson("/api/tokens").catch(() => []);
-  t.replaceChildren(el("tr", {}, el("th", { text: "Token" }), el("th", { text: "Tax" }), el("th", { text: "To liquidity" }),
-    el("th", { text: "Burned" }), el("th", { text: "LP lock" }), el("th", { class: "num", text: "XNT paid to holders" }), el("th", { text: "Launched" })));
+  t.replaceChildren(el("tr", {}, el("th", { text: tr("Token") }), el("th", { text: tr("Tax") }), el("th", { text: tr("To liquidity") }),
+    el("th", { text: tr("Burned") }), el("th", { text: tr("LP lock") }), el("th", { class: "num", text: tr("XNT paid to holders") }), el("th", { text: tr("Launched") })));
   if (!tokens.length) {
-    t.append(el("tr", {}, el("td", { class: "empty", colspan: 7 }, "No tokens yet. ", el("a", { href: "/launch", text: "Be the first to launch →" }))));
+    t.append(el("tr", {}, el("td", { class: "empty", colspan: 7 }, tr("No tokens yet. "), el("a", { href: "/launch", text: tr("Be the first to launch →") }))));
     return;
   }
   for (const k of tokens.slice(0, 12)) {
@@ -544,9 +545,9 @@ async function loadTokens(info) {
     t.append(el("tr", {},
       el("td", {}, img, el("a", { href: `${info.explorer}/address/${k.mint}`, target: "_blank", rel: "noopener", text: `${k.name} (${k.symbol})` })),
       el("td", { text: `${k.taxBps / 100}%` }),
-      el("td", { text: `${k.autoLpBps / 100}% of tax` }),
-      el("td", { text: k.burnBps ? `${k.burnBps / 100}% of tax` : "–" }),
-      el("td", { text: k.lockDays === null ? "Forever" : `${k.lockDays} days` }),
+      el("td", { text: tr("{autoLpBps}% of tax", { autoLpBps: k.autoLpBps / 100 }) }),
+      el("td", { text: k.burnBps ? tr("{burnBps}% of tax", { burnBps: k.burnBps / 100 }) : "–" }),
+      el("td", { text: k.lockDays === null ? tr("Forever") : tr("{lockDays} days", { lockDays: k.lockDays }) }),
       el("td", { class: "num", text: fmt(xnt(k.paid?.xntPaid ?? 0), 4) }),
       el("td", { text: new Date(k.registeredAt).toLocaleDateString() })));
   }

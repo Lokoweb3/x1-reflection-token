@@ -79,6 +79,7 @@ td.num, th.num { text-align: right; }
 @media (max-width: 860px) { .hero, .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tile.big { grid-column: 1 / -1; } .cols { grid-template-columns: minmax(0, 1fr); } header nav { margin-left: 0; } }
 </style>
 <link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
 <script src="/theme.js"></script>
 </head>
 <body>
@@ -116,8 +117,8 @@ const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopen
 const units = (v, dec = 9) => Number(BigInt(v ?? 0)) / 10 ** dec;
 const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
 const xnt = (v) => `${fmt(units(v))} XNT`;
-const SERIES = [["holders", "Holders", "var(--series-1)"], ["liquidity", "Liquidity", "var(--series-2)"], ["creator", "Creators", "var(--series-3)"]];
-const KIND = { payout: "Payout", "auto-lp": "Auto-LP", burn: "Burn", "creator-reward": "Creator", "clicker-reward": "Clicker" };
+const SERIES = [["holders", tr("Holders"), "var(--series-1)"], ["liquidity", tr("Liquidity"), "var(--series-2)"], ["creator", tr("Creators"), "var(--series-3)"]];
+const KIND = { payout: tr("Payout"), "auto-lp": tr("Auto-LP"), burn: tr("Burn"), "creator-reward": tr("Creator"), "clicker-reward": tr("Clicker") };
 let explorer = "";
 
 /** Hourly buckets; grouped by day once the history spans more than three days. */
@@ -141,13 +142,13 @@ const label = (k, daily) => daily ? new Date(k + "T00:00:00Z").toLocaleDateStrin
 function chart(hourly) {
   const { rows, daily } = buckets(hourly);
   const wrap = el("div", { class: "chart-wrap" });
-  if (!rows.length) { wrap.append(el("p", { class: "muted", text: "No distributions yet." })); return { node: wrap, rows, daily }; }
+  if (!rows.length) { wrap.append(el("p", { class: "muted", text: tr("No distributions yet.") })); return { node: wrap, rows, daily }; }
   const W = 1000, H = 260, L = 56, R = 10, T = 10, B = 28;
   const max = Math.max(...rows.map((r) => r.holders + r.liquidity + r.creator)) || 1;
   const nice = (() => { const p = 10 ** Math.floor(Math.log10(max)); return Math.ceil(max / p) * p; })();
   const y = (v) => T + (H - T - B) * (1 - v / nice);
   const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
-    "aria-label": `XNT from the tax per ${daily ? "day" : "hour"}: to holders, to liquidity and to creators` });
+    "aria-label": tr("XNT from the tax per {period}: to holders, to liquidity and to creators", { period: daily ? tr("day") : tr("hour") }) });
   for (let i = 0; i <= 4; i++) {
     const v = nice * i / 4, yy = y(v);
     svg.append(svgEl("line", { x1: L, x2: W - R, y1: yy, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
@@ -190,15 +191,15 @@ function chart(hourly) {
 
 function render(d) {
   const c = chart(d.hourly);
-  const table = el("table", { hidden: "" }, el("tr", {}, el("th", { text: c.daily ? "Day" : "Hour" }), ...SERIES.map(([, l]) => el("th", { class: "num", text: `${l} (XNT)` }))),
+  const table = el("table", { hidden: "" }, el("tr", {}, el("th", { text: c.daily ? tr("Day") : tr("Hour") }), ...SERIES.map(([, l]) => el("th", { class: "num", text: tr("{label} (XNT)", { label: l }) }))),
     ...c.rows.map((r) => el("tr", {}, el("td", { text: label(r.k, c.daily) }), ...SERIES.map(([k]) => el("td", { class: "num", text: fmt(r[k], 6) })))));
-  const toggle = el("button", { class: "btn sm", type: "button", text: "Show data table" });
-  toggle.onclick = () => { table.hidden = !table.hidden; toggle.textContent = table.hidden ? "Show data table" : "Hide data table"; };
+  const toggle = el("button", { class: "btn sm", type: "button", text: tr("Show data table") });
+  toggle.onclick = () => { table.hidden = !table.hidden; toggle.textContent = table.hidden ? tr("Show data table") : tr("Hide data table"); };
   const totalOut = BigInt(d.holdersXnt) + BigInt(d.liquidityXnt) + BigInt(d.creatorXnt);
 
   const perToken = el("table", {},
-    el("tr", {}, el("th", { text: "Token" }), el("th", { class: "num", text: "To holders" }), el("th", { class: "num", text: "Wallets" }),
-      el("th", { class: "num", text: "To liquidity" }), el("th", { class: "num", text: "To creator" }), el("th", { class: "num", text: "Payouts" }), el("th", { text: "Last run" })),
+    el("tr", {}, el("th", { text: tr("Token") }), el("th", { class: "num", text: tr("To holders") }), el("th", { class: "num", text: tr("Wallets") }),
+      el("th", { class: "num", text: tr("To liquidity") }), el("th", { class: "num", text: tr("To creator") }), el("th", { class: "num", text: tr("Payouts") }), el("th", { text: tr("Last run") })),
     ...d.perToken.map((t) => el("tr", {},
       el("td", {}, link(`${explorer}/address/${t.mint}`, t.symbol)),
       el("td", { class: "num", text: xnt(t.holdersXnt) }), el("td", { class: "num", text: String(t.walletsPaid) }),
@@ -207,34 +208,34 @@ function render(d) {
       el("td", { class: "muted", text: t.lastRun ? new Date(t.lastRun).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–" }))));
 
   const feed = el("ul", { class: "feed" }, ...d.recent.map((e) => {
-    const what = e.kind === "payout" ? `${xnt(e.xnt)} to ${e.wallets} wallet${e.wallets === 1 ? "" : "s"}`
-      : e.kind === "burn" ? `${fmt(units(e.tokens))} ${e.symbol} burned`
-      : e.kind === "auto-lp" ? `${xnt(e.xnt)} added to liquidity`
+    const what = e.kind === "payout" ? tr("{xnt} to {wallets} wallet{s}", { xnt: xnt(e.xnt), wallets: e.wallets, s: e.wallets === 1 ? "" : "s" })
+      : e.kind === "burn" ? tr("{tokens} {symbol} burned", { tokens: fmt(units(e.tokens)), symbol: e.symbol })
+      : e.kind === "auto-lp" ? tr("{xnt} added to liquidity", { xnt: xnt(e.xnt) })
       : `${xnt(e.xnt)}`;
     return el("li", {}, el("span", {}, el("span", { class: "kind", text: KIND[e.kind] ?? e.kind }), el("b", { text: e.symbol }), ` ${what}`),
       el("span", { class: "when" }, e.signature ? link(`${explorer}/tx/${e.signature}`, new Date(e.at).toLocaleString()) : new Date(e.at).toLocaleString()));
   }));
-  if (!d.recent.length) feed.append(el("li", { class: "muted", text: "No activity yet." }));
+  if (!d.recent.length) feed.append(el("li", { class: "muted", text: tr("No activity yet.") }));
 
   $("out").replaceChildren(
     el("div", { class: "hero" },
-      el("div", { class: "tile big" }, el("div", { class: "k", text: "Paid to holders" }), el("div", { class: "v", text: xnt(d.holdersXnt) }),
-        el("div", { class: "n", text: `across ${d.payouts} payout${d.payouts === 1 ? "" : "s"}` })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Wallets paid" }), el("div", { class: "v", text: String(d.walletsPaid) })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Added to liquidity" }), el("div", { class: "v", text: xnt(d.liquidityXnt) })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Paid to creators" }), el("div", { class: "v", text: xnt(d.creatorXnt) }))),
+      el("div", { class: "tile big" }, el("div", { class: "k", text: tr("Paid to holders") }), el("div", { class: "v", text: xnt(d.holdersXnt) }),
+        el("div", { class: "n", text: tr("across {payouts} payout{s}", { payouts: d.payouts, s: d.payouts === 1 ? "" : "s" }) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Wallets paid") }), el("div", { class: "v", text: String(d.walletsPaid) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Added to liquidity") }), el("div", { class: "v", text: xnt(d.liquidityXnt) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Paid to creators") }), el("div", { class: "v", text: xnt(d.creatorXnt) }))),
     el("div", { class: "tiles" },
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Tokens" }), el("div", { class: "v", text: String(d.tokens) }), el("div", { class: "n", text: `${d.launches} launched here` })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Total XNT from tax" }), el("div", { class: "v", text: xnt(totalOut) })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Burns" }), el("div", { class: "v", text: String(d.burns) })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Clicker rewards" }), el("div", { class: "v", text: xnt(d.clickerXnt) }), el("div", { class: "n", text: "paid for “Distribute now”" }))),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Tokens") }), el("div", { class: "v", text: String(d.tokens) }), el("div", { class: "n", text: tr("{launches} launched here", { launches: d.launches }) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Total XNT from tax") }), el("div", { class: "v", text: xnt(totalOut) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Burns") }), el("div", { class: "v", text: String(d.burns) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Clicker rewards") }), el("div", { class: "v", text: xnt(d.clickerXnt) }), el("div", { class: "n", text: tr("paid for “Distribute now”") }))),
     el("div", { class: "card" },
-      el("div", { class: "card-head" }, el("h2", { text: `XNT from the tax, per ${c.daily ? "day" : "hour"}` }), toggle),
+      el("div", { class: "card-head" }, el("h2", { text: tr("XNT from the tax, per {period}", { period: c.daily ? tr("day") : tr("hour") }) }), toggle),
       el("div", { class: "legend" }, ...SERIES.map(([, l, col]) => el("span", {}, el("i", { style: `background:${col}` }), l))),
       c.node, el("div", { class: "table-wrap" }, table)),
     el("div", { class: "cols" },
-      el("div", { class: "card" }, el("h2", { text: "By token" }), el("div", { class: "table-wrap" }, perToken)),
-      el("div", { class: "card" }, el("h2", { text: "Recent activity" }), feed)),
+      el("div", { class: "card" }, el("h2", { text: tr("By token") }), el("div", { class: "table-wrap" }, perToken)),
+      el("div", { class: "card" }, el("h2", { text: tr("Recent activity") }), feed)),
   );
 }
 
@@ -243,9 +244,9 @@ function render(d) {
     const [info, d] = await Promise.all([fetch("/api/info").then((r) => r.json()), fetch("/api/analytics").then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })]);
     explorer = info.explorer;
     // Nothing launched on this network yet: say so instead of a page of zeros and empty charts.
-    if (!d.tokens) $("out").replaceChildren(siteEmpty("No tokens launched on this network yet, so there's nothing to chart."));
+    if (!d.tokens) $("out").replaceChildren(siteEmpty(tr("No tokens launched on this network yet, so there's nothing to chart.")));
     else render(d);
-  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load analytics: ${e.message || e}` })); }
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: tr("Couldn't load analytics: {message}", { message: e.message || e }) })); }
 })();
 </script>
 </body>

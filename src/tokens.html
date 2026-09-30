@@ -71,6 +71,7 @@ h1 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-siz
 @media (max-width: 720px) { header nav { margin-left: 0; } .grid { grid-template-columns: 1fr; } }
 </style>
 <link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
 <script src="/theme.js"></script>
 </head>
 <body>
@@ -120,9 +121,9 @@ const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractio
 const xnt = (v) => `${fmt(units(v))} XNT`;
 const price = (p) => p == null ? "–" : p === 0 ? "0" : p < 0.0001 ? p.toPrecision(3) : fmt(p, 6);
 const fmtSig = (v) => v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(12, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 });
-const SPLIT = [["holders", "Holders", "var(--holders)"], ["liquidity", "Liquidity", "var(--liquidity)"], ["burn", "Burn", "var(--burn)"], ["creator", "Creator", "var(--creator)"]];
+const SPLIT = [["holders", tr("Holders"), "var(--holders)"], ["liquidity", tr("Liquidity"), "var(--liquidity)"], ["burn", tr("Burn"), "var(--burn)"], ["creator", tr("Creator"), "var(--creator)"]];
 let tokens = [], explorer = "";
-const VAULT_TIP = "Only the Tax Vault program can withdraw this token's tax. It burns, adds liquidity and funds the creator on-chain, and pays holders from a public rewards list that can only share out the holders' part. No team wallet holds the tax.";
+const VAULT_TIP = tr("Only the Tax Vault program can withdraw this token's tax. It burns, adds liquidity and funds the creator on-chain, and pays holders from a public rewards list that can only share out the holders' part. No team wallet holds the tax.");
 
 function card(t) {
   const logo = el("div", { class: "logo" });
@@ -132,45 +133,45 @@ function card(t) {
   return el("article", { class: "tok" },
     el("div", { class: "tok-head" }, logo,
       el("div", {}, el("h2", {}, t.name, el("span", { class: "tag", text: t.symbol })),
-        el("div", { class: "sub" }, link(`${explorer}/address/${t.mint}`, short(t.mint)), t.createdAt ? ` · since ${new Date(t.createdAt).toLocaleDateString()}` : "",
-          t.quote && t.quote !== "XNT" ? ` · paired with ${t.quote}` : ""))),
+        el("div", { class: "sub" }, link(`${explorer}/address/${t.mint}`, short(t.mint)), t.createdAt ? tr(" · since {date}", { date: new Date(t.createdAt).toLocaleDateString() }) : "",
+          t.quote && t.quote !== "XNT" ? tr(" · paired with {quote}", { quote: t.quote }) : ""))),
     t.description ? el("div", { class: "sub", text: t.description.slice(0, 140) }) : null,
     // Tax Vault tokens: the program holds the tax; link its public rewards list.
-    t.vault ? el("div", { class: "vault-row" }, el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: "✓ Tax enforced by program" }),
+    t.vault ? el("div", { class: "vault-row" }, el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: tr("✓ Tax enforced by program") }),
       // A graduated curve token whose creator hasn't started the vault yet: nothing to list or run.
-      t.vault.exists ? el("a", { href: t.vault.listUrl, target: "_blank", rel: "noopener", text: "Rewards list ↗" })
-        : el("span", { class: "sub", text: "Waiting for the creator to start the tax vault — the tax waits safely until then" }),
-      t.vault.nextListAt ? el("span", { class: "sub", text: `Next list pays at ${new Date(t.vault.nextListAt * 1000).toLocaleString()}` }) : null,
-      t.vault.fallbackActive ? el("span", { class: "sub", title: "No rewards list was published for 30 days: anyone can pay holders from the last one.", text: "Fallback active: paying from the last list" }) : null) : null,
-    el("div", {}, el("div", { class: "sub", text: `${t.taxPct}% tax on every trade, split:` }), bar,
+      t.vault.exists ? el("a", { href: t.vault.listUrl, target: "_blank", rel: "noopener", text: tr("Rewards list ↗") })
+        : el("span", { class: "sub", text: tr("Waiting for the creator to start the tax vault — the tax waits safely until then") }),
+      t.vault.nextListAt ? el("span", { class: "sub", text: tr("Next list pays at {date}", { date: new Date(t.vault.nextListAt * 1000).toLocaleString() }) }) : null,
+      t.vault.fallbackActive ? el("span", { class: "sub", title: tr("No rewards list was published for 30 days: anyone can pay holders from the last one."), text: tr("Fallback active: paying from the last list") }) : null) : null,
+    el("div", {}, el("div", { class: "sub", text: tr("{taxPct}% tax on every trade, split:", { taxPct: t.taxPct }) }), bar,
       el("div", { class: "legend" }, ...SPLIT.filter(([k]) => t.split[k] > 0).map(([k, l, c]) => el("span", {}, el("i", { style: `background:${c}` }), `${l} ${t.split[k]}%`)))),
-    t.yield && t.yield.per1000PerDay > 0 ? el("div", { class: "yield", title: `From payouts over the last ${t.yield.windowDays} days, split across tokens that earn now. Not guaranteed.` },
-      el("span", { class: "yv", text: `${fmtSig(t.yield.per1000PerDay)} XNT/day` }), ` per 1,000 ${t.symbol}`,
-      t.yield.aprPct != null ? el("span", { class: "apr", text: `≈ ${fmtSig(t.yield.aprPct)}% a year` }) : null)
-      : el("div", { class: "yield muted", text: "No holder payouts in the last 7 days" }),
+    t.yield && t.yield.per1000PerDay > 0 ? el("div", { class: "yield", title: tr("From payouts over the last {windowDays} days, split across tokens that earn now. Not guaranteed.", { windowDays: t.yield.windowDays }) },
+      el("span", { class: "yv", text: tr("{per1000PerDay} XNT/day", { per1000PerDay: fmtSig(t.yield.per1000PerDay) }) }), tr(" per 1,000 {symbol}", { symbol: t.symbol }),
+      t.yield.aprPct != null ? el("span", { class: "apr", text: tr("≈ {aprPct}% a year", { aprPct: fmtSig(t.yield.aprPct) }) }) : null)
+      : el("div", { class: "yield muted", text: tr("No holder payouts in the last 7 days") }),
     el("dl", { class: "stats" },
-      el("dt", { text: "Price" }), el("dt", { text: "Pool liquidity" }),
+      el("dt", { text: tr("Price") }), el("dt", { text: tr("Pool liquidity") }),
       // A JACK-paired token trades in JACK: show that first, with its XNT value.
       t.quote && t.quote !== "XNT"
-        ? el("dd", {}, `${price(t.priceQuote)} ${t.quote}`, el("div", { class: "sub", text: `≈ ${price(t.priceXnt)} XNT` }))
+        ? el("dd", {}, `${price(t.priceQuote)} ${t.quote}`, el("div", { class: "sub", text: tr("≈ {priceXnt} XNT", { priceXnt: price(t.priceXnt) }) }))
         : el("dd", { text: `${price(t.priceXnt)} XNT` }),
       t.quote && t.quote !== "XNT"
         ? el("dd", {}, t.liquidityQuote ? `${fmt(units(t.liquidityQuote), 6)} ${t.quote}` : "–", el("div", { class: "sub", text: t.liquidityXnt ? `≈ ${xnt(t.liquidityXnt)}` : "" }))
         : el("dd", { text: t.liquidityXnt ? `≈ ${xnt(t.liquidityXnt)}` : "–" }),
-      el("dt", { text: "Paid to holders" }), el("dt", { text: "Wallets paid" }),
+      el("dt", { text: tr("Paid to holders") }), el("dt", { text: tr("Wallets paid") }),
       el("dd", { text: xnt(t.holdersXnt) }), el("dd", { text: String(t.walletsPaid) }),
-      el("dt", { text: "Added to liquidity" }), el("dt", { text: "Creator rewards" }),
+      el("dt", { text: tr("Added to liquidity") }), el("dt", { text: tr("Creator rewards") }),
       el("dd", { text: xnt(t.liquidityAddedXnt) }), el("dd", { text: xnt(t.creatorXnt) })),
-    t.holderPass ? el("div", { class: "yield" }, "Holders earn through a ", el("b", { text: "Holder Pass" }), ": mint one, then claim whenever you like. ",
-      el("a", { href: "/wallet", text: "Mint / claim in My earnings →" })) : null,
-    el("div", { class: "sub", text: t.lastRun ? `Last distribution ${new Date(t.lastRun).toLocaleString()}` : "No distributions yet" }),
+    t.holderPass ? el("div", { class: "yield" }, tr("Holders earn through a "), el("b", { text: tr("Holder Pass") }), tr(": mint one, then claim whenever you like. "),
+      el("a", { href: "/wallet", text: tr("Mint / claim in My earnings →") })) : null,
+    el("div", { class: "sub", text: t.lastRun ? tr("Last distribution {date}", { date: new Date(t.lastRun).toLocaleString() }) : tr("No distributions yet") }),
     el("div", { class: "links" },
-      ...[["website", "Website"], ["twitter", "X"], ["telegram", "Telegram"]].filter(([k]) => t.links?.[k]).map(([k, l]) => link(t.links[k], `${l} ↗`, "btn sm")),
-      t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}`, text: "LP lock NFT" }) : null,
+      ...[["website", tr("Website")], ["twitter", "X"], ["telegram", tr("Telegram")]].filter(([k]) => t.links?.[k]).map(([k, l]) => link(t.links[k], `${l} ↗`, "btn sm")),
+      t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}`, text: tr("LP lock NFT") }) : null,
       // Vault tokens: anyone can run the vault's steps from the token's NFT page (and earn the crank reward).
-      t.vault ? (t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}#vault`, text: t.vault.exists ? "Run the vault" : "Tax vault" }) : null)
-        : el("a", { class: "btn sm", href: "/launch#distribute", text: "Distribute now" }),
-      link(`${explorer}/address/${t.pool}`, "Pool ↗", "btn sm")));
+      t.vault ? (t.lockNft ? el("a", { class: "btn sm", href: `/nft/${t.lockNft}#vault`, text: t.vault.exists ? tr("Run the vault") : tr("Tax vault") }) : null)
+        : el("a", { class: "btn sm", href: "/launch#distribute", text: tr("Distribute now") }),
+      link(`${explorer}/address/${t.pool}`, tr("Pool ↗"), "btn sm")));
 }
 
 function render() {
@@ -183,14 +184,14 @@ function render() {
   }[by];
   list.sort((a, b) => key(a) - key(b));
   $("out").replaceChildren(list.length ? el("div", { class: "grid" }, ...list.map(card))
-    : q ? el("div", { class: "empty" }, "No token matches that search.") : siteEmpty("No tokens launched on this network yet."));
+    : q ? el("div", { class: "empty" }, tr("No token matches that search.")) : siteEmpty(tr("No tokens launched on this network yet.")));
 }
 
 (async () => {
   try {
     const [info, list] = await Promise.all([fetch("/api/info").then((r) => r.json()), fetch("/api/token-list").then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })]);
     explorer = info.explorer; tokens = list; render();
-  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load tokens: ${e.message || e}` })); }
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: tr("Couldn't load tokens: {message}", { message: e.message || e }) })); }
 })();
 $("q").addEventListener("input", render);
 $("sort").addEventListener("change", render);

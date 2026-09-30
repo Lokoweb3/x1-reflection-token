@@ -41,12 +41,13 @@ tr.me td { background: rgb(200 16 46 / .07); }
 .error { color: var(--critical); }
 /* Phones hide the column headers (stacked rows), so sorting moves to this dropdown. */
 #sortM { display: none; }
-@media (max-width: 640px) { #sortM { display: block; flex: 1 1 100%; } }
+@media (max-width: 640px) { #sortM { display: block; flex: 1 1 100%; min-width: 0; max-width: 100%; } }
 @media (max-width: 860px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } header nav { margin-left: 0; } }
 a.ext { text-decoration: none; opacity: .6; font-size: 12px; }
 a.ext:hover { opacity: 1; }
 </style>
 <link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
 <script src="/theme.js"></script>
 </head>
 <body>
@@ -98,17 +99,17 @@ let explorer = "", data = null, sortKey = "balance", sortDir = -1;
 // Prices and costs are in the token's pair: XNT, or JACK for a JACK-paired token (its
 // trades are in JACK). Rewards are always XNT.
 const colsFor = (u) => [
-  ["#", null], ["Wallet", null], ["Balance", "balance"], [`Avg cost (${u})`, "avgCost"], [`Cost (${u})`, "costBasis"], [`Worth now (${u})`, "value"],
-  ["Rewards earned (XNT)", "rewardsXnt"], ["Profit / loss", "pnl"], ["Total return (XNT)", "returnXnt"],
-  ["Bought", "bought"], [`Spent (${u})`, "spent"], ["Sold", "sold"], [`Realized (${u})`, "realized"], ["Trades", "trades"],
+  ["#", null], [tr("Wallet"), null], [tr("Balance"), "balance"], [tr("Avg cost ({u})", { u }), "avgCost"], [tr("Cost ({u})", { u }), "costBasis"], [tr("Worth now ({u})", { u }), "value"],
+  [tr("Rewards earned (XNT)"), "rewardsXnt"], [tr("Profit / loss"), "pnl"], [tr("Total return (XNT)"), "returnXnt"],
+  [tr("Bought"), "bought"], [tr("Spent ({u})", { u }), "spent"], [tr("Sold"), "sold"], [tr("Realized ({u})", { u }), "realized"], [tr("Trades"), "trades"],
 ];
 let COLS = colsFor("XNT"), colsUnit = null;
 
 // Phone sort menu: every sortable column, high to low and low to high (rebuilt when the unit changes).
 function buildSortMenu() {
   $("sortM").replaceChildren(...COLS.filter(([, k]) => k).flatMap(([label, k]) => [
-    el("option", { value: `${k}:-1`, text: `Sort: ${label}, high to low` }),
-    el("option", { value: `${k}:1`, text: `Sort: ${label}, low to high` }),
+    el("option", { value: `${k}:-1`, text: tr("Sort: {label}, high to low", { label }) }),
+    el("option", { value: `${k}:1`, text: tr("Sort: {label}, low to high", { label }) }),
   ]));
 }
 buildSortMenu();
@@ -136,45 +137,45 @@ function render() {
   const body = rows.map((r, i) => el("tr", { class: me && r.wallet === me ? "me" : "" },
     el("td", { class: "muted", text: String(i + 1) }),
     // The wallet opens its earnings page on this site; ↗ goes to the explorer.
-    el("td", {}, el("a", { href: `/wallet/${r.wallet}`, class: "mono", title: "Balances, rewards and NFTs for this wallet", text: short(r.wallet) }),
-      el("a", { href: `${explorer}/address/${r.wallet}`, target: "_blank", rel: "noopener", class: "ext", title: "View on the explorer", "aria-label": "View on the explorer", text: " ↗" }),
-      r.label ? el("span", { class: "lbl", text: r.label }) : null, me && r.wallet === me ? el("span", { class: "lbl", text: "You" }) : null,
-      r.status === "sold" ? el("span", { class: "lbl", text: "Sold out" }) : null),
-    el("td", { class: "num", text: amt(r.balance), title: r.unknownCost > 0 ? `${amt(r.unknownCost)} of these weren't bought on the pool (no known cost)` : "" }),
-    el("td", { class: "num", text: r.avgCost !== null ? sig(r.avgCost) : "–", title: r.avgCost === null ? "No buys on the pool since tracking began" : "" }),
+    el("td", {}, el("a", { href: `/wallet/${r.wallet}`, class: "mono", title: tr("Balances, rewards and NFTs for this wallet"), text: short(r.wallet) }),
+      el("a", { href: `${explorer}/address/${r.wallet}`, target: "_blank", rel: "noopener", class: "ext", title: tr("View on the explorer"), "aria-label": tr("View on the explorer"), text: " ↗" }),
+      r.label ? el("span", { class: "lbl", text: tr(r.label) }) : null, me && r.wallet === me ? el("span", { class: "lbl", text: tr("You") }) : null,
+      r.status === "sold" ? el("span", { class: "lbl", text: tr("Sold out") }) : null),
+    el("td", { class: "num", text: amt(r.balance), title: r.unknownCost > 0 ? tr("{unknownCost} of these weren't bought on the pool (no known cost)", { unknownCost: amt(r.unknownCost) }) : "" }),
+    el("td", { class: "num", text: r.avgCost !== null ? sig(r.avgCost) : "–", title: r.avgCost === null ? tr("No buys on the pool since tracking began") : "" }),
     el("td", { class: "num", text: r.avgCost !== null && r.costBasis > 0 ? sig(r.costBasis) : "–",
-      title: r.unknownCost > 0 && r.costBasis > 0 ? `What the ${amt(r.balance - r.unknownCost)} bought tokens they still hold cost; ${amt(r.unknownCost)} more have no known cost` : "What the tokens they hold now cost them" }),
+      title: r.unknownCost > 0 && r.costBasis > 0 ? tr("What the {balance} bought tokens they still hold cost; {unknownCost} more have no known cost", { balance: amt(r.balance - r.unknownCost), unknownCost: amt(r.unknownCost) }) : tr("What the tokens they hold now cost them") }),
     el("td", { class: "num", text: r.value !== null ? sig(r.value) : "–" }),
-    el("td", { class: "num", text: r.rewardsXnt ? sig(r.rewardsXnt) : "–", title: "XNT this wallet has received: holder payouts plus Distribute now rewards" }),
+    el("td", { class: "num", text: r.rewardsXnt ? sig(r.rewardsXnt) : "–", title: tr("XNT this wallet has received: holder payouts plus Distribute now rewards") }),
     el("td", { class: "num" }, pnlSpan(r.pnl, r.pnlPct, U)),
-    el("td", { class: "num", title: "Profit/loss plus realized profit plus rewards received" + (U !== "XNT" ? ` (${U} valued at today's ${U}/XNT price)` : "") }, pnlSpan(r.returnXnt, null)),
+    el("td", { class: "num", title: tr("Profit/loss plus realized profit plus rewards received") + (U !== "XNT" ? tr(" ({U} valued at today's {U}/XNT price)", { U }) : "") }, pnlSpan(r.returnXnt, null)),
     el("td", { class: "num", text: r.bought ? amt(r.bought) : "–" }),
-    el("td", { class: "num", text: r.spent ? sig(r.spent) : "–", title: `Total ${U} paid on all buys, including tokens since sold` }),
+    el("td", { class: "num", text: r.spent ? sig(r.spent) : "–", title: tr("Total {U} paid on all buys, including tokens since sold", { U }) }),
     el("td", { class: "num", text: r.sold ? amt(r.sold) : "–" }),
     el("td", { class: "num" }, r.realized ? pnlSpan(r.realized, null, U) : el("span", { class: "muted", text: "–" })),
     el("td", { class: "num", text: String(r.trades || "–") })));
   $("out").replaceChildren(
     el("div", { class: "tiles" },
-      tile("Price now", data.price ? `${sig(data.price)} ${U}` : "–", U !== "XNT" && data.price && data.quoteXnt ? `≈ ${sig(data.price * data.quoteXnt)} XNT` : null),
-      tile("Average holder cost", s.avgCost ? `${sig(s.avgCost)} ${U}` : "–", vsPrice !== null ? `price is ${vsPrice >= 0 ? "+" : ""}${vsPrice.toFixed(1)}% vs this` : "no pool buys tracked yet"),
-      tile("Holders' total cost", `${sig(data.rows.reduce((t, r) => t + (r.balance > 0 ? r.costBasis : 0), 0))} ${U}`, `${sig(data.rows.reduce((t, r) => t + r.spent, 0))} ${U} spent on all buys`),
-      tile("Holders in profit", s.inProfit + s.inLoss ? `${s.inProfit} of ${s.inProfit + s.inLoss}` : "–", s.inLoss ? `${s.inLoss} in loss` : ""),
-      tile("Unrealized P/L", `${s.unrealized >= 0 ? "+" : ""}${sig(s.unrealized)} ${U}`, "holders' open positions"),
-      tile("Realized P/L", `${s.realized >= 0 ? "+" : ""}${sig(s.realized)} ${U}`, `${s.trades} trades by ${s.traders} wallets`),
-      tile("Paid to holders", `${sig(s.rewardsPaid ?? 0)} XNT`, "payouts and Distribute now rewards to these wallets")),
+      tile(tr("Price now"), data.price ? `${sig(data.price)} ${U}` : "–", U !== "XNT" && data.price && data.quoteXnt ? tr("≈ {price} XNT", { price: sig(data.price * data.quoteXnt) }) : null),
+      tile(tr("Average holder cost"), s.avgCost ? `${sig(s.avgCost)} ${U}` : "–", vsPrice !== null ? tr("price is {sign}{vsPrice}% vs this", { sign: vsPrice >= 0 ? "+" : "", vsPrice: vsPrice.toFixed(1) }) : tr("no pool buys tracked yet")),
+      tile(tr("Holders' total cost"), `${sig(data.rows.reduce((t, r) => t + (r.balance > 0 ? r.costBasis : 0), 0))} ${U}`, tr("{spent} {U} spent on all buys", { spent: sig(data.rows.reduce((t, r) => t + r.spent, 0)), U })),
+      tile(tr("Holders in profit"), s.inProfit + s.inLoss ? tr("{inProfit} of {total}", { inProfit: s.inProfit, total: s.inProfit + s.inLoss }) : "–", s.inLoss ? tr("{inLoss} in loss", { inLoss: s.inLoss }) : ""),
+      tile(tr("Unrealized P/L"), `${s.unrealized >= 0 ? "+" : ""}${sig(s.unrealized)} ${U}`, tr("holders' open positions")),
+      tile(tr("Realized P/L"), `${s.realized >= 0 ? "+" : ""}${sig(s.realized)} ${U}`, tr("{trades} trades by {traders} wallets", { trades: s.trades, traders: s.traders })),
+      tile(tr("Paid to holders"), `${sig(s.rewardsPaid ?? 0)} XNT`, tr("payouts and Distribute now rewards to these wallets"))),
     el("div", { class: "table-wrap" }, el("table", {}, head, ...body)),
-    el("p", { class: "note", text: `Average cost uses the average-cost method: buys add to cost, sells remove cost at the average price. Network fees and account rent aren't counted as price. Trades tracked since ${s.trackedSince ? new Date(s.trackedSince * 1000).toLocaleString() : "now"} (public RPCs keep about a day of history, so earlier trades can't be read). The pool and the token's distributor are left out.`
-      + (U !== "XNT" ? ` This token is paired with ${U}, so prices, costs and profit/loss are in ${U}; rewards are XNT, and Total return values the ${U} profit at today's ${U}/XNT price.` : "") }));
+    el("p", { class: "note", text: tr("Average cost uses the average-cost method: buys add to cost, sells remove cost at the average price. Network fees and account rent aren't counted as price. Trades tracked since {date} (public RPCs keep about a day of history, so earlier trades can't be read). The pool and the token's distributor are left out.", { date: s.trackedSince ? new Date(s.trackedSince * 1000).toLocaleString() : tr("now") })
+      + (U !== "XNT" ? tr(" This token is paired with {U}, so prices, costs and profit/loss are in {U}; rewards are XNT, and Total return values the {U} profit at today's {U}/XNT price.", { U }) : "") }));
 }
 
 async function load(mint) {
-  $("out").replaceChildren(el("p", { class: "muted", text: "Reading trades from the chain…" }));
+  $("out").replaceChildren(el("p", { class: "muted", text: tr("Reading trades from the chain…") }));
   try {
     const r = await fetch(`/api/leaderboard/${mint}`);
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error || r.statusText);
-    data = d; document.title = `${d.symbol} leaderboard · 99 + Tax`; render();
-  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load the leaderboard: ${e.message || e}` })); }
+    if (!r.ok) throw new Error(tr(d.error || r.statusText));
+    data = d; document.title = tr("{symbol} leaderboard · 99 + Tax", { symbol: d.symbol }); render();
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: tr("Couldn't load the leaderboard: {message}", { message: e.message || e }) })); }
 }
 
 (async () => {
@@ -186,8 +187,8 @@ async function load(mint) {
     if (want && tokens.some((t) => t.mint === want)) $("token").value = want;
     $("token").onchange = () => { history.replaceState(null, "", `/leaderboard/${$("token").value}`); load($("token").value); };
     if (tokens.length) load($("token").value);
-    else { document.querySelector(".bar").style.display = "none"; $("out").replaceChildren(siteEmpty("No tokens to rank yet: the leaderboard fills in once a token trades.")); }
-  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: `Couldn't load tokens: ${e.message || e}` })); }
+    else { document.querySelector(".bar").style.display = "none"; $("out").replaceChildren(siteEmpty(tr("No tokens to rank yet: the leaderboard fills in once a token trades."))); }
+  } catch (e) { $("out").replaceChildren(el("p", { class: "error", text: tr("Couldn't load tokens: {message}", { message: e.message || e }) })); }
 })();
 $("q").addEventListener("input", render);
 W.onChange(render);

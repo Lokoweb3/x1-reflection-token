@@ -55,6 +55,8 @@ h1 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-siz
 dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; margin: 0; }
 dt { color: var(--text-muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
+/* Phones: long labels (and longer languages) wrap instead of pushing the values off screen. */
+@media (max-width: 520px) { dl { grid-template-columns: fit-content(42%) minmax(0, 1fr); } }
 .mono { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
 .note { font-size: 13px; color: var(--text-secondary); margin-top: 14px; }
@@ -186,6 +188,7 @@ table.burns .num { text-align: right; }
 .vault-panel form input:focus { outline: none; border-color: var(--cyan); }
 </style>
 <link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
 <script src="/theme.js"></script>
 </head>
 <body>
@@ -225,42 +228,42 @@ const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 async function show(mint, quiet = false) {
   const out = $("out");
   if (current?.nftMint !== mint) { current = { nftMint: mint }; holdersShown = 25; } // single-NFT view from here on
-  if (!quiet) out.replaceChildren(el("p", { class: "muted", text: "Reading the NFT from the chain…" }));
+  if (!quiet) out.replaceChildren(el("p", { class: "muted", text: tr("Reading the NFT from the chain…") }));
   try {
     const r = await fetch(`/api/nft/${encodeURIComponent(mint)}`);
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error || r.statusText);
-    document.title = `${d.name} · 99 + Tax`;
+    if (!r.ok) throw new Error(tr(d.error || r.statusText));
+    document.title = tr("{name} · 99 + Tax", { name: d.name });
     const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
     const rows = [
-      ["Token", el("span", {}, `${d.tokenName} (${d.symbol}) `, addr(d.tokenMint))],
-      ["LP locked", `${d.lockedLp} LP · ${d.lpSharePct.toFixed(2)}% of the pool`],
-      ["Lock", d.term === "FOREVER" ? "Forever, can never be withdrawn" : d.term.replace(/^UNTIL/, "Until")],
-      ["Locked at", d.lockedAt],
-      ["Tax", d.split ? `${d.taxPct}%: ${d.split.holders}% holders · ${d.split.liquidity}% liquidity · ${d.split.burn}% burn · ${d.split.creator}% creator` : `${d.taxPct}%`],
-      ["Held by", d.holder ? addr(d.holder) : "Nobody (burned)"],
+      [tr("Token"), el("span", {}, `${d.tokenName} (${d.symbol}) `, addr(d.tokenMint))],
+      [tr("LP locked"), tr("{lockedLp} LP · {lpSharePct}% of the pool", { lockedLp: d.lockedLp, lpSharePct: d.lpSharePct.toFixed(2) })],
+      [tr("Lock"), d.term === "FOREVER" ? tr("Forever, can never be withdrawn") : d.term.replace(/^UNTIL/, tr("Until"))],
+      [tr("Locked at"), d.lockedAt],
+      [tr("Tax"), d.split ? tr("{taxPct}%: {holders}% holders · {liquidity}% liquidity · {burn}% burn · {creator}% creator", { taxPct: d.taxPct, holders: d.split.holders, liquidity: d.split.liquidity, burn: d.split.burn, creator: d.split.creator }) : `${d.taxPct}%`],
+      [tr("Held by"), d.holder ? addr(d.holder) : tr("Nobody (burned)")],
       ["NFT", addr(d.nftMint)],
-      ["Lock account", addr(d.lock)],
+      [tr("Lock account"), addr(d.lock)],
     ];
-    const img = el("img", { src: d.image, alt: `${d.name} receipt: ${d.lockedLp} LP locked ${d.term.toLowerCase()}, locked at ${d.lockedAt}` });
-    const download = el("a", { class: "btn", href: d.image, download: `${d.symbol}-lp-lock-${d.nftMint.slice(0, 8)}.svg`, text: "Download image" });
-    const copy = el("button", { class: "btn", type: "button", text: "Copy link" });
-    copy.onclick = async () => { try { await navigator.clipboard.writeText(location.href); copy.textContent = "Copied"; } catch { copy.textContent = location.href; } };
-    const statsHost = el("section", { class: "card stats-card", "aria-live": "polite" }, el("p", { class: "muted", text: `Loading ${d.symbol} token stats…` }));
-    const back = el("a", { href: "/nft", class: "back", text: "← All locked NFTs" });
+    const img = el("img", { src: d.image, alt: tr("{name} receipt: {lockedLp} LP locked {term}, locked at {lockedAt}", { name: d.name, lockedLp: d.lockedLp, term: d.term.toLowerCase(), lockedAt: d.lockedAt }) });
+    const download = el("a", { class: "btn", href: d.image, download: `${d.symbol}-lp-lock-${d.nftMint.slice(0, 8)}.svg`, text: tr("Download image") });
+    const copy = el("button", { class: "btn", type: "button", text: tr("Copy link") });
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(location.href); copy.textContent = tr("Copied"); } catch { copy.textContent = location.href; } };
+    const statsHost = el("section", { class: "card stats-card", "aria-live": "polite" }, el("p", { class: "muted", text: tr("Loading {symbol} token stats…", { symbol: d.symbol }) }));
+    const back = el("a", { href: "/nft", class: "back", text: tr("← All locked NFTs") });
     back.onclick = (ev) => { ev.preventDefault(); history.pushState(null, "", "/nft"); showGallery(); };
     out.replaceChildren(back, el("div", { class: "view" },
       el("div", { class: "art" }, img),
       el("div", {},
         el("h1", { text: d.name }),
-        el("span", { class: `pill ${d.printed ? "ok" : "warn"}`, text: d.printed ? "Receipt stored on-chain in the NFT" : "Preview: receipt not printed yet" }),
+        el("span", { class: `pill ${d.printed ? "ok" : "warn"}`, text: d.printed ? tr("Receipt stored on-chain in the NFT") : tr("Preview: receipt not printed yet") }),
         el("div", { class: "card" }, el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", {}, v)]))),
-        el("div", { class: "actions" }, link(`${d.explorer}/address/${d.nftMint}`, "View on explorer ↗", "btn primary"), download, copy, receiptButton(d)),
+        el("div", { class: "actions" }, link(`${d.explorer}/address/${d.nftMint}`, tr("View on explorer ↗"), "btn primary"), download, copy, receiptButton(d)),
         withdrawCard(d),
         el("p", { class: "note", text: d.printed
-          ? "The image and details above are read straight from the NFT's on-chain metadata; nothing is hosted."
-            + (d.upToDate ? "" : ` The printed receipt is out of date; the wallet that locked (${d.authority ? short(d.authority) : "unknown"}) can update it.`)
-          : `This is how the receipt will look. The wallet that locked (${d.authority ? short(d.authority) : "unknown"}) can print it into the NFT from the launch app or the dashboard.` }))), statsHost);
+          ? tr("The image and details above are read straight from the NFT's on-chain metadata; nothing is hosted.")
+            + (d.upToDate ? "" : tr(" The printed receipt is out of date; the wallet that locked ({authority}) can update it.", { authority: d.authority ? short(d.authority) : tr("unknown") }))
+          : tr("This is how the receipt will look. The wallet that locked ({authority}) can print it into the NFT from the launch app or the dashboard.", { authority: d.authority ? short(d.authority) : tr("unknown") }) }))), statsHost);
     loadTokenStats(d, statsHost);
   } catch (e) {
     out.replaceChildren(el("p", { class: "error", text: e.message || String(e) }));
@@ -269,11 +272,11 @@ async function show(mint, quiet = false) {
 
 // ---------- Token stats: burned, liquidity added, payouts, holders ----------
 const STATUS = {
-  earning: ["Earning", "Receives XNT payouts"],
-  "below-minimum": ["Below minimum", "Holds less than the minimum needed for payouts"],
-  excluded: ["Excluded", "Pool, distributor, burn address or an excluded wallet"],
-  program: ["Program", "Owned by a program, not a wallet"],
-  sold: ["Sold", "No longer holds the token, but was paid before"],
+  earning: [tr("Earning"), tr("Receives XNT payouts")],
+  "below-minimum": [tr("Below minimum"), tr("Holds less than the minimum needed for payouts")],
+  excluded: [tr("Excluded"), tr("Pool, distributor, burn address or an excluded wallet")],
+  program: [tr("Program"), tr("Owned by a program, not a wallet")],
+  sold: [tr("Sold"), tr("No longer holds the token, but was paid before")],
 };
 let holdersShown = 25;
 let burnsShown = 10;
@@ -283,13 +286,13 @@ function yieldPanel(y, sym, extraNote) {
   if (!y) return null;
   const none = y.per1000PerDay <= 0;
   return el("div", { class: "panel yield-panel" },
-    el("div", {}, el("div", { class: "k", text: `Holder yield per 1,000 ${sym}` }),
-      el("div", { class: "v", text: none ? "–" : `${fmtSig(y.per1000PerDay)} XNT/day` }),
-      el("div", { class: "n", text: none ? "no payouts in this period" : `≈ ${fmtSig(y.xntPerDay)} XNT/day to all holders` })),
-    el("div", {}, el("div", { class: "k", text: "Estimated yearly return" }),
+    el("div", {}, el("div", { class: "k", text: tr("Holder yield per 1,000 {sym}", { sym }) }),
+      el("div", { class: "v", text: none ? "–" : tr("{per1000PerDay} XNT/day", { per1000PerDay: fmtSig(y.per1000PerDay) }) }),
+      el("div", { class: "n", text: none ? tr("no payouts in this period") : tr("≈ {xntPerDay} XNT/day to all holders", { xntPerDay: fmtSig(y.xntPerDay) }) })),
+    el("div", {}, el("div", { class: "k", text: tr("Estimated yearly return") }),
       el("div", { class: "v", text: y.aprPct == null ? "–" : `≈ ${fmtSig(y.aprPct)}%` }),
-      el("div", { class: "n", text: "at today's price, not compounded" })),
-    el("div", { class: "why", text: `Based on XNT paid to holders over the last ${y.windowDays} day${y.windowDays === 1 ? "" : "s"}, split across the tokens that earn payouts now. Payouts follow trading volume, so this changes and isn't guaranteed.${extraNote ?? ""}` }));
+      el("div", { class: "n", text: tr("at today's price, not compounded") })),
+    el("div", { class: "why", text: tr("Based on XNT paid to holders over the last {windowDays} day{s}, split across the tokens that earn payouts now. Payouts follow trading volume, so this changes and isn't guaranteed.{extraNote}", { windowDays: y.windowDays, s: y.windowDays === 1 ? "" : "s", extraNote: extraNote ?? "" }) }));
 }
 /** Small prices keep 3 significant digits (0.0000001534), larger ones up to 6 decimals. */
 const fmtPrice = (p) => p === 0 ? "0" : p < 0.001 ? p.toFixed(Math.min(18, 2 - Math.floor(Math.log10(p)))) : p.toLocaleString(undefined, { maximumFractionDigits: 6 });
@@ -301,26 +304,26 @@ async function loadTokenStats(d, host, fresh = false) {
     renderTokenStats(d, s, host);
     if (location.hash === "#vault") $("vault")?.scrollIntoView({ block: "start" });
   } catch (e) {
-    host.replaceChildren(el("p", { class: "muted", text: `Token stats aren't available: ${e.message || e}` }));
+    host.replaceChildren(el("p", { class: "muted", text: tr("Token stats aren't available: {message}", { message: e.message || e }) }));
   }
 }
-const VAULT_TIP = "Only the Tax Vault program can withdraw this token's tax. It burns, adds liquidity and funds the creator on-chain, and pays holders from a public rewards list that can only share out the holders' part. No team wallet holds the tax.";
+const VAULT_TIP = tr("Only the Tax Vault program can withdraw this token's tax. It burns, adds liquidity and funds the creator on-chain, and pays holders from a public rewards list that can only share out the holders' part. No team wallet holds the tax.");
 /** Tax Vault tokens: the badge, the public rewards list, and when the next list starts paying. */
 function vaultRow(v) {
   if (!v) return null;
   return el("div", { class: "vault-row" },
-    el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: "✓ Tax enforced by program" }),
-    v.exists ? el("a", { href: v.listUrl, target: "_blank", rel: "noopener", text: "Latest rewards list ↗" }) : null,
-    v.nextListAt ? el("span", { class: "muted", text: `Next rewards list pays at ${new Date(v.nextListAt * 1000).toLocaleString()}` }) : null,
-    v.cancelsLeft != null ? el("span", { class: "muted", title: "The creator (the vault's guardian) can stop a new rewards list before it pays, but only this many times in a row: once a list goes live the count starts over.",
-      text: v.cancelsLeft > 0 ? `The creator can cancel ${v.cancelsLeft} more list${v.cancelsLeft === 1 ? "" : "s"} in a row` : "The creator can't cancel the next list" }) : null);
+    el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: tr("✓ Tax enforced by program") }),
+    v.exists ? el("a", { href: v.listUrl, target: "_blank", rel: "noopener", text: tr("Latest rewards list ↗") }) : null,
+    v.nextListAt ? el("span", { class: "muted", text: tr("Next rewards list pays at {date}", { date: new Date(v.nextListAt * 1000).toLocaleString() }) }) : null,
+    v.cancelsLeft != null ? el("span", { class: "muted", title: tr("The creator (the vault's guardian) can stop a new rewards list before it pays, but only this many times in a row: once a list goes live the count starts over."),
+      text: v.cancelsLeft > 0 ? tr("The creator can cancel {cancelsLeft} more list{s} in a row", { cancelsLeft: v.cancelsLeft, s: v.cancelsLeft === 1 ? "" : "s" }) : tr("The creator can't cancel the next list") }) : null);
 }
 /** "3 hours ago" / "in 2 days" for unix seconds. */
 function relTime(sec) {
   const d = sec - Date.now() / 1000, a = Math.abs(d);
   const [n, u] = a < 90 ? [Math.round(a), "second"] : a < 5400 ? [Math.round(a / 60), "minute"] : a < 129600 ? [Math.round(a / 3600), "hour"] : [Math.round(a / 86400), "day"];
-  const t = `${n} ${u}${n === 1 ? "" : "s"}`;
-  return d < 0 ? `${t} ago` : `in ${t}`;
+  // Intl words it in the page's language ("3 hours ago", "hace 3 horas").
+  return new Intl.RelativeTimeFormat(document.documentElement.lang || "en").format(d < 0 ? -n : n, u);
 }
 const when = (sec) => new Date(sec * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 let vaultLog = null; // what the last "Run the vault now" did: { mint, lines: [[text, cls]] }
@@ -340,41 +343,41 @@ function vaultPanel(d, s) {
   if (v.publisher && v.quorum) {
     // Publisher quorum: the publisher is a Squads multisig's vault; a list goes live only with `threshold` approvals.
     const q = v.quorum;
-    rows.push(["Publisher", el("span", { title: "Rewards lists are published by a Squads multisig: each list needs this many of its members' approvals. An independent co-signer re-checks every list (nobody's total drops, the split matches the holders' balances) before approving it." },
-      addr(q.multisig), el("span", { class: "lbl", text: `${q.threshold}-of-${q.voters} multisig` }))]);
-    rows.push(["Members", el("span", {}, ...q.members.filter((m) => m.vote).flatMap((m, i) => [i ? ", " : "", addr(m.key), ` ${m.label}`]))]);
+    rows.push([tr("Publisher"), el("span", { title: tr("Rewards lists are published by a Squads multisig: each list needs this many of its members' approvals. An independent co-signer re-checks every list (nobody's total drops, the split matches the holders' balances) before approving it.") },
+      addr(q.multisig), el("span", { class: "lbl", text: tr("{threshold}-of-{voters} multisig", { threshold: q.threshold, voters: q.voters }) }))]);
+    rows.push([tr("Members"), el("span", {}, ...q.members.filter((m) => m.vote).flatMap((m, i) => [i ? ", " : "", addr(m.key), ` ${m.label}`]))]);
     const c = v.listCheck;
     if (c) {
       const who = (xs) => xs.map((x) => x.label).join(", ");
-      rows.push([`List ${v.listCheckEpoch ?? ""}`.trim(), el("span", { class: c.cosigner === "rejected" ? "warn" : "", text:
-        c.cosigner === "checked" ? `✓ checked and approved by ${who(c.approvedBy)}`
-        : c.cosigner === "rejected" ? `✗ rejected by ${who(c.rejectedBy)}${c.reason ? `: ${c.reason}` : ""}`
-        : `waiting for the co-signer's check (Squads #${c.index})` })]);
+      rows.push([tr("List {listCheckEpoch}", { listCheckEpoch: v.listCheckEpoch ?? "" }).trim(), el("span", { class: c.cosigner === "rejected" ? "warn" : "", text:
+        c.cosigner === "checked" ? tr("✓ checked and approved by {approvedBy}", { approvedBy: who(c.approvedBy) })
+        : c.cosigner === "rejected" ? tr("✗ rejected by {rejectedBy}{extra}", { rejectedBy: who(c.rejectedBy), extra: c.reason ? `: ${c.reason}` : "" })
+        : tr("waiting for the co-signer's check (Squads #{index})", { index: c.index }) })]);
     }
     if (v.lastRejected && (!c || c.cosigner !== "rejected")) {
-      rows.push(["Last rejected list", el("span", { class: "muted", title: when(Date.parse(v.lastRejected.at) / 1000), text: `${v.lastRejected.epoch}${v.lastRejected.reason ? `: ${v.lastRejected.reason}` : ""}` })]);
+      rows.push([tr("Last rejected list"), el("span", { class: "muted", title: when(Date.parse(v.lastRejected.at) / 1000), text: `${v.lastRejected.epoch}${v.lastRejected.reason ? `: ${v.lastRejected.reason}` : ""}` })]);
     }
   } else if (v.publisher) {
-    rows.push(["Publisher", el("span", {}, addr(v.publisher), el("span", { class: "lbl", text: v.sitePublishes ? "99 + Tax" : "Not 99 + Tax" }))]);
+    rows.push([tr("Publisher"), el("span", {}, addr(v.publisher), el("span", { class: "lbl", text: v.sitePublishes ? tr("99 + Tax") : tr("Not 99 + Tax") }))]);
   }
   if (v.publisher) {
-    rows.push(["Last list published", el("span", { title: when(v.lastPublishAt), text: relTime(v.lastPublishAt) })]);
+    rows.push([tr("Last list published"), el("span", { title: when(v.lastPublishAt), text: relTime(v.lastPublishAt) })]);
     // The active list's file on IPFS: its address is stored on-chain, so it's readable without this site.
-    if (v.listCid) rows.push(["List file (IPFS)", link(v.listCidUrl, `${v.listCid.slice(0, 10)}…${v.listCid.slice(-6)} ↗`, "mono")]);
-    if (BigInt(v.fallbackPaid ?? "0") > 0n) rows.push(["Paid in fallback", `${fmtUnits(v.fallbackPaid, 9, 6)} XNT`]);
+    if (v.listCid) rows.push([tr("List file (IPFS)"), link(v.listCidUrl, `${v.listCid.slice(0, 10)}…${v.listCid.slice(-6)} ↗`, "mono")]);
+    if (BigInt(v.fallbackPaid ?? "0") > 0n) rows.push([tr("Paid in fallback"), `${fmtUnits(v.fallbackPaid, 9, 6)} XNT`]);
   }
-  const state = !v.publisher ? el("p", { class: "vp-state muted", text: "This vault is upgraded to v3 on its next run (anyone can run it below)." })
-    : v.fallbackActive ? el("p", { class: "vp-state warn", text: "Fallback active: paying from the last list. No list was published for 30 days, so anyone can pay holders their share of the last list, scaled up to all the XNT set aside for them. A new list from a publisher ends it." })
+  const state = !v.publisher ? el("p", { class: "vp-state muted", text: tr("This vault is upgraded to v3 on its next run (anyone can run it below).") })
+    : v.fallbackActive ? el("p", { class: "vp-state warn", text: tr("Fallback active: paying from the last list. No list was published for 30 days, so anyone can pay holders their share of the last list, scaled up to all the XNT set aside for them. A new list from a publisher ends it.") })
     : el("p", { class: "vp-state muted" },
-      now >= v.appointAllowedAt ? `The publisher has been silent since ${when(v.lastPublishAt)}: the creator can appoint a new publisher now. ` : `The creator can appoint a new publisher from ${when(v.appointAllowedAt)} if no list is published before then. `,
-      `Fallback payouts from the last list start ${when(v.fallbackAt)} if still none is.`);
+      now >= v.appointAllowedAt ? tr("The publisher has been silent since {lastPublishAt}: the creator can appoint a new publisher now. ", { lastPublishAt: when(v.lastPublishAt) }) : tr("The creator can appoint a new publisher from {appointAllowedAt} if no list is published before then. ", { appointAllowedAt: when(v.appointAllowedAt) }),
+      tr("Fallback payouts from the last list start {fallbackAt} if still none is.", { fallbackAt: when(v.fallbackAt) }));
   // Lists decide who gets the holders' XNT: flag a publisher that isn't this site's key (a
   // creator-chosen one, or one appointed after the site went quiet) and settings that differ.
   const warns = [
     v.mismatch,
-    v.publisher && !v.sitePublishes ? "Rewards lists for this token are published by a wallet that isn't 99 + Tax's, so holder payouts depend on that wallet." : null,
+    v.publisher && !v.sitePublishes ? tr("Rewards lists for this token are published by a wallet that isn't 99 + Tax's, so holder payouts depend on that wallet.") : null,
   ].filter(Boolean).map((t) => el("p", { class: "vp-state warn", text: `⚠ ${t}` }));
-  const run = el("button", { class: "btn primary", type: "button", text: "Run the vault now" });
+  const run = el("button", { class: "btn primary", type: "button", text: tr("Run the vault now") });
   run.disabled = busy;
   run.onclick = (ev) => (W.state.address ? runVault(d, s) : openWalletMenu(ev));
   const log = vaultLog && vaultLog.mint === s.mint ? el("ul", { class: "vp-log", "aria-live": "polite" }, ...vaultLog.lines.map(([t, c]) => el("li", { class: c ?? "", text: t }))) : null;
@@ -382,21 +385,21 @@ function vaultPanel(d, s) {
   let form = null;
   if (me && v.guardian === me && v.publisher) {
     if (now >= v.appointAllowedAt) {
-      const input = el("input", { id: "newPublisher", placeholder: "New publisher's wallet address", autocomplete: "off", spellcheck: "false" });
-      const go = el("button", { class: "btn", type: "submit", text: "Appoint a new publisher" });
+      const input = el("input", { id: "newPublisher", placeholder: tr("New publisher's wallet address"), autocomplete: "off", spellcheck: "false" });
+      const go = el("button", { class: "btn", type: "submit", text: tr("Appoint a new publisher") });
       go.disabled = busy;
-      form = el("form", {}, el("label", { for: "newPublisher", text: "You're this vault's guardian. The publisher has gone quiet, so you can hand publishing to a wallet that will run the crank with --publisher (see the README)." }), input, go);
+      form = el("form", {}, el("label", { for: "newPublisher", text: tr("You're this vault's guardian. The publisher has gone quiet, so you can hand publishing to a wallet that will run the crank with --publisher (see the README).") }), input, go);
       form.onsubmit = (ev) => { ev.preventDefault(); appointPublisher(d, s, input.value.trim()); };
     } else {
-      form = el("p", { class: "muted", style: "font-size:12px;margin:10px 0 0", text: `You're this vault's guardian: if the publisher stays silent, you can appoint a new one here from ${when(v.appointAllowedAt)}.` });
+      form = el("p", { class: "muted", style: "font-size:12px;margin:10px 0 0", text: tr("You're this vault's guardian: if the publisher stays silent, you can appoint a new one here from {appointAllowedAt}.", { appointAllowedAt: when(v.appointAllowedAt) }) });
     }
   }
   return el("div", { class: "panel vault-panel", id: "vault" },
-    el("div", { class: "vp-head" }, el("h3", { text: "Tax Vault", style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: `v${v.version ?? "?"} · ${short(v.vault)}` })),
+    el("div", { class: "vp-head" }, el("h3", { text: tr("Tax Vault"), style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: `v${v.version ?? "?"} · ${short(v.vault)}` })),
     rows.length ? el("dl", {}, ...rows.flatMap(([k, x]) => [el("dt", { text: k }), el("dd", {}, x)])) : null,
     ...warns,
     state,
-    el("div", { class: "vp-run" }, run, el("span", { class: "muted", text: "Anyone can run the vault: your wallet signs the steps that are due (collect, sell, liquidity, creator reward, payouts) and pays their network fees; you earn the crank reward, 1% of the holders' XNT from each sale (up to 0.05 XNT)." })),
+    el("div", { class: "vp-run" }, run, el("span", { class: "muted", text: tr("Anyone can run the vault: your wallet signs the steps that are due (collect, sell, liquidity, creator reward, payouts) and pays their network fees; you earn the crank reward, 1% of the holders' XNT from each sale (up to 0.05 XNT).") })),
     log, form);
 }
 /**
@@ -406,31 +409,31 @@ function vaultPanel(d, s) {
  */
 function vaultStartPanel(d, s) {
   const mine = !!W.state.address && W.state.address === s.vault.creator;
-  const go = mine ? el("button", { class: "btn primary", type: "button", text: "Start the tax vault" }) : null;
+  const go = mine ? el("button", { class: "btn primary", type: "button", text: tr("Start the tax vault") }) : null;
   if (go) { go.disabled = busy; go.onclick = () => startVault(d, s); }
   return el("div", { class: "panel vault-panel", id: "vault" },
-    el("div", { class: "vp-head" }, el("h3", { text: "Tax Vault", style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: "not started yet" })),
+    el("div", { class: "vp-head" }, el("h3", { text: tr("Tax Vault"), style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: tr("not started yet") })),
     el("p", { class: "vp-state muted", text: mine
-      ? "Your token has graduated. Sign one transaction to start its tax vault: from then on the Tax Vault program collects the tax, burns, adds liquidity, funds your creator reward and pays holders. Until you do, the tax waits safely in the holders' token accounts."
-      : "Waiting for the creator to start the tax vault — the tax waits safely until then." }),
+      ? tr("Your token has graduated. Sign one transaction to start its tax vault: from then on the Tax Vault program collects the tax, burns, adds liquidity, funds your creator reward and pays holders. Until you do, the tax waits safely in the holders' token accounts.")
+      : tr("Waiting for the creator to start the tax vault — the tax waits safely until then.") }),
     go ? el("div", { class: "vp-run" }, go) : null);
 }
 async function startVault(d, s) {
   if (busy) return;
   busy = true;
   try {
-    toast("info", "Start the tax vault: preparing and simulating…");
+    toast("info", tr("Start the tax vault: preparing and simulating…"));
     const { tx } = await api("/api/launch/vault", { mint: s.mint, creator: W.state.address });
-    toast("info", "Approve it in your wallet…");
+    toast("info", tr("Approve it in your wallet…"));
     const signed = await W.sign(W.b64ToBytes(tx));
     const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), vaultMint: s.mint });
-    toast("success", "Tax vault started: the vault crank takes it from here. ", link(`${d.explorer}/tx/${signature}`, "View transaction ↗"));
+    toast("success", tr("Tax vault started: the vault crank takes it from here. "), link(`${d.explorer}/tx/${signature}`, tr("View transaction ↗")));
     busy = false;
     const host = document.querySelector(".stats-card");
     if (host) await loadTokenStats(d, host, true);
     return;
   } catch (e) {
-    toast("error", `Start the tax vault failed: ${e.message || e}`);
+    toast("error", tr("Start the tax vault failed: {message}", { message: e.message || e }));
   }
   busy = false;
 }
@@ -441,18 +444,18 @@ async function runVault(d, s) {
   vaultLog = { mint: s.mint, lines };
   const redraw = () => { const host = document.querySelector(".stats-card"); const old = host?.querySelector("#vault"); const nu = vaultPanel(d, s); if (old && nu) old.replaceWith(nu); };
   try {
-    toast("info", "Run the vault: finding the steps that are due…");
+    toast("info", tr("Run the vault: finding the steps that are due…"));
     const plan = await api(`/api/vault/${s.mint}/crank-tx`, { caller: W.state.address });
     const reward = BigInt(plan.crankRewardLamports), rent = BigInt(plan.recordsRentLamports);
-    lines.push([`${plan.txs.length} step${plan.txs.length === 1 ? "" : "s"}: ${plan.txs.map((t) => t.label).join(" · ")}`]);
-    lines.push([`Estimated reward ≈ ${fmtUnits(reward, 9, 6)} XNT · network fees ≈ ${fmtUnits(plan.networkFeeLamports, 9, 6)} XNT${rent > 0n ? ` · payment records' rent ${fmtUnits(rent, 9, 6)} XNT` : ""}`]);
+    lines.push([tr("{txsCount} step{s}: {list}", { txsCount: plan.txs.length, s: plan.txs.length === 1 ? "" : "s", list: plan.txs.map((t) => tr(t.label)).join(" · ") })]);
+    lines.push([tr("Estimated reward ≈ {reward} XNT · network fees ≈ {networkFeeLamports} XNT{extra}", { reward: fmtUnits(reward, 9, 6), networkFeeLamports: fmtUnits(plan.networkFeeLamports, 9, 6), extra: rent > 0n ? tr(" · payment records' rent {rent} XNT", { rent: fmtUnits(rent, 9, 6) }) : "" })]);
     for (const n of plan.notes ?? []) lines.push([n]);
     redraw();
-    toast("info", `Approve ${plan.txs.length} transaction${plan.txs.length === 1 ? "" : "s"} in your wallet…`);
+    toast("info", tr("Approve {txsCount} transaction{s} in your wallet…", { txsCount: plan.txs.length, s: plan.txs.length === 1 ? "" : "s" }));
     const signed = await W.signAll(plan.txs.map((t) => W.b64ToBytes(t.tx)));
     const sigs = [];
     for (const [i, t] of plan.txs.entries()) {
-      toast("info", `Sending ${i + 1} of ${plan.txs.length}: ${t.label}…`);
+      toast("info", tr("Sending {i} of {txsCount}: {label}…", { i: i + 1, txsCount: plan.txs.length, label: tr(t.label) }));
       try {
         // The vault allows one sale / reward swap per slot: a step right behind the sale can
         // land in the same slot, so resend the same signed transaction a moment later.
@@ -463,42 +466,42 @@ async function runVault(d, s) {
             await new Promise((r) => setTimeout(r, 1200));
           }
         }
-        sigs.push(signature); lines.push([`✓ ${t.label}`, "good"]);
+        sigs.push(signature); lines.push([`✓ ${tr(t.label)}`, "good"]);
       } catch (e) {
         // Later steps may still work (a payout doesn't need the sale).
         const m = String(e.message || e);
         // TooSmall / NothingToPay: someone else (usually the site's own crank) ran this step first.
-        if (/TooSmall|NothingToPay|0x177e|0x177c\b/.test(m)) lines.push([`– ${t.label}: already done by someone else, nothing left for this step (no fee charged)`]);
-        else lines.push([`✗ ${t.label}: ${m}`, "bad"]);
+        if (/TooSmall|NothingToPay|0x177e|0x177c\b/.test(m)) lines.push([tr("– {label}: already done by someone else, nothing left for this step (no fee charged)", { label: tr(t.label) })]);
+        else lines.push([`✗ ${tr(t.label)}: ${m}`, "bad"]);
       }
       redraw();
     }
     if (sigs.length) {
       const res = await api(`/api/vault/${s.mint}/crank-result`, { signatures: sigs });
       const got = BigInt(res.crankRewardLamports);
-      lines.push([got > 0n ? `Crank reward received: ${fmtUnits(got, 9, 6)} XNT` : "No crank reward this time (no sale ran)", got > 0n ? "good" : ""]);
-      toast("success", `Vault run: ${sigs.length} of ${plan.txs.length} step${plan.txs.length === 1 ? "" : "s"} confirmed${got > 0n ? `, you earned ${fmtUnits(got, 9, 6)} XNT` : ""}. `, link(`${d.explorer}/tx/${sigs.at(-1)}`, "View transaction ↗"));
-    } else toast("error", "Nothing went through; see the details under the button.");
+      lines.push([got > 0n ? tr("Crank reward received: {got} XNT", { got: fmtUnits(got, 9, 6) }) : tr("No crank reward this time (no sale ran)"), got > 0n ? "good" : ""]);
+      toast("success", tr("Vault run: {sigsCount} of {txsCount} step{s} confirmed{extra}. ", { sigsCount: sigs.length, txsCount: plan.txs.length, s: plan.txs.length === 1 ? "" : "s", extra: got > 0n ? tr(", you earned {got} XNT", { got: fmtUnits(got, 9, 6) }) : "" }), link(`${d.explorer}/tx/${sigs.at(-1)}`, tr("View transaction ↗")));
+    } else toast("error", tr("Nothing went through; see the details under the button."));
   } catch (e) {
     lines.push([`${e.message || e}`, "bad"]);
-    toast("error", `Run the vault: ${e.message || e}`);
+    toast("error", tr("Run the vault: {message}", { message: e.message || e }));
   }
   busy = false; redraw();
 }
 async function appointPublisher(d, s, newPublisher) {
   if (busy) return;
-  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(newPublisher)) { toast("error", "Enter the new publisher's wallet address."); return; }
-  if (!confirm(`Appoint ${newPublisher} as this vault's publisher?\n\nThat wallet will publish the rewards lists from now on (it must run the crank). The current publisher can't publish any more.`)) return;
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(newPublisher)) { toast("error", tr("Enter the new publisher's wallet address.")); return; }
+  if (!confirm(tr("Appoint {newPublisher} as this vault's publisher?\n\nThat wallet will publish the rewards lists from now on (it must run the crank). The current publisher can't publish any more.", { newPublisher }))) return;
   busy = true;
   try {
-    toast("info", "Appoint a new publisher: preparing and simulating…");
+    toast("info", tr("Appoint a new publisher: preparing and simulating…"));
     const { tx } = await api(`/api/vault/${s.mint}/appoint-tx`, { guardian: W.state.address, newPublisher });
-    toast("info", "Approve it in your wallet…");
+    toast("info", tr("Approve it in your wallet…"));
     const signed = await W.sign(W.b64ToBytes(tx));
     const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
-    toast("success", "New publisher appointed. ", link(`${d.explorer}/tx/${signature}`, "View transaction ↗"));
+    toast("success", tr("New publisher appointed. "), link(`${d.explorer}/tx/${signature}`, tr("View transaction ↗")));
   } catch (e) {
-    toast("error", `Appoint a new publisher failed: ${e.message || e}`);
+    toast("error", tr("Appoint a new publisher failed: {message}", { message: e.message || e }));
   }
   busy = false;
 }
@@ -520,42 +523,42 @@ function renderTokenStats(d, s, host) {
   let chg = null;
   if (pNow != null && pLaunch) {
     const c = (pNow / pLaunch - 1) * 100;
-    chg = el("span", { class: `chg ${c >= 0 ? "up" : "down"}`, text: `${c >= 0 ? "+" : ""}${c.toFixed(1)}% since launch`, title: `Launch price ${pairQ && pLaunch < 1e-6 ? pLaunch.toPrecision(3) : fmtPrice(pLaunch)} ${pUnit}` });
+    chg = el("span", { class: `chg ${c >= 0 ? "up" : "down"}`, text: tr("{sign}{pct}% since launch", { sign: c >= 0 ? "+" : "", pct: c.toFixed(1) }), title: tr("Launch price {pLaunch} {pUnit}", { pLaunch: pairQ && pLaunch < 1e-6 ? pLaunch.toPrecision(3) : fmtPrice(pLaunch), pUnit }) });
   }
   // JACK prices of a small token run to many zeros; keep them to 3 significant digits so they fit.
   const fmtP = (v) => (pairQ && v < 1e-6 ? v.toPrecision(3) : fmtPrice(v));
   const priceV = el("div", { class: "v" }, pNow == null ? "–" : `${fmtP(pNow)} ${pUnit}`, chg);
   const hero = el("div", { class: "hero-row" },
-    metric(`${s.symbol} price`, priceV, pairQ
-      ? (s.priceXnt != null ? `≈ ${fmtPrice(s.priceXnt)} XNT (1 ${pairQ} ≈ ${Number(s.pairXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 })} XNT)` : "no pool price")
-      : (s.priceXnt != null ? `1 XNT ≈ ${Number(1 / s.priceXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 })} ${s.symbol}` : "no pool price"), "price"),
-    metric("Market cap", s.marketCapXnt ? `≈ ${xntOf(s.marketCapXnt, 2)}` : "–", "supply × price"),
-    metric("Pool liquidity", s.poolXnt ? `≈ ${xntOf(s.poolXnt, 2)}` : "–",
-      pairQ && s.poolQuote ? `both sides: ≈ ${fmtUnits(s.poolQuote, 9, 6)} ${pairQ}, in XNT at the ${pairQ} price` : "both sides, in XNT"),
-    metric("Supply", tokC(s.supply), BigInt(s.burned) > 0n ? `${tok(s.supply, 2)} of ${tokC(s.originalSupply)}; fixed, can't be minted` : "fixed, can't be minted"));
+    metric(tr("{symbol} price", { symbol: s.symbol }), priceV, pairQ
+      ? (s.priceXnt != null ? tr("≈ {priceXnt} XNT (1 {pairQ} ≈ {pairXnt} XNT)", { priceXnt: fmtPrice(s.priceXnt), pairQ, pairXnt: Number(s.pairXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 }) }) : tr("no pool price"))
+      : (s.priceXnt != null ? tr("1 XNT ≈ {amount} {symbol}", { amount: Number(1 / s.priceXnt).toLocaleString(undefined, { maximumSignificantDigits: 4 }), symbol: s.symbol }) : tr("no pool price")), "price"),
+    metric(tr("Market cap"), s.marketCapXnt ? `≈ ${xntOf(s.marketCapXnt, 2)}` : "–", tr("supply × price")),
+    metric(tr("Pool liquidity"), s.poolXnt ? `≈ ${xntOf(s.poolXnt, 2)}` : "–",
+      pairQ && s.poolQuote ? tr("both sides: ≈ {poolQuote} {pairQ}, in XNT at the {pairQ} price", { poolQuote: fmtUnits(s.poolQuote, 9, 6), pairQ }) : tr("both sides, in XNT")),
+    metric(tr("Supply"), tokC(s.supply), BigInt(s.burned) > 0n ? tr("{supply} of {originalSupply}; fixed, can't be minted", { supply: tok(s.supply, 2), originalSupply: tokC(s.originalSupply) }) : tr("fixed, can't be minted")));
 
   // Your position, when the connected wallet holds or was paid.
   const mine = me ? s.holders.find((h) => h.owner === me) : null;
   const mineStrip = mine ? el("div", { class: "panel mine-strip" },
-    el("div", { class: "title" }, el("h3", { text: "Your position", style: "margin:0" }), el("span", { class: `st ${mine.status}`, text: (STATUS[mine.status] ?? [mine.status])[0] })),
-    el("div", { class: "metric" }, el("div", { class: "k", text: "Balance" }), el("div", { class: "v", text: tokC(mine.balance) }), el("div", { class: "n", text: `${pctText(mine.pct, mine.balance)} of supply` })),
-    el("div", { class: "metric" }, el("div", { class: "k", text: "Worth now" }), el("div", { class: "v", text: `≈ ${xntOf(mine.valueXnt)}` }), el("div", { class: "n", text: "at the pool price" })),
-    el("div", { class: "metric" }, el("div", { class: "k", text: "XNT received" }), el("div", { class: "v", text: xntOf(mine.paidXnt, 6) }), el("div", { class: "n", text: "from payouts so far" })),
-    el("div", { class: "metric" }, el("div", { class: "k", text: "Share of next payout" }), el("div", { class: "v", text: `${mine.payoutSharePct.toFixed(2)}%` }),
+    el("div", { class: "title" }, el("h3", { text: tr("Your position"), style: "margin:0" }), el("span", { class: `st ${mine.status}`, text: (STATUS[mine.status] ?? [mine.status])[0] })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: tr("Balance") }), el("div", { class: "v", text: tokC(mine.balance) }), el("div", { class: "n", text: tr("{pct} of supply", { pct: pctText(mine.pct, mine.balance) }) })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: tr("Worth now") }), el("div", { class: "v", text: `≈ ${xntOf(mine.valueXnt)}` }), el("div", { class: "n", text: tr("at the pool price") })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: tr("XNT received") }), el("div", { class: "v", text: xntOf(mine.paidXnt, 6) }), el("div", { class: "n", text: tr("from payouts so far") })),
+    el("div", { class: "metric" }, el("div", { class: "k", text: tr("Share of next payout") }), el("div", { class: "v", text: `${mine.payoutSharePct.toFixed(2)}%` }),
       el("div", { class: "n", text: mine.status === "earning"
-        ? (s.yield && s.yield.per1000PerDay > 0 ? `≈ ${fmtSig(s.yield.per1000PerDay / 1000 * Number(BigInt(mine.balance)) / 10 ** s.decimals)} XNT/day at the current yield` : `of the holders' ${s.split.holders}% of the tax`)
-        : "not earning right now" }))) : null;
+        ? (s.yield && s.yield.per1000PerDay > 0 ? tr("≈ {per1000PerDay} XNT/day at the current yield", { per1000PerDay: fmtSig(s.yield.per1000PerDay / 1000 * Number(BigInt(mine.balance)) / 10 ** s.decimals) }) : tr("of the holders' {holders}% of the tax", { holders: s.split.holders }))
+        : tr("not earning right now") }))) : null;
 
   // Where the supply is.
   const orig = s.originalSupply;
   const sup = [
-    ["Holders earning", s.breakdown.earning, "var(--s-hold)"],
-    ["In the pool", s.breakdown.pool, "var(--s-pool)"],
-    ["Wallets not earning", s.breakdown.other, "var(--s-other)"],
-    ["Burned", s.burned, "var(--s-burn)"],
+    [tr("Holders earning"), s.breakdown.earning, "var(--s-hold)"],
+    [tr("In the pool"), s.breakdown.pool, "var(--s-pool)"],
+    [tr("Wallets not earning"), s.breakdown.other, "var(--s-other)"],
+    [tr("Burned"), s.burned, "var(--s-burn)"],
   ];
-  const supplyPanel = el("div", { class: "panel" }, el("h3", { text: "Where the supply is" }),
-    el("div", { class: "muted", style: "font-size:12px;margin:-4px 0 10px", text: `% of the ${tokC(orig)} minted at launch (burned included). The holders table below uses today's supply.` }),
+  const supplyPanel = el("div", { class: "panel" }, el("h3", { text: tr("Where the supply is") }),
+    el("div", { class: "muted", style: "font-size:12px;margin:-4px 0 10px", text: tr("% of the {orig} minted at launch (burned included). The holders table below uses today's supply.", { orig: tokC(orig) }) }),
     el("div", { class: "bar", role: "img", "aria-label": sup.map(([l, v]) => `${l} ${pctText(pctOf(v, orig), v)}`).join(", ") },
       ...sup.filter(([, v]) => BigInt(v) > 0n).map(([l, v, c]) => el("span", { style: `flex:${Math.max(pctOf(v, orig), 0.4)};background:${c}`, title: `${l}: ${pctText(pctOf(v, orig), v)}` }))),
     el("ul", { class: "brk" }, ...sup.map(([l, v, c]) => el("li", {}, el("i", { style: `background:${c}` }), el("span", { class: "lab", text: l }),
@@ -564,21 +567,21 @@ function renderTokenStats(d, s, host) {
   // Where the tax went.
   const taxXnt = BigInt(s.holdersXnt) + BigInt(s.liquidityXnt) + BigInt(s.creatorXnt);
   const tax = [
-    ["Paid to holders", s.holdersXnt, "var(--s-hold)"],
-    ["Added to liquidity", s.liquidityXnt, "var(--s-pool)"],
-    ["Creator rewards", s.creatorXnt, "var(--s-other)"],
+    [tr("Paid to holders"), s.holdersXnt, "var(--s-hold)"],
+    [tr("Added to liquidity"), s.liquidityXnt, "var(--s-pool)"],
+    [tr("Creator rewards"), s.creatorXnt, "var(--s-other)"],
   ];
-  const taxPanel = el("div", { class: "panel" }, el("h3", { text: `Where the tax went · ${xntOf(taxXnt)}` }),
+  const taxPanel = el("div", { class: "panel" }, el("h3", { text: tr("Where the tax went · {taxXnt}", { taxXnt: xntOf(taxXnt) }) }),
     taxXnt > 0n ? el("div", { class: "bar", role: "img", "aria-label": tax.map(([l, v]) => `${l} ${xntOf(v)}`).join(", ") },
       ...tax.filter(([, v]) => BigInt(v) > 0n).map(([l, v, c]) => el("span", { style: `flex:${Number(BigInt(v))};background:${c}`, title: `${l}: ${xntOf(v)}` }))) : el("div", { class: "bar", style: "background:var(--line)" }),
     el("ul", { class: "brk" }, ...tax.map(([l, v, c]) => el("li", {}, el("i", { style: `background:${c}` }), el("span", { class: "lab", text: l }),
       el("span", { class: "amt" }, xntOf(v), el("span", { class: "pct", text: taxXnt > 0n ? `${pctOf(v, taxXnt).toFixed(0)}%` : "" })))),
-      el("li", {}, el("i", { style: "background:var(--s-burn)" }), el("span", { class: "lab", text: "Tokens burned" }), el("span", { class: "amt", text: tokC(s.taxBurned) }))),
-    el("div", { class: "n muted", style: "margin-top:10px;font-size:12px", text: `${s.taxPct}% tax per trade: ${s.split.holders}% holders · ${s.split.liquidity}% liquidity · ${s.split.burn}% burn · ${s.split.creator}% creator` }));
+      el("li", {}, el("i", { style: "background:var(--s-burn)" }), el("span", { class: "lab", text: tr("Tokens burned") }), el("span", { class: "amt", text: tokC(s.taxBurned) }))),
+    el("div", { class: "n muted", style: "margin-top:10px;font-size:12px", text: tr("{taxPct}% tax per trade: {holders}% holders · {liquidity}% liquidity · {burn}% burn · {creator}% creator", { taxPct: s.taxPct, holders: s.split.holders, liquidity: s.split.liquidity, burn: s.split.burn, creator: s.split.creator }) }));
 
   // Paid to holders over time (cumulative).
   const chartPanel = el("div", { class: "panel chart-panel" },
-    el("h3", { text: `Paid to holders over time · ${s.payouts} payout${s.payouts === 1 ? "" : "s"} to ${s.walletsPaid} wallet${s.walletsPaid === 1 ? "" : "s"}` }),
+    el("h3", { text: tr("Paid to holders over time · {payouts} payout{s} to {walletsPaid} wallet{s2}", { payouts: s.payouts, s: s.payouts === 1 ? "" : "s", walletsPaid: s.walletsPaid, s2: s.walletsPaid === 1 ? "" : "s" }) }),
     payoutChart(s.payoutSeries));
 
   // Burns: every tax burn, a running total, and the latest burns with their transactions.
@@ -587,26 +590,26 @@ function renderTokenStats(d, s, host) {
   const burnTotal = burns.reduce((a, b) => a + BigInt(b.tokens), 0n);
   const recent = burns.slice().reverse().slice(0, burnsShown);
   const burnPanel = el("div", { class: "panel chart-panel burn-panel" },
-    el("h3", { text: `Burned · ${tokC(burnTotal.toString())} in ${burns.length} burn${burns.length === 1 ? "" : "s"}` }),
+    el("h3", { text: tr("Burned · {amount} in {burnsCount} burn{s}", { amount: tokC(burnTotal.toString()), burnsCount: burns.length, s: burns.length === 1 ? "" : "s" }) }),
     burns.length ? el("div", { class: "burn-facts" },
-      el("div", {}, el("span", { class: "muted", text: "Burned so far" }), el("b", { text: tokC(burnTotal.toString()) })),
-      el("div", {}, el("span", { class: "muted", text: "Share of launch supply" }), el("b", { text: `${(s.burnedPct ?? 0).toFixed(2)}%` })),
-      el("div", {}, el("span", { class: "muted", text: "Burns" }), el("b", { text: String(burns.length) })),
-      el("div", {}, el("span", { class: "muted", text: "Last burn" }), el("b", { text: new Date(burns.at(-1).at).toLocaleString() }))) : null,
+      el("div", {}, el("span", { class: "muted", text: tr("Burned so far") }), el("b", { text: tokC(burnTotal.toString()) })),
+      el("div", {}, el("span", { class: "muted", text: tr("Share of launch supply") }), el("b", { text: `${(s.burnedPct ?? 0).toFixed(2)}%` })),
+      el("div", {}, el("span", { class: "muted", text: tr("Burns") }), el("b", { text: String(burns.length) })),
+      el("div", {}, el("span", { class: "muted", text: tr("Last burn") }), el("b", { text: new Date(burns.at(-1).at).toLocaleString() }))) : null,
     payoutChart(burns, {
-      empty: `No burns yet. Each distribution burns ${s.split.burn}% of the collected tax.`,
-      amount: (p) => tokNum(p.tokens), unit: s.symbol, color: "var(--s-burn)", what: "Burned",
-      aria: (max, n) => `Cumulative ${s.symbol} burned: ${fmtNum(max)} over ${n} burns`,
+      empty: tr("No burns yet. Each distribution burns {burn}% of the collected tax.", { burn: s.split.burn }),
+      amount: (p) => tokNum(p.tokens), unit: s.symbol, color: "var(--s-burn)", what: tr("Burned"),
+      aria: (max, n) => tr("Cumulative {symbol} burned: {max} over {n} burns", { symbol: s.symbol, max: fmtNum(max), n }),
     }),
     burns.length ? el("div", { class: "table-wrap" }, el("table", { class: "burns" },
-      el("tr", {}, el("th", { text: "When" }), el("th", { class: "num", text: `Burned (${s.symbol})` }), el("th", { class: "num", text: "Total after" }), el("th", { text: "Transaction" })),
+      el("tr", {}, el("th", { text: tr("When") }), el("th", { class: "num", text: tr("Burned ({symbol})", { symbol: s.symbol }) }), el("th", { class: "num", text: tr("Total after") }), el("th", { text: tr("Transaction") })),
       ...(() => { let after = burnTotal; return recent.map((b) => {
         const row = el("tr", {}, el("td", { text: new Date(b.at).toLocaleString() }), el("td", { class: "num", text: fmtNum(tokNum(b.tokens)) }),
           el("td", { class: "num", text: fmtNum(tokNum(after.toString())) }),
           el("td", {}, b.sig ? link(`${d.explorer}/tx/${b.sig}`, `${b.sig.slice(0, 8)}… ↗`, "mono") : el("span", { class: "muted", text: "–" })));
         after -= BigInt(b.tokens); return row; }); })())) : null,
-    burns.length > burnsShown ? (() => { const b = el("button", { class: "btn more", type: "button", text: `Show all ${burns.length} burns` }); b.onclick = () => { burnsShown = Infinity; renderTokenStats(d, s, host); }; return b; })() : null,
-    el("div", { class: "n muted", style: "margin-top:8px;font-size:12px", text: `Tokens are burned straight from the collected tax (${s.split.burn}% of it), not bought back. Burned tokens are gone for good, so the supply only goes down.` }));
+    burns.length > burnsShown ? (() => { const b = el("button", { class: "btn more", type: "button", text: tr("Show all {burnsCount} burns", { burnsCount: burns.length }) }); b.onclick = () => { burnsShown = Infinity; renderTokenStats(d, s, host); }; return b; })() : null,
+    el("div", { class: "n muted", style: "margin-top:8px;font-size:12px", text: tr("Tokens are burned straight from the collected tax ({burn}% of it), not bought back. Burned tokens are gone for good, so the supply only goes down.", { burn: s.split.burn }) }));
 
   // Holders.
   const list = s.holders.slice(0, holdersShown);
@@ -614,14 +617,14 @@ function renderTokenStats(d, s, host) {
   const circulating = s.holders.filter((h) => h.status !== "excluded").reduce((a, h) => a + BigInt(h.balance), 0n);
   const top10 = s.holders.filter((h) => h.status !== "excluded").slice(0, 10).reduce((a, h) => a + BigInt(h.balance), 0n);
   const table = el("table", { class: "holders" },
-    el("tr", {}, el("th", { class: "num", text: "#" }), el("th", { text: "Wallet" }), el("th", { class: "num", text: "Balance" }),
-      el("th", { class: "num", text: "% of supply now", title: "Share of today's supply (after burns)" }), el("th", { class: "num", text: "Worth (XNT)" }), el("th", { class: "num", text: "XNT received" }),
-      el("th", { text: "Next payout share" }), el("th", { text: "Status" })),
+    el("tr", {}, el("th", { class: "num", text: "#" }), el("th", { text: tr("Wallet") }), el("th", { class: "num", text: tr("Balance") }),
+      el("th", { class: "num", text: tr("% of supply now"), title: tr("Share of today's supply (after burns)") }), el("th", { class: "num", text: tr("Worth (XNT)") }), el("th", { class: "num", text: tr("XNT received") }),
+      el("th", { text: tr("Next payout share") }), el("th", { text: tr("Status") })),
     ...list.map((h, i) => {
       const [st, why] = STATUS[h.status] ?? [h.status, ""];
       return el("tr", { class: me && h.owner === me ? "me" : "" },
         el("td", { class: "num muted", text: String(i + 1) }),
-        el("td", {}, addr(h.owner), h.label ? el("span", { class: "lbl", text: h.label }) : null, me && h.owner === me ? el("span", { class: "lbl", text: "You" }) : null),
+        el("td", {}, addr(h.owner), h.label ? el("span", { class: "lbl", text: tr(h.label) }) : null, me && h.owner === me ? el("span", { class: "lbl", text: tr("You") }) : null),
         el("td", { class: "num", text: fmtUnits(h.balance, s.decimals, 4) }),
         el("td", { class: "num", text: pctText(h.pct, h.balance) }),
         el("td", { class: "num", text: BigInt(h.valueXnt) > 0n ? fmtUnits(h.valueXnt, 9, 4) : "–" }),
@@ -629,26 +632,26 @@ function renderTokenStats(d, s, host) {
         el("td", {}, h.payoutSharePct > 0 ? el("span", {}, el("span", { class: "share" }, el("span", { style: `width:${h.payoutSharePct}%` })), `${h.payoutSharePct.toFixed(2)}%`) : el("span", { class: "muted", text: "–" })),
         el("td", {}, el("span", { class: `st ${h.status}`, text: st, title: why })));
     }));
-  const more = s.holders.length > holdersShown ? el("button", { class: "btn more", type: "button", text: `Show all ${s.holders.length} holders` }) : null;
+  const more = s.holders.length > holdersShown ? el("button", { class: "btn more", type: "button", text: tr("Show all {holdersCount} holders", { holdersCount: s.holders.length }) }) : null;
   if (more) more.onclick = () => { holdersShown = Infinity; renderTokenStats(d, s, host); };
 
   host.replaceChildren(
-    el("div", { class: "ts-head" }, el("h2", { text: `${s.name} (${s.symbol})` }), link(`${d.explorer}/address/${s.mint}`, "Token on explorer ↗")),
-    el("div", { class: "ts-sub", text: `Live token stats${s.lastRun ? ` · last distribution ${new Date(s.lastRun).toLocaleString()}` : ""}. Values in XNT use the current pool price and are estimates.` }),
+    el("div", { class: "ts-head" }, el("h2", { text: `${s.name} (${s.symbol})` }), link(`${d.explorer}/address/${s.mint}`, tr("Token on explorer ↗"))),
+    el("div", { class: "ts-sub", text: tr("Live token stats{extra}. Values in XNT use the current pool price and are estimates.", { extra: s.lastRun ? tr(" · last distribution {date}", { date: new Date(s.lastRun).toLocaleString() }) : "" }) }),
     ...[vaultRow(s.vault), vaultPanel(d, s), hero, yieldPanel(s.yield, s.symbol), mineStrip].filter(Boolean), el("div", { class: "two" }, supplyPanel, taxPanel), chartPanel, burnPanel,
-    el("div", { class: "hold-head" }, el("h2", { text: "Holders" }),
+    el("div", { class: "hold-head" }, el("h2", { text: tr("Holders") }),
       el("div", { class: "chips" },
         el("span", { class: "chip" }, el("b", { text: String(s.holders.length) }), " addresses"),
         el("span", { class: "chip" }, el("b", { text: String(s.earning) }), " earning"),
-        el("span", { class: "chip" }, "min ", el("b", { text: `${Number(s.minHolding).toLocaleString()} ${s.symbol}` }), " to earn"),
-        circulating > 0n && s.holders.filter((h) => h.status !== "excluded").length > 10 ? el("span", { class: "chip", title: "Share of tokens outside the pool held by the 10 largest wallets" }, "top 10 hold ", el("b", { text: `${pctOf(top10, circulating).toFixed(1)}%` })) : null)),
+        el("span", { class: "chip" }, "min ", el("b", { text: `${Number(s.minHolding).toLocaleString()} ${s.symbol}` }), tr(" to earn")),
+        circulating > 0n && s.holders.filter((h) => h.status !== "excluded").length > 10 ? el("span", { class: "chip", title: tr("Share of tokens outside the pool held by the 10 largest wallets") }, tr("top 10 hold "), el("b", { text: `${pctOf(top10, circulating).toFixed(1)}%` })) : null)),
     el("div", { class: "table-wrap" }, table), ...(more ? [more] : []));
 }
 
 /** Cumulative XNT paid to holders: a stepped line with a hover readout. */
 function payoutChart(series, opts) {
   const box = el("div", { class: "chart-box" });
-  if (!series.length) { box.append(el("p", { class: "muted", text: opts?.empty ?? "No payouts yet. They start once holders qualify and tax has built up." })); return box; }
+  if (!series.length) { box.append(el("p", { class: "muted", text: opts?.empty ?? tr("No payouts yet. They start once holders qualify and tax has built up.") })); return box; }
   // Draw once the box has a width, at that width, so labels stay crisp on phones.
   let lastW = 0;
   const draw = () => {
@@ -671,7 +674,7 @@ function drawPayouts(series, W, opts = {}) {
   const nice = (() => { const p = 10 ** Math.floor(Math.log10(max)); return Math.ceil(max / p) * p; })();
   const x = (t) => L + (W - L - R) * (t - t0) / (t1 - t0 || 1);
   const y = (v) => T + (H - T - B) * (1 - v / nice);
-  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": opts.aria ? opts.aria(max, pts.length) : `Cumulative XNT paid to holders: ${max.toFixed(4)} XNT over ${pts.length} payouts` });
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": opts.aria ? opts.aria(max, pts.length) : tr("Cumulative XNT paid to holders: {max} XNT over {ptsCount} payouts", { max: max.toFixed(4), ptsCount: pts.length }) });
   for (let i = 0; i <= 3; i++) {
     const v = nice * i / 3;
     svg.append(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1, "stroke-opacity": .5 }));
@@ -693,7 +696,7 @@ function drawPayouts(series, W, opts = {}) {
   svg.addEventListener("mousemove", (ev) => {
     const r = svg.getBoundingClientRect(), t = t0 + ((ev.clientX - r.left) - L) / (W - L - R) * (t1 - t0);
     let best = pts[0]; for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
-    tip.replaceChildren(el("div", { class: "muted", text: new Date(best.t).toLocaleString() }), el("div", {}, `${opts.what ?? "Payout"} `, el("b", { text: `${fmtNum(best.add)} ${unit}` })), el("div", {}, "Total so far ", el("b", { text: `${fmtNum(best.v)} ${unit}` })));
+    tip.replaceChildren(el("div", { class: "muted", text: new Date(best.t).toLocaleString() }), el("div", {}, `${opts.what ?? tr("Payout")} `, el("b", { text: `${fmtNum(best.add)} ${unit}` })), el("div", {}, tr("Total so far "), el("b", { text: `${fmtNum(best.v)} ${unit}` })));
     tip.hidden = false;
     tip.style.left = `${Math.min(Math.max(0, x(best.t) - 80), W - 170)}px`; tip.style.top = "0px";
   });
@@ -709,13 +712,13 @@ let mineOnly = false;
 let gallery = null;
 async function showGallery() {
   current = null;
-  document.title = "Locked NFTs · 99 + Tax";
+  document.title = tr("Locked NFTs · 99 + Tax");
   $("mintInput").value = "";
   const out = $("out");
-  if (!gallery) out.replaceChildren(el("p", { class: "muted", text: "Loading every locked NFT from the chain…" }));
+  if (!gallery) out.replaceChildren(el("p", { class: "muted", text: tr("Loading every locked NFT from the chain…") }));
   try {
     gallery = await api("/api/nfts");
-  } catch (e) { out.replaceChildren(el("p", { class: "error", text: `Couldn't load NFTs: ${e.message || e}` })); return; }
+  } catch (e) { out.replaceChildren(el("p", { class: "error", text: tr("Couldn't load NFTs: {message}", { message: e.message || e }) })); return; }
   renderGallery();
 }
 function renderGallery() {
@@ -724,36 +727,36 @@ function renderGallery() {
   const list = mineOnly && me ? gallery.filter((n) => n.holder === me) : gallery;
   const sum = (f) => list.reduce((a, n) => a + BigInt(f(n)), 0n);
   const segBtn = (text, on, fn, disabled) => { const b = el("button", { type: "button", "aria-pressed": String(on), text }); b.disabled = !!disabled; b.onclick = fn; return b; };
-  const seg = el("div", { class: "seg", role: "group", "aria-label": "Show" },
-    segBtn("All NFTs", !mineOnly, () => { mineOnly = false; renderGallery(); }),
-    segBtn("Mine", mineOnly, () => { mineOnly = true; renderGallery(); }, !me));
-  if (!me) seg.title = "Connect a wallet to see the NFTs it holds";
+  const seg = el("div", { class: "seg", role: "group", "aria-label": tr("Show") },
+    segBtn(tr("All NFTs"), !mineOnly, () => { mineOnly = false; renderGallery(); }),
+    segBtn(tr("Mine"), mineOnly, () => { mineOnly = true; renderGallery(); }, !me));
+  if (!me) seg.title = tr("Connect a wallet to see the NFTs it holds");
   const cards = list.map((n) => {
     const e = n.earned, r = e.rewards;
     const a = el("a", { class: "nft-card", href: `/nft/${n.nftMint}` });
     a.onclick = (ev) => { ev.preventDefault(); history.pushState(null, "", `/nft/${n.nftMint}`); $("mintInput").value = n.nftMint; show(n.nftMint); };
     a.append(
-      el("div", { class: "thumb" }, n.receipt ? el("img", { src: n.receipt, alt: `${n.name} receipt` }) : el("div", { class: "none", text: "Receipt not printed" })),
+      el("div", { class: "thumb" }, n.receipt ? el("img", { src: n.receipt, alt: tr("{name} receipt", { name: n.name }) }) : el("div", { class: "none", text: tr("Receipt not printed") })),
       el("div", {},
         el("h3", {}, n.name, me && n.holder === me ? el("span", { class: "mine", text: "YOURS" }) : null),
-        el("div", { class: "line", text: `${n.lpSharePct.toFixed(2)}% of the pool · ${n.unlockAt === null ? "locked forever" : `unlocks ${new Date(n.unlockAt * 1000).toLocaleDateString()}`}` }),
-        el("div", { class: "earned", text: `≈ ${xntFmt(e.totalXnt)}`, title: "Total earned so far, valued at current pool prices" }),
-        el("div", { class: "line", text: `Fees collected ${xntFmt(e.feesCollectedXnt)}` }),
-        el("div", { class: "line", text: `Fees ready ${xntFmt(e.feesReadyXnt)}` }),
-        ...(r ? [r, ...(r.others ?? [])] : []).map((x) => el("div", { class: "line", text: `Creator rewards ${fmtUnits(BigInt(x.claimed) + BigInt(x.ready) + BigInt(x.vesting), x.decimals, 4)} ${x.symbol} (${fmtUnits(x.vesting, x.decimals, 4)} vesting)` })),
-        el("div", { class: "line muted", text: `Liquidity locked ≈ ${xntFmt(n.valueXnt)}` })));
+        el("div", { class: "line", text: tr("{lpSharePct}% of the pool · {extra}", { lpSharePct: n.lpSharePct.toFixed(2), extra: n.unlockAt === null ? tr("locked forever") : tr("unlocks {date}", { date: new Date(n.unlockAt * 1000).toLocaleDateString() }) }) }),
+        el("div", { class: "earned", text: `≈ ${xntFmt(e.totalXnt)}`, title: tr("Total earned so far, valued at current pool prices") }),
+        el("div", { class: "line", text: tr("Fees collected {feesCollectedXnt}", { feesCollectedXnt: xntFmt(e.feesCollectedXnt) }) }),
+        el("div", { class: "line", text: tr("Fees ready {feesReadyXnt}", { feesReadyXnt: xntFmt(e.feesReadyXnt) }) }),
+        ...(r ? [r, ...(r.others ?? [])] : []).map((x) => el("div", { class: "line", text: tr("Creator rewards {claimed} {symbol} ({vesting} vesting)", { claimed: fmtUnits(BigInt(x.claimed) + BigInt(x.ready) + BigInt(x.vesting), x.decimals, 4), symbol: x.symbol, vesting: fmtUnits(x.vesting, x.decimals, 4) }) })),
+        el("div", { class: "line muted", text: tr("Liquidity locked ≈ {valueXnt}", { valueXnt: xntFmt(n.valueXnt) }) })));
     return a;
   });
   $("out").replaceChildren(...[
-    el("div", { class: "gal-head" }, el("div", {}, el("h1", { text: "Locked NFTs" }),
-      el("div", { class: "muted", text: "Every LP-lock NFT and what it has earned: trading fees from its locked liquidity, plus creator rewards. Values in XNT at current pool prices, estimates only." })), seg),
+    el("div", { class: "gal-head" }, el("div", {}, el("h1", { text: tr("Locked NFTs") }),
+      el("div", { class: "muted", text: tr("Every LP-lock NFT and what it has earned: trading fees from its locked liquidity, plus creator rewards. Values in XNT at current pool prices, estimates only.") })), seg),
     // No totals row on an empty site: the empty state below says it better than three zeros.
     !list.length && !mineOnly ? null : el("div", { class: "tiles" },
-      el("div", { class: "tile" }, el("div", { class: "k", text: mineOnly ? "Your NFTs" : "Locked NFTs" }), el("div", { class: "v", text: String(list.length) })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Total earned" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.earned.totalXnt))}` })),
-      el("div", { class: "tile" }, el("div", { class: "k", text: "Liquidity locked" }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.valueXnt))}` }))),
+      el("div", { class: "tile" }, el("div", { class: "k", text: mineOnly ? tr("Your NFTs") : tr("Locked NFTs") }), el("div", { class: "v", text: String(list.length) })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Total earned") }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.earned.totalXnt))}` })),
+      el("div", { class: "tile" }, el("div", { class: "k", text: tr("Liquidity locked") }), el("div", { class: "v", text: `≈ ${xntFmt(sum((n) => n.valueXnt))}` }))),
     list.length ? el("div", { class: "grid" }, ...cards)
-      : mineOnly ? el("p", { class: "muted", text: "This wallet doesn't hold any LP-lock NFTs." }) : siteEmpty("No LP-lock NFTs yet: every launch creates one.")].filter(Boolean));
+      : mineOnly ? el("p", { class: "muted", text: tr("This wallet doesn't hold any LP-lock NFTs.") }) : siteEmpty(tr("No LP-lock NFTs yet: every launch creates one."))].filter(Boolean));
 }
 
 // ---------- Withdraw (the NFT holder's wallet signs) ----------
@@ -762,7 +765,7 @@ function withdrawCard(d) {
   current = d;
   const me = W.state.address;
   const isHolder = !!me && me === d.holder;
-  const hint = !me ? "Connect the wallet that holds this NFT to withdraw." : isHolder ? "" : `Only the NFT holder (${d.holder ? short(d.holder) : "nobody"}) can withdraw.`;
+  const hint = !me ? tr("Connect the wallet that holds this NFT to withdraw.") : isHolder ? "" : tr("Only the NFT holder ({holder}) can withdraw.", { holder: d.holder ? short(d.holder) : tr("nobody") });
   // Only the wallet holding the NFT gets withdraw buttons (the locker enforces it on-chain too).
   const btn = (text, enabled, title, fn) => {
     if (!isHolder) return null;
@@ -776,53 +779,53 @@ function withdrawCard(d) {
   for (const r of d.rewards ? [d.rewards, ...(d.rewards.others ?? [])] : []) {
     const ready = BigInt(r.claimable) > 0n;
     rows.push(el("div", { class: "wd-row" },
-      el("div", { class: "what" }, el("div", {}, "Creator rewards ", el("span", { class: "amt", text: `${fmtUnits(r.claimable, r.decimals)} ${r.symbol} ready` })),
+      el("div", { class: "what" }, el("div", {}, tr("Creator rewards "), el("span", { class: "amt", text: tr("{claimable} {symbol} ready", { claimable: fmtUnits(r.claimable, r.decimals), symbol: r.symbol }) })),
         r.nextUnlock ? el("div", { class: "cd-box" },
-          el("span", { class: "cd-label", text: `Next ${fmtUnits(r.nextAmount ?? "0", r.decimals)} ${r.symbol} claimable in` }), Countdown.el(r.nextUnlock),
+          el("span", { class: "cd-label", text: tr("Next {nextAmount} {symbol} claimable in", { nextAmount: fmtUnits(r.nextAmount ?? "0", r.decimals), symbol: r.symbol }) }), Countdown.el(r.nextUnlock),
           el("span", { class: "cd-label", text: new Date(r.nextUnlock * 1000).toLocaleString() })) : null,
-        el("div", { class: "muted", text: `${fmtUnits(r.vesting, r.decimals)} ${r.symbol} still vesting in total · ${fmtUnits(r.claimed, r.decimals)} claimed so far. Each deposit vests 7 days.` })),
-      btn(d.rewards.others?.length ? `Claim ${r.symbol}` : "Claim rewards", ready, ready ? "" : "Nothing has vested yet",
-        () => withdraw(`Claim creator rewards (${r.symbol})`, "/api/nft/claim", { rewardMint: r.mint }))));
+        el("div", { class: "muted", text: tr("{vesting} {symbol} still vesting in total · {claimed} claimed so far. Each deposit vests 7 days.", { vesting: fmtUnits(r.vesting, r.decimals), symbol: r.symbol, claimed: fmtUnits(r.claimed, r.decimals) }) })),
+      btn(d.rewards.others?.length ? tr("Claim {symbol}", { symbol: r.symbol }) : tr("Claim rewards"), ready, ready ? "" : tr("Nothing has vested yet"),
+        () => withdraw(tr("Claim creator rewards ({symbol})", { symbol: r.symbol }), "/api/nft/claim", { rewardMint: r.mint }))));
   }
   const f = d.fees;
   if (f) {
     rows.push(el("div", { class: "wd-row" },
-      el("div", { class: "what" }, el("div", {}, "Trading fees ", el("span", { class: "amt", text: `≈ ${fmtUnits(f.worth, 9)} XNT` })),
+      el("div", { class: "what" }, el("div", {}, tr("Trading fees "), el("span", { class: "amt", text: tr("≈ {worth} XNT", { worth: fmtUnits(f.worth, 9) }) })),
         el("div", { class: "muted", text: f.quote && f.quote !== "XNT"
-          ? `${fmtUnits(f.quoteAmount, 9)} ${f.quote} + ${fmtUnits(f.tokens, 9, 4)} ${d.symbol}, from this NFT's share of pool trading (valued in XNT at the ${f.quote} price)`
-          : `${fmtUnits(f.xnt, 9)} XNT + ${fmtUnits(f.tokens, 9, 4)} ${d.symbol}, from this NFT's share of pool trading` }),
-        f.networkFee ? el("div", { class: "muted", text: `Network fee to collect ≈ ${fmtUnits(f.networkFee, 9)} XNT (charged by X1). `
-          + (f.collectable ? "Collecting now nets ≈ " + fmtUnits(String(BigInt(f.worth) - BigInt(f.networkFee)), 9) + " XNT." : "Worth collecting once fees are above that.") }) : null),
-      btn("Collect fees", f.collectable, f.collectable ? "" : f.networkFee && BigInt(f.worth) > 0n
-        ? `Fees ready (≈ ${fmtUnits(f.worth, 9)} XNT) are less than the network fee (≈ ${fmtUnits(f.networkFee, 9)} XNT); wait for more trading`
-        : "Nothing worth collecting yet; fees grow as people trade", () => withdraw("Collect trading fees", "/api/nft/collect"))));
+          ? tr("{quoteAmount} {quote} + {tokens} {symbol}, from this NFT's share of pool trading (valued in XNT at the {quote} price)", { quoteAmount: fmtUnits(f.quoteAmount, 9), quote: f.quote, tokens: fmtUnits(f.tokens, 9, 4), symbol: d.symbol })
+          : tr("{xnt} XNT + {tokens} {symbol}, from this NFT's share of pool trading", { xnt: fmtUnits(f.xnt, 9), tokens: fmtUnits(f.tokens, 9, 4), symbol: d.symbol }) }),
+        f.networkFee ? el("div", { class: "muted", text: tr("Network fee to collect ≈ {networkFee} XNT (charged by X1). ", { networkFee: fmtUnits(f.networkFee, 9) })
+          + (f.collectable ? tr("Collecting now nets ≈ ") + fmtUnits(String(BigInt(f.worth) - BigInt(f.networkFee)), 9) + tr(" XNT.") : tr("Worth collecting once fees are above that.")) }) : null),
+      btn(tr("Collect fees"), f.collectable, f.collectable ? "" : f.networkFee && BigInt(f.worth) > 0n
+        ? tr("Fees ready (≈ {worth} XNT) are less than the network fee (≈ {networkFee} XNT); wait for more trading", { worth: fmtUnits(f.worth, 9), networkFee: fmtUnits(f.networkFee, 9) })
+        : tr("Nothing worth collecting yet; fees grow as people trade"), () => withdraw(tr("Collect trading fees"), "/api/nft/collect"))));
   }
   rows.push(el("div", { class: "wd-row" },
-    el("div", { class: "what" }, el("div", {}, "Locked liquidity ", el("span", { class: "amt", text: `${d.lockedLp} LP` })),
-      d.unlockAt ? el("div", { class: "cd-box" }, el("span", { class: "cd-label", text: "LP unlocks in" }), Countdown.el(d.unlockAt),
+    el("div", { class: "what" }, el("div", {}, tr("Locked liquidity "), el("span", { class: "amt", text: `${d.lockedLp} LP` })),
+      d.unlockAt ? el("div", { class: "cd-box" }, el("span", { class: "cd-label", text: tr("LP unlocks in") }), Countdown.el(d.unlockAt),
         el("span", { class: "cd-label", text: new Date(d.unlockAt * 1000).toLocaleString() })) : null,
-      el("div", { class: "muted", text: d.term === "FOREVER" ? "Locked forever: it can never be withdrawn, only its fees."
-        : d.unlockAt * 1000 <= Date.now() ? "The lock has ended: the NFT holder can unlock the LP from the dashboard or CLI."
-        : "After that the NFT holder can unlock the LP from the dashboard or CLI." }))));
-  const connectBtn = !me ? el("button", { class: "btn primary", type: "button", text: "Connect wallet" }) : null;
+      el("div", { class: "muted", text: d.term === "FOREVER" ? tr("Locked forever: it can never be withdrawn, only its fees.")
+        : d.unlockAt * 1000 <= Date.now() ? tr("The lock has ended: the NFT holder can unlock the LP from the dashboard or CLI.")
+        : tr("After that the NFT holder can unlock the LP from the dashboard or CLI.") }))));
+  const connectBtn = !me ? el("button", { class: "btn primary", type: "button", text: tr("Connect wallet") }) : null;
   if (connectBtn) connectBtn.onclick = openWalletMenu;
-  return el("div", { class: "card withdraw" }, el("h2", { text: "Withdraw" }),
+  return el("div", { class: "card withdraw" }, el("h2", { text: tr("Withdraw") }),
     hint ? el("p", { class: "muted", text: hint }) : null, connectBtn, ...rows);
 }
 // A countdown on the NFT page reached zero: re-read the NFT (the chain needs a moment).
 document.addEventListener("countdown-done", () => { if (current?.nftMint) setTimeout(() => show(current.nftMint, true), 4000); });
 function receiptButton(d) {
   if (d.upToDate) return null;
-  const me = W.state.address, text = d.printed ? "Update receipt" : "Print receipt";
+  const me = W.state.address, text = d.printed ? tr("Update receipt") : tr("Print receipt");
   const b = el("button", { class: "btn", type: "button", text });
   if (!me) {
-    b.title = `Connect the wallet that locked (${d.authority ? short(d.authority) : "unknown"}) to ${text.toLowerCase()}`;
+    b.title = tr("Connect the wallet that locked ({authority}) to {action}", { authority: d.authority ? short(d.authority) : tr("unknown"), action: text.toLowerCase() });
     b.onclick = openWalletMenu;
   } else if (me !== d.authority) {
     b.disabled = true;
-    b.title = `Only the wallet that locked (${d.authority ? short(d.authority) : "unknown"}) can ${text.toLowerCase()}`;
+    b.title = tr("Only the wallet that locked ({authority}) can {action}", { authority: d.authority ? short(d.authority) : tr("unknown"), action: text.toLowerCase() });
   } else {
-    b.title = d.printed ? "Reprint the receipt in the NFT with the latest design and numbers (on-chain)" : "Write the receipt image into the NFT (on-chain, small rent)";
+    b.title = d.printed ? tr("Reprint the receipt in the NFT with the latest design and numbers (on-chain)") : tr("Write the receipt image into the NFT (on-chain, small rent)");
     b.disabled = busy;
     b.onclick = () => withdraw(text, "/api/nft/receipt");
   }
@@ -832,22 +835,22 @@ async function withdraw(label, url, extra) {
   if (busy || !current) return;
   busy = true; show(current.nftMint, true);
   try {
-    toast("info", `${label}: preparing and simulating…`);
+    toast("info", tr("{label}: preparing and simulating…", { label }));
     const { tx } = await api(url, { nftMint: current.nftMint, holder: W.state.address, authority: W.state.address, ...extra });
-    toast("info", `${label}: approve it in your wallet…`);
+    toast("info", tr("{label}: approve it in your wallet…", { label }));
     const signed = await W.sign(W.b64ToBytes(tx));
-    toast("info", `${label}: sending…`);
+    toast("info", tr("{label}: sending…", { label }));
     const { signature } = await api("/api/send", { tx: W.bytesToB64(signed) });
-    toast("success", `${label} confirmed. `, link(`${current.explorer}/tx/${signature}`, "View transaction ↗"));
+    toast("success", tr("{label} confirmed. ", { label }), link(`${current.explorer}/tx/${signature}`, tr("View transaction ↗")));
   } catch (e) {
-    toast("error", `${label} failed: ${e.message || e}`);
+    toast("error", tr("{label} failed: {message}", { label, message: e.message || e }));
   }
   busy = false; show(current.nftMint, true);
 }
 async function api(url, body) {
   const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
   const j = await r.json().catch(() => ({ error: r.statusText }));
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  if (!r.ok) throw new Error(tr(j.error || r.statusText)); // server messages are English; tr() maps known ones
   return j;
 }
 let toastTimer;
@@ -858,11 +861,11 @@ function toast(kind, ...parts) {
 function renderWallet() {
   const area = $("walletArea");
   if (W.state.address) {
-    const b = el("button", { class: "btn", type: "button", text: "Disconnect" });
+    const b = el("button", { class: "btn", type: "button", text: tr("Disconnect") });
     b.onclick = () => W.disconnect();
     area.replaceChildren(el("span", { class: "mono", text: short(W.state.address) }), b);
   } else {
-    const b = el("button", { class: "btn primary", type: "button", text: "Connect wallet" });
+    const b = el("button", { class: "btn primary", type: "button", text: tr("Connect wallet") });
     b.onclick = openWalletMenu;
     area.replaceChildren(b);
   }
@@ -871,8 +874,8 @@ function openWalletMenu(ev) {
   ev.stopPropagation();
   $("walletMenu")?.remove();
   const choices = W.choices();
-  const go = (c) => W.connect(c).catch((e) => toast("error", "Wallet connection failed: " + (e.message || e)));
-  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  const go = (c) => W.connect(c).catch((e) => toast("error", tr("Wallet connection failed: ") + (e.message || e)));
+  if (!choices.length) { toast("error", tr("No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload.")); return; }
   if (choices.length === 1) { go(choices[0]); return; }
   const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
   for (const c of choices) {
@@ -897,7 +900,7 @@ W.onChange(() => {
   if (!current) { renderGallery(); return; }
   // Re-reading the NFT for this wallet takes a few seconds (fees come from the chain).
   const wd = document.querySelector(".withdraw");
-  if (wd) { wd.querySelectorAll("button").forEach((b) => { b.disabled = true; }); const p = wd.querySelector("p.muted"); if (p) p.textContent = "Checking your wallet…"; }
+  if (wd) { wd.querySelectorAll("button").forEach((b) => { b.disabled = true; }); const p = wd.querySelector("p.muted"); if (p) p.textContent = tr("Checking your wallet…"); }
   show(current.nftMint, true);
 });
 renderWallet();
@@ -905,7 +908,7 @@ renderWallet();
 $("search").addEventListener("submit", (ev) => {
   ev.preventDefault();
   const m = $("mintInput").value.trim();
-  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)) { $("out").replaceChildren(el("p", { class: "error", text: "That doesn't look like a Solana/X1 address." })); return; }
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)) { $("out").replaceChildren(el("p", { class: "error", text: tr("That doesn't look like a Solana/X1 address.") })); return; }
   history.pushState(null, "", `/nft/${m}`);
   show(m);
 });

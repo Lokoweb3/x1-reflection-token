@@ -6,7 +6,7 @@
  */
 window.Countdown = (() => {
   const left = (s) => {
-    if (s <= 0) return "now";
+    if (s <= 0) return window.tr ? window.tr("now") : "now";
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = String(Math.floor(s % 60)).padStart(2, "0");
     return d ? `${d}d ${h}h ${m}m ${sec}s` : h ? `${h}h ${m}m ${sec}s` : `${m}m ${sec}s`;
   };
