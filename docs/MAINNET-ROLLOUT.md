@@ -4,7 +4,23 @@ The runbook for moving mainnet onto the Tax Vault and reopening launches. Nothin
 done until the owner decides to go; every step says who runs it and where. Prepared
 30 Sep 2026.
 
-## Where mainnet is today
+## Status (1 Oct 2026)
+
+Path **B** (unaudited beta) was chosen, with the team key (53fT) as upgrade authority until
+the Squads multisig is set up. Done:
+
+- P1–P3: config switches; the full rehearsal on a local copy of mainnet passed
+  (`scripts/mainnet-vault-rehearsal.ts`).
+- Phase 1: `tax_vault` deployed (sha256 `25e9881f…`, verified against the chain; 4.11 XNT rent).
+- Phase 2: mainnet site on the vault (`taxVault.mainnet`, `beta`), publisher `8TAJ…dGkb`; JACK pair removed.
+- Phase 3: Test migrated (`4CF2eth…`), first crank pass, list and payouts the same morning;
+  the retired distributor paid what it owed and was swept to 53fT.
+- The mainnet recovery page is pinned (`bafybeid64cd…`) and served at `/recovery`.
+
+Left: phase 4 (reopen launches), P4/P5 (Squads multisig as upgrade authority), P6 (VM),
+the audit.
+
+## Where mainnet was before the rollout
 
 - Site `99tax.vercel.app` (VM services `reflect-mainnet-factory` and
   `reflect-mainnet-factory-distributor`, data in `/opt/x1-reflection-token/mainnet/`).

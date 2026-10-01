@@ -1,8 +1,8 @@
 # 99 + Tax: tax tokens on X1 that pay holders in XNT
 
 **99 + Tax** is a launchpad for tax tokens on the X1 blockchain. Every trade of a 99 + Tax
-token pays a small tax (1–10%), and the **Tax Vault program** (testnet; a per-token
-distributor on mainnet until the vault is audited) turns that tax into:
+token pays a small tax (1–10%), and the **Tax Vault program** (on mainnet since 1 Oct 2026
+as a marked beta, and on testnet) turns that tax into:
 
 - **XNT paid straight to holders' wallets**, in proportion to their balance (at least 35%
   of the tax),
@@ -15,11 +15,13 @@ Anyone can launch one in a few wallet approvals. The whole supply goes into the 
 (no dev bag), the launch liquidity is locked forever in an NFT, and the tax can never be
 changed.
 
-On testnet **every token's tax is held by the Tax Vault** program (v3): no server key can
-move it, and holders keep getting paid if the site disappears (see
-[Tax Vault](#tax-vault-testnet) and [If 99 + Tax goes offline](#if-99--tax-goes-offline)).
-**Mainnet launches are paused** until the vault is audited and deployed there, so that the
-site never holds a key to anyone's tax.
+On **both networks every token's tax is held by the Tax Vault** program (v3): no server key
+can move it, and holders keep getting paid if the site disappears (see
+[Tax Vault](#tax-vault) and [If 99 + Tax goes offline](#if-99--tax-goes-offline)). On
+mainnet the vault went live on 1 Oct 2026 as an **unaudited beta** (the site says so): the
+first token, "Test", moved onto it from its old hot-wallet distributor and was paid out by
+it the same morning. New mainnet launches reopen on the vault shortly. Testnet also runs
+**payout tokens** (v4): holders paid in a token the creator picks instead of XNT.
 
 **Reviewing the code?** Start with [docs/REVIEW.md](docs/REVIEW.md): scope, deployed
 program hashes and how to reproduce them, tests, trust assumptions and what to look at.
@@ -45,7 +47,7 @@ a bonding curve (testnet) and an off-chain distributor around them.
 | **`lp_locker`** (Anchor, `lp-locker/programs/lp_locker`) | Locks the pool's LP behind a 1-of-1 NFT (forever or timed). The NFT holder collects the LP's trading fees and claims the creator reward from a 7-day vesting vault. Also Holder Passes (built, not deployed). |
 | **`bonding_curve`** (Anchor, `lp-locker/programs/bonding_curve`, testnet) | Curve launches with no starting liquidity; at graduation it creates the XDEX pool and locks the LP through `lp_locker`. See [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). |
 | **`tax_vault`** (Anchor, `lp-locker/programs/tax_vault`, testnet) | Program custody of each token's tax: collect, burn, sell, add liquidity, creator reward and holder payouts against a published Merkle list, all enforced on-chain and cranked by anyone. See [docs/tax-vault-spec.md](docs/tax-vault-spec.md). |
-| **Distributor** (`src/distribute.ts`, one wallet per token) | The pre-vault path (mainnet's "Test", JACK tokens, and curve tokens on a site without the vault): each cycle collects the tax, burns, sells for XNT, adds liquidity (LP burned), funds the creator reward and pays holders. Crash-safe journal. |
+| **Distributor** (`src/distribute.ts`, one wallet per token) | The pre-vault path, now retired on both networks (every live token is on the Tax Vault); kept for JACK-paired tokens and sites without the vault: each cycle collects the tax, burns, sells for XNT, adds liquidity (LP burned), funds the creator reward and pays holders. Crash-safe journal. |
 | **Site** (`src/factory-server.ts`) | Landing page, launch app and all the public pages below; builds transactions for the visitor's wallet to sign (it never holds their keys). |
 
 **Program ids**
@@ -54,7 +56,7 @@ a bonding curve (testnet) and an off-chain distributor around them.
 |---|---|---|
 | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` |
 | `bonding_curve` | – | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` |
-| `tax_vault` | – | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` |
+| `tax_vault` | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` (v3, beta) | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` |
 | XDEX | `sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN` | `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf` |
 
 The home page's **Contracts** section lists every address the live site uses.
@@ -432,7 +434,7 @@ curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of 
   over a live 20 XNT curve, with the site). Enabled by `factory.curve.programId`; off on
   mainnet until audited.
 
-## Tax Vault (testnet)
+## Tax Vault
 
 > **Payout tokens (v4, testnet first):** a launch can pay its holders in another token
 > instead of XNT ("Pay holders in" on the launch form, fixed for good). The vault swaps the
@@ -491,8 +493,9 @@ working if 99 + Tax disappears (see the next section).
 
 Enabled by `factory.taxVault: { programId, publisherKeypair }` (v3 lists also need
 `factory.pinataJwt`). The publisher key can only post lists (which the guardian can
-cancel) and cannot move funds. Mainnet stays on distributors, with launches paused, until
-the vault is audited.
+cancel) and cannot move funds. On mainnet it also needs `factory.taxVault.mainnet: true`
+(set since 1 Oct 2026, with `beta: true` for the "not formally audited" notice); the runbook
+is [docs/MAINNET-ROLLOUT.md](docs/MAINNET-ROLLOUT.md).
 
 ## If 99 + Tax goes offline
 
@@ -650,9 +653,10 @@ recommended as usage grows: set `rpcUrl` (or `REFLECT_RPC_URL`).
 See [deploy/README.md](deploy/README.md): one setup script, systemd services that
 restart on crash and boot, HTTPS via Caddy (or a Vercel front door), a firewall, and daily
 encrypted backups. The live setup runs both networks on one server: the testnet site and
-distributors from the app folder, and the mainnet site and distributor (`reflect-mainnet-*`
-services) from `mainnet/` with its own config, launches and keys; each Vercel project
-forwards to its site over a secret path.
+distributors from the app folder, and the mainnet site (`reflect-mainnet-factory`) from
+`mainnet/` with its own config, launches and keys; each Vercel project forwards to its site
+over a secret path. Both sites run the Tax Vault crank; the distributor services on both
+networks are disabled (their tokens moved to the vault).
 
 ## Dashboard
 
@@ -676,7 +680,7 @@ localhost, because it lists every holder's payouts.
 ## Tests
 
 ```bash
-npm test          # 102 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths, list verification (publisher quorum), Spanish coverage, IPFS gateways, the served recovery page matching its pin
+npm test          # 103 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths, list verification (publisher quorum), Spanish coverage, IPFS gateways, the served recovery page matching its pin
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
@@ -708,10 +712,18 @@ accepts.
 
 ## Verified vs. not yet verified
 
-**Live on mainnet:** the launchpad and the `lp_locker` program (deployed from a build
-checked byte-for-byte against the rehearsed one). The first real launch ("Test", paired
-with XNT) completed all four steps and its distributor has been paying holders, burning
-and adding liquidity every cycle; the site's figures were checked against the chain.
+**Live on mainnet:** the launchpad, the `lp_locker` program and, since 1 Oct 2026, the
+`tax_vault` program v3 as a marked beta (each deployed from a build checked byte-for-byte
+against the rehearsed one; `tax_vault` sha256 `25e9881f…`, upgrade authority the team
+wallet until the Squads multisig). The first real launch ("Test") ran on its distributor
+for its first days, then moved onto the vault (`scripts/migrate-to-vault.ts`): within
+minutes the site's crank collected, burned, sold, added liquidity and sent the creator
+reward in USDC.X to the lock NFT, its first rewards list was pinned and published, and the
+vault paid holders after the 10-minute window; the retired distributor wallet paid what it
+still owed and was swept. The whole rollout was rehearsed first on a local copy of mainnet
+(`scripts/mainnet-vault-rehearsal.ts`). The mainnet recovery page is pinned to IPFS and
+served at `/recovery`. Lock NFT receipts are printed as a PNG + metadata JSON on IPFS so
+wallets and explorers can show them.
 
 **Live on testnet:** the `tax_vault` program **v3** (upgraded in place from v1 and v2,
 each deployed build checked byte-for-byte against the rehearsed one). **Every testnet token
@@ -745,8 +757,9 @@ program, a freezable NFT mint, unlocking early or a forever lock), crash recover
 distributor's journal, and program upgrades against the real lock accounts.
 
 **Not yet:** an independent audit of `lp_locker`, `bonding_curve` and `tax_vault` (all
-still upgradeable by the team); the vault on mainnet (mainnet launches stay paused until
-then); a second, independent IPFS pin of the rewards lists and the recovery page (today
+still upgradeable by the team; the upgrade key moves to a Squads multisig next); new
+mainnet launches on the vault (reopening shortly); payout tokens (v4) on a public network
+(rehearsed locally, testnet next); a second, independent IPFS pin of the rewards lists and the recovery page (today
 they're pinned on one Pinata account, readable through any gateway); a JACK-paired launch on mainnet itself; Holder Passes on a public
 network (testnet `lp_locker` is an older revision without them); the bonding curve on
 mainnet; trustless holder payouts (lists are published by one key; see

@@ -360,7 +360,7 @@ body.gated { overflow: hidden; }
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">%</span><div><h3>The tax can never change</h3><p>The token has no fee authority, so no one can raise the tax later. Not the creator, not us.</p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">∑</span><div><h3>The supply is fixed</h3><p>The mint authority is revoked at launch. No one can ever print more tokens.</p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span><div><h3>Liquidity is locked in an NFT</h3><p><span data-forever="Forever. The lock program has no way to release it.">Forever, or until the date shown. The lock program has no way to release it early.</span></p></div></div>
-      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">↻</span><div><h3>The tax goes where the token says</h3><p>Each token has its own distributor wallet, the only one that can collect its tax. It splits it the same way every time: holders (at least 35%), liquidity, burn and the creator's 10%.</p></div></div>
+      <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">↻</span><div><h3>A program holds the tax</h3><p>Each token's tax can only be collected by the Tax Vault program, never a wallet: no key on our server can move it. The program splits it the same way every time: holders (at least 35%), liquidity, burn and the creator's 10%.</p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">0</span><div><h3>No dev bag</h3><p>The whole supply goes into the pool at launch. The creator's wallet starts with zero tokens, and you can see it on the explorer.</p></div></div>
       <div class="chunk g"><span class="stamp">ON-CHAIN</span><span class="ic" aria-hidden="true">7d</span><div><h3>Creator rewards vest</h3><p>The creator's 10% sits in an on-chain vault and unlocks 7 days after each deposit. Only the LP-lock NFT's holder can claim it.</p></div></div>
     </div>
@@ -368,7 +368,7 @@ body.gated { overflow: hidden; }
 
   <section id="contracts">
     <h2>The contracts</h2>
-    <p class="section-lede">Every address this site uses on <span id="contractsNet">X1</span>, so you can check them yourself on the explorer. Each launched token also gets its own mint, pool, distributor wallet and LP-lock NFT; they're listed on its page.</p>
+    <p class="section-lede">Every address this site uses on <span id="contractsNet">X1</span>, so you can check them yourself on the explorer. Each launched token also gets its own mint, pool, Tax Vault and LP-lock NFT; they're listed on its page.</p>
     <div class="chunk contracts"><table id="contractsTable"><tr><td>Loading…</td></tr></table></div>
   </section>
 
@@ -383,7 +383,7 @@ body.gated { overflow: hidden; }
       </div>
       <div class="receipt-side">
         <h3>One flat fee. That's it.</h3>
-        <p>The launch fee is the only thing that goes to 99 + Tax. Your XNT goes into your own pool, the pool fee goes to XDEX, and the gas funds your token's own payouts.</p>
+        <p>The launch fee is the only thing that goes to 99 + Tax. Your XNT goes into your own pool and the pool fee goes to XDEX. Your token's Tax Vault pays its own way: whoever runs it earns a small reward from each sale.</p>
         <p>And the "+ tax"? That's the good part. It's paid by every trade of your token, forever. Most of it goes to your holders, and 10% comes back to you as your creator reward, in USDC.</p>
       </div>
     </div>
@@ -391,27 +391,28 @@ body.gated { overflow: hidden; }
 
   <section id="tokens">
     <h2>Fresh off the shelf</h2>
-    <p class="section-lede">Every token here was created, pooled and locked through 99 + Tax. Holding one and don't want to wait for the next payout? <a href="/launch#distribute">Distribute now →</a></p>
+    <p class="section-lede">Every token here was created, pooled and locked through 99 + Tax. Holding one and don't want to wait for the next payout? Open its page and press <b>Run the vault now</b>.</p>
     <div class="chunk tokens"><table id="tokenTable"></table></div>
   </section>
 
   <section id="faq">
     <h2>Questions at the register</h2>
     <details class="chunk"><summary>What is a tax (reflection) token?</summary><p>A token that takes a small percentage of every transfer, including every buy and sell. Here that tax isn't kept by the team. It's sold for XNT and paid to everyone who holds the token, in proportion to how much they hold.</p></details>
-    <details class="chunk"><summary>How do holders get paid?</summary><p>About every 15 minutes, the token&rsquo;s distributor collects the tax, sells it on XDEX and sends XNT directly to holders' wallets. There's nothing to claim. Very small shares build up until they reach 0.001 XNT, then they're sent.</p></details>
-    <details class="chunk"><summary>What's "Distribute now"?</summary><p>If you don't want to wait for the next 30-minute run, anyone can press Distribute now on the launch page and pay a small tip (0.005 XNT) that covers the gas. The token's full distribution runs right away, and the person who pressed it earns 1% of that run's holder payout, up to 0.05 XNT. It only works when enough tax is waiting, at most once every 10 minutes per token.</p></details>
+    <details class="chunk"><summary>How do holders get paid?</summary><p>The token&rsquo;s Tax Vault (an on-chain program) collects the tax, sells it on XDEX and sets the holders' share aside. A rewards list of every holder's share is published on-chain and on IPFS, and 10 minutes later the XNT is sent straight to holders' wallets. There's nothing to claim. Very small shares build up until they reach 0.001 XNT, then they're sent.</p></details>
+    <details class="chunk"><summary>What's "Run the vault now"?</summary><p>The site runs every vault automatically, but anyone can press Run the vault now on a token's page: your wallet signs the steps that are due and pays their small network fees, and you earn 1% of the holders' XNT from each sale, up to 0.05 XNT. The program decides every amount; whoever runs it can't take anything.</p></details>
+    <details class="chunk"><summary>What if 99 + Tax goes offline?</summary><p>Holders keep getting paid. Every step of the vault is open to anyone, and a recovery page on IPFS runs it from any wallet with nothing of ours online. If no rewards list is published for 7 days, the token's creator can appoint a new publisher; after 30 days, anyone can pay holders from the last list.</p></details>
     <details class="chunk"><summary>Who gets the tax that goes to liquidity?</summary><p>Nobody. It's added to the pool, and the LP tokens it creates are burned, so that liquidity stays in the pool for good and the price gets steadier over time.</p></details>
     <details class="chunk"><summary>What does the burn do?</summary><p>If the creator turns it on, that share of each cycle's collected tax is burned outright, before anything is sold. The token supply goes down every cycle, and because those tokens are never sold, there's less selling pressure too. The creator picks the share at launch (up to 50%; liquidity plus burn can't pass 55%, because 10% goes to the creator and holders always get at least 35%), and it can't be changed later.</p></details>
     <details class="chunk"><summary>How do creators earn?</summary><p>Creators start with no tokens, so instead every token pays its creator 10% of its tax. It's sold and swapped to USDC (XNT on testnet), then held in an on-chain vault tied to the launch's LP-lock NFT. Each deposit vests for 7 days, then whoever holds the NFT can claim it. Sell the NFT and you sell the income with it.</p></details>
     <details class="chunk"><summary>What does the LP NFT do?</summary><p>It holds the launch liquidity. Whoever owns the NFT collects the trading fees that liquidity earns and the token's creator rewards, and can sell or transfer both, but can't withdraw the liquidity itself. With a timed lock, the NFT holder can take the LP back after the date and keeps the NFT for the rewards.</p></details>
     <details class="chunk" id="lockerNoteFaq" hidden><summary>Is the lock permanent today?</summary><p>Until its security audit is done, the 99 + Tax team can still upgrade the lock program (it isn't immutable yet). After the audit it will be made permanent; this notice disappears automatically when it is.</p></details>
     <details class="chunk"><summary>Can the creator rug?</summary><p>They can't change the tax, print tokens or pull locked liquidity. They also start with no tokens: every launch puts 100% of the supply into the pool, so there's no dev bag to dump. <span data-forever="Every launch here locks its liquidity forever.">What's left to check is whether the lock is forever or timed.</span></p></details>
-    <details class="chunk"><summary>Is it audited?</summary><p>Not yet. The code is open source and has been tested on X1 testnet and against attack cases, but the lock program hasn't had an independent audit. Only use what you can afford to lose.</p></details>
+    <details class="chunk"><summary>Is it audited?</summary><p>Not yet. The code is open source, has had two independent reviews and has been tested on X1 testnet, on copies of mainnet and against attack cases, but the programs haven't had a formal audit. The Tax Vault runs as a beta until then. Only use what you can afford to lose.</p></details>
   </section>
 
   <section class="disclaimer" id="disclaimer" aria-label="Disclaimer">
     <h2>Disclaimer</h2>
-    <p><b>Everything shown here is an estimate.</b> Tax splits, daily earnings, starting prices, rewards and payouts are calculated from current on-chain data and change constantly with trading. Real results depend on trading volume and prices, which nobody controls.</p><p><b>Cryptocurrency is highly volatile.</b> Token prices can fall sharply or to zero, trading and rewards can stop, and you can lose everything you put in. <b>Nothing here is guaranteed.</b></p><p>Nothing on this site is financial, investment, legal or tax advice. Smart contracts can contain bugs, and the lock program has not had an independent audit. Launching or buying a token may have legal or tax consequences where you live. Do your own research and only use money you can afford to lose.</p>
+    <p><b>Everything shown here is an estimate.</b> Tax splits, daily earnings, starting prices, rewards and payouts are calculated from current on-chain data and change constantly with trading. Real results depend on trading volume and prices, which nobody controls.</p><p><b>Cryptocurrency is highly volatile.</b> Token prices can fall sharply or to zero, trading and rewards can stop, and you can lose everything you put in. <b>Nothing here is guaranteed.</b></p><p>Nothing on this site is financial, investment, legal or tax advice. Smart contracts can contain bugs, and the programs have not had a formal audit. Launching or buying a token may have legal or tax consequences where you live. Do your own research and only use money you can afford to lose.</p>
   </section>
 
   <div class="chunk final">
@@ -478,6 +479,7 @@ function renderContracts(info, net) {
     [tr("LP locker program"), info.lockerUpgradeable
       ? tr("Locks launch liquidity in NFTs and holds creator rewards. Still upgradeable by {lockerAuthority} until its audit.", { lockerAuthority: info.lockerAuthority ? info.lockerAuthority.slice(0, 4) + "…" + info.lockerAuthority.slice(-4) : tr("the team") })
       : tr("Locks launch liquidity in NFTs and holds creator rewards. Immutable: no one can change it."), info.lockerProgram],
+    [tr("Tax Vault program"), info.taxVault?.beta ? tr("Holds every token's tax and pays holders. Beta: reviewed and tested, not formally audited yet.") : tr("Holds every token's tax and pays holders."), info.taxVault?.programId],
     [tr("XDEX program"), tr("The DEX every token's pool lives on (not run by 99 + Tax)."), info.xdexProgram],
     [tr("Launch fee token ({feeSymbol})", { feeSymbol: info.feeSymbol }), tr("The {feeAmount} {feeSymbol} launch fee is paid in this token.", { feeAmount: info.feeAmount, feeSymbol: info.feeSymbol }), info.feeMint],
     [tr("Launch fee receiver"), tr("The 99 + Tax wallet that receives launch fees."), info.feeReceiver],
@@ -485,8 +487,11 @@ function renderContracts(info, net) {
   if (info.creatorRewardMint) rows.push([tr("Creator reward token ({creatorRewardSymbol})", { creatorRewardSymbol: info.creatorRewardSymbol }), tr("Creator rewards are swapped into this and vest in the locker."), info.creatorRewardMint]);
   if (info.creatorRewardPool) rows.push([tr("Creator reward swap pool"), tr("The XDEX pool used to swap XNT into {creatorRewardSymbol}.", { creatorRewardSymbol: info.creatorRewardSymbol }), info.creatorRewardPool]);
   const trs = rows.filter((r) => r[2]).map(([what, note, a]) => el("tr", {}, el("td", {}, el("span", { class: "what", text: what }), el("span", { class: "note", text: note })), el("td", {}, addr(a))));
-  if (info.sourceUrl) trs.push(el("tr", {}, el("td", {}, el("span", { class: "what", text: tr("Source code") }), el("span", { class: "note", text: tr("The site, distributor and locker program.") })),
+  if (info.sourceUrl) trs.push(el("tr", {}, el("td", {}, el("span", { class: "what", text: tr("Source code") }), el("span", { class: "note", text: tr("The site, the cranks and the programs.") })),
     el("td", {}, el("a", { href: info.sourceUrl, target: "_blank", rel: "noopener", text: info.sourceUrl.replace(/^https:\/\//, "") }))));
+  // The recovery page: runs any vault from IPFS with nothing of 99 + Tax online.
+  if (info.taxVault?.recoveryUrl) trs.push(el("tr", {}, el("td", {}, el("span", { class: "what", text: tr("Recovery page (IPFS)") }), el("span", { class: "note", text: tr("Keeps every vault running from any wallet if this site is ever down.") })),
+    el("td", {}, el("a", { href: info.taxVault.recoveryUrl, target: "_blank", rel: "noopener", text: info.taxVault.recoveryUrl.replace(/^https:\/\//, "").slice(0, 34) + "…" }))));
   $("contractsTable").replaceChildren(...trs);
 }
 
@@ -509,7 +514,8 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
       [tr("Launch fee"), tr("Flat, paid once in {feeSym}", { feeSym }), `${fmt(fee)} ${feeSym}`],
       [tr("Starting liquidity"), tr("Your XNT, paired with your tokens in the pool. It stays in your token."), tr("You choose")],
       [tr("XDEX pool creation"), tr("Charged by XDEX, not by us"), info.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "–"],
-      [tr("Distributor gas"), tr("Pays for your token's first payouts, then refills itself from the tax"), `${info.gasXnt} XNT`],
+      // A Tax Vault token has no distributor wallet to fund.
+      ...(info.taxVault?.launches ? [] : [[tr("Distributor gas"), tr("Pays for your token's first payouts, then refills itself from the tax"), `${info.gasXnt} XNT`]]),
       [tr("Rent and network fees"), tr("Standard X1 account rent"), tr("≈ 0.03 XNT")],
     ];
     $("costTable").replaceChildren(...rows.map(([a, n, b]) => el("tr", {}, el("td", {}, a, el("span", { class: "note", text: n })), el("td", { text: b }))));

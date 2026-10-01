@@ -30,6 +30,7 @@ Hashes are sha256 of `solana program dump`, taken 30 Sep 2026.
 
 | Network | Program | Address | Bytes | sha256 | Source commit · build flags |
 |---|---|---|---|---|---|
+| mainnet | `tax_vault` v3 | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 590,376 | `25e9881f2cc77f0b07f218d64f4abc57b4fa9ad6ed3dc3f18304cc38332ad6f4` | `7f2097d` (the v3 program source; deployed 1 Oct 2026 as a marked beta) · no features |
 | testnet | `tax_vault` v3 | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 590,376 | `4d334f40a99974d515169a9d43bb5d6f9705c50c7c5763973638d28293605ea5` | `7f2097d` (program source unchanged since) · `--features testnet` |
 | testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,184 (account 478,840, zero-padded) | `6fa319a082599f892b9db77565549b8878cafcb39f7e5d949a9bfdae0bdc47dc` (of the first 478,184 bytes) | `b8150df` (testnet-only: 10 / 20 XNT targets, creator may buy; deployed 30 Sep 2026) · `--features testnet` |
 | mainnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 554,776 | `f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b` | `fd136f3` (unchanged since) · no features |
@@ -39,7 +40,8 @@ Hashes are sha256 of `solana program dump`, taken 30 Sep 2026.
 reviews ran against the previous `bonding_curve` build (`b9c0eb9c…`, commit `5332c44`),
 which differs only in the testnet-only 10 and 20 XNT targets.
 
-`tax_vault` and `bonding_curve` are not on mainnet. XDEX (the DEX all three call):
+`bonding_curve` is not on mainnet. The program source now also holds v4 (payout tokens,
+`f2c2b1b`): rebuild `7f2097d` to reproduce the deployed v3 hashes. XDEX (the DEX all three call):
 testnet `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf`, mainnet
 `sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN`.
 
@@ -71,7 +73,7 @@ is never deployed.
 
 ```bash
 cd lp-locker && cargo test -p tax_vault && cargo test -p bonding_curve && cargo test -p lp_locker
-cd .. && npm install && npx tsc --noEmit -p . && npm test      # 102 TypeScript tests
+cd .. && npm install && npx tsc --noEmit -p . && npm test      # 103 TypeScript tests
 ```
 
 End-to-end scripts run against a **local validator** that clones the real testnet XDEX,
