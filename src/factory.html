@@ -1004,7 +1004,8 @@ async function loadTokens() {
       + (info.taxVault?.launches && info.quoteTokens?.length && info.taxVault.rewardSymbol !== info.creatorRewardSymbol ? tr(" ({creatorRewardSymbol} for tokens paired with {list})", { creatorRewardSymbol: info.creatorRewardSymbol, list: info.quoteTokens.map((q) => q.symbol).join(tr(" or ")) }) : "")
       + tr(", vests 7 days, claimed with your LP-lock NFT (whoever holds it can claim).");
   } catch (e) { toast("error", tr("Couldn't reach the factory server: ") + e.message); }
-  renderWallet(); renderForm(); loadTokens(); loadDistribute(); loadFaucet(); setupLogo();
+  // loadMine too: a wallet that reconnected silently before W.onChange was attached never fired it.
+  renderWallet(); renderForm(); loadTokens(); loadDistribute(); loadFaucet(); setupLogo(); loadMine();
 })();
 
 // Entry disclaimer: shown before the site until the visitor accepts it. Bump the key
