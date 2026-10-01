@@ -34,13 +34,18 @@ for (const mint of new Set(accounts.value.map((a) => a.account.data.parsed.info.
 }
 
 const state = arg("--state") && fs.existsSync(arg("--state")!) ? JSON.parse(fs.readFileSync(arg("--state")!, "utf8")) : {};
-const owed = Object.entries((state.owed ?? {}) as Record<string, string>).map(([w, a]) => [new PublicKey(w), BigInt(a)] as const).filter(([, a]) => a > 0n);
+const owedRaw = Object.entries((state.owed ?? {}) as Record<string, string>).map(([w, a]) => [new PublicKey(w), BigInt(a)] as const).filter(([, a]) => a > 0n);
+// A wallet with no account can only receive at least the rent-exempt minimum: it gets that
+// instead of a smaller amount owed (the difference comes out of what is swept).
+const rentMin = BigInt(await conn.getMinimumBalanceForRentExemption(0));
+const existing = owedRaw.length ? await conn.getMultipleAccountsInfo(owedRaw.map(([w]) => w), "confirmed") : [];
+const owed = owedRaw.map(([w, a], i) => [w, !existing[i] && a < rentMin ? rentMin : a, a] as const);
 const balance = BigInt(await conn.getBalance(key.publicKey, "confirmed"));
 const owedTotal = owed.reduce((s, [, a]) => s + a, 0n);
 const FEE_ROOM = 20_000n; // the two transactions' fees (tiny limits, see fitComputeLimit)
 const rest = balance - owedTotal - FEE_ROOM;
 console.log(`Wallet ${key.publicKey.toBase58()}: ${xnt(balance)}`);
-for (const [w, a] of owed) console.log(`  pay ${w.toBase58()} the ${xnt(a)} it is owed`);
+for (const [w, a, was] of owed) console.log(`  pay ${w.toBase58()} the ${xnt(was)} it is owed${a !== was ? ` (as ${xnt(a)}: a new wallet's minimum balance)` : ""}`);
 console.log(`  then send ${xnt(rest > 0n ? rest : 0n)} to ${dest.toBase58()}`);
 if (rest <= 0n && !owed.length) { console.log("Nothing to sweep."); process.exit(0); }
 if (!execute) { console.log("\nDry run. Add --execute to send."); process.exit(0); }
