@@ -505,7 +505,7 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
   | Network | CID | Open |
   |---|---|---|
   | testnet | `bafybeidzdlu2ggduswbtr637qnsfxgvjx5ogakxkihuamexkgvpjd5aska` (built from `5d162a7`, sha256 `17f0150b…`) | https://bafybeidzdlu2ggduswbtr637qnsfxgvjx5ogakxkihuamexkgvpjd5aska.ipfs.dweb.link/ |
-  | mainnet | pinned at the mainnet rollout | |
+  | mainnet | `bafybeid64cdbdnrx26ewj7kn6bvw5mnlruikiqpvqopobpeiqgpze5mdge` (built from `e462dfb`, sha256 `351fb123…`) | https://bafybeid64cdbdnrx26ewj7kn6bvw5mnlruikiqpvqopobpeiqgpze5mdge.ipfs.dweb.link/ (also https://99tax.vercel.app/recovery) |
 
   Open it through a subdomain gateway (`https://<cid>.ipfs.dweb.link/` or
   `https://<cid>.ipfs.inbrowser.link/`), `ipfs://<cid>` in Brave or a local node, or any web

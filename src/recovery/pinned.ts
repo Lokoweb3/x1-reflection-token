@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 export const RECOVERY_PAGES: Record<"testnet" | "mainnet", { cid: string; commit: string; sha256: string } | null> = {
   testnet: { cid: "bafybeidzdlu2ggduswbtr637qnsfxgvjx5ogakxkihuamexkgvpjd5aska", commit: "5d162a7", sha256: "17f0150bc0b054f078b9eab339fa2dfa3ce9b29f0e23e876b66d3dd7b37f10f6" },
-  mainnet: null,
+  mainnet: { cid: "bafybeid64cdbdnrx26ewj7kn6bvw5mnlruikiqpvqopobpeiqgpze5mdge", commit: "e462dfb", sha256: "351fb1237a3386a1016c64037f24399da6ce799564c3937f0de5e5ba6c36924b" },
 };
 /** A browser link to the pinned page (a subdomain gateway: it serves HTML, unlike Pinata's public one). */
 export const recoveryUrl = (network: "testnet" | "mainnet") => {
