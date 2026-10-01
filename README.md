@@ -21,7 +21,8 @@ can move it, and holders keep getting paid if the site disappears (see
 mainnet the vault went live on 1 Oct 2026 as an **unaudited beta** (the site says so): the
 first token, "Test", moved onto it from its old hot-wallet distributor and was paid out by
 it the same morning. New mainnet launches reopen on the vault shortly. Testnet also runs
-**payout tokens** (v4): holders paid in a token the creator picks instead of XNT.
+**payout tokens** (v4, live since 1 Oct 2026): holders paid in a token the creator picks
+instead of XNT.
 
 **Reviewing the code?** Start with [docs/REVIEW.md](docs/REVIEW.md): scope, deployed
 program hashes and how to reproduce them, tests, trust assumptions and what to look at.
@@ -436,7 +437,7 @@ curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of 
 
 ## Tax Vault
 
-> **Payout tokens (v4, testnet first):** a launch can pay its holders in another token
+> **Payout tokens (v4, live on testnet):** a launch can pay its holders in another token
 > instead of XNT ("Pay holders in" on the launch form, fixed for good). The vault swaps the
 > holders' XNT on that token's XDEX pool and pays the token. See
 > [docs/tax-vault-spec.md](docs/tax-vault-spec.md#payout-token-v4).
@@ -758,8 +759,8 @@ distributor's journal, and program upgrades against the real lock accounts.
 
 **Not yet:** an independent audit of `lp_locker`, `bonding_curve` and `tax_vault` (all
 still upgradeable by the team; the upgrade key moves to a Squads multisig next); new
-mainnet launches on the vault (reopening shortly); payout tokens (v4) on a public network
-(rehearsed locally, testnet next); a second, independent IPFS pin of the rewards lists and the recovery page (today
+mainnet launches on the vault (reopening shortly); payout tokens (v4) on mainnet (live on testnet since 1 Oct 2026; mainnet stays on v3 until
+then); a second, independent IPFS pin of the rewards lists and the recovery page (today
 they're pinned on one Pinata account, readable through any gateway); a JACK-paired launch on mainnet itself; Holder Passes on a public
 network (testnet `lp_locker` is an older revision without them); the bonding curve on
 mainnet; trustless holder payouts (lists are published by one key; see
