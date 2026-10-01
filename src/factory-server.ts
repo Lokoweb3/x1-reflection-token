@@ -21,6 +21,7 @@ import { PublicKey, Transaction } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
 import { pinnedRecoveryFile, recoveryUrl } from "./recovery/pinned.js";
+import { payoutToken, payoutTokenJson, payoutTokensOn } from "./factory/payout.js";
 import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
@@ -314,6 +315,11 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
       await requirePairTokens(new PublicKey(p.creator), pair, p.poolXnt, `Launching with ${p.poolXnt} ${pair.symbol} in the pool`);
       await requireXnt(new PublicKey(p.creator), ((await poolCreateFee()) ?? 0.1) + Number(f!.gasXnt ?? "0.05") + 0.05,
         `Launching with a ${pair.symbol} pool`, `XDEX's pool fee, the distributor's gas and network fees`);
+    }
+    // A payout token: checked in full now (pool, freeze authority, extensions), before step 1 charges the fee.
+    if (p.payoutMint) {
+      if (!isVaultLaunch(cfg, pair)) throw new Error("Paying holders in another token needs a Tax Vault launch.");
+      await payoutToken(conn, cfg, p.payoutMint);
     }
     const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
@@ -726,6 +732,8 @@ async function get(url: URL) {
 async function getView(url: URL) {
   if (url.pathname === "/api/nfts") return allNfts();
   if (url.pathname === "/api/curves") return curves ? curves.list() : null;
+  // The launch form checks a payout token as it's typed: its XNT pool, freeze authority and extensions.
+  if (url.pathname === "/api/payout-token") return payoutTokenJson(await payoutToken(conn, cfg, url.searchParams.get("mint") ?? ""));
   const cv = /^\/api\/curve\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (cv) {
     if (!curves) return null;
@@ -761,7 +769,7 @@ async function getView(url: URL) {
       // New XNT launches hand their tax to the Tax Vault program (no distributor gas to pre-fund).
       // Their creator reward is swapped on-chain into the network's reward token (XNM on testnet).
       ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR),
-        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true, recoveryUrl: recoveryUrl(cfg.network), recoveryPath: RECOVERY_FILE ? "/recovery" : null } } : {}),
+        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true, payoutTokens: payoutTokensOn(cfg), recoveryUrl: recoveryUrl(cfg.network), recoveryPath: RECOVERY_FILE ? "/recovery" : null } } : {}),
     };
   }
   if (url.pathname === "/api/launches") {

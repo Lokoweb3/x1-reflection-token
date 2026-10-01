@@ -169,6 +169,8 @@ table.list img { border: 1px solid var(--line); }
 .neon-sign { animation: flicker 7s infinite; }
 @keyframes flicker { 0%, 92%, 100% { opacity: 1; } 93% { opacity: .55; } 94% { opacity: 1; } 96% { opacity: .7; } 97% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .neon-sign { animation: none; } }
+.hint.good { color: var(--good, #2f7d32); }
+.hint.bad { color: var(--critical, #b4232f); }
 .receipt-thumb { width: 30px; vertical-align: middle; margin-right: 8px; border-radius: 3px; }
 .mainnav { display: flex; gap: 16px; margin-left: auto; }
 .mainnav + .wallet { margin-left: 0; }
@@ -299,6 +301,12 @@ form .row[hidden], .hint[hidden] { display: none; }
         </fieldset>
         <fieldset>
           <legend>Launch liquidity (XDEX pool)</legend>
+          <div class="row" id="payoutRow" hidden>
+            <label>Pay holders in
+              <input name="payoutMint" placeholder="XNT (leave empty), or a token's mint address" autocomplete="off" spellcheck="false">
+              <span class="hint" id="payoutHint">Optional. Holders get this token instead of XNT: the vault swaps their share on the token's XDEX pool. Fixed for good once launched.</span>
+            </label>
+          </div>
           <div class="row" id="pairRow" hidden>
             <label>Pair with
               <select name="quote"><option value="XNT" selected>XNT</option></select>
@@ -459,8 +467,29 @@ function readForm() {
     supply, taxBps: Math.round(Number(v.tax) * 100), autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
     poolTokens, poolXnt: String(v.poolXnt).trim(), lockDays: v.lock === "forever" ? null : Number(v.lock),
     quote: String(v.quote ?? "XNT"),
+    ...(String(v.payoutMint ?? "").trim() ? { payoutMint: String(v.payoutMint).trim() } : {}),
   };
 }
+// Payout token: checked as it's typed (its XNT pool, freeze authority, extensions).
+let payoutTimer;
+form.elements.payoutMint.addEventListener("input", () => {
+  clearTimeout(payoutTimer);
+  const hint = document.getElementById("payoutHint"), mint = form.elements.payoutMint.value.trim();
+  hint.classList.remove("bad", "good");
+  if (!mint) { hint.textContent = tr("Optional. Holders get this token instead of XNT: the vault swaps their share on the token's XDEX pool. Fixed for good once launched."); return; }
+  hint.textContent = tr("Checking the token…");
+  payoutTimer = setTimeout(async () => {
+    try {
+      const t = await api(`/api/payout-token?mint=${encodeURIComponent(mint)}`);
+      if (form.elements.payoutMint.value.trim() !== mint) return;
+      hint.textContent = tr("Holders will be paid in {symbol} ({poolXnt} XNT in its XDEX pool). Fixed for good once launched.", { symbol: t.symbol, poolXnt: fmt(Number(t.poolXnt), 2) });
+      hint.classList.add("good");
+    } catch (e) {
+      if (form.elements.payoutMint.value.trim() !== mint) return;
+      hint.textContent = tr(e.message || String(e)); hint.classList.add("bad");
+    }
+  }, 500);
+});
 /** The chosen pair token: XNT, or one the site offers (info.quoteTokens) with its XNT price. */
 function pairOf(symbol) {
   const q = (info?.quoteTokens ?? []).find((t) => t.symbol === symbol);
@@ -1010,6 +1039,8 @@ async function loadTokens() {
     }
     if (info.lockerUpgradeable) document.getElementById("lockerNoteLi").hidden = false;
     if (info.taxVault?.beta) document.getElementById("vaultBetaLi").hidden = false;
+    // Paying holders in another token: only where the site offers it (the vault program's v4).
+    if (info.taxVault?.payoutTokens && info.taxVault?.launches) document.getElementById("payoutRow").hidden = false;
     // Pair choice: only when the site offers pair tokens besides XNT.
     if (info.quoteTokens?.length) {
       const sel = form.elements.quote;

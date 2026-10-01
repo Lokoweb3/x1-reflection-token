@@ -735,3 +735,57 @@ and post it to `--webhook`. It executes only proposals it approved.
 - The program is unchanged; the guardian's cancel, the delay, the fallback and appointing
   work as before. The guardian can still appoint a plain key after 7 days of silence (the
   quorum then ends for that vault).
+
+# Payout token (v4)
+
+A launch can pay its holders in another token instead of XNT. The choice is made once, at
+creation (`init_vault_payout`), and never changes. Vaults created before (or with
+`init_vault`) pay XNT exactly as before; no upgrade step is needed.
+
+## Layout (inside the v3 reserved bytes; the account stays 640 bytes)
+
+| Offset | Field | Meaning |
+|---|---|---|
+| 580 | `payout_pool: Pubkey` | The payout token's XDEX pool against wXNT; all zero = XNT payouts |
+| 612 | `xnt_holders: u64` | Holders' XNT not yet swapped into the payout token |
+| 620 | `reserved: [u8; 20]` | Zero |
+
+With a payout token, `holders_funded`, `holders_paid`, list totals, `fallback_paid` and every
+`PaidRecord.paid` are in the payout token's base units.
+
+## Instructions
+
+* `init_vault_payout(burn_bps, lp_bps, publisher, guardian)`: `init_vault`'s accounts plus
+  `payout_mint`, `payout_pool`, `payout_token_program`. The payout mint must be an SPL Token or
+  Token-2022 mint with **no freeze authority** and only metadata / group extensions (no transfer
+  fee, hook, permanent delegate or pause), and differ from the tax token and wXNT. The pool must
+  be an XDEX pool of exactly that mint against wXNT, with swaps open. It is stored for good:
+  every holders' swap goes through it, so nobody can route the swap through a thin pool.
+* `sell`: in a payout-token vault the holders' XNT goes to `xnt_holders` (not `holders_funded`).
+* `fund_holders`: swaps up to `xnt_holders` into the payout token on the payout pool, capped
+  like the reward swap (`reward_impact_bps`, one swap per slot shared with `fund_creator`), and
+  keeps the output in auth's payout-token account (opened once; its rent comes out of
+  `xnt_holders`). `holders_funded += out`. Event `HoldersFunded { vault, xnt_in, payout_out, payout_mint }`.
+* `pay_token` / `pay_fallback_token`: the same proofs and bookkeeping as `pay` /
+  `pay_fallback`; the amount moves from auth's payout account to the wallet's (opened if needed,
+  paid by `payer`) with `transfer_checked`, and the wallet must receive exactly that amount.
+* `pay` / `pay_fallback` refuse a payout-token vault (`PaysInToken`); the token versions refuse
+  an XNT vault (`PaysInXnt`). New errors: `PaysInToken`, `PaysInXnt`, `BadPayoutMint`, `BadPayoutPool`.
+
+## Invariants
+
+* Lamports: auth holds `xnt_lp + xnt_creator + (XNT vault ? holders_funded − holders_paid : xnt_holders)` plus its reserve.
+* Payout tokens (checked after `fund_holders` and every token payment): auth's payout account
+  holds at least `holders_funded − holders_paid`.
+
+## Off-chain
+
+* The site offers the choice only with `factory.taxVault.payoutTokens: true` (the program must
+  be v4) and checks the token before step 1 (`/api/payout-token`): its pool against XNT (XDEX's
+  standard pool for it, or the one XDEX's API lists), the same mint rules, and at least
+  `factory.taxVault.payoutMinPoolXnt` (default 10) XNT in the pool.
+* The crank adds `fund_holders` after `fund_creator`, pays with the token instructions, and
+  converts the XNT minimums (`minCycle`, `minPayout`) into payout units at the pool's spot price.
+* The site's stats stay in XNT: each token payout is also logged at the vault's average swap
+  price (`holders-swap` entries), alongside the token amounts.
+* Rehearsal: `scripts/payout-token-rehearsal.ts`.

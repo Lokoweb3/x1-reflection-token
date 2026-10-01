@@ -36,7 +36,7 @@ function scenario() {
     pendingEpoch: 0n, pendingRoot: Buffer.alloc(32), pendingTotal: 0n, pendingActiveAt: 0,
     totalCollected: 0n, totalBurned: 0n, totalLpTokens: 0n, totalLpXnt: 0n, totalCreatorXnt: 0n, totalCrankRewards: 0n,
     createdAt: 1_780_000_000, bump: 255, authBump: 255, lastSellSlot: 0n, version: 3, cancelsInRow: 0, totalRewardOut: 0n, lastRewardSlot: 0n,
-    lastPublishAt: 1_790_000_000, listCid: prevCid, pendingCid: Buffer.alloc(33), fallbackPaid: 0n,
+    lastPublishAt: 1_790_000_000, listCid: prevCid, pendingCid: Buffer.alloc(33), fallbackPaid: 0n, payoutPool: PublicKey.default, xntHolders: 0n,
   };
   const paid = new Map([[A, 100_000n], [B, 40_000n]]);
   const balances = new Map([[A, 5_000_000n], [B, 3_000_000n], [D, 2_000_000n]]); // C sold out

@@ -43,10 +43,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, getTokenMetadata, unpackMint } from "@solana/spl-token";
+import { decodePool } from "../xdex.js";
 import { Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, loadKeypair, toBaseUnits, xnt } from "../config.js";
 import {
   REWARD_MINT, VAULT_VERSION, appointAllowedAt, appointPublisherIx, cancelsLeft, cidFromBytes, cidToBytes, effectiveList, fallbackAt, fallbackActive,
-  parseEvents, publishListIx, rewardTokenInfo, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent,
+  parseEvents, publishListIx, rewardTokenInfo, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent, paysInToken,
 } from "../taxvault.js";
 import {
   ACTIVATION_MARGIN_SECS, type CrankRules, type CrankToken, type ListInputsJson, type PayList, dueFrom, inFallback, listFileText, nowSecs, parseListFile, planForCaller,
@@ -249,6 +251,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     return {
       mint, programId: program.toBase58(), vault: addrOf(mint).toBase58(), auth: authOf(mint).toBase58(),
       exists: !!v, state: v ? vaultJson(v) : null,
+      // Holders are paid in this token instead of XNT (amounts in the state and lists are in its base units).
+      payout: v ? await payoutInfo(v).catch(() => null) : null,
       // When the pending list starts paying (unix seconds), if one is waiting.
       nextListAt: v && v.pendingEpoch > 0n ? v.pendingActiveAt : null,
       latestList: file ? listSummary(file.next ?? file.active) : null,
@@ -258,6 +262,21 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       crank: { on: !!crank, wallet: crank?.publicKey.toBase58() ?? null, lastPass: status.get(mint) ?? null },
       activity: activity(mint),
     };
+  }
+  /** A payout-token vault's token (from its fixed pool), cached; null for an XNT vault. */
+  const payoutCache = new Map<string, { mint: string; symbol: string; decimals: number; pool: string }>();
+  async function payoutInfo(v: Vault) {
+    if (!paysInToken(v)) return null;
+    const key = v.payoutPool.toBase58();
+    if (!payoutCache.has(key)) {
+      const p = decodePool(v.payoutPool, await conn.getAccountInfo(v.payoutPool, "confirmed"), xdex);
+      const side = p.mints[0].equals(NATIVE_MINT) ? 1 : 0;
+      const mint = p.mints[side];
+      const [mi, md] = await Promise.all([conn.getAccountInfo(mint, "confirmed"), getTokenMetadata(conn, mint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null)]);
+      const decimals = mi ? unpackMint(mint, mi, mi.owner).decimals : 9;
+      payoutCache.set(key, { mint: mint.toBase58(), symbol: md?.symbol || `${mint.toBase58().slice(0, 4)}…`, decimals, pool: key });
+    }
+    return payoutCache.get(key)!;
   }
   const listSummary = (l: VaultList | null) => (l ? { epoch: l.epoch, root: l.root, total: l.total, wallets: Object.keys(l.wallets).length,
     builtAt: l.builtAt, publishedAt: l.publishedAt ?? null, activeAt: l.activeAt ?? null, cid: l.cid ?? null, cidUrl: cidUrl(l.cid), check: listCheck(l) } : null);
@@ -313,6 +332,9 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       version: v?.version ?? null,
       // How many more pending lists the guardian (the creator) may cancel in a row (v2); null: no limit / no vault.
       cancelsLeft: v ? cancelsLeft(v) : null,
+      // Holders are paid in this token instead of XNT (null: XNT).
+      payout: v ? await payoutInfo(v).catch(() => null) : null,
+      xntHolders: v && paysInToken(v) ? v.xntHolders.toString() : null,
       ...(v3Status(v, q) ?? {}),
       activity: v ? activity(mint) : [],
       // Publisher quorum: the newest list's co-signer status and the last rejection.
@@ -330,9 +352,32 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   }
 
   // ---------- event log ----------
+  /**
+   * Payout-token vaults: XNT swapped and payout tokens received for holders so far (from the
+   * log's "holders-swap" entries), so each payout is also valued in XNT at the vault's own
+   * average swap price and the site's XNT stats keep working.
+   */
+  const swapTotals = new Map<string, { xnt: bigint; payout: bigint }>();
+  function swapTotalsOf(mint: string) {
+    let t = swapTotals.get(mint);
+    if (!t) {
+      t = { xnt: 0n, payout: 0n };
+      const f = path.join(stateDirOf(mint), "events.jsonl");
+      if (fs.existsSync(f)) {
+        for (const l of fs.readFileSync(f, "utf8").split("\n")) {
+          if (!l.includes('"holders-swap"')) continue;
+          try { const e = JSON.parse(l); t.xnt += BigInt(e.xnt ?? 0); t.payout += BigInt(e.payout ?? 0); } catch { /* a torn line */ }
+        }
+      }
+      swapTotals.set(mint, t);
+    }
+    return t;
+  }
   /** Append a confirmed transaction's events to the token's log in the distributor's shapes; `wallet` sent it. */
   function record(mint: string, v: Vault, signature: string, events: VaultEvent[], wallet: string, at?: string) {
     const payments: [string, string][] = [];
+    const tokenPayments: [string, string][] = [];
+    const inToken = paysInToken(v);
     let fallback = false;
     // Every entry names the wallet that sent the transaction (for the activity list) and, for a
     // transaction found on-chain later, when it happened.
@@ -354,8 +399,17 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
         const info = rewardTokenInfo(cfg.network, new PublicKey(e.rewardMint));
         logEvent(mint, { kind: "creator-reward", signature, xnt: e.xntIn.toString(), reward: e.rewardOut.toString(), rewardMint: e.rewardMint,
           rewardSymbol: info?.symbol ?? null, rewardDecimals: info?.decimals ?? null, vault: true });
+      } else if (e.name === "HoldersFunded") {
+        logEvent(mint, { kind: "holders-swap", signature, xnt: e.xntIn.toString(), payout: e.payoutOut.toString(), payoutMint: e.payoutMint, vault: true });
+        const st = swapTotalsOf(mint);
+        st.xnt += e.xntIn; st.payout += e.payoutOut;
       } else if (e.name === "Paid" || e.name === "FallbackPaid") {
-        payments.push([e.wallet, e.amount.toString()]);
+        if (inToken) {
+          // The token amount as paid, and its XNT value at the vault's average swap price (the site's XNT stats).
+          const st = swapTotalsOf(mint);
+          tokenPayments.push([e.wallet, e.amount.toString()]);
+          payments.push([e.wallet, (st.payout > 0n ? (e.amount * st.xnt) / st.payout : 0n).toString()]);
+        } else payments.push([e.wallet, e.amount.toString()]);
         if (e.name === "FallbackPaid") fallback = true;
       } else if (e.name === "ListPublished" && wallet !== crank?.publicKey.toBase58()) {
         // This site logs its own lists as "allocate" when it publishes them; this is someone else's.
@@ -367,7 +421,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       }
     }
     if (payments.length) {
-      logEvent(mint, { kind: "payout", signature, payments, total: payments.reduce((a, [, x]) => a + BigInt(x), 0n).toString(), vault: true, ...(fallback ? { fallback: true } : {}) });
+      logEvent(mint, { kind: "payout", signature, payments, total: payments.reduce((a, [, x]) => a + BigInt(x), 0n).toString(), vault: true, ...(fallback ? { fallback: true } : {}),
+        ...(inToken ? { tokenPayments, tokenTotal: tokenPayments.reduce((a, [, x]) => a + BigInt(x), 0n).toString(), payoutPool: v.payoutPool.toBase58() } : {}) });
     }
   }
   /** Signatures already in a token's log (steps a visitor ran are recorded once). */
@@ -811,6 +866,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       await step("add_liquidity", () => c.liquidity(t, pool!, notes));
     }
     await step("fund_creator", () => c.creator(t, notes));
+    await step("fund_holders", () => c.holders(t, notes));
     await step("rewards list", async () => {
       const now = await readVault(t.mint);
       if (!now) return;

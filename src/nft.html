@@ -349,6 +349,12 @@ function vaultPanel(d, s) {
   const now = Date.now() / 1000;
   const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
   const rows = [];
+  // A payout-token vault pays holders in that token: the vault swaps their XNT on its pool.
+  if (v.payout) {
+    rows.push([tr("Holders paid in"), el("span", {}, link(`${d.explorer}/address/${v.payout.mint}`, v.payout.symbol, "mono"),
+      el("span", { class: "muted", text: tr(" · the vault swaps the holders' XNT on its XDEX pool") }))]);
+    if (BigInt(v.xntHolders ?? "0") > 0n) rows.push([tr("Waiting to be swapped"), `${fmtUnits(v.xntHolders, 9, 6)} XNT`]);
+  }
   if (v.publisher && v.quorum) {
     // Publisher quorum: the publisher is a Squads multisig's vault; a list goes live only with `threshold` approvals.
     const q = v.quorum;
@@ -373,7 +379,7 @@ function vaultPanel(d, s) {
     rows.push([tr("Last list published"), el("span", { title: when(v.lastPublishAt), text: relTime(v.lastPublishAt) })]);
     // The active list's file on IPFS: its address is stored on-chain, so it's readable without this site.
     if (v.listCid) rows.push([tr("List file (IPFS)"), link(v.listCidUrl, `${v.listCid.slice(0, 10)}…${v.listCid.slice(-6)} ↗`, "mono")]);
-    if (BigInt(v.fallbackPaid ?? "0") > 0n) rows.push([tr("Paid in fallback"), `${fmtUnits(v.fallbackPaid, 9, 6)} XNT`]);
+    if (BigInt(v.fallbackPaid ?? "0") > 0n) rows.push([tr("Paid in fallback"), v.payout ? `${fmtUnits(v.fallbackPaid, v.payout.decimals, 6)} ${v.payout.symbol}` : `${fmtUnits(v.fallbackPaid, 9, 6)} XNT`]);
   }
   const state = !v.publisher ? el("p", { class: "vp-state muted", text: tr("This vault is upgraded to v3 on its next run (anyone can run it below).") })
     : v.fallbackActive ? el("p", { class: "vp-state warn", text: tr("Fallback active: paying from the last list. No list was published for 30 days, so anyone can pay holders their share of the last list, scaled up to all the XNT set aside for them. A new list from a publisher ends it.") })

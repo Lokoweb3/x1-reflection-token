@@ -11,6 +11,7 @@ import {
   rewardImpactBps, rewardPoolAccountsFrom, rewardTokenInfo, upgradeVaultIx, vaultJson,
   VAULT_V3_LEN, VAULT_V3_OFFSETS, VAULT_WINDOWS, appointAllowedAt, appointPublisherIx, base32Decode, base32Encode, cidFromBytes, cidToBytes, fallbackActive,
   fallbackAt, fallbackEntitled, payFallbackIx, rawCid, setPublisherIx,
+  VAULT_PAYOUT_OFFSETS, initVaultPayoutIx, paysInToken, payFallbackTokenIx, payTokenIx,
 } from "../src/taxvault.js";
 import { composeList, listFileText, parseListFile } from "../src/vault-crank.js";
 import { lockPda, MEMO_PROGRAM_ID, rewardTokensPda, rewardVaultPda } from "../src/locker.js";
@@ -26,6 +27,7 @@ test("discriminators are Anchor's sha256 prefixes of the spec's names", () => {
     ["initVault", "init_vault"], ["collect", "collect"], ["sell", "sell"], ["addLiquidity", "add_liquidity"],
     ["fundCreator", "fund_creator"], ["publishList", "publish_list"], ["cancelList", "cancel_list"], ["pay", "pay"],
     ["upgradeVault", "upgrade_vault"], ["setPublisher", "set_publisher"], ["appointPublisher", "appoint_publisher"], ["payFallback", "pay_fallback"],
+    ["initVaultPayout", "init_vault_payout"], ["fundHolders", "fund_holders"], ["payToken", "pay_token"], ["payFallbackToken", "pay_fallback_token"],
   ];
   assert.equal(Object.keys(IX).length, ixs.length);
   for (const [k, name] of ixs) assert.ok(IX[k].equals(disc(`global:${name}`)), name);
@@ -264,7 +266,7 @@ const sampleVault = (): Omit<Vault, "address"> => ({
   totalCollected: 20n, totalBurned: 21n, totalLpTokens: 22n, totalLpXnt: 23n, totalCreatorXnt: 24n, totalCrankRewards: 25n,
   createdAt: 1_780_000_000, bump: 254, authBump: 253, lastSellSlot: 123_456_789_012n,
   version: 1, cancelsInRow: 0, totalRewardOut: 0n, lastRewardSlot: 0n,
-  lastPublishAt: 0, listCid: Buffer.alloc(33), pendingCid: Buffer.alloc(33), fallbackPaid: 0n,
+  lastPublishAt: 0, listCid: Buffer.alloc(33), pendingCid: Buffer.alloc(33), fallbackPaid: 0n, payoutPool: PublicKey.default, xntHolders: 0n,
 });
 const sampleVaultV2 = (): Omit<Vault, "address"> => ({
   ...sampleVault(), rewardMint: REWARD_MINT.testnet, rewardSwapPool: REWARD_POOL.testnet, version: 2, cancelsInRow: 1, totalRewardOut: 2n ** 60n + 7n, lastRewardSlot: 987_654_321_000n,
@@ -454,8 +456,10 @@ test("program errors are named from simulation messages", () => {
   assert.equal(errorOf("custom program error: 0x1785"), "BadRewardMint"); // 6021
   assert.equal(errorOf(`{"Custom":6022}`), "PublisherActive");
   assert.equal(errorOf("custom program error: 0x1787"), "FallbackNotActive"); // 6023
-  assert.equal(errorOf(`{"Custom":6024}`), null);
-  assert.equal(ERRORS.length, 24);
+  assert.equal(errorOf(`{"Custom":6024}`), "PaysInToken");
+  assert.equal(errorOf(`{"Custom":6027}`), "BadPayoutPool");
+  assert.equal(errorOf(`{"Custom":6028}`), null);
+  assert.equal(ERRORS.length, 28);
   assert.equal(errorOf("something else"), null);
 });
 
@@ -495,6 +499,37 @@ test("Vault v3: 640 bytes, last_publish_at 498, list_cid 506, pending_cid 539, f
   assert.equal(j.listCid, cidFromBytes(v.listCid));
   assert.equal(j.fallbackPaid, (2n ** 40n + 3n).toString());
   assert.equal(vaultJson({ ...sampleVaultV2(), address: key() } as Vault).listCid, null);
+});
+
+test("Payout token: pool at 580, unswapped XNT at 612 (zero = XNT payouts, as in every older vault); instructions", () => {
+  assert.deepEqual(VAULT_PAYOUT_OFFSETS, { payoutPool: 580, xntHolders: 612, reserved: 620 });
+  const plain = decodeVault(key(), encodeVault(sampleVaultV3()));
+  assert.ok(plain.payoutPool.equals(PublicKey.default) && plain.xntHolders === 0n && !paysInToken(plain));
+  const pool = key();
+  const v = { ...sampleVaultV3(), payoutPool: pool, xntHolders: 2n ** 33n + 5n };
+  const d = encodeVault(v);
+  assert.equal(d.length, 640);
+  assert.ok(d.subarray(580, 612).equals(pool.toBuffer()));
+  assert.equal(d.readBigUInt64LE(612), 2n ** 33n + 5n);
+  assert.ok(d.subarray(620, 640).equals(Buffer.alloc(20)));
+  const back = decodeVault(key(), d);
+  assert.ok(back.payoutPool.equals(pool) && back.xntHolders === 2n ** 33n + 5n && paysInToken(back));
+  assert.equal(vaultJson({ ...back, address: key() }).payoutPool, pool.toBase58());
+
+  const program = key(), mint = key(), payer = key(), wallet = key(), payoutMint = key();
+  const p = { pool, payoutMint, payoutTokenProgram: TOKEN_PROGRAM_ID };
+  const init = initVaultPayoutIx(program, { payer, mint, pool: key(), creatorNft: key(), burnBps: 2500, lpBps: 2500, publisher: payer, guardian: payer, payout: p });
+  assert.ok(init.data.subarray(0, 8).equals(IX.initVaultPayout));
+  assert.equal(init.keys.length, 12);
+  assert.ok(init.keys[9].pubkey.equals(payoutMint) && init.keys[10].pubkey.equals(pool) && init.keys[11].pubkey.equals(TOKEN_PROGRAM_ID));
+  const proof = [crypto.randomBytes(32), crypto.randomBytes(32)];
+  const pay = payTokenIx(program, payer, mint, wallet, 1234n, proof, p);
+  assert.ok(pay.data.subarray(0, 8).equals(IX.payToken));
+  assert.equal(pay.data.readBigUInt64LE(8), 1234n);
+  assert.equal(pay.data.readUInt32LE(16), 2);
+  assert.ok(pay.keys[3].pubkey.equals(wallet) && !pay.keys[3].isWritable, "the wallet only owns the receiving account");
+  assert.ok(pay.keys[8].pubkey.equals(getAssociatedTokenAddressSync(payoutMint, wallet, true, TOKEN_PROGRAM_ID)));
+  assert.ok(payFallbackTokenIx(program, payer, mint, wallet, 1n, [], p).data.subarray(0, 8).equals(IX.payFallbackToken));
 });
 
 test("CIDs: known CIDv1 / CIDv0 strings round-trip through the program's [codec, digest]", () => {
@@ -650,6 +685,10 @@ test("the client matches lp-locker/programs/tax_vault/src/lib.rs (args, errors, 
   assert.equal(appointPublisherIx(PROGRAM, k, mint, k).data.length, 8 + fixed("appoint_publisher"));
   assert.deepEqual(argsOf("pay_fallback"), ["u64", "Vec<[u8; 32]>"]);
   assert.deepEqual(argsOf("pay"), ["u64", "Vec<[u8; 32]>"]);
+  assert.deepEqual(argsOf("pay_token"), ["u64", "Vec<[u8; 32]>"]);
+  assert.deepEqual(argsOf("pay_fallback_token"), ["u64", "Vec<[u8; 32]>"]);
+  assert.deepEqual(argsOf("init_vault_payout"), argsOf("init_vault"));
+  assert.equal(argsOf("fund_holders").length, 0);
   assert.equal(argsOf("upgrade_vault").length, 0);
   // Error codes: declaration order in `enum VaultError`.
   const errs = /pub enum VaultError \{([\s\S]*?)\n\}/.exec(src)![1].split("\n").map((l) => l.trim()).filter((l) => /^[A-Z]\w*,?$/.test(l)).map((l) => l.replace(",", ""));
@@ -658,10 +697,13 @@ test("the client matches lp-locker/programs/tax_vault/src/lib.rs (args, errors, 
   const fields = (ev: string) => new RegExp(`pub struct ${ev} \\{([\\s\\S]*?)\\n\\}`).exec(src)![1].split("\n").map((l) => /^\s*pub (\w+):/.exec(l)?.[1]).filter(Boolean);
   assert.deepEqual(fields("PublisherChanged"), ["vault", "old", "new", "by_guardian"]);
   assert.deepEqual(fields("FallbackPaid"), ["vault", "wallet", "amount", "entitled"]);
+  assert.deepEqual(fields("HoldersFunded"), ["vault", "xnt_in", "payout_out", "payout_mint"]);
   // Layout constants.
   assert.match(src, /pub const VAULT_V3_LEN: usize = 640;/);
   assert.match(src, /pub const VAULT_VERSION: u8 = 3;/);
   assert.match(src, /const LAST_PUBLISH_AT_OFFSET: usize = 498;/);
   const vaultFields = fields("Vault");
-  assert.deepEqual(vaultFields.slice(-9), ["version", "cancels_in_row", "total_reward_out", "last_reward_slot", "last_publish_at", "list_cid", "pending_cid", "fallback_paid", "reserved"]);
+  assert.deepEqual(vaultFields.slice(-11), ["version", "cancels_in_row", "total_reward_out", "last_reward_slot", "last_publish_at", "list_cid", "pending_cid", "fallback_paid",
+    "payout_pool", "xnt_holders", "reserved"]);
+  assert.match(src, /pub reserved: \[u8; 20\],/);
 });

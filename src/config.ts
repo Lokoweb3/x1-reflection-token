@@ -103,6 +103,10 @@ export interface Config {
       mainnet?: boolean;
       /** Show the "Tax Vault beta: not formally audited yet" notice on the launch form and vault panels. */
       beta?: boolean;
+      /** Offer "pay holders in another token" at launch (needs the program's init_vault_payout: v4). */
+      payoutTokens?: boolean;
+      /** Smallest XNT side of a payout token's pool a launch may use (default "10"). */
+      payoutMinPoolXnt?: string;
       /** Names for crank wallets in the vault panels' activity list, e.g. { "<address>": "GitHub crank" }. */
       labels?: Record<string, string>;
       quorum?: { multisig: string; programId?: string; labels?: Record<string, string> };

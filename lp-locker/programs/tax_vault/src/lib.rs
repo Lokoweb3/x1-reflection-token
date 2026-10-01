@@ -11,6 +11,11 @@
 //!   and an on-chain minimum output, and books the XNT pro-rata into lamport buckets held
 //!   by `auth`. The caller earns 1% of the holders' part (capped).
 //! * `add_liquidity` deposits kept tokens + LP XNT into the pool and burns every LP token.
+//! * Payout token (optional, fixed at creation with `init_vault_payout`): holders are paid
+//!   in a chosen token instead of XNT. `sell` then books the holders' XNT into `xnt_holders`;
+//!   `fund_holders` swaps it into the payout token on the vault's payout pool (impact-capped,
+//!   one swap per slot), and `pay_token` / `pay_fallback_token` pay it out. The holder pool
+//!   and every list are then counted in the payout token's units. A vault without one pays XNT.
 //! * `fund_creator` swaps the creator's XNT into the network's reward token (XNM on
 //!   testnet, USDC.X on mainnet) on XDEX with an on-chain price-impact cap and minimum
 //!   output, and deposits it into lp_locker's vesting reward vault of the pool's lock NFT.
@@ -157,82 +162,40 @@ pub mod tax_vault {
     /// Token-2022 SetAuthority before this instruction), so nobody can front-run the
     /// creation with their own publisher/guardian.
     pub fn init_vault(ctx: Context<InitVault>, burn_bps: u16, lp_bps: u16, publisher: Pubkey, guardian: Pubkey) -> Result<()> {
-        math::check_split(burn_bps, lp_bps)?;
         let a = &ctx.accounts;
-        let mint = a.mint.key();
-        let auth = a.auth.key();
-        let update_authority = check_vault_mint(&a.mint.to_account_info(), &auth)?;
-        let payer = a.payer.key();
-        require!(
-            update_authority == Some(payer) || handover_in_tx(&a.instructions.to_account_info(), &mint, &auth)?,
-            VaultError::BadAuthority
-        );
-        let pool = PoolView::read(&a.pool.to_account_info())?;
-        pool.token_side(&mint)?;
-        check_lock(&a.lock.to_account_info(), &a.creator_nft.key(), &a.pool.key())?;
-
-        // The rent-exempt reserve for auth (never promised to anyone).
-        let reserve = Rent::get()?.minimum_balance(0);
-        let have = a.auth.lamports();
-        if have < reserve {
-            system_program::transfer(
-                CpiContext::new(
-                    a.system_program.to_account_info(),
-                    system_program::Transfer { from: a.payer.to_account_info(), to: a.auth.to_account_info() },
-                ),
-                reserve - have,
-            )?;
-        }
-
-        let (pool_key, nft) = (a.pool.key(), a.creator_nft.key());
-        let now = Clock::get()?.unix_timestamp;
+        check_init(
+            burn_bps, lp_bps, &a.mint.to_account_info(), &a.auth.to_account_info(), &a.payer.to_account_info(),
+            &a.instructions.to_account_info(), &a.pool.to_account_info(), &a.lock.to_account_info(), &a.creator_nft.key(),
+            &a.system_program.to_account_info(),
+        )?;
+        let (mint, pool, nft) = (a.mint.key(), a.pool.key(), a.creator_nft.key());
+        let (bump, auth_bump) = (ctx.bumps.vault, ctx.bumps.auth);
         let v = &mut ctx.accounts.vault;
-        v.mint = mint;
-        v.pool = pool_key;
-        v.creator_nft = nft;
-        v.reward_mint = REWARD_MINT;
-        v.reward_swap_pool = REWARD_POOL;
-        v.publisher = publisher;
-        v.guardian = guardian;
-        v.burn_bps = burn_bps;
-        v.lp_bps = lp_bps;
-        v.creator_bps = CREATOR_BPS;
-        v.pending_tokens = 0;
-        v.lp_tokens = 0;
-        v.sell_lp = 0;
-        v.sell_creator = 0;
-        v.sell_holders = 0;
-        v.xnt_lp = 0;
-        v.xnt_creator = 0;
-        v.holders_funded = 0;
-        v.holders_paid = 0;
-        v.list_epoch = 0;
-        v.list_root = [0; 32];
-        v.list_total = 0;
-        v.pending_epoch = 0;
-        v.pending_root = [0; 32];
-        v.pending_total = 0;
-        v.pending_active_at = 0;
-        v.total_collected = 0;
-        v.total_burned = 0;
-        v.total_lp_tokens = 0;
-        v.total_lp_xnt = 0;
-        v.total_creator_xnt = 0;
-        v.total_crank_rewards = 0;
-        v.created_at = now;
-        v.bump = ctx.bumps.vault;
-        v.auth_bump = ctx.bumps.auth;
-        v.last_sell_slot = 0;
-        v.version = VAULT_VERSION;
-        v.cancels_in_row = 0;
-        v.total_reward_out = 0;
-        v.last_reward_slot = 0;
-        // The appoint / fallback clocks start at creation.
-        v.last_publish_at = now;
-        v.list_cid = [0; 33];
-        v.pending_cid = [0; 33];
-        v.fallback_paid = 0;
-        v.reserved = [0; 60];
+        setup_vault(v, mint, pool, nft, publisher, guardian, burn_bps, lp_bps, bump, auth_bump, Pubkey::default())?;
+        check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
+    }
+
+    /// `init_vault` for a vault that pays holders in a payout token: the payout token's
+    /// XDEX pool against wXNT is fixed here for good (every holders' swap goes through it).
+    /// The payout mint must have no freeze authority and no transfer fee / hook / delegate
+    /// (only metadata or group extensions), and differ from the tax token.
+    pub fn init_vault_payout(ctx: Context<InitVaultPayout>, burn_bps: u16, lp_bps: u16, publisher: Pubkey, guardian: Pubkey) -> Result<()> {
+        let a = &ctx.accounts;
+        check_init(
+            burn_bps, lp_bps, &a.mint.to_account_info(), &a.auth.to_account_info(), &a.payer.to_account_info(),
+            &a.instructions.to_account_info(), &a.pool.to_account_info(), &a.lock.to_account_info(), &a.creator_nft.key(),
+            &a.system_program.to_account_info(),
+        )?;
+        require_keys_neq!(a.payout_mint.key(), a.mint.key(), VaultError::BadPayoutMint);
+        require_keys_neq!(a.payout_mint.key(), native_mint::ID, VaultError::BadPayoutMint);
+        check_payout_mint(&a.payout_mint.to_account_info(), &a.payout_token_program.key())?;
+        let pool = PoolView::read(&a.payout_pool.to_account_info())?;
+        pool.pair_side(&a.payout_mint.key(), &a.payout_token_program.key()).map_err(|_| error!(VaultError::BadPayoutPool))?;
+        require!(pool.status & STATUS_SWAP_PAUSED == 0, VaultError::BadPayoutPool);
+        let (mint, pool_key, nft, payout_pool) = (a.mint.key(), a.pool.key(), a.creator_nft.key(), a.payout_pool.key());
+        let (bump, auth_bump) = (ctx.bumps.vault, ctx.bumps.auth);
+        let v = &mut ctx.accounts.vault;
+        setup_vault(v, mint, pool_key, nft, publisher, guardian, burn_bps, lp_bps, bump, auth_bump, payout_pool)?;
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
     }
 
@@ -412,7 +375,11 @@ pub mod tax_vault {
         v.sell_holders -= take.holders;
         v.xnt_lp = add(v.xnt_lp, p.lp)?;
         v.xnt_creator = add(v.xnt_creator, p.creator)?;
-        v.holders_funded = add(v.holders_funded, p.holders - p.reward)?;
+        if v.payout_pool == Pubkey::default() {
+            v.holders_funded = add(v.holders_funded, p.holders - p.reward)?;
+        } else {
+            v.xnt_holders = add(v.xnt_holders, p.holders - p.reward)?;
+        }
         v.total_crank_rewards = add(v.total_crank_rewards, p.reward)?;
         v.last_sell_slot = clock.slot;
         check_tokens(&ctx.accounts.auth_token.to_account_info(), v)?;
@@ -767,6 +734,122 @@ pub mod tax_vault {
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
     }
 
+    /// Payout-token vaults: swap (up to) the holders' XNT into the payout token on the
+    /// vault's payout pool (impact-capped like the reward swap, sharing its one-swap-per-slot
+    /// rule) and keep it in auth's payout-token account, adding it to the holder pool. The
+    /// first call opens that account; its rent comes out of the holders' XNT.
+    pub fn fund_holders(ctx: Context<FundHolders>) -> Result<()> {
+        let clock = Clock::get()?;
+        let a = &ctx.accounts;
+        let v = &a.vault;
+        require!(v.payout_pool != Pubkey::default(), VaultError::PaysInXnt);
+        require!(clock.slot > v.last_reward_slot, VaultError::OneSellPerSlot);
+        require!(v.xnt_holders > 0, VaultError::TooSmall);
+        let mint_key = v.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[v.auth_bump]];
+        let payout_mint = a.payout_mint.key();
+        let payout_program = a.payout_token_program.key();
+        check_payout_mint(&a.payout_mint.to_account_info(), &payout_program)?;
+        let pool = PoolView::read(&a.payout_pool.to_account_info())?;
+        let side = pool.pair_side(&payout_mint, &payout_program).map_err(|_| error!(VaultError::BadPayoutPool))?;
+        require!(pool.status & STATUS_SWAP_PAUSED == 0, VaultError::BadPool);
+        require_keys_eq!(pool.amm_config, a.payout_amm_config.key(), VaultError::WrongAccount);
+        require_keys_eq!(pool.observation, a.payout_observation.key(), VaultError::WrongAccount);
+        let reserve_xnt = pool.reserve(1 - side, &a.payout_pool_wxnt_vault.to_account_info())?;
+        let reserve_payout = pool.reserve(side, &a.payout_pool_payout_vault.to_account_info())?;
+        let trade_fee_rate = read_trade_fee_rate(&a.payout_amm_config.to_account_info())?;
+
+        let auth = a.auth.to_account_info();
+        let caller = a.caller.to_account_info();
+        let sys = a.system_program.to_account_info();
+        let tok = a.token_program.to_account_info();
+        let ptok = a.payout_token_program.to_account_info();
+        let ata_prog = a.associated_token_program.to_account_info();
+        let auth_wxnt = a.auth_wxnt.to_account_info();
+        let auth_payout = a.auth_payout.to_account_info();
+
+        // auth's payout-token account stays open for good; its rent comes from the holders' XNT.
+        let rent_payout = create_ata(&ata_prog, &caller, &auth_payout, &auth, &a.payout_mint.to_account_info(), &sys, &ptok)?;
+        let available = v.xnt_holders.checked_sub(rent_payout).ok_or(VaultError::TooSmall)?;
+        pay_from_auth(&sys, &auth, &caller, rent_payout, auth_seeds)?;
+        let xnt_in = math::reward_swap_in(available, reserve_xnt, trade_fee_rate)?;
+        require!(xnt_in > 0, VaultError::TooSmall);
+        let expected = math::cpmm_out(xnt_in, reserve_xnt, reserve_payout, trade_fee_rate)?;
+        let min_out = math::min_out(expected)?;
+        require!(min_out > 0, VaultError::TooSmall);
+
+        let rent_wxnt = create_ata(&ata_prog, &caller, &auth_wxnt, &auth, &a.native_mint.to_account_info(), &sys, &tok)?;
+        pay_from_auth(&sys, &auth, &auth_wxnt, xnt_in, auth_seeds)?;
+        token::sync_native(CpiContext::new(tok.clone(), token::SyncNative { account: auth_wxnt.clone() }))?;
+        let wxnt_before = token_amount(&auth_wxnt, &token::ID)?;
+        let payout_before = token_amount(&auth_payout, &payout_program)?;
+
+        // XDEX swap_base_input XNT -> payout token (same account order as `fund_creator`).
+        let mut data = Vec::with_capacity(24);
+        data.extend_from_slice(&XDEX_SWAP_BASE_INPUT_DISC);
+        data.extend_from_slice(&xnt_in.to_le_bytes());
+        data.extend_from_slice(&min_out.to_le_bytes());
+        let ix = Instruction {
+            program_id: XDEX_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(auth.key(), true),
+                AccountMeta::new_readonly(a.xdex_authority.key(), false),
+                AccountMeta::new_readonly(a.payout_amm_config.key(), false),
+                AccountMeta::new(a.payout_pool.key(), false),
+                AccountMeta::new(auth_wxnt.key(), false),
+                AccountMeta::new(auth_payout.key(), false),
+                AccountMeta::new(a.payout_pool_wxnt_vault.key(), false),
+                AccountMeta::new(a.payout_pool_payout_vault.key(), false),
+                AccountMeta::new_readonly(tok.key(), false),
+                AccountMeta::new_readonly(payout_program, false),
+                AccountMeta::new_readonly(a.native_mint.key(), false),
+                AccountMeta::new_readonly(payout_mint, false),
+                AccountMeta::new(a.payout_observation.key(), false),
+            ],
+            data,
+        };
+        invoke_signed(
+            &ix,
+            &[
+                auth.clone(),
+                a.xdex_authority.to_account_info(),
+                a.payout_amm_config.to_account_info(),
+                a.payout_pool.to_account_info(),
+                auth_wxnt.clone(),
+                auth_payout.clone(),
+                a.payout_pool_wxnt_vault.to_account_info(),
+                a.payout_pool_payout_vault.to_account_info(),
+                tok.clone(),
+                ptok.clone(),
+                a.native_mint.to_account_info(),
+                a.payout_mint.to_account_info(),
+                a.payout_observation.to_account_info(),
+                a.xdex_program.to_account_info(),
+            ],
+            &[auth_seeds],
+        )?;
+        let spent = wxnt_before.checked_sub(token_amount(&auth_wxnt, &token::ID)?).ok_or(VaultError::MathOverflow)?;
+        require!(spent == xnt_in, VaultError::MathOverflow);
+        let out = token_amount(&auth_payout, &payout_program)?.checked_sub(payout_before).ok_or(VaultError::MathOverflow)?;
+        require!(out >= min_out, VaultError::TooSmall);
+
+        token::close_account(CpiContext::new_with_signer(
+            tok,
+            token::CloseAccount { account: auth_wxnt.clone(), destination: auth.clone(), authority: auth.clone() },
+            &[auth_seeds],
+        ))?;
+        require!(auth_wxnt.lamports() == 0, VaultError::WrongAccount);
+        pay_from_auth(&sys, &auth, &caller, rent_wxnt, auth_seeds)?;
+
+        let v = &mut ctx.accounts.vault;
+        v.xnt_holders -= add(xnt_in, rent_payout)?;
+        v.holders_funded = add(v.holders_funded, out)?;
+        v.last_reward_slot = clock.slot;
+        check_payout_tokens(&ctx.accounts.auth_payout.to_account_info(), &payout_program, v)?;
+        emit!(HoldersFunded { vault: v.key(), xnt_in, payout_out: out, payout_mint });
+        check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
+    }
+
     /// Upgrade a 480-byte v1 or 552-byte v2 vault to the 640-byte v3 layout in place
     /// (anyone; the payer pays the extra rent). A v1 vault's creator reward switches to the
     /// network's reward token; the appoint / fallback clocks start now.
@@ -872,91 +955,274 @@ pub mod tax_vault {
         Ok(())
     }
 
-    /// Pay `wallet` its `cumulative` amount from the active list minus what it was paid.
-    pub fn pay(mut ctx: Context<Pay>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let accs = &mut ctx.accounts;
-        let wallet = accs.wallet.key();
-        require_keys_neq!(wallet, accs.auth.key(), VaultError::WrongAccount);
-        let v = &mut accs.vault;
-        activate_if_due(v, now);
-        require!(v.list_epoch > 0, VaultError::BadProof);
-        let vault_key = v.key();
-        require!(verify_proof(&proof, &v.list_root, vault_leaf(&vault_key, &wallet, cumulative)), VaultError::BadProof);
-
-        let rec = &mut accs.record;
-        if rec.vault == Pubkey::default() {
-            rec.vault = vault_key;
-            rec.wallet = wallet;
-            rec.paid = 0;
-            rec.bump = ctx.bumps.record;
-        }
-        require!(cumulative > rec.paid, VaultError::NothingToPay);
-        let amount = cumulative - rec.paid;
-        let paid_total = add(v.holders_paid, amount)?;
-        // A list can only divide what it allocated (and list_total <= holders_funded).
-        require!(paid_total <= v.list_total && paid_total <= v.holders_funded, VaultError::OverFunded);
-
-        let mint_key = v.mint;
-        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[v.auth_bump]];
-        pay_from_auth(
-            &accs.system_program.to_account_info(),
-            &accs.auth.to_account_info(),
-            &accs.wallet.to_account_info(),
-            amount,
-            auth_seeds,
-        )?;
-        rec.paid = cumulative;
-        v.holders_paid = paid_total;
-        emit!(Paid { vault: vault_key, wallet, amount, cumulative });
+    /// Pay `wallet` its `cumulative` amount from the active list minus what it was paid (XNT vaults).
+    pub fn pay(ctx: Context<Pay>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
+        let accs = ctx.accounts;
+        require!(accs.vault.payout_pool == Pubkey::default(), VaultError::PaysInToken);
+        let amount = book_pay(&mut accs.vault, &mut accs.record, ctx.bumps.record, &accs.wallet.key(), &accs.auth.key(), cumulative, &proof, false)?;
+        let mint_key = accs.vault.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[accs.vault.auth_bump]];
+        pay_from_auth(&accs.system_program.to_account_info(), &accs.auth.to_account_info(), &accs.wallet.to_account_info(), amount, auth_seeds)?;
         check_solvent(&accs.auth.to_account_info(), &accs.vault)
     }
 
     /// Fallback (no list published for FALLBACK_AFTER_SECS): pay `wallet` its share of the
     /// last active list scaled up to everything funded so far,
     /// `floor(cumulative * holders_funded / list_total)`, minus what it was paid. Same
-    /// accounts as `pay`.
-    pub fn pay_fallback(mut ctx: Context<Pay>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let accs = &mut ctx.accounts;
-        let wallet = accs.wallet.key();
-        require_keys_neq!(wallet, accs.auth.key(), VaultError::WrongAccount);
-        let v = &mut accs.vault;
-        activate_if_due(v, now);
+    /// accounts as `pay` (XNT vaults).
+    pub fn pay_fallback(ctx: Context<Pay>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
+        let accs = ctx.accounts;
+        require!(accs.vault.payout_pool == Pubkey::default(), VaultError::PaysInToken);
+        let amount = book_pay(&mut accs.vault, &mut accs.record, ctx.bumps.record, &accs.wallet.key(), &accs.auth.key(), cumulative, &proof, true)?;
+        let mint_key = accs.vault.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[accs.vault.auth_bump]];
+        pay_from_auth(&accs.system_program.to_account_info(), &accs.auth.to_account_info(), &accs.wallet.to_account_info(), amount, auth_seeds)?;
+        check_solvent(&accs.auth.to_account_info(), &accs.vault)
+    }
+
+    /// `pay` for a payout-token vault: the amount (in payout-token units) goes from auth's
+    /// payout account to the wallet's, opened here if needed (paid by `payer`).
+    pub fn pay_token(ctx: Context<PayToken>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
+        pay_token_inner(ctx, cumulative, proof, false)
+    }
+
+    /// `pay_fallback` for a payout-token vault (same accounts as `pay_token`).
+    pub fn pay_fallback_token(ctx: Context<PayToken>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
+        pay_token_inner(ctx, cumulative, proof, true)
+    }
+}
+
+/// Check a payout proof against the active list (or, in fallback, the scaled-up share),
+/// book it in the wallet's record and the vault, and return the amount to pay now.
+#[allow(clippy::too_many_arguments)]
+fn book_pay(
+    v: &mut Vault,
+    rec: &mut PaidRecord,
+    record_bump: u8,
+    wallet: &Pubkey,
+    auth: &Pubkey,
+    cumulative: u64,
+    proof: &[[u8; 32]],
+    fallback: bool,
+) -> Result<u64> {
+    let now = Clock::get()?.unix_timestamp;
+    require_keys_neq!(*wallet, *auth, VaultError::WrongAccount);
+    activate_if_due(v, now);
+    if fallback {
         math::check_fallback(v.list_epoch, v.pending_epoch, v.last_publish_at, now)?;
-        let vault_key = v.key();
-        require!(verify_proof(&proof, &v.list_root, vault_leaf(&vault_key, &wallet, cumulative)), VaultError::BadProof);
-
-        let rec = &mut accs.record;
-        if rec.vault == Pubkey::default() {
-            rec.vault = vault_key;
-            rec.wallet = wallet;
-            rec.paid = 0;
-            rec.bump = ctx.bumps.record;
-        }
+    } else {
+        require!(v.list_epoch > 0, VaultError::BadProof);
+    }
+    let vault_key = vault_pda(&v.mint, v.bump)?;
+    require!(verify_proof(proof, &v.list_root, vault_leaf(&vault_key, wallet, cumulative)), VaultError::BadProof);
+    if rec.vault == Pubkey::default() {
+        rec.vault = vault_key;
+        rec.wallet = *wallet;
+        rec.paid = 0;
+        rec.bump = record_bump;
+    }
+    if fallback {
         let f = math::fallback_pay(cumulative, v.holders_funded, v.list_total, rec.paid, v.holders_paid)?;
-
-        let mint_key = v.mint;
-        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[v.auth_bump]];
-        pay_from_auth(
-            &accs.system_program.to_account_info(),
-            &accs.auth.to_account_info(),
-            &accs.wallet.to_account_info(),
-            f.amount,
-            auth_seeds,
-        )?;
         rec.paid = f.entitled;
         v.holders_paid = add(v.holders_paid, f.amount)?;
         v.fallback_paid = add(v.fallback_paid, f.amount)?;
-        emit!(FallbackPaid { vault: vault_key, wallet, amount: f.amount, entitled: f.entitled });
-        check_solvent(&accs.auth.to_account_info(), &accs.vault)
+        emit!(FallbackPaid { vault: vault_key, wallet: *wallet, amount: f.amount, entitled: f.entitled });
+        Ok(f.amount)
+    } else {
+        require!(cumulative > rec.paid, VaultError::NothingToPay);
+        let amount = cumulative - rec.paid;
+        let paid_total = add(v.holders_paid, amount)?;
+        // A list can only divide what it allocated (and list_total <= holders_funded).
+        require!(paid_total <= v.list_total && paid_total <= v.holders_funded, VaultError::OverFunded);
+        rec.paid = cumulative;
+        v.holders_paid = paid_total;
+        emit!(Paid { vault: vault_key, wallet: *wallet, amount, cumulative });
+        Ok(amount)
     }
+}
+
+fn pay_token_inner(ctx: Context<PayToken>, cumulative: u64, proof: Vec<[u8; 32]>, fallback: bool) -> Result<()> {
+    let accs = ctx.accounts;
+    require!(accs.vault.payout_pool != Pubkey::default(), VaultError::PaysInXnt);
+    let payout_mint = accs.payout_mint.key();
+    let payout_program = accs.payout_token_program.key();
+    // The payout mint is the payout pool's non-wXNT side.
+    let pool = PoolView::read(&accs.payout_pool.to_account_info())?;
+    pool.pair_side(&payout_mint, &payout_program).map_err(|_| error!(VaultError::BadPayoutPool))?;
+    let amount = book_pay(&mut accs.vault, &mut accs.record, ctx.bumps.record, &accs.wallet.key(), &accs.auth.key(), cumulative, &proof, fallback)?;
+
+    let mint_key = accs.vault.mint;
+    let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[accs.vault.auth_bump]];
+    let ptok = accs.payout_token_program.to_account_info();
+    create_ata(
+        &accs.associated_token_program.to_account_info(),
+        &accs.payer.to_account_info(),
+        &accs.wallet_payout.to_account_info(),
+        &accs.wallet.to_account_info(),
+        &accs.payout_mint.to_account_info(),
+        &accs.system_program.to_account_info(),
+        &ptok,
+    )?;
+    let decimals = {
+        let d = accs.payout_mint.try_borrow_data()?;
+        StateWithExtensions::<MintState>::unpack(&d).map_err(|_| error!(VaultError::BadPayoutMint))?.base.decimals
+    };
+    let before = token_amount(&accs.wallet_payout.to_account_info(), &payout_program)?;
+    token_interface::transfer_checked(
+        CpiContext::new_with_signer(
+            ptok,
+            token_interface::TransferChecked {
+                from: accs.auth_payout.to_account_info(),
+                mint: accs.payout_mint.to_account_info(),
+                to: accs.wallet_payout.to_account_info(),
+                authority: accs.auth.to_account_info(),
+            },
+            &[auth_seeds],
+        ),
+        amount,
+        decimals,
+    )?;
+    // The wallet receives exactly the amount (no fee on the payout token).
+    let got = token_amount(&accs.wallet_payout.to_account_info(), &payout_program)?.checked_sub(before).ok_or(VaultError::MathOverflow)?;
+    require!(got == amount, VaultError::BadPayoutMint);
+    check_payout_tokens(&accs.auth_payout.to_account_info(), &payout_program, &accs.vault)?;
+    check_solvent(&accs.auth.to_account_info(), &accs.vault)
 }
 
 // ---------- Helpers ----------
 
 fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b).ok_or_else(|| error!(VaultError::MathOverflow))
+}
+
+/// This program's ["vault", mint] PDA with its stored bump.
+fn vault_pda(mint: &Pubkey, bump: u8) -> Result<Pubkey> {
+    Pubkey::create_program_address(&[b"vault", mint.as_ref(), &[bump]], &crate::ID).map_err(|_| error!(VaultError::WrongAccount))
+}
+
+/// The checks every new vault passes (`init_vault` / `init_vault_payout`), and auth's
+/// rent-exempt reserve (never promised to anyone), paid by `payer` if missing.
+#[allow(clippy::too_many_arguments)]
+fn check_init<'info>(
+    burn_bps: u16,
+    lp_bps: u16,
+    mint: &AccountInfo<'info>,
+    auth: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    instructions: &AccountInfo<'info>,
+    pool: &AccountInfo<'info>,
+    lock: &AccountInfo<'info>,
+    creator_nft: &Pubkey,
+    system: &AccountInfo<'info>,
+) -> Result<()> {
+    math::check_split(burn_bps, lp_bps)?;
+    let update_authority = check_vault_mint(mint, auth.key)?;
+    require!(
+        update_authority == Some(*payer.key) || handover_in_tx(instructions, mint.key, auth.key)?,
+        VaultError::BadAuthority
+    );
+    PoolView::read(pool)?.token_side(mint.key)?;
+    check_lock(lock, creator_nft, pool.key)?;
+    let reserve = Rent::get()?.minimum_balance(0);
+    let have = auth.lamports();
+    if have < reserve {
+        system_program::transfer(
+            CpiContext::new(system.clone(), system_program::Transfer { from: payer.clone(), to: auth.clone() }),
+            reserve - have,
+        )?;
+    }
+    Ok(())
+}
+
+/// A new vault's fields; `payout_pool` = Pubkey::default() pays holders in XNT.
+#[allow(clippy::too_many_arguments)]
+fn setup_vault(
+    v: &mut Vault,
+    mint: Pubkey,
+    pool: Pubkey,
+    creator_nft: Pubkey,
+    publisher: Pubkey,
+    guardian: Pubkey,
+    burn_bps: u16,
+    lp_bps: u16,
+    bump: u8,
+    auth_bump: u8,
+    payout_pool: Pubkey,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    v.mint = mint;
+    v.pool = pool;
+    v.creator_nft = creator_nft;
+    v.reward_mint = REWARD_MINT;
+    v.reward_swap_pool = REWARD_POOL;
+    v.publisher = publisher;
+    v.guardian = guardian;
+    v.burn_bps = burn_bps;
+    v.lp_bps = lp_bps;
+    v.creator_bps = CREATOR_BPS;
+    v.pending_tokens = 0;
+    v.lp_tokens = 0;
+    v.sell_lp = 0;
+    v.sell_creator = 0;
+    v.sell_holders = 0;
+    v.xnt_lp = 0;
+    v.xnt_creator = 0;
+    v.holders_funded = 0;
+    v.holders_paid = 0;
+    v.list_epoch = 0;
+    v.list_root = [0; 32];
+    v.list_total = 0;
+    v.pending_epoch = 0;
+    v.pending_root = [0; 32];
+    v.pending_total = 0;
+    v.pending_active_at = 0;
+    v.total_collected = 0;
+    v.total_burned = 0;
+    v.total_lp_tokens = 0;
+    v.total_lp_xnt = 0;
+    v.total_creator_xnt = 0;
+    v.total_crank_rewards = 0;
+    v.created_at = now;
+    v.bump = bump;
+    v.auth_bump = auth_bump;
+    v.last_sell_slot = 0;
+    v.version = VAULT_VERSION;
+    v.cancels_in_row = 0;
+    v.total_reward_out = 0;
+    v.last_reward_slot = 0;
+    // The appoint / fallback clocks start at creation.
+    v.last_publish_at = now;
+    v.list_cid = [0; 33];
+    v.pending_cid = [0; 33];
+    v.fallback_paid = 0;
+    v.payout_pool = payout_pool;
+    v.xnt_holders = 0;
+    v.reserved = [0; 20];
+    Ok(())
+}
+
+/// A payout token: a mint of `program` (SPL Token or Token-2022) with no freeze authority
+/// and only metadata / group extensions (no transfer fee, hook, delegate or pause), so the
+/// vault's payout balance can't be frozen, taxed or moved by anyone else.
+fn check_payout_mint(mint: &AccountInfo, program: &Pubkey) -> Result<()> {
+    require!(*program == token::ID || *program == token_2022::ID, VaultError::BadPayoutMint);
+    require_keys_eq!(*mint.owner, *program, VaultError::BadPayoutMint);
+    let d = mint.try_borrow_data()?;
+    payout_mint_ok(&d)
+}
+
+pub fn payout_mint_ok(data: &[u8]) -> Result<()> {
+    reward_mint_ok(data).map_err(|_| error!(VaultError::BadPayoutMint))?;
+    let state = StateWithExtensions::<MintState>::unpack(data).map_err(|_| error!(VaultError::BadPayoutMint))?;
+    require!(state.base.freeze_authority.is_none(), VaultError::BadPayoutMint);
+    Ok(())
+}
+
+/// auth's payout-token account holds at least what the holders are still owed.
+fn check_payout_tokens(auth_payout: &AccountInfo, program: &Pubkey, v: &Vault) -> Result<()> {
+    let owed = v.holders_funded.checked_sub(v.holders_paid).ok_or(VaultError::Insolvent)?;
+    require!(token_amount(auth_payout, program)? >= owed, VaultError::Insolvent);
+    Ok(())
 }
 
 /// A pending list whose time has come becomes the active one.
@@ -975,10 +1241,12 @@ fn activate_if_due(v: &mut Vault, now: i64) {
     }
 }
 
-/// XNT promised by the vault (lamports that must stay in auth).
+/// XNT promised by the vault (lamports that must stay in auth). A payout-token vault owes
+/// its holders in tokens (checked separately) and only the XNT not yet swapped here.
 pub fn promised(v: &Vault) -> Result<u64> {
     let owed = v.holders_funded.checked_sub(v.holders_paid).ok_or(VaultError::Insolvent)?;
-    add(add(v.xnt_lp, v.xnt_creator)?, owed)
+    let holders = if v.payout_pool == Pubkey::default() { owed } else { v.xnt_holders };
+    add(add(v.xnt_lp, v.xnt_creator)?, holders)
 }
 
 /// The lamport invariant: auth covers every bucket plus its own rent-exempt reserve.
@@ -1615,10 +1883,17 @@ pub struct Vault {
     pub list_cid: [u8; 33],
     /// IPFS address of the pending list file.
     pub pending_cid: [u8; 33],
-    /// XNT paid by `pay_fallback`, ever.
+    /// Paid by `pay_fallback`, ever (in the holder pool's unit).
     pub fallback_paid: u64,
+    // ----- payout token (offset 580, over v3 reserved bytes; zero in older vaults) -----
+    /// The payout token's XDEX pool against wXNT, fixed at creation; Pubkey::default() =
+    /// holders are paid in XNT. With a payout token, holders_funded / holders_paid / list
+    /// totals / PaidRecord.paid are in its base units.
+    pub payout_pool: Pubkey,
+    /// Holders' XNT not yet swapped into the payout token (payout-token vaults only).
+    pub xnt_holders: u64,
     /// Future use (zero).
-    pub reserved: [u8; 60],
+    pub reserved: [u8; 20],
 }
 
 impl Discriminator for Vault {
@@ -1690,6 +1965,34 @@ pub struct InitVault<'info> {
     /// CHECK: the instructions sysvar (handover_in_tx).
     #[account(address = ix_sysvar::ID @ VaultError::WrongAccount)]
     pub instructions: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct InitVaultPayout<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: validated in check_vault_mint.
+    pub mint: UncheckedAccount<'info>,
+    #[account(init, payer = payer, space = 8 + Vault::INIT_SPACE, seeds = [b"vault", mint.key().as_ref()], bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"auth", mint.key().as_ref()], bump)]
+    pub auth: SystemAccount<'info>,
+    /// CHECK: XDEX pool, checked in PoolView::read / token_side.
+    pub pool: UncheckedAccount<'info>,
+    /// CHECK: lp_locker PDA(["lock", creator_nft]), checked in check_lock.
+    pub lock: UncheckedAccount<'info>,
+    /// CHECK: the lock's NFT mint (check_lock).
+    pub creator_nft: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    /// CHECK: the instructions sysvar (handover_in_tx).
+    #[account(address = ix_sysvar::ID @ VaultError::WrongAccount)]
+    pub instructions: UncheckedAccount<'info>,
+    /// CHECK: the payout token (check_payout_mint).
+    pub payout_mint: UncheckedAccount<'info>,
+    /// CHECK: the payout token's XDEX pool against wXNT (PoolView::read / pair_side).
+    pub payout_pool: UncheckedAccount<'info>,
+    /// The payout mint's token program (SPL Token or Token-2022).
+    pub payout_token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -1867,6 +2170,51 @@ pub struct FundCreator<'info> {
 }
 
 #[derive(Accounts)]
+pub struct FundHolders<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    /// CHECK: ATA(auth, NATIVE_MINT, SPL Token), created and closed here.
+    #[account(mut, address = ata(&auth.key(), &native_mint::ID, &token::ID) @ VaultError::WrongAccount)]
+    pub auth_wxnt: UncheckedAccount<'info>,
+    /// CHECK: the payout token (check_payout_mint; must be the payout pool's other side).
+    pub payout_mint: UncheckedAccount<'info>,
+    /// CHECK: ATA(auth, payout_mint, payout_token_program), created here once and kept.
+    #[account(mut, address = ata(&auth.key(), &payout_mint.key(), &payout_token_program.key()) @ VaultError::WrongAccount)]
+    pub auth_payout: UncheckedAccount<'info>,
+    /// CHECK: the vault's payout pool (layout checked in PoolView::read).
+    #[account(mut, address = vault.payout_pool @ VaultError::WrongAccount)]
+    pub payout_pool: UncheckedAccount<'info>,
+    /// CHECK: must be the payout pool's amm config (checked in the handler).
+    pub payout_amm_config: UncheckedAccount<'info>,
+    /// CHECK: XDEX vault/LP authority PDA; XDEX verifies it.
+    pub xdex_authority: UncheckedAccount<'info>,
+    /// CHECK: the payout pool's payout-token vault (PoolView::reserve).
+    #[account(mut)]
+    pub payout_pool_payout_vault: UncheckedAccount<'info>,
+    /// CHECK: the payout pool's wXNT vault (PoolView::reserve).
+    #[account(mut)]
+    pub payout_pool_wxnt_vault: UncheckedAccount<'info>,
+    /// CHECK: the payout pool's observation account (checked in the handler).
+    #[account(mut)]
+    pub payout_observation: UncheckedAccount<'info>,
+    /// CHECK: the XDEX program this build targets.
+    #[account(address = XDEX_PROGRAM_ID @ VaultError::WrongAccount)]
+    pub xdex_program: UncheckedAccount<'info>,
+    /// CHECK: wrapped XNT mint.
+    #[account(address = native_mint::ID @ VaultError::WrongAccount)]
+    pub native_mint: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+    /// The payout mint's token program (SPL Token or Token-2022).
+    pub payout_token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct UpgradeVault<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -1924,6 +2272,39 @@ pub struct Pay<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts of `pay_token` and `pay_fallback_token`.
+#[derive(Accounts)]
+pub struct PayToken<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    /// CHECK: any wallet; it owns the account that receives the payout.
+    pub wallet: UncheckedAccount<'info>,
+    #[account(
+        init_if_needed, payer = payer, space = 8 + PaidRecord::INIT_SPACE,
+        seeds = [b"paid", vault.key().as_ref(), wallet.key().as_ref()], bump,
+    )]
+    pub record: Box<Account<'info, PaidRecord>>,
+    /// CHECK: the vault's payout pool (read to check the payout mint).
+    #[account(address = vault.payout_pool @ VaultError::WrongAccount)]
+    pub payout_pool: UncheckedAccount<'info>,
+    /// CHECK: the payout token: the payout pool's non-wXNT side (checked in the handler).
+    pub payout_mint: UncheckedAccount<'info>,
+    /// CHECK: ATA(auth, payout_mint, payout_token_program).
+    #[account(mut, address = ata(&auth.key(), &payout_mint.key(), &payout_token_program.key()) @ VaultError::WrongAccount)]
+    pub auth_payout: UncheckedAccount<'info>,
+    /// CHECK: ATA(wallet, payout_mint, payout_token_program), created here if needed.
+    #[account(mut, address = ata(&wallet.key(), &payout_mint.key(), &payout_token_program.key()) @ VaultError::WrongAccount)]
+    pub wallet_payout: UncheckedAccount<'info>,
+    /// The payout mint's token program (SPL Token or Token-2022).
+    pub payout_token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
 // ---------- Events ----------
 
 #[event]
@@ -1960,6 +2341,16 @@ pub struct CreatorFunded {
     /// Reward tokens deposited into the lock NFT's reward vault.
     pub reward_out: u64,
     pub reward_mint: Pubkey,
+}
+
+#[event]
+pub struct HoldersFunded {
+    pub vault: Pubkey,
+    /// Holders' XNT swapped.
+    pub xnt_in: u64,
+    /// Payout tokens added to the holder pool.
+    pub payout_out: u64,
+    pub payout_mint: Pubkey,
 }
 
 #[event]
@@ -2053,6 +2444,14 @@ pub enum VaultError {
     PublisherActive,
     #[msg("Fallback payments start only after a long time without a published list")]
     FallbackNotActive,
+    #[msg("This vault pays holders in its payout token: use pay_token / pay_fallback_token")]
+    PaysInToken,
+    #[msg("This vault pays holders in XNT")]
+    PaysInXnt,
+    #[msg("Payout token must have no freeze authority and no transfer fee, hook, delegate or pause, and differ from the tax token and XNT")]
+    BadPayoutMint,
+    #[msg("Payout pool must be the payout token's XDEX pool against wXNT, with swaps open")]
+    BadPayoutPool,
 }
 
 #[cfg(test)]
@@ -2274,7 +2673,7 @@ mod tests {
             total_burned: 0, total_lp_tokens: 0, total_lp_xnt: 0, total_creator_xnt: 0, total_crank_rewards: 0,
             created_at: 0, bump: 0, auth_bump: 0, last_sell_slot: 0, version: VAULT_VERSION, cancels_in_row: 0,
             total_reward_out: 0, last_reward_slot: 0, last_publish_at: 0, list_cid: [0; 33], pending_cid: [0; 33],
-            fallback_paid: 0, reserved: [0; 60],
+            fallback_paid: 0, payout_pool: Pubkey::default(), xnt_holders: 0, reserved: [0; 20],
         }
     }
 
@@ -2319,7 +2718,7 @@ mod tests {
             total_burned: 0x22, total_lp_tokens: 0x23, total_lp_xnt: 0x24, total_creator_xnt: 0x25,
             total_crank_rewards: 0x26, created_at: 0x27, bump: 0x28, auth_bump: 0x29, last_sell_slot: 0x2a,
             version: VAULT_VERSION, cancels_in_row: 0x2b, total_reward_out: 0x2c, last_reward_slot: 0x2d,
-            last_publish_at: 0x2f, list_cid: [0x30; 33], pending_cid: [0x31; 33], fallback_paid: 0x32, reserved: [0x2e; 60],
+            last_publish_at: 0x2f, list_cid: [0x30; 33], pending_cid: [0x31; 33], fallback_paid: 0x32, payout_pool: Pubkey::new_from_array([0x2e; 32]), xnt_holders: 0x2e2e2e2e2e2e2e2e, reserved: [0x2e; 20],
         }
     }
 
@@ -2389,7 +2788,7 @@ mod tests {
         assert_eq!((v.reward_mint, v.reward_swap_pool), (REWARD_MINT, REWARD_POOL));
         assert_eq!((v.xnt_creator, v.holders_funded, v.list_root, v.last_sell_slot, v.bump, v.auth_bump), (0x17, 0x18, [0x1b; 32], 0x2a, 0x28, 0x29));
         assert_eq!((v.version, v.cancels_in_row, v.total_reward_out, v.last_reward_slot), (3, 0, 0, 0));
-        assert_eq!((v.last_publish_at, v.list_cid, v.pending_cid, v.fallback_paid, v.reserved), (1_234_567, [0; 33], [0; 33], 0, [0; 60]));
+        assert_eq!((v.last_publish_at, v.list_cid, v.pending_cid, v.fallback_paid, v.payout_pool, v.xnt_holders, v.reserved), (1_234_567, [0; 33], [0; 33], 0, Pubkey::default(), 0, [0; 20]));
         // Upgrading needs exactly a 640-byte buffer with the vault discriminator.
         assert!(upgrade_layout(&mut v1.clone(), VAULT_V1_LEN, 0).is_err());
         let mut other = v1.clone();
@@ -2420,7 +2819,7 @@ mod tests {
         assert_eq!((v.reward_mint, v.reward_swap_pool), (f.reward_mint, f.reward_swap_pool));
         assert_eq!((v.cancels_in_row, v.total_reward_out, v.last_reward_slot), (0x2b, 0x2c, 0x2d));
         assert_eq!((v.pending_epoch, v.pending_root, v.pending_total, v.pending_active_at), (0x1d, [0x1e; 32], 0x1f, 0x20));
-        assert_eq!((v.version, v.last_publish_at, v.list_cid, v.pending_cid, v.fallback_paid, v.reserved), (3, -5, [0; 33], [0; 33], 0, [0; 60]));
+        assert_eq!((v.version, v.last_publish_at, v.list_cid, v.pending_cid, v.fallback_paid, v.payout_pool, v.xnt_holders, v.reserved), (3, -5, [0; 33], [0; 33], 0, Pubkey::default(), 0, [0; 20]));
         // A 552-byte account whose version byte isn't 2 is refused.
         let mut bad = v2.clone();
         bad[480] = 3;
@@ -2604,5 +3003,40 @@ mod tests {
         assert!(reward_mint_ok(&plain).is_ok());
         assert!(reward_mint_ok(&[0u8; 10]).is_err());
         assert!(reward_mint_ok(&vec![0u8; MintState::LEN]).is_err());
+
+        // Payout tokens: the same extension rules, and no freeze authority either.
+        assert!(payout_mint_ok(&plain).is_ok());
+        assert!(payout_mint_ok(&mint_with(&[ExtensionType::MetadataPointer])).is_ok());
+        assert_eq!(payout_mint_ok(&mint_with(&[ExtensionType::TransferFeeConfig])).unwrap_err(), error!(VaultError::BadPayoutMint));
+        let mut frozen = vec![0u8; MintState::LEN];
+        MintState { decimals: 6, is_initialized: true, supply: 1, freeze_authority: COption::Some(Pubkey::new_unique()), ..Default::default() }
+            .pack_into_slice(&mut frozen);
+        assert!(reward_mint_ok(&frozen).is_ok(), "the creator reward token may have one (USDC.X does)");
+        assert_eq!(payout_mint_ok(&frozen).unwrap_err(), error!(VaultError::BadPayoutMint));
+    }
+
+    #[test]
+    fn payout_fields_and_what_auth_must_hold() {
+        // The payout fields sit in the v3 reserved bytes: 580 pool, 612 unswapped XNT, 620.. reserved.
+        let mut v = filled();
+        v.payout_pool = Pubkey::new_from_array([0x51; 32]);
+        v.xnt_holders = 0x52;
+        let mut buf = Vec::new();
+        v.try_serialize(&mut buf).unwrap();
+        assert_eq!(buf.len(), VAULT_V3_LEN);
+        assert_eq!(&buf[580..612], &[0x51; 32]);
+        assert_eq!(u64::from_le_bytes(buf[612..620].try_into().unwrap()), 0x52);
+        assert_eq!(&buf[620..640], &[0x2e; 20]);
+
+        // XNT vault: auth holds the LP and creator XNT plus what holders are still owed.
+        let mut v = filled();
+        v.payout_pool = Pubkey::default();
+        (v.xnt_lp, v.xnt_creator, v.holders_funded, v.holders_paid, v.xnt_holders) = (10, 20, 100, 40, 7);
+        assert_eq!(promised(&v).unwrap(), 10 + 20 + 60);
+        // Payout-token vault: holders are owed tokens (checked separately); auth holds only the unswapped XNT.
+        v.payout_pool = Pubkey::new_unique();
+        assert_eq!(promised(&v).unwrap(), 10 + 20 + 7);
+        v.holders_paid = 101;
+        assert!(promised(&v).is_err(), "paid can never pass funded");
     }
 }

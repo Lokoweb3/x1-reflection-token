@@ -39,8 +39,9 @@ import {
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
 import { Config, FACTORY_DIR, ROOT, fromBaseUnits, loadKeypair, toBaseUnits } from "../config.js";
-import { decodeVault, initVaultIx, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
-import { buildCreatePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
+import { decodeVault, initVaultIx, initVaultPayoutIx, paysInToken, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
+import { payoutToken } from "./payout.js";
+import { buildCreatePool, decodePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
@@ -120,6 +121,8 @@ export interface LaunchParams {
   lockDays: number | null; // null = forever
   /** Pair token symbol: "XNT" (default) or one of factory.quoteTokens. */
   quote?: string;
+  /** Tax Vault launches: pay holders in this token (its mint) instead of XNT; fixed for good. */
+  payoutMint?: string;
 }
 
 /** A launch's pair token: XNT, or an entry of factory.quoteTokens (JACK). */
@@ -248,7 +251,14 @@ export function validateParams(raw: Record<string, unknown>, quoteSymbols: strin
     throw new Error("Liquidity + burn can't exceed 55% of the tax (10% goes to the creator; holders keep at least 35%)");
   }
   const lockDays = raw.lockDays === null || raw.lockDays === "forever" ? null : int("lockDays", 1, 3650);
-  return { creator, name, symbol, description, image, website, twitter, telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, quote };
+  // Checked in full (pool, freeze authority, extensions) by the server before step 1.
+  let payoutMint: string | undefined;
+  if (raw.payoutMint) {
+    try { payoutMint = new PublicKey(String(raw.payoutMint).trim()).toBase58(); } catch { throw new Error("The payout token must be a token (mint) address."); }
+    if (quote && quote !== "XNT") throw new Error("Paying holders in another token works with XNT-paired launches.");
+  }
+  return { creator, name, symbol, description, image, website, twitter, telegram, supply, taxBps, autoLpBps, burnBps, poolTokens, poolXnt, lockDays, quote,
+    ...(payoutMint ? { payoutMint } : {}) };
 }
 
 const launchDir = (mint: string) => path.join(FACTORY_DIR, "launches", mint);
@@ -529,7 +539,13 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   const c = r.kind === "curve" ? await readCurveOf(conn, cfg, r) : null;
   if (r.kind === "curve" && (!c || c.status < CurveStatus.Graduated)) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
   const pool = c ? c.pool : new PublicKey(r.pool);
-  return [initVaultIx(program, { payer: creator, mint, pool, creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator })];
+  const base = { payer: creator, mint, pool, creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator };
+  if (r.payoutMint) {
+    // Checked again now: the vault fixes the payout pool for good.
+    const pt = await payoutToken(conn, cfg, r.payoutMint, r.mint);
+    return [initVaultPayoutIx(program, { ...base, payout: { pool: pt.pool, payoutMint: pt.mint, payoutTokenProgram: pt.tokenProgram } })];
+  }
+  return [initVaultIx(program, base)];
 }
 
 /** A vault launch's vault must exist with this site's publisher, the creator as guardian and the recorded split. */
@@ -545,6 +561,12 @@ async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
   if (!v.mint.equals(new PublicKey(r.mint)) || !v.guardian.equals(new PublicKey(r.creator)) || (publisher && !v.publisher.equals(publisher))
       || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps) {
     throw new Error("This token's tax vault doesn't match the launch (publisher, guardian or split differ).");
+  }
+  // The payout token: XNT for a launch without one, else a vault paying through that token's pool.
+  if (!r.payoutMint !== !paysInToken(v)) throw new Error("This token's tax vault doesn't match the launch (payout token differs).");
+  if (r.payoutMint) {
+    const p = decodePool(v.payoutPool, await conn.getAccountInfo(v.payoutPool, "confirmed"), new PublicKey(cfg.xdex.programId));
+    if (!p.mints.some((x) => x.toBase58() === r.payoutMint)) throw new Error("This token's tax vault pays in a different token than the launch chose.");
   }
 }
 

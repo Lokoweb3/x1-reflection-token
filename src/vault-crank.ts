@@ -14,6 +14,10 @@
  *   pay            every wallet the active list owes at least minPayout
  *   pay_fallback   v3, once no list was published for FALLBACK_AFTER_SECS: every wallet owed
  *                  something of its last-list share scaled up to everything funded
+ *   fund_holders   payout-token vaults: swap the holders' XNT into the payout token (capped,
+ *                  one swap per slot, shared with fund_creator); lists and payouts are then in
+ *                  that token (pay_token / pay_fallback_token), and the XNT minimums (minCycle,
+ *                  minPayout) are converted at the payout pool's price
  *
  * List files (v3) are pinned to IPFS before they're published and their CID goes on-chain,
  * so anyone can pay from them without the site: `listFileText` is the pinned bytes and
@@ -30,7 +34,7 @@ import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, type Eligib
 import { outcome, sendAndConfirm, sign, simulate, withPriority } from "./tx.js";
 import { decodePool, maxLpFor, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "./xdex.js";
 import {
-  CID_CODEC, CRANK_REWARD_BPS, CRANK_REWARD_CAP, MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, PAID_RECORD_DISC, PAID_RECORD_LEN, RENT_EXEMPT_EMPTY,
+  CID_CODEC, CRANK_REWARD_BPS, CRANK_REWARD_CAP, fundHoldersIx, payFallbackTokenIx, payTokenIx, paysInToken, payoutPoolAccountsFrom, MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, PAID_RECORD_DISC, PAID_RECORD_LEN, RENT_EXEMPT_EMPTY,
   VAULT_VERSION, addLiquidityIx, buildVaultTree, cidFromBytes, cidToBytes, collectIx, decodePaidRecord, decodeVault, effectiveList, errorOf, fallbackActive,
   fallbackEntitled, fundCreatorIx, paidRecordPda, parseEvents, payFallbackIx, payIx, poolAccountsFrom, publishListIx, rewardImpactBps,
   rewardPoolAccountsFrom, rewardTokenInfo, sellBuckets, sellImpactBps, sellIx, upgradeVaultIx, vaultAuthPda, vaultPda,
@@ -207,7 +211,25 @@ export function listFromInputs(prev: Record<string, string> | null, inputs: List
   return composeList(prev, paid, allocate(balances, BigInt(inputs.pot)), BigInt(inputs.floor));
 }
 
-/** Every PaidRecord of a vault: wallet -> cumulative XNT paid. */
+/**
+ * `lamports` of XNT in the unit the vault pays holders in: itself for an XNT vault, else
+ * payout-token base units at the payout pool's spot price (at least 1 for a non-zero amount),
+ * so the XNT minimums (minPayout, minCycle) mean the same for every vault.
+ */
+export async function xntInPayout(conn: Connection, xdex: PublicKey, v: Vault, lamports: bigint) {
+  if (!paysInToken(v) || lamports === 0n) return lamports;
+  const pool = decodePool(v.payoutPool, (await conn.getMultipleAccountsInfo([v.payoutPool], "confirmed"))[0], xdex);
+  const p = payoutPoolAccountsFrom(xdex, pool);
+  const snap = await snapshot(conn, xdex, v.payoutPool, p.payoutMint);
+  const units = (lamports * snap.reserveToken) / snap.reserveQuote;
+  return units > 0n ? units : 1n;
+}
+/** The payout pool's accounts of a payout-token vault. */
+export async function payoutAccountsOf(conn: Connection, xdex: PublicKey, v: Vault) {
+  return payoutPoolAccountsFrom(xdex, decodePool(v.payoutPool, (await conn.getMultipleAccountsInfo([v.payoutPool], "confirmed"))[0], xdex));
+}
+
+/** Every PaidRecord of a vault: wallet -> cumulative paid (in the vault's payout unit). */
 export async function readPaidRecords(conn: Connection, program: PublicKey, vault: PublicKey) {
   const raw = await conn.getProgramAccounts(program, {
     commitment: "confirmed",
@@ -242,7 +264,8 @@ export async function dueFrom(conn: Connection, program: PublicKey, v: Vault, wa
       const paid = exists ? decodePaidRecord(paidRecordPda(program, v.address, e.wallet), info!.data).paid : 0n;
       const target = opts.fallback ? fallbackEntitled(e.cumulative, v.holdersFunded, opts.listTotal) : e.cumulative;
       const owed = target - paid;
-      if (owed > 0n && owed >= opts.minPayout && (accounts[j] || owed >= RENT_EXEMPT_EMPTY)) due.push({ ...e, owed, recordExists: exists });
+      // An XNT payout to a wallet with no account must cover its rent; a token payout opens the wallet's token account.
+      if (owed > 0n && owed >= opts.minPayout && (paysInToken(v) || accounts[j] || owed >= RENT_EXEMPT_EMPTY)) due.push({ ...e, owed, recordExists: exists });
     });
   }
   return due.sort((a, b) => (b.owed > a.owed ? 1 : b.owed < a.owed ? -1 : 0));
@@ -431,6 +454,31 @@ export function vaultCrank(env: CrankEnv) {
   });
 
   /**
+   * Payout-token vaults: swap the holders' XNT into the payout token (fund_holders), each
+   * swap capped on-chain like the reward swap and one per slot (shared with fund_creator).
+   */
+  async function holders(t: CrankToken, notes: string[]) {
+    for (let i = 0; i < MAX_REWARD_SWAPS_PER_PASS; i++) {
+      const v = await readVault(t.mint);
+      if (!v || !paysInToken(v) || v.xntHolders === 0n) return;
+      const p = await payoutAccountsOf(conn, xdex, v);
+      const q = await quoteBuy(conn, xdex, v.payoutPool, p.payoutMint, v.xntHolders, Number(OUT_TOLERANCE_BPS), rewardImpactBps).catch((e) => {
+        if (/too small|too shallow|no liquidity/i.test(msg(e))) return null;
+        throw e;
+      });
+      if (!q || q.minimumOut <= 0n) { notes.push(`holders' ${xnt(v.xntHolders)} would buy no payout token yet`); return; }
+      try {
+        await perSlot(() => send(t, v, `fund_holders ${xnt(q.amountIn)} for ~${q.expectedOut} payout units`, [fundHoldersIx(program, signer.publicKey, t.mint, p)], 300_000));
+      } catch (e) {
+        if (/: TooSmall$/.test(msg(e))) { notes.push(`holders' ${xnt(v.xntHolders)} is still too small to swap`); return; }
+        throw e;
+      }
+      notes.push(`holders ${xnt(q.amountIn)} -> payout token`);
+      if (q.amountIn >= v.xntHolders) return;
+    }
+  }
+
+  /**
    * Pay what `list` owes (pay), or in fallback its scaled-up shares (pay_fallback), a few
    * wallets per transaction; a failed batch is retried one by one. `list` must be the list
    * the program checks (effectiveList). Returns how many wallets were paid.
@@ -438,7 +486,8 @@ export function vaultCrank(env: CrankEnv) {
   async function pay(t: CrankToken, v: Vault, list: PayList, mode: "pay" | "fallback", notes: string[], opts: { due?: Due[] } = {}) {
     const eff = effectiveList(v, nowSecs());
     if (!eff || eff.root.toString("hex") !== list.root) throw new Error("the list to pay isn't the one on-chain");
-    let due = opts.due ?? await dueFrom(conn, program, v, list.wallets, { fallback: mode === "fallback", minPayout: t.rules.minPayout, listTotal: eff.total });
+    const minPayout = await xntInPayout(conn, xdex, v, t.rules.minPayout);
+    let due = opts.due ?? await dueFrom(conn, program, v, list.wallets, { fallback: mode === "fallback", minPayout, listTotal: eff.total });
     if (!due.length && eff.pending && !opts.due) {
       // The program switches to a due pending list inside `pay`. If nobody is owed minPayout
       // yet, pay the largest amount owed anyway so the new list takes over and the next can follow.
@@ -446,8 +495,10 @@ export function vaultCrank(env: CrankEnv) {
     }
     if (!due.length) return 0;
     const { proofs } = buildVaultTree(v.address, list.wallets);
-    const build = mode === "fallback" ? payFallbackIx : payIx;
-    const ixOf = (d: Due) => build(program, signer.publicKey, t.mint, d.wallet, d.cumulative, proofs[d.wallet.toBase58()]);
+    const payout = paysInToken(v) ? await payoutAccountsOf(conn, xdex, v) : null;
+    const ixOf = (d: Due) => payout
+      ? (mode === "fallback" ? payFallbackTokenIx : payTokenIx)(program, signer.publicKey, t.mint, d.wallet, d.cumulative, proofs[d.wallet.toBase58()], payout)
+      : (mode === "fallback" ? payFallbackIx : payIx)(program, signer.publicKey, t.mint, d.wallet, d.cumulative, proofs[d.wallet.toBase58()]);
     const what = mode === "fallback" ? "pay_fallback" : "pay";
     let txs = 0, paid = 0;
     const queue = [...due];
@@ -493,7 +544,7 @@ export function vaultCrank(env: CrankEnv) {
     for (const [w, p] of paid) if (p > (seen.get(w) ?? 0n)) { seen.set(w, p); paidAbove.push([w, p.toString()]); }
     for (const x of seen.values()) start += x;
     const pot = v.holdersFunded > start ? v.holdersFunded - start : 0n;
-    if (pot < t.rules.minCycle && !force) return null;
+    if (pot < await xntInPayout(conn, xdex, v, t.rules.minCycle) && !force) return null;
     const slot = await conn.getSlot("confirmed");
     const rows = await scanTokenAccounts(conn, t.mint);
     // A publisher that is a PDA (a multisig vault) never earns; a plain-key publisher is unchanged.
@@ -523,7 +574,7 @@ export function vaultCrank(env: CrankEnv) {
     return { signature, activeAt: pub?.name === "ListPublished" ? pub.activeAt : null };
   }
 
-  return { readVault, send, upgrade, poolOf, taxWaiting, collect, sell, liquidity, creator, creatorQuote, pay, nextList, publish, fits };
+  return { readVault, send, upgrade, poolOf, taxWaiting, collect, sell, liquidity, creator, creatorQuote, holders, pay, nextList, publish, fits };
 }
 
 /** Whether the vault is in fallback now, with a margin so the chain's clock agrees. */
@@ -536,7 +587,7 @@ export const inFallback = (v: Vault, now = nowSecs()) => fallbackActive(v, now -
  * (X1 bills the requested units). Sell ~88k, fund_creator up to ~194k (the spec asks for >= 250k), collect ~32k-45k,
  * pay / pay_fallback ~16k-20k per wallet, upgrade ~6k.
  */
-export interface PlannedStep { kind: "upgrade" | "collect" | "sell" | "add_liquidity" | "fund_creator" | "pay" | "pay_fallback"; label: string; ixs: TransactionInstruction[]; units: number }
+export interface PlannedStep { kind: "upgrade" | "collect" | "sell" | "add_liquidity" | "fund_creator" | "fund_holders" | "pay" | "pay_fallback"; label: string; ixs: TransactionInstruction[]; units: number }
 /**
  * What a visitor's wallet (`caller`) can run right now, in order: each step is one
  * transaction the caller pays and signs; later ones count on the earlier ones landing (the
@@ -574,7 +625,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   const sellLp = v.sellLp + (lp - lp / 2n), sellCr = v.sellCreator + cr, sellHo = v.sellHolders + holders;
   const wanted = sellLp + sellCr + sellHo;
   // 2. sell (one sale; the program caps it).
-  let reward = 0n, toLp = 0n, toCreator = 0n, soldIn = 0n, soldOut = 0n;
+  let reward = 0n, toLp = 0n, toCreator = 0n, toHolders = 0n, soldIn = 0n, soldOut = 0n;
   const pool = poolAccountsFrom(xdex, decodePool(v.pool, (await conn.getMultipleAccountsInfo([v.pool], "confirmed"))[0], xdex), t.mint);
   if (wanted > 0n) {
     const q = await quoteSell(conn, xdex, v.pool, t.mint, wanted, { maxImpactBps: sellImpactBps(t.taxBps), slippageBps: Number(OUT_TOLERANCE_BPS) }).catch(() => null);
@@ -584,6 +635,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
       reward = (part * CRANK_REWARD_BPS) / 10_000n;
       if (reward > CRANK_REWARD_CAP) reward = CRANK_REWARD_CAP;
       toLp = (q.expectedOut * sellLp) / wanted; toCreator = (q.expectedOut * sellCr) / wanted;
+      toHolders = q.expectedOut - toLp - toCreator - reward;
       soldIn = q.amountIn - q.transferFee; soldOut = q.expectedOut;
     } else if (q) notes.push("The tax to sell is still dust.");
   }
@@ -607,6 +659,16 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
         ixs: [fundCreatorIx(program, caller, t.mint, v.creatorNft, rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint))], units: 260_000 });
     }
   }
+  // 4b. fund_holders (payout-token vaults): the holders' XNT, including what the sale adds.
+  // It shares fund_creator's one-swap-per-slot rule; the visitor's steps land in separate slots.
+  const payout = paysInToken(v) ? await payoutAccountsOf(conn, xdex, v) : null;
+  if (payout && v.xntHolders + toHolders > 0n) {
+    const q = await quoteBuy(conn, xdex, v.payoutPool, payout.payoutMint, v.xntHolders + toHolders, Number(OUT_TOLERANCE_BPS), rewardImpactBps).catch(() => null);
+    if (q && q.minimumOut > 0n) {
+      steps.push({ kind: "fund_holders", label: `Swap the holders' XNT into the payout token (${xnt(q.amountIn)})`,
+        ixs: [fundHoldersIx(program, caller, t.mint, payout)], units: 260_000 });
+    }
+  }
   // 5. pay / pay_fallback a few wallets. Only wallets that already have a PaidRecord: a
   // visitor earns nothing for paying, so they never pay a record's rent (the site crank
   // and scripts/crank.ts create new records). `includeNew` (the recovery page, when the
@@ -617,14 +679,16 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
   const waitingActivation = !!eff && !eff.pending && v.pendingEpoch > 0n && now >= v.pendingActiveAt;
   if (list && eff && !waitingActivation && eff.root.toString("hex") === list.root) {
     const fallback = inFallback(v, now);
-    const due = (await dueFrom(conn, program, v, list.wallets, { fallback, minPayout: opts.minPayout, listTotal: eff.total }))
+    const due = (await dueFrom(conn, program, v, list.wallets, { fallback, minPayout: await xntInPayout(conn, xdex, v, opts.minPayout), listTotal: eff.total }))
       .filter((d) => d.recordExists || opts.includeNew).slice(0, opts.maxPays);
     if (due.length) {
       const { proofs } = buildVaultTree(v.address, list.wallets);
-      const build = fallback ? payFallbackIx : payIx;
+      const build = (x: Due) => payout
+        ? (fallback ? payFallbackTokenIx : payTokenIx)(program, caller, t.mint, x.wallet, x.cumulative, proofs[x.wallet.toBase58()], payout)
+        : (fallback ? payFallbackIx : payIx)(program, caller, t.mint, x.wallet, x.cumulative, proofs[x.wallet.toBase58()]);
       const batch: Due[] = [];
       for (const d of due) {
-        const next = [...batch, d].map((x) => build(program, caller, t.mint, x.wallet, x.cumulative, proofs[x.wallet.toBase58()]));
+        const next = [...batch, d].map(build);
         if (!fitsFor(next)) break;
         batch.push(d);
       }
@@ -632,8 +696,9 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
         const rent = BigInt(await conn.getMinimumBalanceForRentExemption(PAID_RECORD_LEN));
         recordsRent = rent * BigInt(batch.filter((d) => !d.recordExists).length);
         steps.push({ kind: fallback ? "pay_fallback" : "pay",
-          label: `${fallback ? "Pay holders from the last list (fallback)" : "Pay holders"}: ${batch.length} wallet${batch.length === 1 ? "" : "s"}, ${xnt(batch.reduce((a, d) => a + d.owed, 0n))}`,
-          ixs: batch.map((d) => build(program, caller, t.mint, d.wallet, d.cumulative, proofs[d.wallet.toBase58()])), units: Math.min(1_400_000, 20_000 + 30_000 * batch.length) });
+          label: `${fallback ? "Pay holders from the last list (fallback)" : "Pay holders"}: ${batch.length} wallet${batch.length === 1 ? "" : "s"}, ${payout ? `${batch.reduce((a, d) => a + d.owed, 0n)} payout-token units` : xnt(batch.reduce((a, d) => a + d.owed, 0n))}`,
+          // A token payout may also open the wallet's token account.
+          ixs: batch.map(build), units: Math.min(1_400_000, (payout ? 45_000 : 20_000) + (payout ? 60_000 : 30_000) * batch.length) });
       }
     }
   }

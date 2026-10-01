@@ -171,6 +171,7 @@ async function crankVault(mint: PublicKey) {
     await step("add_liquidity", () => c.liquidity(t, pool!, notes));
   }
   await step("fund_creator", () => c.creator(t, notes));
+  await step("fund_holders", () => c.holders(t, notes));
 
   // Lists: with --publisher, build, pin and publish a new one when this key publishes for the vault.
   await step("rewards list", async () => {

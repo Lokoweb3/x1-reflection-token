@@ -127,6 +127,11 @@ export const IX = {
   setPublisher: disc("global:set_publisher"),
   appointPublisher: disc("global:appoint_publisher"),
   payFallback: disc("global:pay_fallback"),
+  // payout token
+  initVaultPayout: disc("global:init_vault_payout"),
+  fundHolders: disc("global:fund_holders"),
+  payToken: disc("global:pay_token"),
+  payFallbackToken: disc("global:pay_fallback_token"),
 };
 export const VAULT_DISC = disc("account:Vault");
 export const PAID_RECORD_DISC = disc("account:PaidRecord");
@@ -141,6 +146,8 @@ export const EVENT = {
   // v3
   PublisherChanged: disc("event:PublisherChanged"),
   FallbackPaid: disc("event:FallbackPaid"),
+  // payout token
+  HoldersFunded: disc("event:HoldersFunded"),
 };
 /** Anchor numbers custom errors from 6000 in declaration order. */
 export const ERRORS = [
@@ -151,6 +158,8 @@ export const ERRORS = [
   "WrongVersion", "TooManyCancels", "BadRewardMint",
   // v3
   "PublisherActive", "FallbackNotActive",
+  // payout token
+  "PaysInToken", "PaysInXnt", "BadPayoutMint", "BadPayoutPool",
 ] as const;
 export const errorName = (code: number) => ERRORS[code - 6000] ?? null;
 /** The program's error name in a simulation/transaction error ({"Custom":6012} etc.), or null. */
@@ -227,9 +236,19 @@ export interface Vault {
   listCid: Buffer;
   /** IPFS address of the pending list file (v3). */
   pendingCid: Buffer;
-  /** XNT paid by pay_fallback, ever (v3). */
+  /** Paid by pay_fallback, ever, in the holder pool's unit (v3). */
   fallbackPaid: bigint;
+  /**
+   * The payout token's XDEX pool against wXNT, fixed at creation (init_vault_payout);
+   * PublicKey.default = holders are paid in XNT. With a payout token, holdersFunded /
+   * holdersPaid / list totals / PaidRecord.paid are in its base units.
+   */
+  payoutPool: PublicKey;
+  /** Holders' XNT not yet swapped into the payout token (payout-token vaults). */
+  xntHolders: bigint;
 }
+/** Whether the vault pays holders in a payout token (not XNT). */
+export const paysInToken = (v: Pick<Vault, "payoutPool">) => !v.payoutPool.equals(PublicKey.default);
 const VAULT_KEYS = ["mint", "pool", "creatorNft", "rewardMint", "rewardSwapPool", "publisher", "guardian"] as const;
 const VAULT_U64S_A = ["pendingTokens", "lpTokens", "sellLp", "sellCreator", "sellHolders", "xntLp", "xntCreator", "holdersFunded", "holdersPaid", "listEpoch"] as const;
 const VAULT_TOTALS = ["totalCollected", "totalBurned", "totalLpTokens", "totalLpXnt", "totalCreatorXnt", "totalCrankRewards"] as const;
@@ -242,6 +261,8 @@ export const VAULT_V2_OFFSETS = { version: 480, cancelsInRow: 481, totalRewardOu
 /** v3 reuses v2's reserved bytes and grows to 640: last_publish_at, list_cid, pending_cid, fallback_paid, 60 reserved. */
 export const VAULT_V3_LEN = 640;
 export const VAULT_V3_OFFSETS = { lastPublishAt: 498, listCid: 506, pendingCid: 539, fallbackPaid: 572, reserved: 580 } as const;
+/** Payout-token fields, in v3's reserved bytes (zero in older vaults: XNT payouts): pool, unswapped XNT, then 20 reserved. */
+export const VAULT_PAYOUT_OFFSETS = { payoutPool: 580, xntHolders: 612, reserved: 620 } as const;
 export const CID_LEN = 33;
 export const PAID_RECORD_LEN = 8 + 32 + 32 + 8 + 1;
 
@@ -276,6 +297,9 @@ export function decodeVault(address: PublicKey, d: Buffer): Vault {
   v.listCid = v3 ? Buffer.from(d.subarray(o3.listCid, o3.listCid + CID_LEN)) : Buffer.alloc(CID_LEN);
   v.pendingCid = v3 ? Buffer.from(d.subarray(o3.pendingCid, o3.pendingCid + CID_LEN)) : Buffer.alloc(CID_LEN);
   v.fallbackPaid = v3 ? d.readBigUInt64LE(o3.fallbackPaid) : 0n;
+  const op = VAULT_PAYOUT_OFFSETS;
+  v.payoutPool = v3 ? new PublicKey(d.subarray(op.payoutPool, op.payoutPool + 32)) : PublicKey.default;
+  v.xntHolders = v3 ? d.readBigUInt64LE(op.xntHolders) : 0n;
   return v as unknown as Vault;
 }
 
@@ -307,6 +331,8 @@ export function encodeVault(v: Omit<Vault, "address">): Buffer {
     d.writeBigInt64LE(BigInt(v.lastPublishAt), o3.lastPublishAt);
     v.listCid.copy(d, o3.listCid, 0, CID_LEN); v.pendingCid.copy(d, o3.pendingCid, 0, CID_LEN);
     d.writeBigUInt64LE(v.fallbackPaid, o3.fallbackPaid);
+    (v.payoutPool ?? PublicKey.default).toBuffer().copy(d, VAULT_PAYOUT_OFFSETS.payoutPool);
+    d.writeBigUInt64LE(v.xntHolders ?? 0n, VAULT_PAYOUT_OFFSETS.xntHolders);
   }
   return d;
 }
@@ -582,6 +608,74 @@ export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: Pub
   });
 }
 
+/** A payout token's XDEX pool against wXNT, with the accounts its swap needs. */
+export interface PayoutPoolAccounts {
+  xdexProgram: PublicKey; pool: PublicKey; ammConfig: PublicKey; payoutMint: PublicKey; payoutTokenProgram: PublicKey;
+  payoutVault: PublicKey; wxntVault: PublicKey; observation: PublicKey;
+}
+/** The payout pool's accounts from its decoded state (the pool must pair the payout mint with wXNT). */
+export function payoutPoolAccountsFrom(xdexProgram: PublicKey, pool: Pool): PayoutPoolAccounts {
+  if (!pool.mints[0].equals(NATIVE_MINT) && !pool.mints[1].equals(NATIVE_MINT)) throw new Error("The payout pool must be against XNT (wXNT)");
+  const wxntSide: 0 | 1 = pool.mints[0].equals(NATIVE_MINT) ? 0 : 1;
+  const side: 0 | 1 = wxntSide === 0 ? 1 : 0;
+  return {
+    xdexProgram, pool: pool.address, ammConfig: pool.ammConfig, payoutMint: pool.mints[side], payoutTokenProgram: pool.programs[side],
+    payoutVault: pool.vaults[side], wxntVault: pool.vaults[wxntSide], observation: pool.observation,
+  };
+}
+/** auth's payout-token account (kept open; holds what holders are owed). */
+export const authPayoutAccount = (auth: PublicKey, p: Pick<PayoutPoolAccounts, "payoutMint" | "payoutTokenProgram">) =>
+  getAssociatedTokenAddressSync(p.payoutMint, auth, true, p.payoutTokenProgram);
+
+/** init_vault for a vault that pays holders in the payout token of `payout` (fixed for good). */
+export function initVaultPayoutIx(programId: PublicKey, a: Parameters<typeof initVaultIx>[1] & { payout: Pick<PayoutPoolAccounts, "pool" | "payoutMint" | "payoutTokenProgram"> }) {
+  const base = initVaultIx(programId, a);
+  base.data.set(IX.initVaultPayout, 0);
+  base.keys.push(m(a.payout.payoutMint, false, false), m(a.payout.pool, false, false), m(a.payout.payoutTokenProgram, false, false));
+  return base;
+}
+
+/**
+ * Payout-token vaults: swap up to `xnt_holders` into the payout token (impact capped like the
+ * reward swap; shares its one-swap-per-slot rule) into auth's payout account. Needs ~250k CU.
+ */
+export function fundHoldersIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, p: PayoutPoolAccounts) {
+  const auth = vaultAuthPda(programId, mint);
+  return new TransactionInstruction({
+    programId, data: Buffer.from(IX.fundHolders),
+    keys: [
+      m(caller, true, true), m(vaultPda(programId, mint), false, true), m(auth, false, true), m(authWxntAccount(auth), false, true),
+      m(p.payoutMint, false, false), m(authPayoutAccount(auth, p), false, true), m(p.pool, false, true), m(p.ammConfig, false, false),
+      m(poolAuthority(p.xdexProgram), false, false), m(p.payoutVault, false, true), m(p.wxntVault, false, true), m(p.observation, false, true),
+      m(p.xdexProgram, false, false), m(NATIVE_MINT, false, false), m(TOKEN_PROGRAM_ID, false, false), m(p.payoutTokenProgram, false, false),
+      m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false), m(SystemProgram.programId, false, false),
+    ],
+  });
+}
+
+function payTokenLikeIx(tag: Buffer, programId: PublicKey, payer: PublicKey, mint: PublicKey, wallet: PublicKey, cumulative: bigint, proof: Buffer[],
+  p: Pick<PayoutPoolAccounts, "pool" | "payoutMint" | "payoutTokenProgram">) {
+  const vault = vaultPda(programId, mint), auth = vaultAuthPda(programId, mint);
+  const data = Buffer.alloc(8 + 8 + 4 + 32 * proof.length);
+  tag.copy(data, 0); data.writeBigUInt64LE(cumulative, 8); data.writeUInt32LE(proof.length, 16);
+  proof.forEach((x, i) => x.copy(data, 20 + 32 * i));
+  return new TransactionInstruction({
+    programId, data,
+    keys: [
+      m(payer, true, true), m(vault, false, true), m(auth, false, true), m(wallet, false, false), m(paidRecordPda(programId, vault, wallet), false, true),
+      m(p.pool, false, false), m(p.payoutMint, false, false), m(authPayoutAccount(auth, p), false, true),
+      m(getAssociatedTokenAddressSync(p.payoutMint, wallet, true, p.payoutTokenProgram), false, true),
+      m(p.payoutTokenProgram, false, false), m(ASSOCIATED_TOKEN_PROGRAM_ID, false, false), m(SystemProgram.programId, false, false),
+    ],
+  });
+}
+/** pay for a payout-token vault: `wallet` gets the token (its account is opened if needed, `payer` paying the rent). */
+export const payTokenIx = (programId: PublicKey, payer: PublicKey, mint: PublicKey, wallet: PublicKey, cumulative: bigint, proof: Buffer[], p: Pick<PayoutPoolAccounts, "pool" | "payoutMint" | "payoutTokenProgram">) =>
+  payTokenLikeIx(IX.payToken, programId, payer, mint, wallet, cumulative, proof, p);
+/** pay_fallback for a payout-token vault. */
+export const payFallbackTokenIx = (programId: PublicKey, payer: PublicKey, mint: PublicKey, wallet: PublicKey, cumulative: bigint, proof: Buffer[], p: Pick<PayoutPoolAccounts, "pool" | "payoutMint" | "payoutTokenProgram">) =>
+  payTokenLikeIx(IX.payFallbackToken, programId, payer, mint, wallet, cumulative, proof, p);
+
 /** Bring a 480-byte v1 or 552-byte v2 vault up to the 640-byte v3 layout (anyone; `payer` pays the extra rent). */
 export function upgradeVaultIx(programId: PublicKey, payer: PublicKey, mint: PublicKey) {
   return new TransactionInstruction({
@@ -671,7 +765,8 @@ export type VaultEvent =
   | { name: "ListCancelled"; vault: string; epoch: bigint }
   | { name: "Paid"; vault: string; wallet: string; amount: bigint; cumulative: bigint }
   | { name: "PublisherChanged"; vault: string; old: string; new: string; byGuardian: boolean }
-  | { name: "FallbackPaid"; vault: string; wallet: string; amount: bigint; entitled: bigint };
+  | { name: "FallbackPaid"; vault: string; wallet: string; amount: bigint; entitled: bigint }
+  | { name: "HoldersFunded"; vault: string; xntIn: bigint; payoutOut: bigint; payoutMint: string };
 
 /** Decode one event's bytes (discriminator first); null for anything else. */
 export function decodeEvent(d: Buffer): VaultEvent | null {
@@ -706,6 +801,7 @@ export function decodeEvent(d: Buffer): VaultEvent | null {
       return { name: "PublisherChanged", vault, old, new: nu, byGuardian: d[o] === 1 };
     }
     if (tag.equals(EVENT.FallbackPaid)) return { name: "FallbackPaid", vault: key(), wallet: key(), amount: u64(), entitled: u64() };
+    if (tag.equals(EVENT.HoldersFunded)) return { name: "HoldersFunded", vault: key(), xntIn: u64(), payoutOut: u64(), payoutMint: key() };
   } catch { /* truncated: not ours */ }
   return null;
 }
@@ -757,5 +853,7 @@ export function vaultJson(v: Vault) {
     lastPublishAt: v.version >= 3 ? v.lastPublishAt : null,
     listCid: v.version >= 3 ? cidFromBytes(v.listCid) : null, pendingCid: v.version >= 3 ? cidFromBytes(v.pendingCid) : null,
     fallbackPaid: s(v.fallbackPaid),
+    // Payout token: its pool (null = holders are paid in XNT) and the holders' XNT not yet swapped.
+    payoutPool: paysInToken(v) ? v.payoutPool.toBase58() : null, xntHolders: s(v.xntHolders),
   };
 }
