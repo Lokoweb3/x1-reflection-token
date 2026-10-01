@@ -576,6 +576,7 @@ async function printReceipt(mint) {
     const d = await fetch(`/api/nft/${nft}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
     if (d?.receiptPng && d.freshReceipt) png = await receiptPng(d.freshReceipt);
   }
+  if (png) toast("info", tr("Print receipt NFT: uploading the receipt to IPFS (about 30 seconds)…"));
   return signAndSend(tr("Print receipt NFT"), () => api("/api/launch/receipt", { mint, creator: W.state.address, ...(png ? { png } : {}) }));
 }
 /** The receipt SVG drawn as a PNG (base64), at twice its size on a white background. */

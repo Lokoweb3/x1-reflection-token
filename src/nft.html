@@ -895,7 +895,7 @@ async function withdraw(label, url, extra) {
   if (busy || !current) return;
   busy = true; show(current.nftMint, true);
   try {
-    toast("info", tr("{label}: preparing and simulating…", { label }));
+    toast("info", extra?.png ? tr("{label}: uploading the receipt to IPFS and preparing (about 30 seconds)…", { label }) : tr("{label}: preparing and simulating…", { label }));
     const { tx } = await api(url, { nftMint: current.nftMint, holder: W.state.address, authority: W.state.address, ...extra });
     toast("info", tr("{label}: approve it in your wallet…", { label }));
     const signed = await W.sign(W.b64ToBytes(tx));

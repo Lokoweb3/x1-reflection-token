@@ -599,6 +599,8 @@ I18N.add("es", {
   "Copied": "Copiado",
   "Loading {symbol} token stats…": "Cargando estadísticas del token {symbol}…",
   "← All locked NFTs": "← Todos los NFTs bloqueados",
+  "{label}: uploading the receipt to IPFS and preparing (about 30 seconds)…": "{label}: subiendo el recibo a IPFS y preparando (unos 30 segundos)…",
+  "Print receipt NFT: uploading the receipt to IPFS (about 30 seconds)…": "Imprimir recibo NFT: subiendo el recibo a IPFS (unos 30 segundos)…",
   "Receipt printed in the NFT (image on IPFS)": "Recibo impreso en el NFT (imagen en IPFS)",
   "The NFT points to this receipt image and its details, pinned on IPFS, so wallets and explorers can show it.": "El NFT apunta a esta imagen del recibo y sus detalles, fijados en IPFS, para que billeteras y exploradores puedan mostrarlo.",
   " Many wallets can't show this inline receipt; updating it stores a PNG on IPFS that they can.": " Muchas billeteras no pueden mostrar este recibo integrado; al actualizarlo se guarda un PNG en IPFS que sí pueden mostrar.",
