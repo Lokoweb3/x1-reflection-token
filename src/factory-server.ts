@@ -1200,7 +1200,7 @@ function leaderboard(mintStr: string) {
     const t = findTarget(cfg, mintStr);
     const pair = pairForMint(t.mint);
     const [idx, st, pairVal] = await Promise.all([
-      refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir, pair.xntPool ? pair.mint.toBase58() : undefined),
+      refreshTrades(conn, t.mint, t.stateDir, pair.xntPool ? pair.mint.toBase58() : undefined),
       tokenStats(t.mint) as Promise<any>,
       pairValue(pair).catch(() => null),
     ]);
@@ -1267,7 +1267,7 @@ function leaderboard(mintStr: string) {
       mint: t.mint, symbol: t.symbol, name: t.name, price, quote: pair.symbol, quoteXnt: perUnitXnt,
       summary: {
         rewardsPaid: rows.reduce((a, r) => a + r.rewardsXnt, 0),
-        holders: rows.filter((r) => r.balance > 0).length, traders: pos.size, trades: idx.trades.length, trackedSince: idx.since ?? null,
+        holders: rows.filter((r) => r.balance > 0).length, traders: pos.size, trades: idx.trades.length, trackedSince: idx.since || null, tradesComplete: !idx.backfill,
         avgCost: tokensKnown > 0 ? costKnown / tokensKnown : null,
         inProfit: priced.filter((r) => (r.pnl ?? 0) > 0).length, inLoss: priced.filter((r) => (r.pnl ?? 0) < 0).length,
         realized: rows.reduce((a, r) => a + r.realized, 0), unrealized: priced.reduce((a, r) => a + (r.pnl ?? 0), 0),
@@ -1446,7 +1446,7 @@ server.on("error", (e: NodeJS.ErrnoException) => {
 // history, so trades have to be saved before they age out (the leaderboard needs them).
 async function indexAllTrades() {
   for (const t of targets(cfg)) {
-    await refreshTrades(conn, new PublicKey(t.pool), t.mint, t.stateDir, t.quote?.mint)
+    await refreshTrades(conn, t.mint, t.stateDir, t.quote?.mint)
       .catch((e) => console.error(`Trade index for ${t.symbol} failed: ${e instanceof Error ? e.message : e}`));
   }
 }

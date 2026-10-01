@@ -1,8 +1,13 @@
 /**
  * Holder cost basis from on-chain trades, for the leaderboard.
  *
- * Every XDEX swap on a token's pool is read once and kept in `<stateDir>/trades.json`;
- * later refreshes only read newer transactions. For each swap the signer's token change
+ * Every swap that changes a wallet's balance of the token is read once and kept in
+ * `<stateDir>/trades.json`; later refreshes only read newer transactions. Swaps are found
+ * through the token's mint, which every transfer of it names, so a buy routed through
+ * another pool (e.g. a TOKEN/JACK pool someone created, XNT -> JACK -> TOKEN) counts too;
+ * the price is the signer's own XNT change. An index built from the main pool only
+ * (version 1) is completed from the mint's whole history, a few hundred transactions per
+ * refresh (the public RPC's rate limit). For each swap the signer's token change
  * and XNT change are taken from the transaction's own balance records (network fee, and
  * the rent of a token account opened by the swap, are added back so they don't count as
  * price). Liquidity moves (deposit, withdraw, pool creation) aren't trades and are
@@ -21,16 +26,28 @@ import { Connection, PublicKey, VersionedTransactionResponse } from "@solana/web
 import { NATIVE_MINT } from "@solana/spl-token";
 
 export interface Trade { sig: string; at: number; wallet: string; tokens: string; xnt: string }
-interface Index { version: 1; newest: string | null; trades: Trade[]; since?: number }
+interface Index {
+  version: 1 | 2; newest: string | null; trades: Trade[]; since?: number;
+  /** Version 2: reading the mint's older history still to do (newest first); null when done. */
+  backfill?: { before: string | null } | null;
+}
 
 const ACCOUNT_RENT = 2_039_280n; // a token account opened during the swap: account cost, not price
 const MAX_NEW_PER_REFRESH = 3_000;
+/** Older transactions read per refresh while backfilling, and per batch (with a pause between batches). */
+const BACKFILL_PER_REFRESH = 400;
+const BATCH = 25, BATCH_PAUSE_MS = 1_200;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const indexFile = (stateDir: string) => path.join(stateDir, "trades.json");
 function loadIndex(stateDir: string): Index {
   const f = indexFile(stateDir);
-  if (!fs.existsSync(f)) return { version: 1, newest: null, trades: [] };
-  return JSON.parse(fs.readFileSync(f, "utf8"));
+  // A new index reads the whole history once (backfill), newest first.
+  if (!fs.existsSync(f)) return { version: 2, newest: null, trades: [], backfill: { before: null } };
+  const idx = JSON.parse(fs.readFileSync(f, "utf8")) as Index;
+  // Version 1 read only the main pool: keep its trades and complete them from the mint's history.
+  if (idx.version !== 2) { idx.version = 2; idx.backfill = { before: null }; }
+  return idx;
 }
 
 /**
@@ -63,44 +80,64 @@ export function parseSwap(tx: VersionedTransactionResponse, mint: string, quoteM
   return { wallet, tokens: tokens.toString(), xnt: xnt.toString() };
 }
 
-/** Read swaps newer than the last refresh and add them to the index. */
-export async function refreshTrades(conn: Connection, pool: PublicKey, mint: string, stateDir: string, quoteMint?: string) {
+/** Parse `sigs` (unknown ones only) as swaps of `mint` into the index, in paced batches. */
+async function addSwaps(conn: Connection, idx: Index, sigs: string[], mint: string, quoteMint?: string) {
+  const known = new Set(idx.trades.map((t) => t.sig));
+  const todo = sigs.filter((x) => !known.has(x));
+  for (let i = 0; i < todo.length; i += BATCH) {
+    if (i) await sleep(BATCH_PAUSE_MS);
+    const batch = todo.slice(i, i + BATCH);
+    const txs = await conn.getTransactions(batch, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    txs.forEach((tx, j) => {
+      const t = tx && parseSwap(tx, mint, quoteMint);
+      if (t) idx.trades.push({ sig: batch[j], at: tx!.blockTime ?? 0, ...t });
+    });
+  }
+}
+
+/**
+ * Read swaps newer than the last refresh (found through the token's `mint`) and add them to
+ * the index; while a backfill is due, also read the next stretch of older history.
+ */
+export async function refreshTrades(conn: Connection, mint: string, stateDir: string, quoteMint?: string) {
   const idx = loadIndex(stateDir);
+  const mintKey = new PublicKey(mint);
   const fresh: { signature: string; blockTime?: number | null; err: unknown }[] = [];
-  // RPCs drop old history, so the last-seen signature can vanish; then `until` fails and
-  // we page back without it, stopping at trades already indexed or older than the last one.
+  // RPCs can drop old history, so the last-seen signature can vanish; then `until` fails and
+  // we page back without it, stopping at a signature already seen.
   let until = idx.newest ?? undefined;
   const known = new Set(idx.trades.map((t) => t.sig));
-  const lastAt = idx.trades.at(-1)?.at ?? 0;
   let before: string | undefined;
+  // Without a `newest` yet, the backfill reads everything: just take the newest signature.
+  const limit = idx.newest ? 1000 : 1;
   while (fresh.length < MAX_NEW_PER_REFRESH) {
     let page: typeof fresh;
     try {
-      page = await conn.getSignaturesForAddress(pool, { limit: 1000, before, until }, "confirmed");
+      page = await conn.getSignaturesForAddress(mintKey, { limit, before, until }, "confirmed");
     } catch (e) {
       if (!until || !/not found/i.test(String(e))) throw e;
       until = undefined;
       continue;
     }
-    const seenOld = page.findIndex((s) => s.signature === idx.newest || known.has(s.signature) || (s.blockTime ?? Infinity) < lastAt);
+    const seenOld = page.findIndex((x) => x.signature === idx.newest || known.has(x.signature));
     fresh.push(...(seenOld < 0 ? page : page.slice(0, seenOld)));
-    if (page.length < 1000 || seenOld >= 0) break;
+    if (!idx.newest || page.length < 1000 || seenOld >= 0) break;
     before = page.at(-1)!.signature;
   }
-  idx.since ??= Math.floor(Date.now() / 1000) - 86_400; // RPCs keep about a day; older trades can't be read
-  if (!fresh.length) { saveIndex(stateDir, idx); return idx; }
-  const ok = fresh.filter((s) => !s.err);
-  for (let i = 0; i < ok.length; i += 50) {
-    const batch = ok.slice(i, i + 50);
-    const txs = await conn.getTransactions(batch.map((s) => s.signature), { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-    txs.forEach((tx, j) => {
-      const t = tx && parseSwap(tx, mint, quoteMint);
-      if (t) idx.trades.push({ sig: batch[j].signature, at: tx!.blockTime ?? batch[j].blockTime ?? 0, ...t });
-    });
+  if (fresh.length) {
+    await addSwaps(conn, idx, fresh.filter((x) => !x.err).map((x) => x.signature), mint, quoteMint);
+    idx.newest = fresh[0].signature;
   }
-  idx.newest = fresh[0].signature;
+  // Older history, a stretch per refresh (newest first), until it runs out.
+  if (idx.backfill) {
+    const page = await conn.getSignaturesForAddress(mintKey, { limit: BACKFILL_PER_REFRESH, before: idx.backfill.before ?? undefined }, "confirmed");
+    await addSwaps(conn, idx, page.filter((x) => !x.err).map((x) => x.signature), mint, quoteMint);
+    idx.backfill = page.length < BACKFILL_PER_REFRESH ? null : { before: page.at(-1)!.signature };
+  }
+  // While older history is still being read, `since` is how far back the trades go so far.
+  idx.since = idx.backfill ? (idx.since ?? Math.floor(Date.now() / 1000)) : 0;
   idx.trades.sort((a, b) => a.at - b.at || a.sig.localeCompare(b.sig));
-  if (idx.trades.length && idx.trades[0].at < idx.since!) idx.since = idx.trades[0].at;
+  if (idx.trades.length && idx.since && idx.trades[0].at < idx.since) idx.since = idx.trades[0].at;
   saveIndex(stateDir, idx);
   return idx;
 }

@@ -164,7 +164,9 @@ function render() {
       tile(tr("Realized P/L"), `${s.realized >= 0 ? "+" : ""}${sig(s.realized)} ${U}`, tr("{trades} trades by {traders} wallets", { trades: s.trades, traders: s.traders })),
       tile(tr("Paid to holders"), `${sig(s.rewardsPaid ?? 0)} XNT`, tr("payouts and Distribute now rewards to these wallets"))),
     el("div", { class: "table-wrap" }, el("table", {}, head, ...body)),
-    el("p", { class: "note", text: tr("Average cost uses the average-cost method: buys add to cost, sells remove cost at the average price. Network fees and account rent aren't counted as price. Trades tracked since {date} (public RPCs keep about a day of history, so earlier trades can't be read). The pool and the token's distributor are left out.", { date: s.trackedSince ? new Date(s.trackedSince * 1000).toLocaleString() : tr("now") })
+    el("p", { class: "note", text: tr("Average cost uses the average-cost method: buys add to cost, sells remove cost at the average price. Network fees and account rent aren't counted as price. The pool and the token's distributor are left out.")
+      + (s.tradesComplete ? tr(" Every trade since the token launched is counted, including buys routed through other pools (e.g. XNT → JACK → token).")
+        : tr(" Still reading older trades (counted back to {date} so far); they fill in over the next minutes.", { date: s.trackedSince ? new Date(s.trackedSince * 1000).toLocaleString() : tr("now") }))
       + (U !== "XNT" ? tr(" This token is paired with {U}, so prices, costs and profit/loss are in {U}; rewards are XNT, and Total return values the {U} profit at today's {U}/XNT price.", { U }) : "") }));
 }
 
