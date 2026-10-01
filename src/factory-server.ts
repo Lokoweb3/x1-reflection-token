@@ -542,6 +542,11 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
     rateLimit("launch", ip, "launches started");
     const p = validateCurveParams(body, cfg.network);
+    // A payout token: checked now (pool, freeze authority, extensions); the creator's vault uses it after graduation.
+    if (p.payoutMint) {
+      if (!isVaultLaunch(cfg, XNT_PAIR)) throw new Error("Paying holders in another token needs a Tax Vault launch.");
+      await payoutToken(conn, cfg, p.payoutMint);
+    }
     const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program);
     c.invalidate();
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };

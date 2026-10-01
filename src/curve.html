@@ -109,6 +109,8 @@ tr.me td { background: rgb(200 16 46 / .07); }
   .grid { grid-template-columns: 1fr; }
   h1 { font-size: 28px; }
 }
+.hint.good { color: var(--good, #2f7d32); }
+.hint.bad { color: var(--critical, #b4232f); }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/i18n.js"></script>
@@ -353,7 +355,12 @@ function createForm() {
       el("div", { class: "row" },
         el("label", {}, tr("Share of the tax added to liquidity (%)"), el("input", { name: "autoLp", type: "number", min: "0", max: "50", step: "5", value: "25", required: "" })),
         el("label", {}, tr("Share of the tax burned (%)"), el("input", { name: "burn", type: "number", min: "0", max: "50", step: "5", value: "25", required: "" }))),
-      el("p", { class: "hint", id: "splitNote", style: "margin:0" })),
+      el("p", { class: "hint", id: "splitNote", style: "margin:0" }),
+      // Paying holders in another token (Tax Vault v4): only where the site offers it.
+      info?.taxVault?.payoutTokens && info.taxVault.launches ? el("div", { class: "row" },
+        el("label", {}, tr("Pay holders in"),
+          el("input", { name: "payoutMint", id: "payoutMint", placeholder: tr("XNT (leave empty), or a token's mint address"), autocomplete: "off", spellcheck: "false" }),
+          el("span", { class: "hint", id: "payoutHint", text: tr("Optional. Holders get this token instead of XNT: the vault swaps their share on the token's XDEX pool. Fixed for good once launched.") }))) : null),
     el("p", { class: "callout", text: tr("No tax while on the curve; the tax starts at graduation. Tokens arrive in your wallet at graduation.") }),
     el("table", { class: "costs", id: "costs" }),
     el("p", { class: "muted", text: p.creatorCanBuy ? tr("On testnet the creator can also buy (for testing); on mainnet you can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") : tr("You can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") }),
@@ -383,8 +390,30 @@ function readForm() {
     website: String(v.website ?? "").trim(), twitter: String(v.twitter ?? "").trim(), telegram: String(v.telegram ?? "").trim(),
     supply: String(v.supply === "custom" ? v.supplyCustom ?? "" : v.supply).replace(/[,_\s]/g, ""), taxBps: Math.round(Number(v.tax) * 100), targetXnt: String(v.targetXnt ?? ""),
     autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
+    ...(String(v.payoutMint ?? "").trim() ? { payoutMint: String(v.payoutMint).trim() } : {}),
   };
 }
+// Payout token: checked as it's typed (its XNT pool, freeze authority, extensions).
+let payoutTimer;
+document.addEventListener("input", (ev) => {
+  if (ev.target?.id !== "payoutMint") return;
+  clearTimeout(payoutTimer);
+  const hint = $("payoutHint"), mint = ev.target.value.trim();
+  hint.classList.remove("bad", "good");
+  if (!mint) { hint.textContent = tr("Optional. Holders get this token instead of XNT: the vault swaps their share on the token's XDEX pool. Fixed for good once launched."); return; }
+  hint.textContent = tr("Checking the token…");
+  payoutTimer = setTimeout(async () => {
+    try {
+      const t = await api(`/api/payout-token?mint=${encodeURIComponent(mint)}`);
+      if ($("payoutMint").value.trim() !== mint) return;
+      hint.textContent = tr("Holders will be paid in {symbol} ({poolXnt} XNT in its XDEX pool). Fixed for good once launched.", { symbol: t.symbol, poolXnt: fmt(Number(t.poolXnt), 2) });
+      hint.classList.add("good");
+    } catch (e) {
+      if ($("payoutMint").value.trim() !== mint) return;
+      hint.textContent = tr(e.message || String(e)); hint.classList.add("bad");
+    }
+  }, 500);
+});
 function clampSplit(changed) {
   const f = $("createForm"); if (!f) return;
   const lp = f.elements.autoLp, burn = f.elements.burn;
