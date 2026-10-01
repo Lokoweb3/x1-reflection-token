@@ -568,8 +568,28 @@ async function signAndSend(label, build, vaultMint) {
   return { signature, ...rest };
 }
 /** Write the lock receipt image into the LP NFT, on-chain (optional; small rent). */
-function printReceipt(mint) {
-  return signAndSend(tr("Print receipt NFT"), () => api("/api/launch/receipt", { mint, creator: W.state.address }));
+async function printReceipt(mint) {
+  // With uploads on, the receipt goes to IPFS as a PNG drawn here (what wallets can show).
+  let png;
+  const nft = (await statusOf(mint)).lockNft;
+  if (nft) {
+    const d = await fetch(`/api/nft/${nft}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (d?.receiptPng && d.freshReceipt) png = await receiptPng(d.freshReceipt);
+  }
+  return signAndSend(tr("Print receipt NFT"), () => api("/api/launch/receipt", { mint, creator: W.state.address, ...(png ? { png } : {}) }));
+}
+/** The receipt SVG drawn as a PNG (base64), at twice its size on a white background. */
+async function receiptPng(svgUrl) {
+  const img = new Image();
+  img.src = svgUrl;
+  await img.decode();
+  const scale = 2, w = img.naturalWidth || 340, h = img.naturalHeight || 420;
+  const c = document.createElement("canvas");
+  c.width = w * scale; c.height = h * scale;
+  const g = c.getContext("2d");
+  g.fillStyle = "#ffffff"; g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/png").split(",")[1];
 }
 async function statusOf(mint) {
   const mine = await api(`/api/launches?creator=${W.state.address}`);
@@ -807,7 +827,7 @@ function launchCard(l) {
 
   // The receipt, if it hasn't been printed into the NFT yet.
   const print = s.lock && !l.receipt
-    ? btn(tr("Print receipt"), "", async () => { if (running) return; running = true; try { await printReceipt(l.mint); } catch (e) { toast("error", tr("Print receipt failed: {message}", { message: e.message || e })); } running = false; loadMine(); }, false, tr("Write the lock receipt image into your LP NFT, on-chain"))
+    ? btn(tr("Print receipt"), "", async () => { if (running) return; running = true; try { await printReceipt(l.mint); } catch (e) { toast("error", tr("Print receipt failed: {message}", { message: e.message || e })); } running = false; loadMine(); }, false, tr("Write the lock receipt image into your LP NFT"))
     : null;
 
   // Edit the token's logo, description and links (creator only; needs IPFS uploads).

@@ -102,6 +102,16 @@ export async function pinLogo(cfg: Config, bytes: Buffer, name: string) {
   return { cid, url: gatewayUrl(cfg, cid) };
 }
 
+/** Largest receipt image accepted (a 2x PNG of the receipt is ~30-80 KB). */
+export const MAX_RECEIPT_PNG_BYTES = 1_000_000;
+/** Pin a lock NFT's receipt PNG (rendered from the receipt SVG in the creator's browser). Returns its gateway URL. */
+export async function pinReceiptPng(cfg: Config, bytes: Buffer, label: string) {
+  if (!ipfsEnabled(cfg)) throw new Error("IPFS isn't set up on this site (factory.pinataJwt)");
+  if (bytes.length === 0 || bytes.length > MAX_RECEIPT_PNG_BYTES) throw new Error("The receipt image is empty or too large.");
+  if (sniffImage(bytes)?.type !== "image/png") throw new Error("The receipt image must be a PNG.");
+  return gatewayUrl(cfg, await upload(cfg, new Blob([new Uint8Array(bytes)], { type: "image/png" }), "receipt.png", `99tax receipt ${label}`));
+}
+
 /** Pin a token's metadata JSON (see tokenMetadataJson). Returns its gateway URL. */
 export async function pinMetadata(cfg: Config, content: Record<string, string | boolean>, label: string) {
   const cid = await upload(cfg, new Blob([JSON.stringify(content)], { type: "application/json" }), "metadata.json", `99tax metadata ${label}`);

@@ -12,7 +12,9 @@ import {
   createSyncNativeInstruction, getAssociatedTokenAddressSync, getMintLen, getTokenMetadata, unpackAccount, unpackMint,
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
-import { receiptData, receiptUri } from "./web/receipt.js";
+import crypto from "node:crypto";
+import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
+import { gatewayBase, gatewayUrl, pinJson, pinReceiptPng } from "./factory/ipfs.js";
 import { Config, requireMint } from "./config.js";
 import { poolAuthority, snapshot } from "./xdex.js";
 import {
@@ -150,6 +152,76 @@ export async function buildReceipt(conn: Connection, cfg: Config, authority: Pub
   if (need > 0n) ixs.push(SystemProgram.transfer({ fromPubkey: authority, toPubkey: nftMint, lamports: need }));
   ixs.push(createUpdateFieldInstruction({ programId: TOKEN_2022_PROGRAM_ID, metadata: nftMint, updateAuthority: authority, field: "uri", value: uri }));
   return { ixs, receipt: d, printed: current.uri === uri };
+}
+
+/** Fingerprint of the receipt a lock should show now (design + numbers); kept in the IPFS metadata. */
+export const receiptHash = (d: NonNullable<Awaited<ReturnType<typeof receiptData>>>) => crypto.createHash("sha256").update(receiptSvg(d)).digest("hex");
+
+/**
+ * Print the receipt the way wallets and explorers read NFTs: the receipt as a PNG (drawn
+ * from the receipt SVG in the creator's browser) and a standard metadata JSON (name,
+ * image, attributes, external_url) pinned to IPFS, and the NFT's `uri` set to the JSON's
+ * https gateway link. The JSON records the receipt's fingerprint so the site can tell
+ * when it's out of date. Only the NFT's update authority (the wallet that locked) signs.
+ */
+export async function buildReceiptIpfs(conn: Connection, cfg: Config, authority: PublicKey, nftMint: PublicKey, png: Buffer, pageUrl: string) {
+  const d = await receiptData(conn, cfg, nftMint);
+  if (!d) throw new Error("Lock not found for that NFT.");
+  const info = await conn.getAccountInfo(nftMint, "confirmed");
+  if (!info) throw new Error("NFT mint not found.");
+  const current = await getTokenMetadata(conn, nftMint, "confirmed", TOKEN_2022_PROGRAM_ID);
+  if (!current) throw new Error("This NFT has no metadata.");
+  if (!current.updateAuthority?.equals(authority)) {
+    throw new Error(`Only the wallet that locked (${current.updateAuthority?.toBase58() ?? "nobody"}) can print this receipt.`);
+  }
+  const image = await pinReceiptPng(cfg, png, `${d.symbol} ${nftMint.toBase58()}`);
+  const lock = d.term === "FOREVER" ? "Forever" : d.term.replace(/^UNTIL /, "Until ");
+  const json = {
+    name: current.name, symbol: current.symbol,
+    description: `${d.symbol} liquidity locked ${lock.toLowerCase()} in the 99 + Tax LP locker: ${d.lockedLp} LP (${d.lpSharePct.toFixed(2)}% of the pool), locked ${d.lockedAt}. Live details: ${pageUrl}`,
+    image, external_url: pageUrl,
+    attributes: [
+      { trait_type: "Token", value: d.symbol }, { trait_type: "Tax", value: `${d.taxPct}%` },
+      ...(d.split ? [{ trait_type: "Split (holders/LP/burn/creator)", value: `${d.split.holders}/${d.split.liquidity}/${d.split.burn}/${d.split.creator}` }] : []),
+      { trait_type: "LP locked", value: d.lockedLp }, { trait_type: "Pool share", value: `${d.lpSharePct.toFixed(2)}%` },
+      { trait_type: "Lock", value: lock }, { trait_type: "Locked at", value: d.lockedAt },
+    ],
+    properties: { category: "image", files: [{ uri: image, type: "image/png" }], receipt_sha256: receiptHash(d) },
+  };
+  const cid = await pinJson(cfg, JSON.stringify(json), "metadata.json", `99tax receipt metadata ${d.symbol} ${nftMint.toBase58()}`);
+  const uri = gatewayUrl(cfg, cid);
+  const ixs: TransactionInstruction[] = [];
+  const newLen = info.data.length + Buffer.byteLength(uri) - Buffer.byteLength(current.uri);
+  const need = BigInt(await conn.getMinimumBalanceForRentExemption(newLen)) - BigInt(info.lamports);
+  if (need > 0n) ixs.push(SystemProgram.transfer({ fromPubkey: authority, toPubkey: nftMint, lamports: need }));
+  ixs.push(createUpdateFieldInstruction({ programId: TOKEN_2022_PROGRAM_ID, metadata: nftMint, updateAuthority: authority, field: "uri", value: uri }));
+  return { ixs, uri, image };
+}
+
+/** IPFS metadata already read (content-addressed, so it never changes). */
+const artCache = new Map<string, { image: string; hash: string | null } | null>();
+/**
+ * What an NFT's metadata shows: an on-chain receipt (data: URI) or a pinned metadata JSON
+ * (read only from this site's gateway, so on-chain links can't make the server fetch
+ * anything else). `ipfs` tells the two apart; `hash` is the pinned receipt's fingerprint.
+ */
+export async function nftArt(cfg: Config, uri: string): Promise<{ image: string; ipfs: boolean; hash: string | null } | null> {
+  const onChain = receiptImage(uri);
+  if (onChain) return { image: onChain, ipfs: false, hash: null };
+  const base = gatewayBase(cfg);
+  if (!uri.startsWith(base) || !/^[A-Za-z0-9]{46,64}$/.test(uri.slice(base.length))) return null;
+  if (!artCache.has(uri)) {
+    try {
+      const r = await fetch(uri, { signal: AbortSignal.timeout(10_000) });
+      const j = r.ok ? await r.json() as { image?: unknown; properties?: { receipt_sha256?: unknown } } : null;
+      const image = typeof j?.image === "string" && j.image.startsWith(base) ? j.image : null;
+      const hash = typeof j?.properties?.receipt_sha256 === "string" ? j.properties.receipt_sha256 : null;
+      if (!r.ok) return null; // a gateway hiccup: try again next time
+      artCache.set(uri, image ? { image, hash } : null);
+    } catch { return null; }
+  }
+  const a = artCache.get(uri);
+  return a ? { ...a, ipfs: true } : null;
 }
 
 /** The receipt image (data: URI) stored in an NFT's metadata, or null if none was printed. */

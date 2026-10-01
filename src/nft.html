@@ -249,7 +249,7 @@ async function show(mint, quiet = false) {
       [tr("Lock account"), addr(d.lock)],
     ];
     const img = el("img", { src: d.image, alt: tr("{name} receipt: {lockedLp} LP locked {term}, locked at {lockedAt}", { name: d.name, lockedLp: d.lockedLp, term: d.term.toLowerCase(), lockedAt: d.lockedAt }) });
-    const download = el("a", { class: "btn", href: d.image, download: `${d.symbol}-lp-lock-${d.nftMint.slice(0, 8)}.svg`, text: tr("Download image") });
+    const download = el("a", { class: "btn", href: d.image, download: `${d.symbol}-lp-lock-${d.nftMint.slice(0, 8)}.${d.onIpfs ? "png" : "svg"}`, text: tr("Download image") });
     const copy = el("button", { class: "btn", type: "button", text: tr("Copy link") });
     copy.onclick = async () => { try { await navigator.clipboard.writeText(location.href); copy.textContent = tr("Copied"); } catch { copy.textContent = location.href; } };
     const statsHost = el("section", { class: "card stats-card", "aria-live": "polite" }, el("p", { class: "muted", text: tr("Loading {symbol} token stats…", { symbol: d.symbol }) }));
@@ -259,13 +259,15 @@ async function show(mint, quiet = false) {
       el("div", { class: "art" }, img),
       el("div", {},
         el("h1", { text: d.name }),
-        el("span", { class: `pill ${d.printed ? "ok" : "warn"}`, text: d.printed ? tr("Receipt stored on-chain in the NFT") : tr("Preview: receipt not printed yet") }),
+        el("span", { class: `pill ${d.printed ? "ok" : "warn"}`, text: !d.printed ? tr("Preview: receipt not printed yet") : d.onIpfs ? tr("Receipt printed in the NFT (image on IPFS)") : tr("Receipt stored on-chain in the NFT") }),
         el("div", { class: "card" }, el("dl", {}, ...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", {}, v)]))),
         el("div", { class: "actions" }, link(`${d.explorer}/address/${d.nftMint}`, tr("View on explorer ↗"), "btn primary"), download, copy, receiptButton(d)),
         withdrawCard(d),
         el("p", { class: "note", text: d.printed
-          ? tr("The image and details above are read straight from the NFT's on-chain metadata; nothing is hosted.")
-            + (d.upToDate ? "" : tr(" The printed receipt is out of date; the wallet that locked ({authority}) can update it.", { authority: d.authority ? short(d.authority) : tr("unknown") }))
+          ? (d.onIpfs ? tr("The NFT points to this receipt image and its details, pinned on IPFS, so wallets and explorers can show it.")
+            : tr("The image and details above are read straight from the NFT's on-chain metadata; nothing is hosted.")
+              + (d.receiptPng ? tr(" Many wallets can't show this inline receipt; updating it stores a PNG on IPFS that they can.") : ""))
+            + (d.upToDate || (!d.onIpfs && d.receiptPng) ? "" : tr(" The printed receipt is out of date; the wallet that locked ({authority}) can update it.", { authority: d.authority ? short(d.authority) : tr("unknown") }))
           : tr("This is how the receipt will look. The wallet that locked ({authority}) can print it into the NFT from the launch app or the dashboard.", { authority: d.authority ? short(d.authority) : tr("unknown") }) }))), statsHost);
     loadTokenStats(d, statsHost);
   } catch (e) {
@@ -865,9 +867,29 @@ function receiptButton(d) {
   } else {
     b.title = d.printed ? tr("Reprint the receipt in the NFT with the latest design and numbers (on-chain)") : tr("Write the receipt image into the NFT (on-chain, small rent)");
     b.disabled = busy;
-    b.onclick = () => withdraw(text, "/api/nft/receipt");
+    b.onclick = async () => {
+      // With uploads on, the receipt goes to IPFS as a PNG drawn here (what wallets can show).
+      let png;
+      if (d.receiptPng) {
+        try { png = await receiptPng(d.freshReceipt); } catch (e) { toast("error", tr("Couldn't draw the receipt image: {message}", { message: e.message || e })); return; }
+      }
+      withdraw(text, "/api/nft/receipt", png ? { png } : undefined);
+    };
   }
   return b;
+}
+/** The receipt SVG drawn as a PNG (base64), at twice its size on a white background. */
+async function receiptPng(svgUrl) {
+  const img = new Image();
+  img.src = svgUrl;
+  await img.decode();
+  const scale = 2, w = img.naturalWidth || 340, h = img.naturalHeight || 420;
+  const c = document.createElement("canvas");
+  c.width = w * scale; c.height = h * scale;
+  const g = c.getContext("2d");
+  g.fillStyle = "#ffffff"; g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/png").split(",")[1];
 }
 async function withdraw(label, url, extra) {
   if (busy || !current) return;

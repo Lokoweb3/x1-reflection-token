@@ -244,13 +244,18 @@ Deploy with `solana program deploy`, then set `locker.programId` in `config.json
 `solana program set-upgrade-authority <program id> --final`. Until then, whoever holds
 the upgrade key could change the program. The program has not had a third-party audit.
 
-### Lock receipt NFT (on-chain image)
+### Lock receipt NFT
 
-After a lock confirms, one more approval "prints" a receipt into the NFT: a small SVG
-(token, tax split, LP locked, pool share, lock term, and the exact on-chain lock time)
-plus its JSON, stored as a `data:` URI in the NFT's Token-2022 metadata. Nothing is
-hosted. A transaction can only write about 1,000 bytes of metadata, so the art is kept
-compact. Only the wallet that locked (the NFT's update authority) can print it.
+After a lock confirms, one more approval "prints" a receipt into the NFT (token, tax
+split, LP locked, pool share, lock term, and the exact on-chain lock time). On a site with
+IPFS uploads set up, the creator's browser draws the receipt as a PNG; the site pins it
+and a standard metadata JSON (name, image, the lock details as attributes, a link to the
+lock page) to IPFS, and the NFT's Token-2022 metadata `uri` points to the JSON's https
+link: the form wallets and explorers read. Without uploads, the receipt goes on-chain as a
+small SVG inside a `data:` URI (nothing hosted, but many wallets can't show it; such a
+receipt shows "Update receipt" once uploads are on). The JSON keeps the receipt's
+fingerprint, so the site offers an update when the numbers change. Only the wallet that
+locked (the NFT's update authority) can print it.
 
 - Dashboard: prompted right after Lock; otherwise a "Print receipt" button on the lock row.
 - Launch app: printed after step 3; otherwise "Print receipt" in "Your launches".

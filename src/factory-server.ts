@@ -29,13 +29,13 @@ import {
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
 import { readRewardVault, rewardSummary } from "./locker.js";
-import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, receiptImage } from "./locker-tx.js";
+import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, buildReceiptIpfs, nftArt, receiptHash, receiptImage } from "./locker-tx.js";
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
 import { snapshot, spotValue } from "./xdex.js";
 import { positions, refreshTrades } from "./trades.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
-import { MAX_LOGO_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
+import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
 import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, getTokenMetadata, getTransferFeeConfig, unpackAccount } from "@solana/spl-token";
 import { findTarget, readiness, runCycle, targets, tipInstruction, verifyTip } from "./factory/trigger.js";
@@ -284,6 +284,15 @@ function ownLaunch(body: Record<string, unknown>) {
   return r;
 }
 
+/** Receipt printing: to IPFS when a PNG came with the request and uploads are on, else on-chain. */
+function receiptIxs(authority: PublicKey, nftMint: PublicKey, png: unknown, ip: string) {
+  if (typeof png === "string" && png && ipfsEnabled(cfg)) {
+    rateLimit("upload", ip, "receipt uploads");
+    return buildReceiptIpfs(conn, cfg, authority, nftMint, Buffer.from(png, "base64"), `${publicUrl.replace(/\/$/, "")}/nft/${nftMint.toBase58()}`);
+  }
+  return buildReceipt(conn, cfg, authority, nftMint);
+}
+
 async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/launch/token") {
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
@@ -343,11 +352,12 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, units: 200_000 }) };
   }
   if (url === "/api/launch/receipt") {
-    // Write the lock receipt (JSON + SVG) into the NFT's on-chain metadata.
+    // Print the lock receipt into the NFT: a PNG + metadata JSON on IPFS when the browser sent
+    // the PNG (what wallets show), else the JSON + SVG in the on-chain metadata.
     const r = ownLaunch(body);
     const nft = r.lockNft ?? (await launchStatus(conn, cfg, r)).lockNft;
     if (!nft) throw new Error("The LP isn't locked yet.");
-    const { ixs } = await buildReceipt(conn, cfg, new PublicKey(r.creator), new PublicKey(nft));
+    const { ixs } = await receiptIxs(new PublicKey(r.creator), new PublicKey(nft), body.png, ip);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, noBudget: true }) };
   }
   // Withdraw from a lock NFT (any lock, RFLT or a launch): the NFT holder's wallet signs.
@@ -396,7 +406,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/nft/receipt") {
     // Print or refresh the receipt in any lock NFT; only its update authority can sign.
     const authority = new PublicKey(String(body.authority));
-    const { ixs } = await buildReceipt(conn, cfg, authority, new PublicKey(String(body.nftMint)));
+    const { ixs } = await receiptIxs(authority, new PublicKey(String(body.nftMint)), body.png, ip);
     return { tx: await unsignedTx(conn, authority, ixs, [], { ...opts, noBudget: true }) };
   }
   if (url === "/api/nft/collect" || url === "/api/nft/claim") {
@@ -545,15 +555,19 @@ async function nftView(mintStr: string) {
   const [meta, holder] = await Promise.all([
     getTokenMetadata(conn, nft, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null), nftHolder(conn, nft),
   ]);
-  const onChain = meta ? receiptImage(meta.uri) : null;
+  const art = meta ? await nftArt(cfg, meta.uri) : null;
+  const fresh = `data:image/svg+xml,${encodeURIComponent(receiptSvg(d))}`;
   // Trading fees this NFT's liquidity has earned, as its current holder would collect them.
   const fees = holder ? await collectQuote(holder.owner, nft, await nftTarget(d)).catch(() => null) : null;
   return {
     fees, rewards: await creatorRewards(mintStr, d.tokenMint),
     ...d, explorer, name: meta?.name ?? `${d.symbol} LP Lock`,
-    image: onChain ?? `data:image/svg+xml,${encodeURIComponent(receiptSvg(d))}`, printed: !!onChain,
-    // False once the design or the numbers (e.g. pool share) have moved on since it was printed.
-    upToDate: !!onChain && onChain === receiptImage(receiptUri(d)),
+    image: art?.image ?? fresh, printed: !!art, onIpfs: !!art?.ipfs,
+    // The receipt as it should look now, for the browser to draw as a PNG when (re)printing.
+    freshReceipt: fresh, receiptPng: ipfsEnabled(cfg),
+    // False once the design or the numbers (e.g. pool share) have moved on since it was
+    // printed, or (with uploads on) while it's still the old inline-SVG receipt wallets can't show.
+    upToDate: !!art && (art.ipfs ? art.hash === receiptHash(d) : !ipfsEnabled(cfg) && art.image === receiptImage(receiptUri(d))),
     holder: holder?.owner.toBase58() ?? null, authority: meta?.updateAuthority?.toBase58() ?? null,
     lock: lockPda(new PublicKey(cfg.locker!.programId), nft).toBase58(),
   };
@@ -621,7 +635,7 @@ async function buildNfts() {
       for (const x of rw ? [rw, ...rw.others] : []) if (x.symbol === "XNT") rewardXnt += BigInt(x.claimed) + BigInt(x.claimable) + BigInt(x.vesting);
       return {
         nftMint: l.nftMint.toBase58(), symbol: t.symbol, tokenName: t.name, tokenMint: t.mint,
-        name: meta?.name ?? `${t.symbol} LP Lock`, receipt: meta ? receiptImage(meta.uri) : null,
+        name: meta?.name ?? `${t.symbol} LP Lock`, receipt: meta ? (await nftArt(cfg, meta.uri))?.image ?? null : null,
         holder: holder?.owner.toBase58() ?? null, lockedAt: l.lockedAt, unlockAt: l.unlockAt,
         lp: lp.toString(), lpSharePct: supply > 0n ? Number((lp * 1_000_000n) / supply) / 10_000 : 0, valueXnt: lpXnt(lp).toString(),
         earned: { feesCollectedXnt: feesCollected.toString(), feesReadyXnt: feesReady.toString(), rewards, totalXnt: (feesCollected + feesReady + rewardXnt).toString(),
@@ -767,7 +781,7 @@ async function getView(url: URL) {
           if (q) fees = { ...q, holder: holder.owner.toBase58() };
         }
       }
-      return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? receiptImage(nftMeta.uri) : null, rewards: await creatorRewards(nft, r.mint), fees, nftHolder: nftHolderAddr };
+      return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? (await nftArt(cfg, nftMeta.uri))?.image ?? null : null, rewards: await creatorRewards(nft, r.mint), fees, nftHolder: nftHolderAddr };
     }));
   }
   if (url.pathname === "/api/tokens") return registeredLaunches().map((r) => ({ ...publicView(r), paid: tokenPayouts(r.mint) }));
@@ -1340,7 +1354,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST") {
       const origin = req.headers.origin ?? "";
       if (![...allowedHosts].some((h) => origin === `http://${h}` || origin === `https://${h}`)) { res.writeHead(403).end("Forbidden origin"); return; }
-      const out = await post(url.pathname, await readJson(req, url.pathname === "/api/upload-logo" ? Math.ceil(MAX_LOGO_BYTES * 1.4) + 2_000 : 64_000), ip);
+      const out = await post(url.pathname, await readJson(req, url.pathname === "/api/upload-logo" ? Math.ceil(MAX_LOGO_BYTES * 1.4) + 2_000
+        : url.pathname === "/api/nft/receipt" || url.pathname === "/api/launch/receipt" ? Math.ceil(MAX_RECEIPT_PNG_BYTES * 1.4) + 2_000 : 64_000), ip);
       if (!out) { res.writeHead(404).end("Not found"); return; }
       send(res, 200, out);
       return;
