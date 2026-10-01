@@ -6,6 +6,9 @@
  *   npx tsx scripts/sweep-retired-distributor.ts --keypair <distributor key> --to <wallet> \
  *     [--state <distributor-state.json>] [--rpc <url>]          # dry run
  *   ... --execute                                                 # send it
+ *   ... --skip-owed   only send the rest (the owed holders were already paid, e.g. a run that
+ *                     stopped after paying them); a normal run clears the state file's owed list
+ *                     once it has paid them, so a rerun can't pay them twice
  *
  * Refuses while the wallet can still withdraw a token's tax (it must be retired first).
  */
@@ -34,7 +37,8 @@ for (const mint of new Set(accounts.value.map((a) => a.account.data.parsed.info.
 }
 
 const state = arg("--state") && fs.existsSync(arg("--state")!) ? JSON.parse(fs.readFileSync(arg("--state")!, "utf8")) : {};
-const owedRaw = Object.entries((state.owed ?? {}) as Record<string, string>).map(([w, a]) => [new PublicKey(w), BigInt(a)] as const).filter(([, a]) => a > 0n);
+const skipOwed = args.includes("--skip-owed");
+const owedRaw = skipOwed ? [] : Object.entries((state.owed ?? {}) as Record<string, string>).map(([w, a]) => [new PublicKey(w), BigInt(a)] as const).filter(([, a]) => a > 0n);
 // A wallet with no account can only receive at least the rent-exempt minimum: it gets that
 // instead of a smaller amount owed (the difference comes out of what is swept).
 const rentMin = BigInt(await conn.getMinimumBalanceForRentExemption(0));
@@ -53,6 +57,13 @@ if (!execute) { console.log("\nDry run. Add --execute to send."); process.exit(0
 if (owed.length) {
   const sig = await run(conn, withPriority(owed.map(([w, a]) => SystemProgram.transfer({ fromPubkey: key.publicKey, toPubkey: w, lamports: a })), 1_000, 10_000), key);
   console.log(`Paid owed holders: ${sig}`);
+  // Never pay them twice: record that nothing is owed any more (the old file is kept as .before-sweep).
+  const sf = arg("--state");
+  if (sf && fs.existsSync(sf)) {
+    fs.copyFileSync(sf, `${sf}.before-sweep`);
+    fs.writeFileSync(sf, JSON.stringify({ ...state, owed: {} }, null, 2) + "\n");
+    console.log(`Cleared the owed list in ${sf}`);
+  }
 }
 // Everything left but the last transaction's fee (the wallet may close to 0 lamports).
 const left = BigInt(await conn.getBalance(key.publicKey, "confirmed"));
