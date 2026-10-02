@@ -132,6 +132,13 @@ description.
 
 ## Voiceover and music
 
+- **ElevenLabs, automatically:** `npx tsx scripts/video-voice.ts --voice <voice id>`
+  speaks each product line in that voice (key from `ELEVENLABS_API_KEY` or
+  `~/.config/elevenlabs/key`, never the repo), holds a scene's last frame when its line runs
+  longer, and writes `tour-product-voiced.mp4`. `--music track.mp3` adds music ducked under
+  the voice; takes are cached in `voice/`, so re-runs only pay for changed lines
+  (`--regenerate` for new takes). Product cut ≈ 1,100 characters of credits.
+
 - **Your own voice:** read the lines over the joined MP4 in any editor (CapCut, DaVinci
   Resolve, iMovie). Each scene is its own MP4, so trimming one to fit a line is easy.
 - **Text-to-speech:** paste a scene's lines into any TTS tool and drop each file at its

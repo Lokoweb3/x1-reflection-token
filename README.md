@@ -735,6 +735,7 @@ with ffmpeg, joins them into one MP4 with an `.srt`:
 npm i --no-save playwright && npx playwright install chromium   # once
 npx tsx scripts/video-tour.ts                  # product cut, 1920x1080 → video/out/product/
 npx tsx scripts/video-tour.ts --cut tutorial   # tutorial cut; --vertical for Shorts/TikTok
+npx tsx scripts/video-voice.ts --voice <ElevenLabs voice id> [--music track.mp3]   # voiceover
 ```
 
 Use the solana 3.x CLI and test validator for the program upgrade tests: the older 2.1
