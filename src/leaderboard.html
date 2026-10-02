@@ -26,8 +26,14 @@ h1 { margin: 0 0 6px; font-size: 34px; }
 .tile .n { font-size: 12px; color: var(--text-muted); }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
-th { font-size: 12px; color: var(--text-muted); }
+th, td { padding: 7px 5px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
+/* Headers wrap (units go to a second line) so the whole table fits without scrolling sideways. */
+th { font-size: 11px; color: var(--text-muted); white-space: normal; vertical-align: bottom; line-height: 1.3; min-width: 4.5em; }
+td { font-size: 13px; }
+/* The wallet's labels (Creator, You, Sold out) drop under the address instead of widening the column. */
+td.who { white-space: normal; min-width: 8.5em; }
+td.who .lbl { display: inline-block; margin: 2px 6px 0 0; }
+@media (max-width: 1150px) { td { font-size: 12px; } th, td { padding: 6px 4px; } th { font-size: 10px; } }
 th button { all: unset; cursor: pointer; }
 th button:hover, th button[aria-sort] { text-decoration: underline; }
 .num { text-align: right; }
@@ -46,6 +52,7 @@ tr.me td { background: rgb(200 16 46 / .07); }
 a.ext { text-decoration: none; opacity: .6; font-size: 12px; }
 a.ext:hover { opacity: 1; }
 td .sub { font-size: .85em; margin-top: 2px; }
+td .sub .sub { font-size: 1em; margin-top: 0; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/i18n.js"></script>
@@ -94,15 +101,19 @@ const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 const sig = (v) => v === 0 ? "0" : Math.abs(v) < 1 ? v.toFixed(Math.min(14, 2 - Math.floor(Math.log10(Math.abs(v))))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) < 100 ? 4 : 2 });
 const amt = (v) => v >= 1e6 ? v.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 2 }) : v.toLocaleString(undefined, { maximumFractionDigits: 4 });
 const pnlSpan = (v, pct, unit = "XNT") => v === null ? el("span", { class: "muted", text: "–" })
-  : el("span", { class: v > 0 ? "up" : v < 0 ? "down" : "", text: `${v > 0 ? "+" : ""}${sig(v)} ${unit}` + (pct != null ? ` (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%)` : "") });
+  : el("span", { class: v > 0 ? "up" : v < 0 ? "down" : "", text: `${v > 0 ? "+" : ""}${sig(v)}${unit ? ` ${unit}` : ""}` + (pct != null ? ` (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%)` : "") });
+/** Table cell profit/loss: the amount, with the percentage on its own line under it (keeps the columns narrow). */
+const pct1 = (p) => `${p > 0 ? "+" : ""}${Math.abs(p) >= 100 ? p.toFixed(0) : p.toFixed(1)}%`;
+const pnlCell = (v, pct) => v === null ? el("span", { class: "muted", text: "–" })
+  : el("span", { class: v > 0 ? "up" : v < 0 ? "down" : "" }, `${v > 0 ? "+" : ""}${sig(v)}`, pct != null ? el("div", { class: "sub", text: pct1(pct) }) : null);
 let explorer = "", data = null, sortKey = "balance", sortDir = -1;
 
 // Prices and costs are in the token's pair: XNT, or JACK for a JACK-paired token (its
 // trades are in JACK). Rewards are always XNT.
 const colsFor = (u) => [
-  ["#", null], [tr("Wallet"), null], [tr("Balance"), "balance"], [tr("Avg cost ({u})", { u }), "avgCost"], [tr("Cost ({u})", { u }), "costBasis"], [tr("Worth now ({u})", { u }), "value"], [tr("If sold now ({u})", { u }), "soldNow"],
-  [tr("Rewards earned (XNT)"), "rewardsXnt"], [tr("Profit / loss"), "pnl"], [tr("Total return (XNT)"), "returnXnt"],
-  [tr("Bought"), "bought"], [tr("Spent ({u})", { u }), "spent"], [tr("Sold"), "sold"], [tr("Realized ({u})", { u }), "realized"], [tr("Trades"), "trades"],
+  ["#", null], [tr("Wallet"), null], [tr("Balance"), "balance"], [tr("Cost ({u})", { u }), "costBasis"], [tr("Worth now ({u})", { u }), "value"], [tr("Profit / loss ({u})", { u }), "pnl"],
+  [tr("If sold now ({u})", { u }), "soldNow"], [tr("Rewards earned (XNT)"), "rewardsXnt"], [tr("Total return (XNT)"), "returnXnt"],
+  [tr("Spent ({u})", { u }), "spent"], [tr("Realized ({u})", { u }), "realized"], [tr("Trades"), "trades"],
 ];
 let COLS = colsFor("XNT"), colsUnit = null;
 
@@ -138,26 +149,29 @@ function render() {
   const body = rows.map((r, i) => el("tr", { class: me && r.wallet === me ? "me" : "" },
     el("td", { class: "muted", text: String(i + 1) }),
     // The wallet opens its earnings page on this site; ↗ goes to the explorer.
-    el("td", {}, el("a", { href: `/wallet/${r.wallet}`, class: "mono", title: tr("Balances, rewards and NFTs for this wallet"), text: short(r.wallet) }),
+    el("td", { class: "who" }, el("a", { href: `/wallet/${r.wallet}`, class: "mono", title: tr("Balances, rewards and NFTs for this wallet"), text: short(r.wallet) }),
       el("a", { href: `${explorer}/address/${r.wallet}`, target: "_blank", rel: "noopener", class: "ext", title: tr("View on the explorer"), "aria-label": tr("View on the explorer"), text: " ↗" }),
       r.label ? el("span", { class: "lbl", text: tr(r.label) }) : null, me && r.wallet === me ? el("span", { class: "lbl", text: tr("You") }) : null,
       r.status === "sold" ? el("span", { class: "lbl", text: tr("Sold out") }) : null),
     el("td", { class: "num", text: amt(r.balance), title: r.unknownCost > 0 ? tr("{unknownCost} of these weren't bought on the pool (no known cost)", { unknownCost: amt(r.unknownCost) }) : "" }),
-    el("td", { class: "num", text: r.avgCost !== null ? sig(r.avgCost) : "–", title: r.avgCost === null ? tr("No buys on the pool since tracking began") : "" }),
-    el("td", { class: "num", text: r.avgCost !== null && r.costBasis > 0 ? sig(r.costBasis) : "–",
-      title: r.unknownCost > 0 && r.costBasis > 0 ? tr("What the {balance} bought tokens they still hold cost; {unknownCost} more have no known cost", { balance: amt(r.balance - r.unknownCost), unknownCost: amt(r.unknownCost) }) : tr("What the tokens they hold now cost them") }),
+    // Cost, with the average price paid per token under it.
+    el("td", { class: "num", title: r.avgCost === null ? tr("No buys on the pool since tracking began")
+        : r.unknownCost > 0 && r.costBasis > 0 ? tr("What the {balance} bought tokens they still hold cost; {unknownCost} more have no known cost", { balance: amt(r.balance - r.unknownCost), unknownCost: amt(r.unknownCost) }) : tr("What the tokens they hold now cost them") },
+      r.avgCost !== null && r.costBasis > 0 ? sig(r.costBasis) : "–",
+      r.avgCost !== null ? el("div", { class: "sub muted", text: tr("avg {price}", { price: sig(r.avgCost) }) }) : null),
     el("td", { class: "num", text: r.value !== null ? sig(r.value) : "–", title: tr("Balance × today's pool price") }),
+    el("td", { class: "num", title: tr("Worth now minus cost") }, pnlCell(r.pnl, r.pnlPct)),
     // What selling the whole balance at once would actually return: after the token's tax, the pool fee and price impact.
     el("td", { class: "num", title: tr("Selling the whole balance in one go now: after the token's tax, the pool's fee and the price impact of the sale itself. Profit/loss below is on that basis.") },
       r.soldNow != null && r.balance > 0 ? sig(r.soldNow) : "–",
-      r.pnlIfSold != null && r.balance > 0 ? el("div", { class: "sub" }, pnlSpan(r.pnlIfSold, r.pnlIfSoldPct, U)) : null),
+      r.pnlIfSold != null && r.balance > 0 ? el("div", { class: "sub" }, pnlCell(r.pnlIfSold, r.pnlIfSoldPct)) : null),
     el("td", { class: "num", text: r.rewardsXnt ? sig(r.rewardsXnt) : "–", title: tr("XNT this wallet has received: holder payouts plus Distribute now rewards") }),
-    el("td", { class: "num" }, pnlSpan(r.pnl, r.pnlPct, U)),
-    el("td", { class: "num", title: tr("Profit/loss plus realized profit plus rewards received") + (U !== "XNT" ? tr(" ({U} valued at today's {U}/XNT price)", { U }) : "") }, pnlSpan(r.returnXnt, null)),
-    el("td", { class: "num", text: r.bought ? amt(r.bought) : "–" }),
-    el("td", { class: "num", text: r.spent ? sig(r.spent) : "–", title: tr("Total {U} paid on all buys, including tokens since sold", { U }) }),
-    el("td", { class: "num", text: r.sold ? amt(r.sold) : "–" }),
-    el("td", { class: "num" }, r.realized ? pnlSpan(r.realized, null, U) : el("span", { class: "muted", text: "–" })),
+    el("td", { class: "num", title: tr("Profit/loss plus realized profit plus rewards received") + (U !== "XNT" ? tr(" ({U} valued at today's {U}/XNT price)", { U }) : "") }, pnlSpan(r.returnXnt, null, null)),
+    // Spent, with the tokens those buys got under it; realized, with the tokens sold.
+    el("td", { class: "num", title: tr("Total {U} paid on all buys, including tokens since sold", { U }) }, r.spent ? sig(r.spent) : "–",
+      r.bought ? el("div", { class: "sub muted", text: tr("{amount} bought", { amount: amt(r.bought) }) }) : null),
+    el("td", { class: "num" }, r.realized ? pnlSpan(r.realized, null, null) : el("span", { class: "muted", text: "–" }),
+      r.sold ? el("div", { class: "sub muted", text: tr("{amount} sold", { amount: amt(r.sold) }) }) : null),
     el("td", { class: "num", text: String(r.trades || "–") })));
   $("out").replaceChildren(
     el("div", { class: "tiles" },
