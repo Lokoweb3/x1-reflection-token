@@ -444,7 +444,12 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const f = path.join(stateDirOf(mint), "vault-index.json");
     let last: string | undefined;
     try { last = JSON.parse(fs.readFileSync(f, "utf8")).last; } catch { /* first run */ }
-    const sigs = await conn.getSignaturesForAddress(v.address, { until: last, limit: 50 }, "confirmed");
+    // A node that has pruned the last indexed transaction (testnet drops old history) answers
+    // "not found": read the newest ones instead (already-logged ones are skipped) and move on.
+    const sigs = await conn.getSignaturesForAddress(v.address, { until: last, limit: 50 }, "confirmed").catch((e) => {
+      if (last && /not found/i.test(msg(e))) return conn.getSignaturesForAddress(v.address, { limit: 50 }, "confirmed");
+      throw e;
+    });
     if (!sigs.length) return;
     const logged = loggedSignatures(mint);
     for (const s of [...sigs].reverse()) {
