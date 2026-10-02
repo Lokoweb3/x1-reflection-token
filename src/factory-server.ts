@@ -18,7 +18,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { PublicKey, Transaction } from "@solana/web3.js";
-import { NATIVE_MINT } from "@solana/spl-token";
+import { NATIVE_MINT, calculateEpochFee } from "@solana/spl-token";
 import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
 import { pinnedRecoveryFile, recoveryUrl } from "./recovery/pinned.js";
 import { payoutToken, payoutTokenJson, payoutTokensOn } from "./factory/payout.js";
@@ -33,7 +33,7 @@ import { readRewardVault, rewardSummary } from "./locker.js";
 import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, buildReceiptIpfs, nftArt, receiptHash, receiptImage } from "./locker-tx.js";
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
-import { snapshot, spotValue } from "./xdex.js";
+import { cpmmOut, snapshot, spotValue } from "./xdex.js";
 import { positions, refreshTrades } from "./trades.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
 import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
@@ -1231,6 +1231,14 @@ function leaderboard(mintStr: string) {
     // Price per whole token in the unit trades are recorded in: XNT, or JACK for a JACK pool.
     const price: number | null = pair.xntPool ? st.priceQuote : st.priceXnt;
     const x = (v: bigint) => Number(v) / 1e9;
+    // "If sold now": what selling a whole balance in one go returns from the pool right now,
+    // after the token's own tax and the pool's fee and price impact (in the price unit).
+    const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint), pair.mint).catch(() => null);
+    const sellAll = (amount: bigint) => {
+      if (!snap || amount <= 0n) return null;
+      const net = amount - calculateEpochFee(snap.feeCfg, snap.epoch, amount);
+      return net > 0n ? x(cpmmOut(net, snap.reserveToken, snap.reserveQuote, snap.tradeFeeRate)) : 0;
+    };
     const rows: any[] = [];
     const seen = new Set<string>();
     for (const h of st.holders) {
@@ -1244,9 +1252,13 @@ function leaderboard(mintStr: string) {
       const value = price !== null ? bal * price : null;
       const pnl = value !== null && avg !== null && price !== null ? price * heldFromBuys - costKnown : null;
       const rewardsXnt = rewardOf(h.owner);
+      const soldNow = sellAll(BigInt(h.balance));
+      // Profit if sold now, on the tokens with a known cost (their share of the sale).
+      const pnlIfSold = soldNow !== null && avg !== null && bal > 0 ? (soldNow * heldFromBuys) / bal - costKnown : null;
       rows.push({
         wallet: h.owner, label: h.label, status: h.status, balance: bal, pctSupply: h.pct,
         avgCost: avg, value, costBasis: costKnown, pnl, pnlPct: pnl !== null && costKnown > 0 ? (pnl / costKnown) * 100 : null,
+        soldNow, pnlIfSold, pnlIfSoldPct: pnlIfSold !== null && costKnown > 0 ? (pnlIfSold / costKnown) * 100 : null,
         rewardsXnt, returnXnt: totalReturn(pnl, p ? x(p.realized) : 0, rewardsXnt),
         unknownCost: bal - heldFromBuys > 1e-9 ? bal - heldFromBuys : 0,
         bought: p ? Number(p.bought) / dec : 0, sold: p ? Number(p.sold) / dec : 0,

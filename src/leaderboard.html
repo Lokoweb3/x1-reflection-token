@@ -45,6 +45,7 @@ tr.me td { background: rgb(200 16 46 / .07); }
 @media (max-width: 860px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } header nav { margin-left: 0; } }
 a.ext { text-decoration: none; opacity: .6; font-size: 12px; }
 a.ext:hover { opacity: 1; }
+td .sub { font-size: .85em; margin-top: 2px; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <script src="/i18n.js"></script>
@@ -99,7 +100,7 @@ let explorer = "", data = null, sortKey = "balance", sortDir = -1;
 // Prices and costs are in the token's pair: XNT, or JACK for a JACK-paired token (its
 // trades are in JACK). Rewards are always XNT.
 const colsFor = (u) => [
-  ["#", null], [tr("Wallet"), null], [tr("Balance"), "balance"], [tr("Avg cost ({u})", { u }), "avgCost"], [tr("Cost ({u})", { u }), "costBasis"], [tr("Worth now ({u})", { u }), "value"],
+  ["#", null], [tr("Wallet"), null], [tr("Balance"), "balance"], [tr("Avg cost ({u})", { u }), "avgCost"], [tr("Cost ({u})", { u }), "costBasis"], [tr("Worth now ({u})", { u }), "value"], [tr("If sold now ({u})", { u }), "soldNow"],
   [tr("Rewards earned (XNT)"), "rewardsXnt"], [tr("Profit / loss"), "pnl"], [tr("Total return (XNT)"), "returnXnt"],
   [tr("Bought"), "bought"], [tr("Spent ({u})", { u }), "spent"], [tr("Sold"), "sold"], [tr("Realized ({u})", { u }), "realized"], [tr("Trades"), "trades"],
 ];
@@ -145,7 +146,11 @@ function render() {
     el("td", { class: "num", text: r.avgCost !== null ? sig(r.avgCost) : "–", title: r.avgCost === null ? tr("No buys on the pool since tracking began") : "" }),
     el("td", { class: "num", text: r.avgCost !== null && r.costBasis > 0 ? sig(r.costBasis) : "–",
       title: r.unknownCost > 0 && r.costBasis > 0 ? tr("What the {balance} bought tokens they still hold cost; {unknownCost} more have no known cost", { balance: amt(r.balance - r.unknownCost), unknownCost: amt(r.unknownCost) }) : tr("What the tokens they hold now cost them") }),
-    el("td", { class: "num", text: r.value !== null ? sig(r.value) : "–" }),
+    el("td", { class: "num", text: r.value !== null ? sig(r.value) : "–", title: tr("Balance × today's pool price") }),
+    // What selling the whole balance at once would actually return: after the token's tax, the pool fee and price impact.
+    el("td", { class: "num", title: tr("Selling the whole balance in one go now: after the token's tax, the pool's fee and the price impact of the sale itself. Profit/loss below is on that basis.") },
+      r.soldNow != null && r.balance > 0 ? sig(r.soldNow) : "–",
+      r.pnlIfSold != null && r.balance > 0 ? el("div", { class: "sub" }, pnlSpan(r.pnlIfSold, r.pnlIfSoldPct, U)) : null),
     el("td", { class: "num", text: r.rewardsXnt ? sig(r.rewardsXnt) : "–", title: tr("XNT this wallet has received: holder payouts plus Distribute now rewards") }),
     el("td", { class: "num" }, pnlSpan(r.pnl, r.pnlPct, U)),
     el("td", { class: "num", title: tr("Profit/loss plus realized profit plus rewards received") + (U !== "XNT" ? tr(" ({U} valued at today's {U}/XNT price)", { U }) : "") }, pnlSpan(r.returnXnt, null)),
