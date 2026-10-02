@@ -41,10 +41,12 @@ const only = opt("scenes")?.split(",").map((s) => s.trim()).filter(Boolean);
 const captionsOn = !flag("no-captions");
 /** Tutorial holds everything longer so a voiceover can explain it. */
 const pace = cut === "tutorial" ? 1.9 : 1;
-// The page is laid out as if the screen were `scale` times smaller (1280 wide at 1080p, phone
-// width for vertical) and zoomed up to the full frame, so text is big and sharp.
+// Landscape: the page is laid out 1280 wide and zoomed up to fill a 1080p frame (big, sharp
+// text). Vertical: the browser really is phone-sized, so the site uses its phone layout
+// (zoom wouldn't trigger it), and ffmpeg scales the clip up to the frame.
 const scale = vertical ? 2 : W >= 1920 ? 1.5 : 1;
-const viewport = { width: W, height: H };
+const zoom = vertical ? 1 : scale;
+const viewport = vertical ? { width: Math.round(W / scale), height: Math.round(H / scale) } : { width: W, height: H };
 
 // ---------- playwright (not a dependency of the site: install it only to record) ----------
 function loadPlaywright() {
@@ -191,7 +193,7 @@ async function scrollBy(c: Ctx, px: number) {
 
 // Caption bar, a visible cursor and a highlight ring: recorded video doesn't show the real pointer.
 /** Caption and cursor sizes follow the video's size (1 = a 1080-pixel short side). */
-const U = Math.min(W, H) / 1080;
+const U = Math.min(viewport.width, viewport.height) / 1080 * (vertical ? 1.1 : 1);
 const OVERLAY = (captions: boolean, zoom: number) => `
 (() => {
   const css = \`
@@ -244,7 +246,7 @@ async function main() {
   const clips: Clip[] = [];
   for (const [i, s] of scenes.entries()) {
     const ctx = await browser.newContext({ viewport, colorScheme: mode === "dark" ? "dark" : "light",
-      recordVideo: { dir: path.join(outDir, ".raw"), size: { width: W, height: H } } });
+      recordVideo: { dir: path.join(outDir, ".raw"), size: viewport } });
     await ctx.addInitScript(({ theme, mode, lang }: { theme: string; mode: string; lang: string }) => {
       try {
         localStorage.setItem("99tax-disclaimer-v1", "yes");
@@ -253,7 +255,7 @@ async function main() {
         localStorage.setItem("99tax-lang", lang);
       } catch { /* recording only */ }
     }, { theme, mode, lang });
-    await ctx.addInitScript(OVERLAY(captionsOn, scale));
+    await ctx.addInitScript(OVERLAY(captionsOn, zoom));
     const page = await ctx.newPage();
     const t0 = Date.now();
     await page.goto(s.url({ mint, nft, wallet }), { waitUntil: "networkidle", timeout: 60_000 }).catch(() => undefined);
