@@ -45,7 +45,7 @@ import path from "node:path";
 import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, getTokenMetadata, unpackMint } from "@solana/spl-token";
 import { decodePool } from "../xdex.js";
-import { Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, loadKeypair, toBaseUnits, xnt } from "../config.js";
+import { Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, fromBaseUnits, loadKeypair, toBaseUnits, xnt } from "../config.js";
 import {
   REWARD_MINT, VAULT_VERSION, appointAllowedAt, appointPublisherIx, cancelsLeft, cidFromBytes, cidToBytes, effectiveList, fallbackAt, fallbackActive,
   parseEvents, publishListIx, rewardTokenInfo, vaultAuthPda, vaultJson, vaultPda, type Vault, type VaultEvent, paysInToken,
@@ -62,6 +62,8 @@ import {
 import { DECIMALS, type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged } from "./launch.js";
 
 /** Crank pass interval; TAX_VAULT_PASS_SECS shortens it for local rehearsals (short-windows builds). */
+/** Warn when the crank wallet has less XNT than this for fees (factory.taxVault.crankLowXnt). */
+export const DEFAULT_CRANK_LOW_XNT = "0.2";
 const PASS_MS = Number(process.env.TAX_VAULT_PASS_SECS ?? 60) * 1000;
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -153,6 +155,24 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   if (keyPath) {
     try { crank = loadKeypair(keyPath); } catch (e) { console.error(`Tax vault crank off: can't read factory.taxVault.publisherKeypair (${msg(e)})`); }
   }
+  // The crank wallet pays every vault transaction's fee; without XNT the vaults stop (nothing is
+  // lost, payouts just wait). Read once per pass; low means warn in the panels and the log.
+  const lowLamports = toBaseUnits(cfg.factory?.taxVault?.crankLowXnt ?? DEFAULT_CRANK_LOW_XNT, 9);
+  let crankBalance: bigint | null = null;
+  let lowLoggedAt = 0;
+  async function checkCrankBalance() {
+    if (!crank) return;
+    crankBalance = BigInt(await conn.getBalance(crank.publicKey, "confirmed"));
+    if (crankBalance < lowLamports && Date.now() - lowLoggedAt > 3_600_000) {
+      lowLoggedAt = Date.now();
+      console.error(`[vault crank] LOW BALANCE: ${crank.publicKey.toBase58()} has ${fromBaseUnits(crankBalance, 9)} XNT for fees (warns under ${fromBaseUnits(lowLamports, 9)}). Top it up or the vaults stop.`);
+    }
+  }
+  const crankJson = (mint: string) => ({
+    on: !!crank, wallet: crank?.publicKey.toBase58() ?? null, lastPass: status.get(mint) ?? null,
+    balanceXnt: crankBalance === null ? null : fromBaseUnits(crankBalance, 9),
+    low: crankBalance !== null && crankBalance < lowLamports,
+  });
   const core = crank ? vaultCrank({ conn, program, xdex, network: cfg.network, signer: crank, microLamports: opts.microLamports,
     onTx: (t, v, signature, events) => record(t.mint.toBase58(), v, signature, events, crank!.publicKey.toBase58()) }) : null;
 
@@ -259,7 +279,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       lastRejected: lastRejected(file),
       listUrl: `/api/vault/${mint}/list`,
       ...(v3Status(v, q) ?? {}),
-      crank: { on: !!crank, wallet: crank?.publicKey.toBase58() ?? null, lastPass: status.get(mint) ?? null },
+      crank: crankJson(mint),
       activity: activity(mint),
     };
   }
@@ -904,6 +924,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     if (cranking || !crank) return;
     cranking = true;
     try {
+      await checkCrankBalance().catch((e) => console.error(`[vault crank] balance check failed: ${msg(e)}`));
       for (const r of await vaultTokens()) {
         try { await crankToken(r); } catch (e) { console.error(`[vault crank] ${r.symbol} (${r.mint}): ${msg(e)}`); }
       }

@@ -498,6 +498,13 @@ cancel) and cannot move funds. On mainnet it also needs `factory.taxVault.mainne
 (set since 1 Oct 2026, with `beta: true` for the "not formally audited" notice); the runbook
 is [docs/MAINNET-ROLLOUT.md](docs/MAINNET-ROLLOUT.md).
 
+The publisher key also pays every vault transaction's network fee, so it needs XNT: with
+`distribution.priorityMicroLamports: 1000` that's roughly 0.0002–0.0004 XNT per transaction
+(about 7 an hour on an active token), partly paid back by the crank reward on each sale. Under
+`factory.taxVault.crankLowXnt` (default 0.2 XNT) the vault panels show a warning and the
+server logs `[vault crank] LOW BALANCE` hourly. If it runs dry the vaults just wait (the tax
+stays collected-in-place), and anyone can still press **Run the vault now** with their own wallet.
+
 ## If 99 + Tax goes offline
 
 Tax Vault tokens don't depend on this site, its server or its keys (v3):

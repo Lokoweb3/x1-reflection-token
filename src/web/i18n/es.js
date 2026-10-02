@@ -644,6 +644,7 @@ I18N.add("es", {
   "Worth now minus cost": "Valor actual menos costo",
   "{amount} bought": "{amount} comprados",
   "{amount} sold": "{amount} vendidos",
+  "99 + Tax's vault wallet is low on XNT for network fees ({balance} XNT left). If it runs out, payouts pause until it's topped up; nothing is lost, the tax waits. Anyone can still press Run the vault now and pay the fees from their own wallet.": "La billetera de la bóveda de 99 + Tax tiene poco XNT para las comisiones de red (quedan {balance} XNT). Si se agota, los pagos se pausan hasta que se recargue; no se pierde nada, el impuesto espera. Cualquiera puede pulsar Ejecutar la bóveda ahora y pagar las comisiones con su propia billetera.",
   "If sold now ({u})": "Si vende ahora ({u})",
   "Balance × today's pool price": "Saldo × precio actual del pool",
   "Selling the whole balance in one go now: after the token's tax, the pool's fee and the price impact of the sale itself. Profit/loss below is on that basis.": "Vender todo el saldo de una vez ahora: después del impuesto del token, la comisión del pool y el impacto en el precio de la propia venta. La ganancia/pérdida de abajo se calcula sobre esa base.",

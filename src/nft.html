@@ -392,6 +392,8 @@ function vaultPanel(d, s) {
     vaultBeta ? tr("Tax Vault beta: the vault program has been independently reviewed and tested but hasn't had a formal audit yet. Launch and hold at your own risk.") : null,
     v.mismatch,
     v.publisher && !v.sitePublishes ? tr("Rewards lists for this token are published by a wallet that isn't 99 + Tax's, so holder payouts depend on that wallet.") : null,
+    // The site's crank wallet pays the vault's network fees; when it runs dry the vault waits (nothing is lost).
+    v.crank?.low ? tr("99 + Tax's vault wallet is low on XNT for network fees ({balance} XNT left). If it runs out, payouts pause until it's topped up; nothing is lost, the tax waits. Anyone can still press Run the vault now and pay the fees from their own wallet.", { balance: v.crank.balanceXnt }) : null,
   ].filter(Boolean).map((t) => el("p", { class: "vp-state warn", text: `⚠ ${t}` }));
   const run = el("button", { class: "btn primary", type: "button", text: tr("Run the vault now") });
   run.disabled = busy;

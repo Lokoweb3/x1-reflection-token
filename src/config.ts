@@ -107,6 +107,8 @@ export interface Config {
       payoutTokens?: boolean;
       /** Smallest XNT side of a payout token's pool a launch may use (default "10"). */
       payoutMinPoolXnt?: string;
+      /** Warn (vault panels, server log) when the crank wallet's XNT for fees drops below this (default "0.2"). */
+      crankLowXnt?: string;
       /** Names for crank wallets in the vault panels' activity list, e.g. { "<address>": "GitHub crank" }. */
       labels?: Record<string, string>;
       quorum?: { multisig: string; programId?: string; labels?: Record<string, string> };
