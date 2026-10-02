@@ -171,3 +171,5 @@ input, select, textarea, .search input, .toolbar input, .toolbar select, .calc i
 .yield { border-radius: 8px !important; border-style: solid !important; }
 .receipt { transform: rotate(-2deg); }
 .tok h2 { font-size: 22px !important; line-height: 1.15 !important; }
+/* The scrolling landing menu sits on the bag, not on a white note. */
+body > nav { background: var(--kraft) !important; }
