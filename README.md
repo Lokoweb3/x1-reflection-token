@@ -280,15 +280,19 @@ locked (the NFT's update authority) can print it.
 - `/wallet/<address>` ("My earnings"): a wallet's holdings across every token, XNT
   received (payouts and "Distribute now" rewards), estimated XNT/day at the current
   yield, and its LP-lock NFTs with fees and creator rewards ready to claim.
-- Themes: every page has a **Theme** menu in its header. Visitors pick Receipt (cream
-  paper, monospace, red price tags), Arcade (dark cabinet, pixel font, CRT scanlines;
-  always dark), Lunch bag (kraft paper bag, marker pen, taped notes) or Notebook (ruled
-  paper, handwriting, tokens and NFTs as sticky notes), and a mode:
+- Themes: every page has a **Theme** menu in its header. Visitors pick one of seven:
+  Receipt (cream paper, monospace, red price tags), Arcade (dark cabinet, pixel font, CRT
+  scanlines; always dark), Lunch bag (kraft paper bag, marker pen, taped notes), Notebook
+  (ruled paper, handwriting, tokens and NFTs as sticky notes), Space (mission control on a
+  starfield), Desert (sun-bleached trading post) or Casino (green baize and gold leaf), and
+  a mode:
   Auto (follows the device), Light or Dark. The choice is saved in their browser and
   applied before the page paints. `factory.theme` in config.json sets the default for
   new visitors. Links can carry `?theme=arcade&mode=dark` (`?theme=default` clears it).
   Files: `src/web/theme-<name>.css` (fonts, colours and a dark-mode token set) on top of
   `src/web/theme-base.css` (shared layout rules); `src/web/theme.js` is the menu.
+- Language: an **EN / ES** switch in every header; the whole site is translated into
+  Spanish (`src/web/i18n/es.js`, checked complete by the tests). `?lang=es` sets it from a link.
 - `/nft` lists every lock NFT (RFLT and all launches) with what it has earned: fees
   collected, fees ready and creator rewards, valued in XNT at current pool prices.
   "Mine" filters to the connected wallet.
@@ -637,11 +641,17 @@ single point of control.
 
 ## Leaderboard, burns and earnings
 
-- **Holder leaderboard** (`/leaderboard/<mint>`): every holder's balance, average cost,
-  cost, worth now, profit/loss, **rewards earned (XNT)** and **total return** (profit/loss +
-  realized + rewards), built from their XDEX swaps (average-cost method, `src/trades.ts`).
-  Click a wallet to open its My earnings page. Public RPCs keep only about a day of history,
-  so trades are indexed every 10 minutes.
+- **Holder leaderboard** (`/leaderboard/<mint>`): every holder's balance, cost (with the
+  average price paid), worth now, profit/loss, **If sold now**, **rewards earned (XNT)**,
+  **total return** (profit/loss + realized + rewards), XNT spent and realized profit, built
+  from their XDEX swaps (average-cost method, `src/trades.ts`). Trades are found through the
+  token's mint, so buys routed through other pools (XNT → JACK → token) count too, and every
+  trade since launch is read (older ones backfill over a few minutes). **If sold now** is
+  what selling the whole balance in one go would return today: after the token's tax, the
+  pool's fee and the sale's own price impact (each wallet as if it sold alone), with the
+  profit/loss on that basis; "Worth now" is balance × spot price. The table fits the page
+  without sideways scrolling; on phones each holder is a card. Click a wallet to open its
+  My earnings page.
 - **Burns** (token stats on `/nft/<mint>`): every tax burn with its transaction, a running
   total chart and the share of launch supply burned.
 - **My earnings** (`/wallet/<address>`): XNT in the wallet, XNT received, earnings per day,
@@ -714,6 +724,19 @@ script's header for the validator command):
 | `scripts/publisher-quorum-rehearsal.ts` | The publisher quorum: the site with a plain key, then a 2-of-3 Squads multisig set up by `scripts/setup-publisher-quorum.ts` and made the publisher; the site's proposals, a co-signer rejection and a new list, the co-signer's approval, execution and payouts; a malicious list and a publisher change proposed by the site's key alone rejected by the co-signer and never on-chain, the recovery clocks unmoved |
 | `scripts/local-holder-pass-test.ts`, `scripts/local-claims-cycle-test.ts` | Holder passes |
 
+### Product video and tutorial
+
+[docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md) has a ~90 s product video and a ~6 min
+tutorial, scene by scene with the voiceover. `scripts/video-tour.ts` screen-records those
+scenes on the live site (captions, a visible cursor, highlights; read-only, no wallet) and,
+with ffmpeg, joins them into one MP4 with an `.srt`:
+
+```bash
+npm i --no-save playwright && npx playwright install chromium   # once
+npx tsx scripts/video-tour.ts                  # product cut, 1920x1080 → video/out/product/
+npx tsx scripts/video-tour.ts --cut tutorial   # tutorial cut; --vertical for Shorts/TikTok
+```
+
 Use the solana 3.x CLI and test validator for the program upgrade tests: the older 2.1
 test validator rejects `solana program extend`, which X1 testnet (solana-core 4.x)
 accepts.
@@ -731,7 +754,13 @@ vault paid holders after the 10-minute window; the retired distributor wallet pa
 still owed and was swept. The whole rollout was rehearsed first on a local copy of mainnet
 (`scripts/mainnet-vault-rehearsal.ts`). The mainnet recovery page is pinned to IPFS and
 served at `/recovery`. Lock NFT receipts are printed as a PNG + metadata JSON on IPFS so
-wallets and explorers can show them.
+wallets and explorers can show them. By 2 Oct 2026 "Test" had paid holders **46.57 XNT**
+over 108 payouts to 12 wallets (5.83 XNT of it by the vault), added 14.7 XNT of liquidity
+and burned 4.76% of its supply. On day two the publisher wallet, which pays the vault's
+network fees, ran out of XNT and payouts paused for ~14 hours: nothing was lost (the tax
+waited in holders' token accounts), and the first pass after a top-up collected the
+backlog and paid 5.43 XNT to 10 wallets. Since then the crank's priority fee is 10× lower
+(`priorityMicroLamports: 1000`) and the vault panels warn when that wallet runs low.
 
 **Live on testnet:** the `tax_vault` program **v3** (upgraded in place from v1 and v2,
 each deployed build checked byte-for-byte against the rehearsed one). **Every testnet token
