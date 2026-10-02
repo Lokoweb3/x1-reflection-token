@@ -41,9 +41,10 @@ const only = opt("scenes")?.split(",").map((s) => s.trim()).filter(Boolean);
 const captionsOn = !flag("no-captions");
 /** Tutorial holds everything longer so a voiceover can explain it. */
 const pace = cut === "tutorial" ? 1.9 : 1;
-// Vertical video: lay the page out at phone width, then scale it up to the frame.
+// The page is laid out as if the screen were `scale` times smaller (1280 wide at 1080p, phone
+// width for vertical) and zoomed up to the full frame, so text is big and sharp.
 const scale = vertical ? 2 : W >= 1920 ? 1.5 : 1;
-const viewport = { width: Math.round(W / scale), height: Math.round(H / scale) };
+const viewport = { width: W, height: H };
 
 // ---------- playwright (not a dependency of the site: install it only to record) ----------
 function loadPlaywright() {
@@ -189,22 +190,25 @@ async function scrollBy(c: Ctx, px: number) {
 }
 
 // Caption bar, a visible cursor and a highlight ring: recorded video doesn't show the real pointer.
-const OVERLAY = (captions: boolean) => `
+/** Caption and cursor sizes follow the video's size (1 = a 1080-pixel short side). */
+const U = Math.min(W, H) / 1080;
+const OVERLAY = (captions: boolean, zoom: number) => `
 (() => {
   const css = \`
-  #__tour-cap{position:fixed;left:50%;bottom:6vh;transform:translateX(-50%) translateY(12px);max-width:min(88vw,1100px);
-    padding:14px 24px;border-radius:14px;background:rgb(15 14 22 / .86);color:#fff;font:600 clamp(18px,2.3vw,30px)/1.3 system-ui,sans-serif;
+  #__tour-cap{position:fixed;left:50%;bottom:6vh;transform:translateX(-50%) translateY(12px);max-width:88vw;
+    padding:${Math.round(18 * U)}px ${Math.round(34 * U)}px;border-radius:${Math.round(18 * U)}px;background:rgb(15 14 22 / .86);color:#fff;font:600 ${Math.round(40 * U)}px/1.3 system-ui,sans-serif;
     text-align:center;opacity:0;transition:opacity .35s,transform .35s;z-index:2147483646;pointer-events:none;box-shadow:0 10px 40px rgb(0 0 0 / .35)}
   #__tour-cap.on{opacity:1;transform:translateX(-50%) translateY(0)}
-  #__tour-cur{position:fixed;left:-40px;top:-40px;width:22px;height:22px;border-radius:50%;background:rgb(255 210 0 / .55);
-    border:2px solid #111;z-index:2147483647;pointer-events:none;transform:translate(-50%,-50%);transition:left .05s linear,top .05s linear}
+  #__tour-cur{position:fixed;left:-60px;top:-60px;width:${Math.round(30 * U)}px;height:${Math.round(30 * U)}px;border-radius:50%;background:rgb(255 210 0 / .55);
+    border:${Math.max(2, Math.round(3 * U))}px solid #111;z-index:2147483647;pointer-events:none;transform:translate(-50%,-50%);transition:left .05s linear,top .05s linear}
   .__tour-spot{outline:4px solid #ffcc00 !important;outline-offset:6px !important;border-radius:6px;transition:outline-color .3s}
   \`;
   const add = () => {
     if (document.getElementById("__tour-cur")) return;
-    const s = document.createElement("style"); s.textContent = css; document.head.append(s);
-    const cur = document.createElement("div"); cur.id = "__tour-cur"; document.body.append(cur);
-    ${captions ? 'const cap = document.createElement("div"); cap.id = "__tour-cap"; document.body.append(cap);' : ""}
+    const s = document.createElement("style"); s.textContent = css + "body{zoom:${zoom}}"; document.head.append(s);
+    // Outside <body>, so the zoom doesn't move them off the pointer.
+    const cur = document.createElement("div"); cur.id = "__tour-cur"; document.documentElement.append(cur);
+    ${captions ? 'const cap = document.createElement("div"); cap.id = "__tour-cap"; document.documentElement.append(cap);' : ""}
     document.addEventListener("mousemove", (e) => { cur.style.left = e.clientX + "px"; cur.style.top = e.clientY + "px"; }, true);
     // The site's own pop-ups (disclaimer, wallet hints) stay out of the shot.
     for (const g of document.querySelectorAll(".gate")) g.remove();
@@ -239,7 +243,7 @@ async function main() {
   const browser = await chromium.launch({ headless: !flag("headed") });
   const clips: Clip[] = [];
   for (const [i, s] of scenes.entries()) {
-    const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: mode === "dark" ? "dark" : "light",
+    const ctx = await browser.newContext({ viewport, colorScheme: mode === "dark" ? "dark" : "light",
       recordVideo: { dir: path.join(outDir, ".raw"), size: { width: W, height: H } } });
     await ctx.addInitScript(({ theme, mode, lang }: { theme: string; mode: string; lang: string }) => {
       try {
@@ -249,7 +253,7 @@ async function main() {
         localStorage.setItem("99tax-lang", lang);
       } catch { /* recording only */ }
     }, { theme, mode, lang });
-    await ctx.addInitScript(OVERLAY(captionsOn));
+    await ctx.addInitScript(OVERLAY(captionsOn, scale));
     const page = await ctx.newPage();
     const t0 = Date.now();
     await page.goto(s.url({ mint, nft, wallet }), { waitUntil: "networkidle", timeout: 60_000 }).catch(() => undefined);
