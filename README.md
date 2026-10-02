@@ -726,16 +726,15 @@ script's header for the validator command):
 
 ### Product video and tutorial
 
-[docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md) has a ~90 s product video and a ~6 min
-tutorial, scene by scene with the voiceover. `scripts/video-tour.ts` screen-records those
-scenes on the live site (captions, a visible cursor, highlights; read-only, no wallet) and,
-with ffmpeg, joins them into one MP4 with an `.srt`:
+[docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md) has the narration of a ~2 min product video and
+a ~6 min tutorial. `scripts/video-tour.ts` records them from the live site (read-only, no
+wallet): each sentence is spoken by an ElevenLabs voice and shown as the caption while the
+screen does what it describes, then everything is joined into one MP4 with an `.srt`:
 
 ```bash
 npm i --no-save playwright && npx playwright install chromium   # once
-npx tsx scripts/video-tour.ts                  # product cut, 1920x1080 → video/out/product/
-npx tsx scripts/video-tour.ts --cut tutorial   # tutorial cut; --vertical for Shorts/TikTok
-npx tsx scripts/video-voice.ts --voice <ElevenLabs voice id> [--music track.mp3]   # voiceover
+npx tsx scripts/video-tour.ts --voice <ElevenLabs voice id>   # product cut, narrated → video/out/product/
+npx tsx scripts/video-tour.ts --cut tutorial --voice <id>     # tutorial; --vertical for Shorts/TikTok
 ```
 
 Use the solana 3.x CLI and test validator for the program upgrade tests: the older 2.1
