@@ -34,7 +34,7 @@ test("pool and distributor trades are left out", () => {
   assert.deepEqual([...m.keys()], ["c"]);
 });
 
-const M = (wallet: string, tokens: number, at: number, kind: "move" | "lp" | "unpriced" = "move"): Trade =>
+const M = (wallet: string, tokens: number, at: number, kind: "move" | "lp" | "unpriced" | "order" = "move"): Trade =>
   ({ ...T(wallet, tokens, 0, at), kind });
 
 test("tokens moved into the LP or another wallet take their share of the cost, with no profit or loss", () => {
@@ -46,17 +46,25 @@ test("tokens moved into the LP or another wallet take their share of the cost, w
   assert.equal(p.trades, 1); // moves aren't trades
 });
 
-test("tokens that arrive without a priced buy have no known cost, and don't borrow one", () => {
+test("tokens transferred in have no known cost, and don't borrow one", () => {
   // Bought 100 for 10, sent all 100 away, then 50 came back from a limit order: none of them cost 10.
   const p = positions([T("c", 100, -10, 1), M("c", -100, 2), M("c", 50, 3)], new Set()).get("c")!;
   assert.equal(x(p.held), 0); assert.equal(x(p.cost), 0); assert.equal(x(p.unknown), 50);
 });
 
-test("a swap paid with another token (or an old entry with no XNT paid) is a buy with no known cost", () => {
-  const p = positions([T("d", 100, -1, 1), M("d", 100, 2, "unpriced"), T("d", 100, 0, 3)], new Set()).get("d")!;
-  assert.equal(x(p.bought), 300); assert.equal(x(p.spent), 1); assert.equal(x(p.held), 100); assert.equal(x(p.unknown), 200);
-  assert.equal(x(p.cost) / x(p.held), 0.01); // average cost isn't diluted by the free-looking buys
-  assert.equal(p.trades, 3);
+test("a swap paid with another token, an old entry with no XNT paid, and an order fill are valued at the market price", () => {
+  // The market: someone buys 100 for 1 XNT (0.01 each) and sells 100 for 0.8 (0.008 each).
+  const m = [T("m", 100, -1, 1000), T("m", -100, 0.8, 1000)];
+  const p = positions([...m, M("d", 100, 1060, "unpriced"), T("d", 100, 0, 1120), M("d", 50, 1180, "order"), M("d", -50, 1200, "unpriced")], new Set()).get("d")!;
+  assert.equal(x(p.bought), 250); assert.equal(x(p.spent), 2.5); assert.equal(x(p.spentEstimated), 2.5); // buys at the buy price
+  assert.equal(x(p.received), 0.4); assert.equal(x(p.receivedEstimated), 0.4); // the sale at the sell price
+  assert.equal(x(p.held), 200); assert.equal(x(p.unknown), 0); assert.equal(p.trades, 4);
+  assert.equal(x(p.realized), -0.1); // sold 50 costing 0.5 for 0.4
+});
+
+test("with no priced swap within a day, an unpriced buy keeps no known cost (and a transfer never gets one)", () => {
+  const p = positions([T("m", 100, -1, 0), M("e", 100, 2 * 86400, "unpriced"), M("e", 100, 60)], new Set()).get("e")!;
+  assert.equal(x(p.spent), 0); assert.equal(x(p.unknown), 200); assert.equal(x(p.bought), 100);
 });
 
 test("a sale draws on known- and unknown-cost tokens in proportion; profit only on the known part", () => {
@@ -84,9 +92,9 @@ test("parseTx: an LP deposit and a transfer are moves; a swap's side payments ar
   const dep = txOf(me, [{ owner: me.toBase58(), mint, pre: 500n, post: 300n }, { owner: pool, mint, pre: 1000n, post: 1190n }], [[1e9, 1e9 - 5000]], ["Program log: Instruction: Deposit"]);
   assert.deepEqual(parseTx(dep, mint), [
     { wallet: me.toBase58(), tokens: "-200", xnt: "0", kind: "lp" }, { wallet: pool, tokens: "190", xnt: "0", kind: "move" }]);
-  // Limit-order fills log "WithdrawOrderTokens": a move, not an LP withdrawal.
+  // Collecting a filled limit order logs "WithdrawOrderTokens": an order fill, not an LP withdrawal.
   const fill = txOf(me, [{ owner: me.toBase58(), mint, pre: 0n, post: 50n }], [[1e9, 1e9 - 5000]], ["Program log: Instruction: WithdrawOrderTokens"]);
-  assert.equal(parseTx(fill, mint)[0].kind, "move");
+  assert.equal(parseTx(fill, mint)[0].kind, "order");
 });
 
 test("parseSwap adds back the real rent of a Token-2022 account the swap opened", () => {

@@ -8,15 +8,17 @@
  * the price is the signer's own XNT change. For each swap the signer's token change and
  * XNT change are taken from the transaction's own balance records (network fee, and the
  * rent of accounts opened by the swap, are added back so they don't count as price). A
- * swap paid or settled in another token (no XNT moved) has no known price ("unpriced").
- * Every other balance change is kept too, without a price: transfers, limit-order fills
- * ("move") and liquidity deposits and withdrawals ("lp"), so tokens that leave a wallet
- * take their share of its cost with them and tokens that arrive have no known cost. The
- * pool and the token's distributor (its tax sales) are skipped when positions are built.
+ * swap paid or settled in another token (no XNT moved) is "unpriced", and a limit-order
+ * fill ("order") shows no payment either: both are valued at the token's market price at
+ * the time (the nearest priced swaps), marked as estimated. Every other balance change is
+ * kept too, without a price: transfers ("move") and liquidity deposits and withdrawals
+ * ("lp"), so tokens that leave a wallet take their share of its cost with them and tokens
+ * that arrive have no known cost. The pool and the token's distributor (its tax sales) are
+ * skipped when positions are built.
  *
- * Positions use the average-cost method: a priced buy adds its XNT to the cost; tokens
- * leaving (a sale or a move) remove cost in proportion, and a priced sale books realized
- * profit on the part with a known cost.
+ * Positions use the average-cost method: a buy adds its XNT to the cost; tokens leaving (a
+ * sale or a move) remove cost in proportion, and a sale books realized profit on the part
+ * with a known cost.
  *
  * A token paired with JACK is priced in JACK instead: each trade's `xnt` field then holds
  * the signer's JACK change (the leaderboard labels it), since a JACK/XNT price at the time
@@ -31,15 +33,15 @@ export interface Trade {
   sig: string; at: number; wallet: string; tokens: string; xnt: string;
   /**
    * Absent: a swap priced by `xnt`. "unpriced": a swap paid or settled in another token.
-   * "move": tokens moved without a trade (transfer, limit-order fill). "lp": into or out of
-   * a pool's liquidity. Only swaps carry an `xnt` amount.
+   * "order": the signer collecting a filled limit order. "move": tokens moved without a
+   * trade (a transfer). "lp": into or out of a pool's liquidity. Only swaps carry an `xnt` amount.
    */
-  kind?: "unpriced" | "move" | "lp";
-  /** Read by version 2 (swaps only); replaced when its transaction is read again. */
+  kind?: "unpriced" | "order" | "move" | "lp";
+  /** Read by an older version; replaced when its transaction is read again. */
   legacy?: true;
 }
 interface Index {
-  version: 1 | 2 | 3; newest: string | null; trades: Trade[]; since?: number;
+  version: 1 | 2 | 3 | 4; newest: string | null; trades: Trade[]; since?: number;
   /** Reading the mint's older history still to do (newest first); null when done. */
   backfill?: { before: string | null } | null;
 }
@@ -55,19 +57,20 @@ const indexFile = (stateDir: string) => path.join(stateDir, "trades.json");
 function loadIndex(stateDir: string): Index {
   const f = indexFile(stateDir);
   // A new index reads the whole history once (backfill), newest first.
-  if (!fs.existsSync(f)) return { version: 3, newest: null, trades: [], backfill: { before: null } };
+  if (!fs.existsSync(f)) return { version: 4, newest: null, trades: [], backfill: { before: null } };
   const idx = JSON.parse(fs.readFileSync(f, "utf8")) as Index;
-  // Versions 1 and 2 kept swaps only: read the whole history again for the other moves. The
-  // old trades stay (marked legacy) until their transactions are read again, and for good
-  // if the RPC no longer has them.
-  if (idx.version !== 3) {
-    idx.version = 3; idx.newest = null; idx.backfill = { before: null }; delete idx.since;
+  // Versions 1 and 2 kept swaps only, and 3 didn't tell order fills from transfers: read the
+  // whole history again. The old entries stay (marked legacy) until their transactions are
+  // read again, and for good if the RPC no longer has them.
+  if (idx.version !== 4) {
+    idx.version = 4; idx.newest = null; idx.backfill = { before: null }; delete idx.since;
     for (const t of idx.trades) t.legacy = true;
   }
   return idx;
 }
 
 const LP_LOG = /^Program log: Instruction: (Deposit|Withdraw|Initialize)$/;
+const ORDER_LOG = /^Program log: Instruction: WithdrawOrderTokens$/;
 
 /**
  * The signer's token and XNT change in one swap, or null if it isn't a swap. With a
@@ -113,7 +116,8 @@ export function parseSwap(tx: VersionedTransactionResponse, mint: string, quoteM
 
 /**
  * Every wallet's token change in one transaction: the signer's swap (priced or not), and
- * any other change as a move ("lp" for the signer's own liquidity deposit or withdrawal).
+ * any other change as a move ("lp" for the signer's own liquidity deposit or withdrawal,
+ * "order" for tokens the signer collects from a filled limit order).
  */
 export function parseTx(tx: VersionedTransactionResponse, mint: string, quoteMint?: string): Omit<Trade, "sig" | "at">[] {
   if (!tx.meta || tx.meta.err) return [];
@@ -123,11 +127,13 @@ export function parseTx(tx: VersionedTransactionResponse, mint: string, quoteMin
   }
   const swap = parseSwap(tx, mint, quoteMint);
   const signer = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses }).get(0)!.toBase58();
-  const lp = (tx.meta.logMessages ?? []).some((l) => LP_LOG.test(l));
+  const logs = tx.meta.logMessages ?? [];
+  const lp = logs.some((l) => LP_LOG.test(l)), order = logs.some((l) => ORDER_LOG.test(l));
   const out: Omit<Trade, "sig" | "at">[] = swap ? [swap] : [];
   for (const [wallet, tokens] of change) {
     if (tokens === 0n || (swap && wallet === swap.wallet)) continue;
-    out.push({ wallet, tokens: tokens.toString(), xnt: "0", kind: lp && wallet === signer ? "lp" : "move" });
+    const kind = wallet !== signer ? "move" : lp ? "lp" : order && tokens > 0n ? "order" : "move";
+    out.push({ wallet, tokens: tokens.toString(), xnt: "0", kind });
   }
   return out;
 }
@@ -204,32 +210,67 @@ function saveIndex(stateDir: string, idx: Index) {
 
 export interface Position {
   wallet: string; bought: bigint; spent: bigint; sold: bigint; received: bigint;
-  /** Tokens still held from priced buys, and what they cost (average-cost method). */
+  /** Tokens from buys with a known or estimated price (what `spent` paid for). */
+  boughtPriced: bigint;
+  /** Parts of `spent` and `received` valued at the market price (paid in another token, or a limit order). */
+  spentEstimated: bigint; receivedEstimated: bigint;
+  /** Tokens still held from buys with a known or estimated price, and what they cost (average-cost method). */
   held: bigint; cost: bigint;
-  /** Tokens still held with no known cost: transferred in, from an order fill or the LP, or bought with another token. */
+  /** Tokens still held with no known cost: transferred in, from the LP, or bought when no market price was near. */
   unknown: bigint;
   /** Tokens moved out without a sale: to other wallets, and into liquidity (`lpOut`). */
   movedOut: bigint; lpOut: bigint;
-  /** Cost that left with tokens moved out or sold for another token (no XNT came back for it). */
+  /** Cost that left with tokens moved out or sold without a price (no XNT came back for it). */
   movedCost: bigint;
   realized: bigint; trades: number; firstAt: number | null; lastAt: number | null;
 }
 
+/** How far the nearest priced swap may be from a trade to value it at the market price. */
+const ESTIMATE_WITHIN_S = 24 * 3600;
+
+/**
+ * The market price (XNT per base unit) near `at`: the nearest priced swap on the same side
+ * (buys and sells differ by the tax), else on either side; null when none is close enough.
+ */
+function marketPrice(swaps: { at: number; buy: boolean; price: number }[], at: number, buy: boolean) {
+  const nearest = (same: boolean) => {
+    let best: { at: number; price: number } | null = null;
+    for (const s of swaps) if ((!same || s.buy === buy) && (!best || Math.abs(s.at - at) < Math.abs(best.at - at))) best = s;
+    return best && Math.abs(best.at - at) <= ESTIMATE_WITHIN_S ? best.price : null;
+  };
+  return nearest(true) ?? nearest(false);
+}
+
 /** Each wallet's position from its trades and moves, in order. */
 export function positions(trades: Trade[], skip: Set<string>) {
+  // A swap with its XNT on the right side has a price; an older entry without one was paid
+  // or settled in another token.
+  const isPriced = (t: Trade) => t.kind === undefined && (BigInt(t.tokens) > 0n ? BigInt(t.xnt) < 0n : BigInt(t.xnt) > 0n);
+  const swaps = trades.filter(isPriced).map((t) => {
+    const tokens = BigInt(t.tokens), xnt = BigInt(t.xnt);
+    return { at: t.at, buy: tokens > 0n, price: Math.abs(Number(xnt) / Number(tokens)) };
+  });
   const out = new Map<string, Position>();
   for (const t of trades) {
     if (skip.has(t.wallet)) continue;
-    const p = out.get(t.wallet) ?? { wallet: t.wallet, bought: 0n, spent: 0n, sold: 0n, received: 0n, held: 0n, cost: 0n, unknown: 0n, movedOut: 0n, lpOut: 0n, movedCost: 0n, realized: 0n, trades: 0, firstAt: null, lastAt: null };
+    const p = out.get(t.wallet) ?? { wallet: t.wallet, bought: 0n, boughtPriced: 0n, spent: 0n, sold: 0n, received: 0n, spentEstimated: 0n, receivedEstimated: 0n,
+      held: 0n, cost: 0n, unknown: 0n, movedOut: 0n, lpOut: 0n, movedCost: 0n, realized: 0n, trades: 0, firstAt: null, lastAt: null };
     out.set(t.wallet, p);
-    const tokens = BigInt(t.tokens), xnt = BigInt(t.xnt);
-    const swap = t.kind === undefined || t.kind === "unpriced";
-    // An older entry with no XNT on the right side was paid or settled in another token.
-    const priced = t.kind === undefined && (tokens > 0n ? xnt < 0n : xnt > 0n);
-    if (swap) { p.trades++; p.firstAt ??= t.at; p.lastAt = t.at; }
+    const tokens = BigInt(t.tokens);
+    const trade = t.kind === undefined || t.kind === "unpriced" || t.kind === "order";
+    // XNT paid (negative) or received; for a trade without one, its value at the market price.
+    let xnt: bigint | null = isPriced(t) ? BigInt(t.xnt) : null, estimated = false;
+    if (xnt === null && trade) {
+      const price = marketPrice(swaps, t.at, tokens > 0n);
+      if (price !== null) { xnt = BigInt(Math.round(-price * Number(tokens))); estimated = true; } // a buy pays, a sale gets
+    }
+    if (trade) { p.trades++; p.firstAt ??= t.at; p.lastAt = t.at; }
     if (tokens > 0n) {
-      if (swap) p.bought += tokens;
-      if (priced) { p.spent += -xnt; p.held += tokens; p.cost += -xnt; } else p.unknown += tokens;
+      if (trade) p.bought += tokens;
+      if (xnt !== null && xnt < 0n) {
+        p.spent += -xnt; p.boughtPriced += tokens; p.held += tokens; p.cost += -xnt;
+        if (estimated) p.spentEstimated += -xnt;
+      } else p.unknown += tokens;
       continue;
     }
     // Tokens leaving take their share of the known-cost and unknown-cost tokens; anything
@@ -240,10 +281,13 @@ export function positions(trades: Trade[], skip: Set<string>) {
     const fromHeld = total > 0n ? (tracked * p.held) / total : 0n;
     const removed = p.held > 0n ? (p.cost * fromHeld) / p.held : 0n;
     p.held -= fromHeld; p.cost -= removed; p.unknown -= tracked - fromHeld;
-    if (swap) p.sold += amount;
+    if (trade) p.sold += amount;
     else if (t.kind === "lp") p.lpOut += amount;
     else p.movedOut += amount;
-    if (priced) { p.received += xnt; p.realized += (xnt * fromHeld) / amount - removed; } else p.movedCost += removed;
+    if (xnt !== null && xnt > 0n) {
+      p.received += xnt; p.realized += (xnt * fromHeld) / amount - removed;
+      if (estimated) p.receivedEstimated += xnt;
+    } else p.movedCost += removed;
   }
   return out;
 }

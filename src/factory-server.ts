@@ -34,7 +34,7 @@ import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, buildRecei
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
 import { cpmmOut, snapshot, spotValue } from "./xdex.js";
-import { positions, refreshTrades } from "./trades.js";
+import { positions, refreshTrades, type Position } from "./trades.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
 import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
@@ -1253,6 +1253,11 @@ function leaderboard(mintStr: string) {
       const net = amount - calculateEpochFee(snap.feeCfg, snap.epoch, amount);
       return net > 0n ? x(cpmmOut(net, snap.reserveToken, snap.reserveQuote, snap.tradeFeeRate)) : 0;
     };
+    // A balance worth less than this (XNT) is dust left after selling: shown as sold out.
+    const DUST_XNT = 0.001;
+    // XNT per token across a wallet's buys (`spent` / the tokens it paid for).
+    const avgBuy = (p: Position | undefined) => p && p.boughtPriced > 0n ? x(p.spent) / (Number(p.boughtPriced) / dec) : null;
+    const estimates = (p: Position | undefined) => ({ spentEstimated: p ? x(p.spentEstimated) : 0, receivedEstimated: p ? x(p.receivedEstimated) : 0 });
     const rows: any[] = [];
     const seen = new Set<string>();
     for (const h of st.holders) {
@@ -1279,8 +1284,9 @@ function leaderboard(mintStr: string) {
       const whole = (open: number | null) => p && p.spent > 0n ? (open ?? 0) + x(p.realized) : null;
       const pl = whole(pnl), plIfSold = whole(pnlIfSold);
       const pctOf = (v: number | null) => v !== null && costIn > 1e-12 ? (v / costIn) * 100 : null;
+      const dust = value !== null && perUnitXnt !== null && value * perUnitXnt < DUST_XNT && !!p?.sold;
       rows.push({
-        wallet: h.owner, label: h.label, status: h.status, balance: bal, pctSupply: h.pct,
+        wallet: h.owner, label: h.label, status: dust ? "sold" : h.status, balance: bal, pctSupply: h.pct, avgBuy: avgBuy(p), ...estimates(p),
         avgCost: avg, value, costBasis: costKnown, pnl, pnlPct: pnl !== null && costKnown > 0 ? (pnl / costKnown) * 100 : null,
         soldNow, pnlIfSold, pnlIfSoldPct: pnlIfSold !== null && costKnown > 0 ? (pnlIfSold / costKnown) * 100 : null,
         pl, plPct: pctOf(pl), plIfSold, plIfSoldPct: pctOf(plIfSold),
@@ -1297,7 +1303,7 @@ function leaderboard(mintStr: string) {
       if (seen.has(p.wallet) || !p.trades) continue;
       const pl = p.spent > 0n ? x(p.realized) : null, costIn = x(p.spent) - x(p.movedCost) - x(p.cost);
       rows.push({
-        wallet: p.wallet, label: null, status: "sold", balance: 0, pctSupply: 0, avgCost: null, value: 0, costBasis: 0, pnl: null, pnlPct: null, unknownCost: 0,
+        wallet: p.wallet, label: null, status: "sold", balance: 0, pctSupply: 0, avgBuy: avgBuy(p), ...estimates(p), avgCost: null, value: 0, costBasis: 0, pnl: null, pnlPct: null, unknownCost: 0,
         // Sold out: nothing left to value, so the result is realized profit plus rewards.
         pl, plPct: pl !== null && costIn > 1e-12 ? (pl / costIn) * 100 : null, plIfSold: pl, plIfSoldPct: null,
         rewardsXnt: rewardOf(p.wallet), returnXnt: totalReturn(0, x(p.realized), rewardOf(p.wallet)),
