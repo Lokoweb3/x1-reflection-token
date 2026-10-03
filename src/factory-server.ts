@@ -713,14 +713,26 @@ const balanceCache = new Map<string, { at: number; data: { network: string; xnt:
  * the background and the old answer is served meanwhile, and if the refresh fails the old
  * answer stays. Only a view that has never succeeded can return an error.
  */
-const swrStore = new Map<string, { at: number; val: unknown; pending: Promise<unknown> | null }>();
+const swrStore = new Map<string, { at: number; val: unknown; pending: Promise<unknown> | null; startedAt: number; gen: number }>();
+/** A refresh still running after this long is abandoned, so one hung chain read can't freeze a view for good. */
+const SWR_STUCK_MS = 120_000;
 function swr(key: string, freshMs: number, fn: () => Promise<unknown>): Promise<unknown> {
   let e = swrStore.get(key);
-  if (!e) { if (swrStore.size > 3_000) swrStore.clear(); e = { at: 0, val: undefined, pending: null }; swrStore.set(key, e); }
+  if (!e) { if (swrStore.size > 3_000) swrStore.clear(); e = { at: 0, val: undefined, pending: null, startedAt: 0, gen: 0 }; swrStore.set(key, e); }
   const entry = e;
-  const refresh = () => (entry.pending ??= fn()
-    .then((v) => { entry.val = v; entry.at = Date.now(); return v; })
-    .finally(() => { entry.pending = null; }));
+  if (entry.pending && Date.now() - entry.startedAt > SWR_STUCK_MS) {
+    console.error(`refresh ${key}: no answer after ${SWR_STUCK_MS / 1000} s, starting a new one`);
+    entry.pending = null;
+  }
+  const refresh = () => {
+    if (entry.pending) return entry.pending;
+    const gen = ++entry.gen;
+    entry.startedAt = Date.now();
+    // Only the newest refresh may store its answer or clear the slot (an abandoned one may still finish later).
+    return (entry.pending = fn()
+      .then((v) => { if (gen === entry.gen) { entry.val = v; entry.at = Date.now(); } return v; })
+      .finally(() => { if (gen === entry.gen) entry.pending = null; }));
+  };
   if (entry.val !== undefined) {
     if (Date.now() - entry.at > freshMs) refresh().catch((err) => console.error(`refresh ${key}: ${err instanceof Error ? err.message.slice(0, 120) : err}`));
     return Promise.resolve(entry.val);

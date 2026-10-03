@@ -357,6 +357,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       xntHolders: v && paysInToken(v) ? v.xntHolders.toString() : null,
       ...(v3Status(v, q) ?? {}),
       activity: v ? activity(mint) : [],
+      // The site's crank: its last pass and whether its fee wallet is running low (panel warning).
+      crank: crankJson(mint),
       // Publisher quorum: the newest list's co-signer status and the last rejection.
       ...(q ? { listCheck: listCheck(file?.next ?? file?.active ?? null), listCheckEpoch: (file?.next ?? file?.active)?.epoch ?? null, lastRejected: lastRejected(file) } : {}),
     };
