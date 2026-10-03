@@ -210,6 +210,8 @@ export interface Position {
   unknown: bigint;
   /** Tokens moved out without a sale: to other wallets, and into liquidity (`lpOut`). */
   movedOut: bigint; lpOut: bigint;
+  /** Cost that left with tokens moved out or sold for another token (no XNT came back for it). */
+  movedCost: bigint;
   realized: bigint; trades: number; firstAt: number | null; lastAt: number | null;
 }
 
@@ -218,7 +220,7 @@ export function positions(trades: Trade[], skip: Set<string>) {
   const out = new Map<string, Position>();
   for (const t of trades) {
     if (skip.has(t.wallet)) continue;
-    const p = out.get(t.wallet) ?? { wallet: t.wallet, bought: 0n, spent: 0n, sold: 0n, received: 0n, held: 0n, cost: 0n, unknown: 0n, movedOut: 0n, lpOut: 0n, realized: 0n, trades: 0, firstAt: null, lastAt: null };
+    const p = out.get(t.wallet) ?? { wallet: t.wallet, bought: 0n, spent: 0n, sold: 0n, received: 0n, held: 0n, cost: 0n, unknown: 0n, movedOut: 0n, lpOut: 0n, movedCost: 0n, realized: 0n, trades: 0, firstAt: null, lastAt: null };
     out.set(t.wallet, p);
     const tokens = BigInt(t.tokens), xnt = BigInt(t.xnt);
     const swap = t.kind === undefined || t.kind === "unpriced";
@@ -238,11 +240,10 @@ export function positions(trades: Trade[], skip: Set<string>) {
     const fromHeld = total > 0n ? (tracked * p.held) / total : 0n;
     const removed = p.held > 0n ? (p.cost * fromHeld) / p.held : 0n;
     p.held -= fromHeld; p.cost -= removed; p.unknown -= tracked - fromHeld;
-    if (swap) {
-      p.sold += amount;
-      if (priced) { p.received += xnt; p.realized += (xnt * fromHeld) / amount - removed; }
-    } else if (t.kind === "lp") p.lpOut += amount;
+    if (swap) p.sold += amount;
+    else if (t.kind === "lp") p.lpOut += amount;
     else p.movedOut += amount;
+    if (priced) { p.received += xnt; p.realized += (xnt * fromHeld) / amount - removed; } else p.movedCost += removed;
   }
   return out;
 }

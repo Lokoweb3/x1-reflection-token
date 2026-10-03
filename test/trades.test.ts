@@ -42,6 +42,7 @@ test("tokens moved into the LP or another wallet take their share of the cost, w
   const p = positions([T("a", 100, -10, 1), M("a", -60, 2, "lp"), M("a", -20, 3)], new Set()).get("a")!;
   assert.equal(x(p.held), 20); assert.equal(x(p.cost), 2); assert.equal(p.realized, 0n);
   assert.equal(x(p.lpOut), 60); assert.equal(x(p.movedOut), 20); assert.equal(x(p.spent), 10);
+  assert.equal(x(p.movedCost), 8); // spent 10 = 2 still held + 8 that left with the moved tokens
   assert.equal(p.trades, 1); // moves aren't trades
 });
 

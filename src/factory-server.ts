@@ -1273,14 +1273,21 @@ function leaderboard(mintStr: string) {
       const soldNow = sellAll(BigInt(h.balance));
       // Profit if sold now, on the tokens with a known cost (their share of the sale).
       const pnlIfSold = soldNow !== null && avg !== null && bal > 0 ? (soldNow * heldFromBuys) / bal - costKnown : null;
+      // Whole-position profit (worth now + XNT received − XNT spent), counting cost that left
+      // with tokens moved out (or no longer in the balance) as gone at cost.
+      const costIn = p ? x(p.spent) - x(p.movedCost) - (x(p.cost) - costKnown) : 0;
+      const whole = (open: number | null) => p && p.spent > 0n ? (open ?? 0) + x(p.realized) : null;
+      const pl = whole(pnl), plIfSold = whole(pnlIfSold);
+      const pctOf = (v: number | null) => v !== null && costIn > 1e-12 ? (v / costIn) * 100 : null;
       rows.push({
         wallet: h.owner, label: h.label, status: h.status, balance: bal, pctSupply: h.pct,
         avgCost: avg, value, costBasis: costKnown, pnl, pnlPct: pnl !== null && costKnown > 0 ? (pnl / costKnown) * 100 : null,
         soldNow, pnlIfSold, pnlIfSoldPct: pnlIfSold !== null && costKnown > 0 ? (pnlIfSold / costKnown) * 100 : null,
+        pl, plPct: pctOf(pl), plIfSold, plIfSoldPct: pctOf(plIfSold),
         rewardsXnt, returnXnt: totalReturn(pnl, p ? x(p.realized) : 0, rewardsXnt),
         unknownCost: bal - heldFromBuys > 1e-9 ? bal - heldFromBuys : 0,
         bought: p ? Number(p.bought) / dec : 0, sold: p ? Number(p.sold) / dec : 0,
-        movedOut: p ? Number(p.movedOut) / dec : 0, lpOut: p ? Number(p.lpOut) / dec : 0,
+        movedOut: p ? Number(p.movedOut) / dec : 0, lpOut: p ? Number(p.lpOut) / dec : 0, movedCost: p ? x(p.movedCost) : 0,
         spent: p ? x(p.spent) : 0, received: p ? x(p.received) : 0, realized: p ? x(p.realized) : 0,
         trades: p?.trades ?? 0, firstAt: p?.firstAt ?? null, lastAt: p?.lastAt ?? null,
       });
@@ -1288,11 +1295,13 @@ function leaderboard(mintStr: string) {
     // Wallets that traded and no longer hold any (not ones that only received and passed tokens on).
     for (const p of pos.values()) {
       if (seen.has(p.wallet) || !p.trades) continue;
+      const pl = p.spent > 0n ? x(p.realized) : null, costIn = x(p.spent) - x(p.movedCost) - x(p.cost);
       rows.push({
         wallet: p.wallet, label: null, status: "sold", balance: 0, pctSupply: 0, avgCost: null, value: 0, costBasis: 0, pnl: null, pnlPct: null, unknownCost: 0,
         // Sold out: nothing left to value, so the result is realized profit plus rewards.
+        pl, plPct: pl !== null && costIn > 1e-12 ? (pl / costIn) * 100 : null, plIfSold: pl, plIfSoldPct: null,
         rewardsXnt: rewardOf(p.wallet), returnXnt: totalReturn(0, x(p.realized), rewardOf(p.wallet)),
-        bought: Number(p.bought) / dec, sold: Number(p.sold) / dec, movedOut: Number(p.movedOut) / dec, lpOut: Number(p.lpOut) / dec,
+        bought: Number(p.bought) / dec, sold: Number(p.sold) / dec, movedOut: Number(p.movedOut) / dec, lpOut: Number(p.lpOut) / dec, movedCost: x(p.movedCost),
         spent: x(p.spent), received: x(p.received), realized: x(p.realized),
         trades: p.trades, firstAt: p.firstAt, lastAt: p.lastAt,
       });
@@ -1307,7 +1316,7 @@ function leaderboard(mintStr: string) {
         holders: rows.filter((r) => r.balance > 0).length,
         traders: [...pos.values()].filter((p) => p.trades).length, trades: idx.trades.filter((t) => !t.kind || t.kind === "unpriced").length, trackedSince: idx.since || null, tradesComplete: !idx.backfill,
         avgCost: tokensKnown > 0 ? costKnown / tokensKnown : null,
-        inProfit: priced.filter((r) => (r.pnl ?? 0) > 0).length, inLoss: priced.filter((r) => (r.pnl ?? 0) < 0).length,
+        inProfit: priced.filter((r) => (r.pl ?? 0) > 0).length, inLoss: priced.filter((r) => (r.pl ?? 0) < 0).length,
         realized: rows.reduce((a, r) => a + r.realized, 0), unrealized: priced.reduce((a, r) => a + (r.pnl ?? 0), 0),
       },
       rows: rows.sort((a, b) => b.balance - a.balance || b.bought - a.bought),
