@@ -166,7 +166,7 @@ test("parseSwap reads the JACK change for a JACK-paired token", () => {
   assert.equal(parseSwap(buy, mint)?.xnt, "0");
   // A routed swap (XNT -> JACK -> token in one transaction): no JACK change, so no price.
   const routed = swapTx(w, [{ mint, pre: 0n, post: 100n }], [1_000_000_000, 900_000_000]);
-  assert.equal(parseSwap(routed, mint, JACK.toBase58()), null);
+  assert.deepEqual(parseSwap(routed, mint, JACK.toBase58()), { wallet: w.toBase58(), tokens: "100", xnt: "0", kind: "unpriced" });
 });
 
 test("launch pair: XNT by default, only offered pairs, and pool amounts per pair", () => {

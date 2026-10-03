@@ -153,7 +153,7 @@ function render() {
       el("a", { href: `${explorer}/address/${r.wallet}`, target: "_blank", rel: "noopener", class: "ext", title: tr("View on the explorer"), "aria-label": tr("View on the explorer"), text: " ↗" }),
       r.label ? el("span", { class: "lbl", text: tr(r.label) }) : null, me && r.wallet === me ? el("span", { class: "lbl", text: tr("You") }) : null,
       r.status === "sold" ? el("span", { class: "lbl", text: tr("Sold out") }) : null),
-    el("td", { class: "num", text: amt(r.balance), title: r.unknownCost > 0 ? tr("{unknownCost} of these weren't bought on the pool (no known cost)", { unknownCost: amt(r.unknownCost) }) : "" }),
+    el("td", { class: "num", text: amt(r.balance), title: r.unknownCost > 0 ? tr("{unknownCost} of these have no known cost (sent from another wallet, from a limit order or the LP, or bought with another token)", { unknownCost: amt(r.unknownCost) }) : "" }),
     // Cost, with the average price paid per token under it.
     el("td", { class: "num", title: r.avgCost === null ? tr("No buys on the pool since tracking began")
         : r.unknownCost > 0 && r.costBasis > 0 ? tr("What the {balance} bought tokens they still hold cost; {unknownCost} more have no known cost", { balance: amt(r.balance - r.unknownCost), unknownCost: amt(r.unknownCost) }) : tr("What the tokens they hold now cost them") },
@@ -166,12 +166,16 @@ function render() {
       r.soldNow != null && r.balance > 0 ? sig(r.soldNow) : "–",
       r.pnlIfSold != null && r.balance > 0 ? el("div", { class: "sub" }, pnlCell(r.pnlIfSold, r.pnlIfSoldPct)) : null),
     el("td", { class: "num", text: r.rewardsXnt ? sig(r.rewardsXnt) : "–", title: tr("XNT this wallet has received: holder payouts plus Distribute now rewards") }),
-    el("td", { class: "num", title: tr("Profit/loss plus realized profit plus rewards received") + (U !== "XNT" ? tr(" ({U} valued at today's {U}/XNT price)", { U }) : "") }, pnlSpan(r.returnXnt, null, null)),
+    el("td", { class: "num", title: tr("Profit/loss plus realized profit plus rewards received (tokens with no known cost add nothing)") + (U !== "XNT" ? tr(" ({U} valued at today's {U}/XNT price)", { U }) : "") }, pnlSpan(r.returnXnt, null, null)),
     // Spent, with the tokens those buys got under it; realized, with the tokens sold.
     el("td", { class: "num", title: tr("Total {U} paid on all buys, including tokens since sold", { U }) }, r.spent ? sig(r.spent) : "–",
       r.bought ? el("div", { class: "sub muted", text: tr("{amount} bought", { amount: amt(r.bought) }) }) : null),
-    el("td", { class: "num" }, r.realized ? pnlSpan(r.realized, null, null) : el("span", { class: "muted", text: "–" }),
-      r.sold ? el("div", { class: "sub muted", text: tr("{amount} sold", { amount: amt(r.sold) }) }) : null),
+    // Tokens that left without a sale (into the LP, or to another wallet) took their share of the cost with them.
+    el("td", { class: "num", title: r.lpOut || r.movedOut ? tr("Tokens put into liquidity or sent to another wallet aren't sales: they leave with their share of the cost, without a profit or loss") : "" },
+      r.realized ? pnlSpan(r.realized, null, null) : el("span", { class: "muted", text: "–" }),
+      r.sold ? el("div", { class: "sub muted", text: tr("{amount} sold", { amount: amt(r.sold) }) }) : null,
+      r.lpOut ? el("div", { class: "sub muted", text: tr("{amount} into LP", { amount: amt(r.lpOut) }) }) : null,
+      r.movedOut ? el("div", { class: "sub muted", text: tr("{amount} sent out", { amount: amt(r.movedOut) }) }) : null),
     el("td", { class: "num", text: String(r.trades || "–") })));
   $("out").replaceChildren(
     el("div", { class: "tiles" },
@@ -183,7 +187,7 @@ function render() {
       tile(tr("Realized P/L"), `${s.realized >= 0 ? "+" : ""}${sig(s.realized)} ${U}`, tr("{trades} trades by {traders} wallets", { trades: s.trades, traders: s.traders })),
       tile(tr("Paid to holders"), `${sig(s.rewardsPaid ?? 0)} XNT`, tr("payouts and Distribute now rewards to these wallets"))),
     el("div", { class: "table-wrap" }, el("table", {}, head, ...body)),
-    el("p", { class: "note", text: tr("Average cost uses the average-cost method: buys add to cost, sells remove cost at the average price. Network fees and account rent aren't counted as price. The pool and the token's distributor are left out.")
+    el("p", { class: "note", text: tr("Average cost uses the average-cost method: buys add to cost; sells, LP deposits and transfers out remove cost at the average price. Tokens sent from another wallet, filled limit orders, LP withdrawals and buys paid with another token have no known cost. Network fees and account rent aren't counted as price. The pool and the token's distributor are left out.")
       + (s.tradesComplete ? tr(" Every trade since the token launched is counted, including buys routed through other pools (e.g. XNT → JACK → token).")
         : tr(" Still reading older trades (counted back to {date} so far); they fill in over the next minutes.", { date: s.trackedSince ? new Date(s.trackedSince * 1000).toLocaleString() : tr("now") }))
       + (U !== "XNT" ? tr(" This token is paired with {U}, so prices, costs and profit/loss are in {U}; rewards are XNT, and Total return values the {U} profit at today's {U}/XNT price.", { U }) : "") }));
