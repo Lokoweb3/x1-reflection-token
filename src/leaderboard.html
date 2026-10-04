@@ -44,6 +44,9 @@ th button:hover, th button[aria-sort] { text-decoration: underline; }
 .lbl { font-size: 11px; font-weight: 700; border: 1px solid var(--line); padding: 1px 7px; margin-left: 6px; }
 tr.me td { background: rgb(200 16 46 / .07); }
 .note { color: var(--text-muted); font-size: 12px; margin-top: 12px; }
+h2.sec { font-size: 16px; margin: 28px 0 10px; }
+td.lp { white-space: normal; min-width: 16em; }
+td.lp div { margin: 1px 0; }
 .error { color: var(--critical); }
 /* Phones hide the column headers (stacked rows), so sorting moves to this dropdown. */
 #sortM { display: none; }
@@ -127,6 +130,44 @@ function buildSortMenu() {
 buildSortMenu();
 $("sortM").onchange = () => { const [k, d] = $("sortM").value.split(":"); sortKey = k; sortDir = Number(d); render(); };
 
+/** Liquidity across every pool holding the token: totals by who can withdraw it, then each pool. */
+function liquidityView(pools, price, symbol) {
+  if (!pools) return [el("h2", { class: "sec", text: tr("Liquidity") }), el("p", { class: "muted", text: tr("Reading the token's pools from the chain…") })];
+  const sum = (f) => pools.reduce((t, p) => t + p.shares.filter(f).reduce((a, s) => a + (s.valueXnt ?? 0), 0), 0);
+  const total = pools.reduce((t, p) => t + (p.valueXnt ?? 0), 0);
+  const forever = sum((s) => s.kind === "forever"), timed = sum((s) => s.kind === "timed"), free = sum((s) => s.kind === "free");
+  const pct = (v) => total > 0 ? tr("{pct}% of all liquidity", { pct: (v / total * 100).toFixed(1) }) : "";
+  const tile = (k, v, n) => el("div", { class: "tile" }, el("div", { class: "k", text: k }), el("div", { class: "v", text: v }), n ? el("div", { class: "n", text: n }) : null);
+  const date = (t) => new Date(t * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  const shareText = (s) => s.burned ? tr("burned (locked for good)")
+    : s.kind === "forever" ? tr("locked forever")
+    : s.kind === "timed" ? tr("locked until {date}", { date: date(s.unlockAt) })
+    : tr("withdrawable any time");
+  const rows = pools.map((p) => el("tr", {},
+    el("td", {}, el("a", { href: `${explorer}/address/${p.pool}`, target: "_blank", rel: "noopener", text: `${symbol} / ${p.quoteSymbol}` })),
+    el("td", { class: "num" }, amt(p.tokens) + ` ${symbol}`, el("div", { class: "sub muted", text: `${sig(p.quote)} ${p.quoteSymbol}` })),
+    el("td", { class: "num", text: p.valueXnt != null ? sig(p.valueXnt) : "–" }),
+    el("td", { class: "num", title: tr("The token's price this pool implies, against the main pool's") },
+      p.priceXnt != null ? sig(p.priceXnt) : "–",
+      p.priceXnt != null && price ? el("div", { class: "sub muted", text: `${p.priceXnt >= price ? "+" : ""}${((p.priceXnt / price - 1) * 100).toFixed(1)}%` }) : null),
+    el("td", { class: "lp" }, ...p.shares.map((s) => el("div", {},
+      el("b", { text: `${s.pct.toFixed(2)}% ` }), shareText(s),
+      s.holder ? " · " : null, s.holder ? el("a", { href: `/wallet/${s.holder}`, class: "mono", text: short(s.holder) }) : null,
+      s.valueXnt != null ? el("span", { class: "muted", text: ` (${sig(s.valueXnt)} XNT)` }) : null)))));
+  return [
+    el("h2", { class: "sec", text: tr("Liquidity") }),
+    el("div", { class: "tiles" },
+      tile(tr("In all pools"), `${sig(total)} XNT`, tr("{n} pools hold this token", { n: pools.length })),
+      tile(tr("Locked forever"), `${sig(forever)} XNT`, pct(forever)),
+      tile(tr("Time-locked"), `${sig(timed)} XNT`, pct(timed)),
+      tile(tr("Withdrawable any time"), `${sig(free)} XNT`, pct(free))),
+    el("div", { class: "table-wrap" }, el("table", {},
+      el("tr", {}, ...[tr("Pool"), tr("Holds"), tr("Worth (XNT)"), tr("Implied price (XNT)"), tr("Who holds the liquidity")].map((t, i) => el("th", { class: i && i < 4 ? "num" : "", text: t }))),
+      ...rows)),
+    el("p", { class: "note", text: tr("Every XDEX pool holding the token, found on-chain, valued in XNT (each pool's other token at its own XNT pool's price). Liquidity is locked forever when this site's locker holds it with no unlock date or it was burned; time-locked when a locker holds it until a date; anyone else holding it can withdraw it whenever they like.") }),
+  ];
+}
+
 function render() {
   if (!data) return;
   const U = data.quote && data.quote !== "XNT" ? data.quote : "XNT";
@@ -188,6 +229,7 @@ function render() {
       tile(tr("Realized P/L"), `${s.realized >= 0 ? "+" : ""}${sig(s.realized)} ${U}`, tr("{trades} trades by {traders} wallets", { trades: s.trades, traders: s.traders })),
       tile(tr("Paid to holders"), `${sig(s.rewardsPaid ?? 0)} XNT`, tr("payouts and Distribute now rewards to these wallets"))),
     el("div", { class: "table-wrap" }, el("table", {}, head, ...body)),
+    ...liquidityView(data.liquidity ?? null, data.price !== null && data.quoteXnt ? data.price * data.quoteXnt : null, data.symbol),
     el("p", { class: "note", text: tr("Cost is all the XNT paid on buys. Profit/loss is what the balance is worth now plus the XNT received from sells, minus cost; tokens put into the LP or sent to another wallet leave with their share of the cost (average-cost method). Buys paid with another token and filled limit orders are valued at the market price at the time (marked ≈); tokens sent from another wallet or withdrawn from the LP have no known cost and add nothing. Network fees and account rent aren't counted as price. The pool and the token's distributor are left out.")
       + (s.tradesComplete ? tr(" Every trade since the token launched is counted, including buys routed through other pools (e.g. XNT → JACK → token).")
         : tr(" Still reading older trades (counted back to {date} so far); they fill in over the next minutes.", { date: s.trackedSince ? new Date(s.trackedSince * 1000).toLocaleString() : tr("now") }))

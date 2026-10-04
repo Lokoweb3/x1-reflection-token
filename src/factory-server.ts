@@ -35,6 +35,7 @@ import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
 import { cpmmOut, snapshot, spotValue } from "./xdex.js";
 import { positions, refreshTrades, type Position } from "./trades.js";
+import { tokenPools } from "./pools.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
 import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
@@ -1210,6 +1211,19 @@ async function walletView(addr: string) {
  * at today's JACK/XNT price before adding them.
  */
 const boardCache = new Map<string, { at: number; data: Promise<unknown> }>();
+/** Every pool holding a token and who holds its liquidity: chain-wide scans, so read every 10 minutes (the last good answer stays). */
+const poolsCache = new Map<string, { at: number; data: Awaited<ReturnType<typeof tokenPools>> | null; pending?: Promise<unknown> }>();
+function liquidityOf(mint: string, priceXnt: number | null) {
+  const hit = poolsCache.get(mint);
+  if (hit && (Date.now() - hit.at < 600_000 || hit.pending)) return hit.data;
+  const entry = { at: hit?.at ?? 0, data: hit?.data ?? null, pending: undefined as Promise<unknown> | undefined };
+  entry.pending = tokenPools(conn, new PublicKey(cfg.xdex.programId), new PublicKey(mint), new PublicKey(cfg.locker!.programId), priceXnt)
+    .then((data) => { entry.data = data; entry.at = Date.now(); })
+    .catch((e) => { console.error(`Pools for ${mint} failed: ${e instanceof Error ? e.message : e}`); entry.at = Date.now() - 480_000; }) // retry in 2 min
+    .finally(() => { entry.pending = undefined; });
+  poolsCache.set(mint, entry);
+  return entry.data;
+}
 function leaderboard(mintStr: string) {
   const hit = boardCache.get(mintStr);
   if (hit && Date.now() - hit.at < 60_000) return hit.data;
@@ -1317,6 +1331,8 @@ function leaderboard(mintStr: string) {
     const costKnown = priced.reduce((a, r) => a + r.costBasis, 0);
     return {
       mint: t.mint, symbol: t.symbol, name: t.name, price, quote: pair.symbol, quoteXnt: perUnitXnt,
+      // Every pool holding the token (null until first read); values in XNT.
+      liquidity: liquidityOf(t.mint, st.priceXnt ?? null),
       summary: {
         rewardsPaid: rows.reduce((a, r) => a + r.rewardsXnt, 0),
         holders: rows.filter((r) => r.balance > 0).length,
