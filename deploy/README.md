@@ -122,6 +122,24 @@ Open `https://launch.example.com`. To see your private dashboard from your lapto
 ssh -L 8123:127.0.0.1:8123 root@SERVER    # then open http://127.0.0.1:8123
 ```
 
+## Pool gap monitor (optional)
+
+`scripts/gap-monitor.ts` watches every XDEX pool holding a token (TEST/JACK, TEST/USDC.X, ...)
+against its main XNT pool and alerts when a round trip between them would pay after every fee
+and the token's transfer tax (twice). With a 5% tax that takes a gap of about 10.5%, so most of
+the time it only logs. It is read-only: no keys, never trades.
+
+```bash
+cp deploy/systemd/reflect-gap-monitor.service /etc/systemd/system/ && systemctl daemon-reload
+# Optional: where alerts go (both Telegram values are needed; or GAP_ARGS="--webhook https://...")
+printf 'TELEGRAM_BOT_TOKEN=...\nTELEGRAM_CHAT_ID=...\n' > /etc/reflect-gap-monitor.env && chmod 600 /etc/reflect-gap-monitor.env
+systemctl enable --now reflect-gap-monitor
+journalctl -u reflect-gap-monitor -f     # one line a minute: each pool's gap and what a round trip would return
+```
+
+Run it by hand anywhere with `npx tsx scripts/gap-monitor.ts --mint <mint> --once` (see the
+file's header for `--min-profit`, `--gap`, `--remind`, `--webhook`).
+
 ## Security checklist
 
 The server never holds users' keys, but it builds the transactions they sign, so a

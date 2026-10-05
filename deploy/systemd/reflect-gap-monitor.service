@@ -1,0 +1,21 @@
+[Unit]
+Description=99 + Tax MAINNET: gap monitor for Test's pools (read-only alerts, never trades)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=reflect
+WorkingDirectory=/opt/x1-reflection-token
+# Optional alert settings, e.g. TELEGRAM_BOT_TOKEN=... and TELEGRAM_CHAT_ID=... (both needed),
+# or GAP_ARGS="--webhook https://..." for a webhook; the file can be left out.
+EnvironmentFile=-/etc/reflect-gap-monitor.env
+ExecStart=/bin/sh -c 'exec /usr/bin/node node_modules/tsx/dist/cli.mjs scripts/gap-monitor.ts --mint C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz --network mainnet --loop 60 $GAP_ARGS'
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

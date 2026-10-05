@@ -54,7 +54,7 @@ async function tokenAmounts(conn: Connection, accounts: PublicKey[]) {
 }
 
 /** Pools of `mint` (on either side), with or without a fixed other side. */
-async function poolsWith(conn: Connection, xdex: PublicKey, mint: PublicKey, other?: PublicKey) {
+export async function poolsWith(conn: Connection, xdex: PublicKey, mint: PublicKey, other?: PublicKey) {
   const out: { address: PublicKey; data: Buffer; side: 0 | 1 }[] = [];
   for (const side of [0, 1] as const) {
     const filters = [{ dataSize: POOL_SIZE }, { memcmp: { offset: MINT_OFFSETS[side], bytes: mint.toBase58() } }];
@@ -71,19 +71,25 @@ async function reserves(conn: Connection, d: Buffer, side: 0 | 1) {
   return side === 0 ? [net[0], net[1]] : [net[1], net[0]];
 }
 
+/** `mint`'s deepest XNT pool (most XNT in it), or null without one. */
+export async function deepestXntPool(conn: Connection, xdex: PublicKey, mint: PublicKey) {
+  let best: { address: PublicKey; tok: bigint; xnt: bigint } | null = null;
+  for (const p of await poolsWith(conn, xdex, mint, NATIVE_MINT)) {
+    const [tok, xnt] = await reserves(conn, p.data, p.side);
+    if (tok > 0n && (!best || xnt > best.xnt)) best = { address: p.address, tok, xnt };
+  }
+  return best;
+}
+
 /** XNT per whole `mint`, from its deepest XNT pool (null without one). */
 async function xntPrice(conn: Connection, xdex: PublicKey, mint: PublicKey, decimals: number) {
   if (mint.equals(NATIVE_MINT)) return 1;
-  let best: { xnt: bigint; price: number } | null = null;
-  for (const p of await poolsWith(conn, xdex, mint, NATIVE_MINT)) {
-    const [tok, xnt] = await reserves(conn, p.data, p.side);
-    if (tok > 0n && (!best || xnt > best.xnt)) best = { xnt, price: (Number(xnt) / 1e9) / (Number(tok) / 10 ** decimals) };
-  }
-  return best?.price ?? null;
+  const best = await deepestXntPool(conn, xdex, mint);
+  return best ? (Number(best.xnt) / 1e9) / (Number(best.tok) / 10 ** decimals) : null;
 }
 
 /** A token's symbol from its Token-2022 metadata ("XNT" for wrapped XNT), else a short address. */
-async function symbolOf(conn: Connection, mint: PublicKey) {
+export async function symbolOf(conn: Connection, mint: PublicKey) {
   if (mint.equals(NATIVE_MINT)) return "XNT";
   const info = await conn.getParsedAccountInfo(mint).catch(() => null);
   const meta = (info?.value?.data as any)?.parsed?.info?.extensions?.find((e: any) => e.extension === "tokenMetadata")?.state;
