@@ -10,8 +10,9 @@
  */
 import { Connection, PublicKey } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
+import { bestTrip, gapPct, roundTrip, type Route } from "./arb.js";
 import { listLocks } from "./locker.js";
-import { poolAuthority } from "./xdex.js";
+import { poolAuthority, snapshot } from "./xdex.js";
 
 const POOL_SIZE = 637;
 const MINT_OFFSETS = [8 + 5 * 32, 8 + 6 * 32] as const;
@@ -46,6 +47,21 @@ export interface PoolLiquidity {
   /** XNT per whole quote token, the pool's whole value in XNT, and the token's price it implies. */
   quoteXnt: number | null; valueXnt: number | null; priceXnt: number | null;
   shares: LpShare[];
+  /**
+   * A side pool (not XNT) against the token's main XNT pool: its price gap in percent, what a
+   * 1 XNT round trip through both returns (percent, after every pool fee and the transfer
+   * tax both ways, in the better direction), and the best round trip's profit in XNT.
+   */
+  gap?: { pct: number; roundTripPct: number; bestProfitXnt: number; dir: "buy-side" | "buy-main" } | null;
+}
+
+/** A side pool's gap against the main pool (null when its quote token has no XNT pool). */
+async function gapOf(conn: Connection, xdex: PublicKey, mint: PublicKey, main: PublicKey, pool: PublicKey, quoteMint: PublicKey) {
+  const q = await deepestXntPool(conn, xdex, quoteMint);
+  if (!q) return null;
+  const r: Route = { main: await snapshot(conn, xdex, main, mint), side: await snapshot(conn, xdex, pool, mint, quoteMint), quote: await snapshot(conn, xdex, q.address, quoteMint) };
+  const best = bestTrip(r);
+  return { pct: gapPct(r), roundTripPct: (Number(roundTrip(r, 1_000_000_000n, best.dir)) / 1e9 - 1) * 100, bestProfitXnt: Number(best.profit) / 1e9, dir: best.dir };
 }
 
 async function tokenAmounts(conn: Connection, accounts: PublicKey[]) {
@@ -135,6 +151,12 @@ export async function tokenPools(conn: Connection, xdex: PublicKey, mint: Public
     shares.sort((a, b) => b.pct - a.pct);
     out.push({ pool: p.address.toBase58(), quoteMint: quoteMint.toBase58(), quoteSymbol: await symbolOf(conn, quoteMint),
       tokens, quote, quoteXnt, valueXnt, priceXnt: quoteXnt !== null && tokens > 0 ? (quote * quoteXnt) / tokens : null, shares });
+  }
+  // Side pools: their gap against the main (deepest) XNT pool.
+  const main = await deepestXntPool(conn, xdex, mint);
+  if (main) for (const p of out) {
+    if (p.quoteMint === NATIVE_MINT.toBase58()) continue;
+    p.gap = await gapOf(conn, xdex, mint, main.address, new PublicKey(p.pool), new PublicKey(p.quoteMint)).catch(() => null);
   }
   return out.sort((a, b) => (b.valueXnt ?? 0) - (a.valueXnt ?? 0));
 }
