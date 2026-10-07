@@ -12,6 +12,9 @@
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (only open the token accounts)
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --sweep [--execute]
  *       (sell the leftovers: every token the wallet holds besides XNT, through its deepest XNT pool)
+ *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --close-dust [--keep <mint,...>] [--execute]
+ *       (burn token balances worth under 0.001 XNT, too small to sell, and close their accounts to get
+ *        the ~0.002 XNT rent each back; empty accounts and --keep tokens are left open for the routes)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --unwrap   (wrapped XNT back to plain XNT)
  *
  * Each --mint (or a comma-separated list) is watched against its own deepest XNT pool, all from
@@ -41,7 +44,8 @@ import {
 } from "@solana/web3.js";
 import {
   NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction,
-  createCloseAccountInstruction, createSyncNativeInstruction, getAssociatedTokenAddressSync,
+  createBurnCheckedInstruction, createCloseAccountInstruction, createHarvestWithheldTokensToMintInstruction,
+  createSyncNativeInstruction, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { XDEX_PROGRAM_IDS, loadKeypair } from "../src/config.js";
 import { gapPct } from "../src/arb.js";
@@ -134,7 +138,7 @@ if (has("unwrap")) {
   process.exit(0);
 }
 const mints = argv.flatMap((a, i) => (a === "--mint" ? (argv[i + 1] ?? "").split(",") : [])).filter(Boolean).map((m) => new PublicKey(m));
-if (!mints.length && !has("sweep")) usage("--mint is required");
+if (!mints.length && !has("sweep") && !has("close-dust")) usage("--mint is required");
 
 // ---------- pools (found on-chain, refreshed every 30 minutes) ----------
 interface Side { pool: PublicKey; quoteMint: PublicKey; quotePool: PublicKey; name: string }
@@ -334,8 +338,54 @@ async function sweep() {
   log(`sweep ${execute ? "done" : "(dry run)"}: ~${xnt(total)} XNT into the wrapped trading balance`);
 }
 
+/**
+ * Token accounts holding dust worth under 0.001 XNT (or a token with no XNT pool at all): burn the
+ * dust, move any transfer tax withheld in the account to its mint (Token-2022 won't close an account
+ * that still holds some), and close the account, which returns its rent (~0.002 XNT) to the wallet.
+ * Empty accounts stay open (the bot keeps those for its routes), and so do --keep tokens and wrapped
+ * XNT. Up to three accounts per transaction; without --execute it only says what it would do.
+ */
+async function closeDust() {
+  const MIN_OUT = lamports(0.001);
+  const keep = new Set((flag("keep") ?? "").split(",").filter(Boolean));
+  type Parsed = { mint: string; tokenAmount: { amount: string; decimals: number }; extensions?: { extension: string; state: { withheldAmount?: number | string } }[] };
+  const held = (await Promise.all([TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map(async (programId) =>
+    (await conn.getParsedTokenAccountsByOwner(wallet.publicKey, { programId }, "confirmed")).value.map((a) => ({ ...a, programId }))))).flat();
+  const batch: { sym: string; rent: number; ixs: TransactionInstruction[] }[] = [];
+  for (const a of held) {
+    const info = a.account.data.parsed.info as Parsed;
+    const m = new PublicKey(info.mint), amount = BigInt(info.tokenAmount.amount);
+    if (m.equals(NATIVE_MINT) || amount === 0n || keep.has(info.mint)) continue;
+    const sym = await symbolOf(conn, m);
+    const pool = await deepestXntPool(conn, xdex, m);
+    if (pool) {
+      const snap = await snapshot(conn, xdex, pool.address, m);
+      const out = swap(snap, true, amount, snap.feeCfg, NO_FEE).out;
+      if (out >= MIN_OUT) { log(`close-dust: ${sym} is worth ~${xnt(out)} XNT, kept (--sweep sells it)`); continue; }
+    }
+    const ixs = [createBurnCheckedInstruction(a.pubkey, m, wallet.publicKey, amount, info.tokenAmount.decimals, [], a.programId)];
+    const withheld = info.extensions?.find((e) => e.extension === "transferFeeAmount")?.state.withheldAmount;
+    if (withheld && BigInt(withheld) > 0n) ixs.push(createHarvestWithheldTokensToMintInstruction(m, [a.pubkey], a.programId));
+    ixs.push(createCloseAccountInstruction(a.pubkey, wallet.publicKey, wallet.publicKey, [], a.programId));
+    batch.push({ sym, rent: a.account.lamports, ixs });
+  }
+  if (!batch.length) { log("close-dust: no dust accounts"); return; }
+  const rent = batch.reduce((t, b) => t + b.rent, 0);
+  log(`close-dust: ${batch.length} account(s): ${batch.map((b) => b.sym).join(", ")}; ~${(rent / 1e9).toFixed(4)} XNT of rent comes back`);
+  if (!execute) { log("close-dust (dry run): add --execute to burn the dust and close them"); return; }
+  for (let i = 0; i < batch.length; i += 3) {
+    const part = batch.slice(i, i + 3);
+    try {
+      log(`close-dust: closed ${part.map((b) => b.sym).join(", ")}: ${await send(part.flatMap((b) => b.ixs))}`);
+    } catch (e) {
+      log(`close-dust: ${part.map((b) => b.sym).join(", ")} not closed: ${msg(e).split("\n")[0]}`);
+    }
+  }
+}
+
 async function main() {
   if (has("sweep")) return sweep();
+  if (has("close-dust")) return closeDust();
   if (has("setup")) {
     // Every account any route could need, so a dry run can simulate the real transactions.
     for (const mint of mints) {
