@@ -4,7 +4,7 @@
  * round trip and pockets the difference in XNT. The maths is src/arb.ts (shared with the gap
  * monitor); this sends the trades.
  *
- *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json>
+ *   npx tsx scripts/arb-bot.ts --mint <token mint> [--mint <another> ...] --keypair <wallet.json>
  *     [--execute] [--network mainnet|testnet] [--rpc <url>] [--min-profit 0.02] [--max-in 2]
  *     [--slippage 0.5] [--priority <micro-lamports per CU> (default 1000)]
  *     [--loop <seconds> (default 20) | --once] [--webhook <url>]
@@ -13,6 +13,10 @@
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --sweep [--execute]
  *       (sell the leftovers: every token the wallet holds besides XNT, through its deepest XNT pool)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --unwrap   (wrapped XNT back to plain XNT)
+ *
+ * Each --mint (or a comma-separated list) is watched against its own deepest XNT pool, all from
+ * one wallet in one process; a triangle two of them share (TOKEN/GOOGL.X seen from either side) is
+ * checked once a pass.
  *
  * Without --execute it only says what it would trade (and simulates it when the wallet is
  * set up). With it, one round trip is ONE transaction of three swaps:
@@ -126,13 +130,16 @@ if (has("unwrap")) {
   log(`unwrapped ${xnt(bal)} XNT to ${wallet.publicKey.toBase58()}: ${sig}`);
   process.exit(0);
 }
-const mint = new PublicKey(flag("mint") ?? usage("--mint is required"));
+const mints = argv.flatMap((a, i) => (a === "--mint" ? (argv[i + 1] ?? "").split(",") : [])).filter(Boolean).map((m) => new PublicKey(m));
+if (!mints.length && !has("sweep")) usage("--mint is required");
 
 // ---------- pools (found on-chain, refreshed every 30 minutes) ----------
 interface Side { pool: PublicKey; quoteMint: PublicKey; quotePool: PublicKey; name: string }
-let found: { at: number; symbol: string; main: PublicKey; sides: Side[] } | null = null;
+interface Found { at: number; mint: PublicKey; symbol: string; main: PublicKey; sides: Side[] }
+const foundBy = new Map<string, Found>();
 
-async function discover() {
+async function discover(mint: PublicKey) {
+  const found = foundBy.get(mint.toBase58());
   if (found && Date.now() - found.at < 30 * 60_000) return found;
   const main = await deepestXntPool(conn, xdex, mint);
   if (!main) throw new Error(`no XNT pool holds ${mint.toBase58()}`);
@@ -147,8 +154,9 @@ async function discover() {
   }
   if (!found || found.sides.map((s) => s.pool.toBase58()).join() !== sides.map((s) => s.pool.toBase58()).join())
     log(`watching ${sides.length} side pool(s) against ${symbol}/XNT ${main.address.toBase58()}: ${sides.map((s) => s.name).join(", ") || "none"}`);
-  found = { at: Date.now(), symbol, main: main.address, sides };
-  return found;
+  const f: Found = { at: Date.now(), mint, symbol, main: main.address, sides };
+  foundBy.set(mint.toBase58(), f);
+  return f;
 }
 
 // ---------- planning ----------
@@ -237,10 +245,23 @@ async function topUp(xntIn: bigint): Promise<TransactionInstruction[] | null> {
 
 // ---------- one pass ----------
 async function pass() {
-  const f = await discover();
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const mint of mints) {
+    const traded = await passFor(mint, seen, lines);
+    if (traded) return; // reserves changed: start a fresh pass before trading another pool
+  }
+  log(lines.join(" | ") || "no side pools");
+}
+
+/** One token's side pools; true once it has sent a trade. */
+async function passFor(mint: PublicKey, seen: Set<string>, line: string[]) {
+  const f = await discover(mint);
   const main = await snapshot(conn, xdex, f.main, mint);
-  const line: string[] = [];
   for (const s of f.sides) {
+    const triangle = [f.main, s.pool, s.quotePool].map((k) => k.toBase58()).sort().join();
+    if (seen.has(triangle)) continue;
+    seen.add(triangle);
     const side = await snapshot(conn, xdex, s.pool, mint, s.quoteMint);
     const quote = await snapshot(conn, xdex, s.quotePool, s.quoteMint);
     const gap = gapPct({ main, side, quote });
@@ -273,9 +294,9 @@ async function pass() {
     } catch (e) {
       log(`${s.name}: trade didn't go through (nothing was traded, only the fee is spent if it landed): ${msg(e).split("\n")[0]}`);
     }
-    return; // reserves changed: start a fresh pass before trading another pool
+    return true;
   }
-  log(line.join(" | ") || "no side pools");
+  return false;
 }
 
 /**
@@ -314,15 +335,17 @@ async function main() {
   if (has("sweep")) return sweep();
   if (has("setup")) {
     // Every account any route could need, so a dry run can simulate the real transactions.
-    const f = await discover();
-    const snaps = [await snapshot(conn, xdex, f.main, mint)];
-    for (const s of f.sides) snaps.push(await snapshot(conn, xdex, s.pool, mint, s.quoteMint), await snapshot(conn, xdex, s.quotePool, s.quoteMint));
-    await setup(snaps, true);
+    for (const mint of mints) {
+      const f = await discover(mint);
+      const snaps = [await snapshot(conn, xdex, f.main, mint)];
+      for (const s of f.sides) snaps.push(await snapshot(conn, xdex, s.pool, mint, s.quoteMint), await snapshot(conn, xdex, s.quotePool, s.quoteMint));
+      await setup(snaps, true);
+    }
     log("setup done: the wallet has every token account its routes use");
     return;
   }
   const plain = await conn.getBalance(wallet.publicKey, "confirmed");
-  log(`arb bot ${execute ? "LIVE" : "dry run"}: ${mint.toBase58()} on ${network}, wallet ${wallet.publicKey.toBase58()} `
+  log(`arb bot ${execute ? "LIVE" : "dry run"}: ${mints.map((m) => m.toBase58()).join(", ")} on ${network}, wallet ${wallet.publicKey.toBase58()} `
     + `(${xnt(BigInt(plain))} XNT + ${xnt((await balanceOf(wxntAta)) ?? 0n)} wrapped), trades up to ${xnt(maxIn)} XNT when a trip pays +${xnt(minProfit)}, `
     + `${loopSecs ? `every ${loopSecs}s` : "once"}`);
   for (;;) {
