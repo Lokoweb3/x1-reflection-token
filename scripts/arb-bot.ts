@@ -10,6 +10,8 @@
  *     [--loop <seconds> (default 20) | --once] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (only open the token accounts)
+ *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --sweep [--execute]
+ *       (sell the leftovers: every token the wallet holds besides XNT, through its deepest XNT pool)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --unwrap   (wrapped XNT back to plain XNT)
  *
  * Without --execute it only says what it would trade (and simulates it when the wallet is
@@ -34,7 +36,7 @@ import {
   ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction,
 } from "@solana/web3.js";
 import {
-  NATIVE_MINT, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction,
+  NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction, createSyncNativeInstruction, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { XDEX_PROGRAM_IDS, loadKeypair } from "../src/config.js";
@@ -276,7 +278,40 @@ async function pass() {
   log(line.join(" | ") || "no side pools");
 }
 
+/**
+ * Sell every token the wallet holds besides XNT (the slippage leftovers trips leave behind) into
+ * its deepest XNT pool. The proceeds land in the wrapped-XNT trading balance. Amounts worth under
+ * 0.001 XNT are left alone (the fee would eat them); without --execute it only says what it would do.
+ */
+async function sweep() {
+  const MIN_OUT = lamports(0.001);
+  const held = (await Promise.all([TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
+    conn.getParsedTokenAccountsByOwner(wallet.publicKey, { programId }, "confirmed")))).flatMap((r) => r.value);
+  let total = 0n;
+  for (const a of held) {
+    const info = a.account.data.parsed.info as { mint: string; tokenAmount: { amount: string } };
+    const m = new PublicKey(info.mint), amount = BigInt(info.tokenAmount.amount);
+    if (m.equals(NATIVE_MINT) || amount === 0n) continue;
+    const sym = await symbolOf(conn, m);
+    const pool = await deepestXntPool(conn, xdex, m);
+    if (!pool) { log(`sweep: ${sym} has no XNT pool, kept`); continue; }
+    const snap = await snapshot(conn, xdex, pool.address, m);
+    const w = swap(snap, true, amount, snap.feeCfg, NO_FEE);
+    if (w.out < MIN_OUT) { log(`sweep: ${sym} ${info.tokenAmount.amount} raw is worth ~${xnt(w.out)} XNT, under ${xnt(MIN_OUT)}: kept`); continue; }
+    const ix = swapIx(xdex, wallet.publicKey, { pool: snap.pool, side: snap.side, amountIn: amount, minimumOut: w.minOut }, a.pubkey, wxntAta);
+    if (!execute) { log(`[dry run] sweep: sell all ${sym} for ~${xnt(w.out)} XNT (after its transfer fee and the pool fee)`); total += w.out; continue; }
+    try {
+      log(`sweep: sold all ${sym} for ~${xnt(w.out)} XNT: ${await send([ix])}`);
+      total += w.out;
+    } catch (e) {
+      log(`sweep: ${sym} didn't sell: ${msg(e).split("\n")[0]}`);
+    }
+  }
+  log(`sweep ${execute ? "done" : "(dry run)"}: ~${xnt(total)} XNT into the wrapped trading balance`);
+}
+
 async function main() {
+  if (has("sweep")) return sweep();
   if (has("setup")) {
     // Every account any route could need, so a dry run can simulate the real transactions.
     const f = await discover();
