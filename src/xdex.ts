@@ -177,8 +177,8 @@ export function tempXntAccount(owner: PublicKey, wxntProgram: PublicKey) {
   return PublicKey.createWithSeed(owner, TEMP_SEED, wxntProgram);
 }
 
-/** XDEX swap_base_input selling `q.amountIn` of the pool's `q.side` mint from `source` into `dest`. */
-function swapIx(programId: PublicKey, owner: PublicKey, q: SellQuote, source: PublicKey, dest: PublicKey) {
+/** XDEX swap_base_input selling `q.amountIn` of the pool's `q.side` mint from `source` into `dest` (`minimumOut` is what `dest` must receive, net of any transfer fee). */
+export function swapIx(programId: PublicKey, owner: PublicKey, q: Pick<SellQuote, "pool" | "side" | "amountIn" | "minimumOut">, source: PublicKey, dest: PublicKey) {
   const { pool, side } = q;
   const data = Buffer.alloc(24);
   SWAP_BASE_INPUT.copy(data, 0);
