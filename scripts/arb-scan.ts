@@ -6,7 +6,7 @@
  * --execute), so every trade keeps the bot's guarantee: one transaction that fails unless it ends
  * at least --min-profit up.
  *
- *   npx tsx scripts/arb-scan.ts --keypair <wallet.json> [--execute] [--min-profit 0.02] [--max-in 10]
+ *   npx tsx scripts/arb-scan.ts --keypair <wallet.json> [--execute] [--min-profit 0.02] [--max-in 10] [--slippage <pct>]
  *     [--loop <seconds> (default 300) | --once] [--skip <mint,...>] [--network mainnet|testnet] [--rpc <url>]
  *
  *   --skip   tokens another bot already watches (e.g. the main arb bot's --mint list), so the two
@@ -47,6 +47,7 @@ const owner = loadKeypair(keypairPath).publicKey;
 const execute = has("execute");
 const minProfit = BigInt(Math.round(num("min-profit", 0.02) * 1e9));
 const maxIn = num("max-in", 10);
+const slippage = flag("slippage"); // passed on to the arb bot (its default otherwise)
 const loopSecs = has("once") ? 0 : num("loop", 300);
 const skip = new Set((flag("skip") ?? "").split(",").filter(Boolean));
 const ACCOUNT_RENT = 2_100_000n; // a Token-2022 account with the immutable-owner extension, rounded up
@@ -171,7 +172,7 @@ async function pass() {
   // shared a pool with an earlier trade are simply skipped if they no longer pay.
   for (const T of [...new Set(found.map((f) => f.T))]) {
     const r = spawnSync("npx", ["tsx", path.join(import.meta.dirname, "arb-bot.ts"), "--mint", T, "--keypair", keypairPath, "--once", "--execute",
-      "--network", network, "--rpc", rpcUrl, "--max-in", String(maxIn), "--min-profit", String(Number(minProfit) / 1e9)], { encoding: "utf8", timeout: 300_000 });
+      "--network", network, "--rpc", rpcUrl, "--max-in", String(maxIn), "--min-profit", String(Number(minProfit) / 1e9), ...(slippage ? ["--slippage", slippage] : [])], { encoding: "utf8", timeout: 300_000 });
     const lines = `${r.stdout}${r.stderr}`.split("\n").filter((x) => /traded|didn't|short|setup:|failed/.test(x) && !/429/.test(x));
     log(`${await name(T)}: ${lines.length ? lines.map((x) => x.replace(/^\S+ \S+ /, "")).join(" | ") : "no trade (the gap moved)"}`);
   }

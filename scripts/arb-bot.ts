@@ -6,7 +6,7 @@
  *
  *   npx tsx scripts/arb-bot.ts --mint <token mint> [--mint <another> ...] --keypair <wallet.json>
  *     [--execute] [--network mainnet|testnet] [--rpc <url>] [--min-profit 0.02] [--max-in 2]
- *     [--slippage 0.5] [--priority <micro-lamports per CU> (default 1000)]
+ *     [--slippage 0.1] [--priority <micro-lamports per CU> (default 1000)]
  *     [--loop <seconds> (default 20) | --once] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (only open the token accounts)
@@ -55,7 +55,7 @@ const has = (name: string) => argv.includes(`--${name}`);
 function usage(problem?: string): never {
   if (problem) console.error(problem);
   console.error("usage: npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> [--execute] [--network mainnet|testnet] [--rpc <url>]\n"
-    + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.5] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
+    + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.1] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
     + "         [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --unwrap (see the file's header)");
   process.exit(problem ? 1 : 0);
@@ -72,7 +72,10 @@ const wallet: Keypair = loadKeypair(flag("keypair") ?? usage("--keypair is requi
 const execute = has("execute");
 const minProfit = lamports(num("min-profit", 0.02));
 const maxIn = lamports(num("max-in", 2));
-const slipBps = BigInt(Math.round(num("slippage", 0.5) * 100));
+// The margin each middle swap keeps below its quote. The last swap's minimum (stake + --min-profit) is what
+// protects the trip, so this only trades a little failure risk for profit: what it holds back is left in the
+// wallet as leftover tokens (0.5% of a 5 XNT TEST trip is ~0.03 XNT, enough to make a paying trip look short).
+const slipBps = BigInt(Math.round(num("slippage", 0.1) * 100));
 const reserve = lamports(num("reserve", 0.1));
 const priority = num("priority", 1000);
 const loopSecs = has("once") ? 0 : num("loop", 20);
