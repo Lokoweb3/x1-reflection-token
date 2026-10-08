@@ -9,7 +9,7 @@
  *     [--max-subs 400] [--min-liquidity <XNT> (default 5)] [--own <wallet,...> [--own-min-profit <XNT>]]
  *     [--network mainnet|testnet] [--rpc <url>] [--verbose] [--webhook <url>] [--telegram-token <t> --telegram-chat <id>]
  *
- *   --skip           tokens another bot already watches (e.g. the arb bot's --mint list): not used as the main token
+ *   --skip           tokens another bot already watches (e.g. the arb bot's --mint list): no triangle through them
  *   --min-liquidity  only watch triangles whose two XNT pools each hold at least this much XNT
  *   --max-subs       at most this many pool vaults are watched live (the most liquid triangles first)
  *
@@ -170,7 +170,8 @@ async function fullRead() {
     if (p.mints.includes(X)) continue;
     for (const [T, Q] of [[p.mints[0], p.mints[1]], [p.mints[1], p.mints[0]]]) {
       const m = main.get(T), q = main.get(Q);
-      if (!m || !q || skip.has(T)) continue;
+      // Any triangle through a --skip token belongs to the other bot (from either side), so the two never race.
+      if (!m || !q || skip.has(T) || skip.has(Q)) continue;
       const k = [m, a, q].sort().join();
       if (seen.has(k)) continue;
       seen.add(k);
