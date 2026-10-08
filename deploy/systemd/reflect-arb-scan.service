@@ -1,0 +1,23 @@
+[Unit]
+Description=99 + Tax MAINNET: XDEX-wide arb scan (takes paying routes through the arb bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=reflect
+WorkingDirectory=/opt/x1-reflection-token
+# Required: ARB_SCAN_ARGS, e.g.
+#   ARB_SCAN_ARGS="--keypair /opt/x1-reflection-token/arb.keypair.json --loop 300 --execute --skip C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz,E3v5m81RLR3ZAjNuCeMjbniCmwBUd1j2iWsvtpXiBVe5"
+EnvironmentFile=/etc/reflect-arb-scan.env
+Environment=REFLECT_STATE_DIR=/opt/x1-reflection-token/state
+ExecStart=/bin/sh -c 'exec /usr/bin/node node_modules/tsx/dist/cli.mjs scripts/arb-scan.ts $ARB_SCAN_ARGS'
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/x1-reflection-token/state
+
+[Install]
+WantedBy=multi-user.target

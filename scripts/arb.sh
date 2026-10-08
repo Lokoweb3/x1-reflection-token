@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Run the arb bot (TEST and GOOGL.X routes) and the XDEX-wide arb scan in the background.
+#
+#   scripts/arb.sh start [bot|scan]    # start both, or one (sends real transactions)
+#   scripts/arb.sh stop  [bot|scan]
+#   scripts/arb.sh status
+#   scripts/arb.sh logs  [bot|scan]    # follow a log (Ctrl+C to stop following)
+#
+# Arguments come from state/arb.env if it exists (gitignored), e.g.
+#   ARB_BOT_ARGS="--mint <TEST> --mint <GOOGL.X> --keypair ./arb.keypair.json --max-in 10 --execute --cap 20 --skim-to <your wallet>"
+#   ARB_SCAN_ARGS="--keypair ./arb.keypair.json --loop 300 --execute --skip <TEST>,<GOOGL.X>"
+# otherwise the defaults below. Each keeps running after the terminal closes, until stopped or until
+# WSL/Windows shuts down (for always-on, use deploy/systemd/reflect-arb-*.service on a server).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+mkdir -p state
+TEST=C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz
+GOOGLX=E3v5m81RLR3ZAjNuCeMjbniCmwBUd1j2iWsvtpXiBVe5
+ARB_BOT_ARGS="--mint $TEST --mint $GOOGLX --keypair ./arb.keypair.json --max-in 10 --execute"
+ARB_SCAN_ARGS="--keypair ./arb.keypair.json --loop 300 --execute --skip $TEST,$GOOGLX"
+[[ -f state/arb.env ]] && source state/arb.env
+
+script() { [[ $1 == bot ]] && echo scripts/arb-bot.ts || echo scripts/arb-scan.ts; }
+args() { [[ $1 == bot ]] && echo "$ARB_BOT_ARGS" || echo "$ARB_SCAN_ARGS"; }
+pidf() { echo "state/arb-$1.pid"; }
+logf() { echo "state/arb-$1.log"; }
+running() { [[ -f $(pidf "$1") ]] && kill -0 "$(cat "$(pidf "$1")")" 2>/dev/null; }
+which_ones() { case "${1:-}" in bot|scan) echo "$1" ;; "") echo bot scan ;; *) echo "unknown: $1 (bot or scan)" >&2; exit 1 ;; esac; }
+
+case "${1:-status}" in
+  start)
+    for w in $(which_ones "${2:-}"); do
+      if running "$w"; then echo "$w: already running (pid $(cat "$(pidf "$w")"))"; continue; fi
+      # shellcheck disable=SC2046 # word-splitting the argument string is intended
+      setsid nohup npx tsx "$(script "$w")" $(args "$w") >>"$(logf "$w")" 2>&1 < /dev/null &
+      echo $! >"$(pidf "$w")"
+      sleep 3
+      if running "$w"; then echo "$w: started (pid $(cat "$(pidf "$w")")). Log: $(logf "$w")"
+      else echo "$w: failed to start; see $(logf "$w")"; tail -n 15 "$(logf "$w")"; fi
+    done
+    ;;
+  stop)
+    for w in $(which_ones "${2:-}"); do
+      if running "$w"; then pid=$(cat "$(pidf "$w")"); kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid"; echo "$w: stopped"
+      else echo "$w: not running"; fi
+      rm -f "$(pidf "$w")"
+    done
+    ;;
+  status)
+    for w in bot scan; do
+      if running "$w"; then echo "$w: running (pid $(cat "$(pidf "$w")")). Last lines:"; tail -n 3 "$(logf "$w")" | cut -c1-200
+      else echo "$w: not running"; fi
+    done
+    ;;
+  logs) tail -n 40 -f "$(logf "${2:-bot}")" ;;
+  *) echo "usage: $0 start|stop [bot|scan] | status | logs [bot|scan]"; exit 1 ;;
+esac

@@ -1,0 +1,24 @@
+[Unit]
+Description=99 + Tax MAINNET: arb bot for TEST and GOOGL.X pools (trades from its own wallet)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=reflect
+WorkingDirectory=/opt/x1-reflection-token
+# Required: ARB_BOT_ARGS, e.g.
+#   ARB_BOT_ARGS="--mint C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz --mint E3v5m81RLR3ZAjNuCeMjbniCmwBUd1j2iWsvtpXiBVe5 --keypair /opt/x1-reflection-token/arb.keypair.json --max-in 10 --execute --cap 20 --skim-to <your wallet>"
+# plus optional TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID for trade alerts. Keep the file root-only (chmod 600).
+EnvironmentFile=/etc/reflect-arb-bot.env
+Environment=REFLECT_STATE_DIR=/opt/x1-reflection-token/state
+ExecStart=/bin/sh -c 'exec /usr/bin/node node_modules/tsx/dist/cli.mjs scripts/arb-bot.ts $ARB_BOT_ARGS'
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/x1-reflection-token/state
+
+[Install]
+WantedBy=multi-user.target

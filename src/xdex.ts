@@ -140,6 +140,53 @@ export async function snapshot(
   return { pool, side, quoteMint: pool.mints[1 - side], reserveToken, reserveQuote, tradeFeeRate, feeCfg, epoch: BigInt(epoch) };
 }
 
+export interface SnapshotSpec { pool: PublicKey; mint: PublicKey; quote: PublicKey | null }
+
+/**
+ * `snapshot` for many pools at once, in two batched reads (the pools, then every fee config, vault and
+ * mint they need) instead of three requests per pool. The epoch is passed in (it changes every few days).
+ * Same checks and maths as `snapshot`; a pool that fails them is left out of the result (its key is missing).
+ * Results are keyed `${pool}:${mint}`.
+ */
+export async function snapshotMany(conn: Connection, programId: PublicKey, specs: SnapshotSpec[], epoch: bigint): Promise<Map<string, Snapshot>> {
+  const many = async (keys: PublicKey[]) => {
+    const out: (AccountInfo<Buffer> | null)[] = [];
+    for (let i = 0; i < keys.length; i += 100) out.push(...await conn.getMultipleAccountsInfo(keys.slice(i, i + 100)));
+    return out;
+  };
+  const poolKeys = [...new Map(specs.map((s) => [s.pool.toBase58(), s.pool])).values()];
+  const poolInfos = await many(poolKeys);
+  const pools = new Map<string, Pool>();
+  poolKeys.forEach((k, i) => { try { pools.set(k.toBase58(), decodePool(k, poolInfos[i], programId)); } catch { /* paused, closed or not XDEX */ } });
+  const need = new Map<string, PublicKey>();
+  for (const p of pools.values()) for (const k of [p.ammConfig, ...p.vaults, ...p.mints]) need.set(k.toBase58(), k);
+  const needKeys = [...need.values()];
+  const infos = new Map((await many(needKeys)).map((a, i) => [needKeys[i].toBase58(), a]));
+  const out = new Map<string, Snapshot>();
+  for (const s of specs) {
+    try {
+      const pool = pools.get(s.pool.toBase58());
+      if (!pool) continue;
+      const side = pool.mints.findIndex((m) => m.equals(s.mint));
+      if (side < 0 || (s.quote && !pool.mints[1 - side].equals(s.quote))) continue;
+      const mintProgram = pool.programs[side];
+      if (!mintProgram.equals(TOKEN_2022_PROGRAM_ID) && !mintProgram.equals(TOKEN_PROGRAM_ID)) continue;
+      const cfgInfo = infos.get(pool.ammConfig.toBase58());
+      if (!cfgInfo || !cfgInfo.owner.equals(programId) || cfgInfo.data.length !== 236 || !cfgInfo.data.subarray(0, 8).equals(CONFIG_DISC)) continue;
+      const tradeFeeRate = cfgInfo.data.readBigUInt64LE(12);
+      if (tradeFeeRate >= FEE_DENOM) continue;
+      const vaultIn = unpackAccount(pool.vaults[side], infos.get(pool.vaults[side].toBase58()) ?? null, pool.programs[side]);
+      const vaultOut = unpackAccount(pool.vaults[1 - side], infos.get(pool.vaults[1 - side].toBase58()) ?? null, pool.programs[1 - side]);
+      const reserveToken = vaultIn.amount - pool.protocolFees[side] - pool.fundFees[side];
+      const reserveQuote = vaultOut.amount - pool.protocolFees[1 - side] - pool.fundFees[1 - side];
+      if (reserveToken <= 0n || reserveQuote <= 0n) continue;
+      const feeCfg = getTransferFeeConfig(unpackMint(s.mint, infos.get(s.mint.toBase58()) ?? null, mintProgram)) ?? NO_TRANSFER_FEE;
+      out.set(`${s.pool.toBase58()}:${s.mint.toBase58()}`, { pool, side, quoteMint: pool.mints[1 - side], reserveToken, reserveQuote, tradeFeeRate, feeCfg, epoch });
+    } catch { /* a vault or mint we can't read: skip this pool */ }
+  }
+  return out;
+}
+
 /** `amount` of a pool's token side valued in its pair token at the spot price. */
 export const spotValue = (amount: bigint, s: Pick<Snapshot, "reserveToken" | "reserveQuote">) =>
   (amount * s.reserveQuote) / s.reserveToken;
