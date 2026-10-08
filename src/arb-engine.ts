@@ -193,17 +193,25 @@ export function createEngine(o: EngineOptions) {
     return [SystemProgram.transfer({ fromPubkey: owner, toPubkey: wxntAta, lamports: need - wrapped }), createSyncNativeInstruction(wxntAta, TOKEN_PROGRAM_ID)];
   }
 
-  // ---------- address lookup table (for four-swap routes) ----------
+  // ---------- address lookup tables (for four-swap routes) ----------
+  // A table holds up to 256 addresses; when it fills up another is created. The list lives in
+  // state/arb-alt-<wallet>.json ({"addresses": [...]}, or the older {"address": "..."}).
   const altFile = path.join(o.stateDir, `arb-alt-${owner.toBase58()}.json`);
-  let alt: AddressLookupTableAccount | null = null;
-  async function loadAlt() {
-    if (alt) return alt;
-    if (!fs.existsSync(altFile)) return null;
-    const addr = new PublicKey(JSON.parse(fs.readFileSync(altFile, "utf8")).address);
-    alt = (await conn.getAddressLookupTable(addr)).value;
-    return alt;
+  const ALT_MAX = 256;
+  let alts: AddressLookupTableAccount[] | null = null;
+  function altAddresses(): PublicKey[] {
+    if (!fs.existsSync(altFile)) return [];
+    const j = JSON.parse(fs.readFileSync(altFile, "utf8"));
+    return (j.addresses ?? (j.address ? [j.address] : [])).map((a: string) => new PublicKey(a));
   }
-  /** Make sure the wallet's lookup table holds every account these routes use; true if it had to change (usable from the next slot). */
+  async function loadAlts() {
+    if (alts) return alts;
+    const out: AddressLookupTableAccount[] = [];
+    for (const a of altAddresses()) { const t = (await conn.getAddressLookupTable(a)).value; if (t) out.push(t); }
+    alts = out;
+    return alts;
+  }
+  /** Make sure the wallet's lookup tables hold every account these routes use; true if they changed (usable from the next slot). */
   async function ensureAlt(routes: Route[]) {
     const want = new Set<string>([xdex, poolAuthority(xdex), TOKEN_PROGRAM_ID, NATIVE_MINT, wxntAta, owner, SystemProgram.programId].map((k) => k.toBase58()));
     for (const r of routes) for (const h of r.hops) {
@@ -211,35 +219,41 @@ export function createEngine(o: EngineOptions) {
       for (const k of [p.address, p.ammConfig, p.observation, ...p.vaults, ...p.mints, ...p.programs]) want.add(k.toBase58());
       for (const i of [0, 1]) want.add(accountFor(h.snap, i).toBase58());
     }
-    let table = await loadAlt();
-    let changed = false;
-    if (!table) {
-      const slot = await conn.getSlot("finalized");
-      const [ix, address] = AddressLookupTableProgram.createLookupTable({ authority: owner, payer: owner, recentSlot: slot });
-      o.log(`lookup table: created ${address.toBase58()}: ${await send([ix])}`);
-      fs.mkdirSync(o.stateDir, { recursive: true });
-      fs.writeFileSync(altFile, JSON.stringify({ address: address.toBase58() }) + "\n");
-      await new Promise((r) => setTimeout(r, 1500));
-      alt = null;
-      table = await loadAlt();
-      changed = true;
-    }
-    if (!table) throw new Error("lookup table not readable yet");
-    const have = new Set(table.state.addresses.map((a) => a.toBase58()));
+    alts = null;
+    const tables = await loadAlts();
+    const have = new Set(tables.flatMap((t) => t.state.addresses.map((a) => a.toBase58())));
     const add = [...want].filter((k) => !have.has(k)).map((k) => new PublicKey(k));
-    for (let i = 0; i < add.length; i += 20) {
-      const ix = AddressLookupTableProgram.extendLookupTable({ lookupTable: table.key, authority: owner, payer: owner, addresses: add.slice(i, i + 20) });
-      o.log(`lookup table: added ${add.slice(i, i + 20).length} address(es): ${await send([ix])}`);
-      changed = true;
+    if (!add.length) return false;
+    let list = altAddresses();
+    let last = tables[tables.length - 1];
+    let room = last ? ALT_MAX - last.state.addresses.length : 0;
+    for (let i = 0; i < add.length;) {
+      if (room <= 0) {
+        const slot = await conn.getSlot("finalized");
+        const [ix, address] = AddressLookupTableProgram.createLookupTable({ authority: owner, payer: owner, recentSlot: slot });
+        o.log(`lookup table: created ${address.toBase58()}: ${await send([ix])}`);
+        list = [...list, address];
+        fs.mkdirSync(o.stateDir, { recursive: true });
+        fs.writeFileSync(altFile, JSON.stringify({ addresses: list.map((a) => a.toBase58()) }) + "\n");
+        await new Promise((r) => setTimeout(r, 1500));
+        last = (await conn.getAddressLookupTable(address)).value!;
+        room = ALT_MAX;
+      }
+      const chunk = add.slice(i, i + Math.min(20, room));
+      const ix = AddressLookupTableProgram.extendLookupTable({ lookupTable: last!.key, authority: owner, payer: owner, addresses: chunk });
+      o.log(`lookup table: added ${chunk.length} address(es) to ${last!.key.toBase58().slice(0, 4)}…: ${await send([ix])}`);
+      i += chunk.length;
+      room -= chunk.length;
     }
-    if (changed) { await new Promise((r) => setTimeout(r, 1500)); alt = null; await loadAlt(); }
-    return changed;
+    await new Promise((r) => setTimeout(r, 1500));
+    alts = null;
+    await loadAlts();
+    return true;
   }
 
   // ---------- sending ----------
   async function compile(ixs: TransactionInstruction[], useAlt: boolean, blockhash: string) {
-    if (useAlt) await loadAlt();
-    const tables = useAlt && alt ? [alt] : [];
+    const tables = useAlt ? await loadAlts() : [];
     return new VersionedTransaction(new TransactionMessage({ payerKey: owner, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message(tables));
   }
   /**
@@ -283,7 +297,35 @@ export function createEngine(o: EngineOptions) {
    * those already chosen, all at once. Each is simulated first and skipped if that fails.
    * Returns how many went through.
    */
-  async function execute(found: { plan: Plan; ownShare: number }[], meta: (p: Plan) => Record<string, unknown> = () => ({})) {
+  /** XNT (plain + wrapped) the wallet gained in a landed transaction, fee included: what a trade really made. */
+  async function realized(signature: string): Promise<bigint | null> {
+    for (let i = 0; i < 4; i++) {
+      const t = await conn.getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+      if (t?.meta) {
+        const keys = t.transaction.message.getAccountKeys({ accountKeysFromLookups: t.meta.loadedAddresses });
+        let k = -1;
+        for (let j = 0; j < keys.length; j++) if (keys.get(j)!.equals(owner)) { k = j; break; }
+        const w = (l: typeof t.meta.preTokenBalances) => (l ?? []).filter((b) => b.owner === owner.toBase58() && b.mint === NATIVE_MINT.toBase58())
+          .reduce((a, b) => a + BigInt(b.uiTokenAmount.amount), 0n);
+        const lamports = k >= 0 ? BigInt(t.meta.postBalances[k] - t.meta.preBalances[k]) : 0n;
+        return lamports + w(t.meta.postTokenBalances) - w(t.meta.preTokenBalances);
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return null;
+  }
+
+  // One batch of trades at a time: whatever calls execute (the bot's pass, the scanner's live check), two
+  // batches never go out together, so the process never sends two trades through the same pool at once.
+  // A batch waiting its turn is re-checked by its simulation before it is sent.
+  let queue: Promise<unknown> = Promise.resolve();
+  function execute(found: { plan: Plan; ownShare: number }[], meta: (p: Plan) => Record<string, unknown> = () => ({})): Promise<number> {
+    const run = queue.then(() => executeNow(found, meta));
+    queue = run.catch(() => undefined);
+    return run;
+  }
+
+  async function executeNow(found: { plan: Plan; ownShare: number }[], meta: (p: Plan) => Record<string, unknown>) {
     const chosen: typeof found = [];
     const used = new Set<string>();
     for (const f of [...found].sort((a, b) => Number(b.plan.profit - a.plan.profit))) {
@@ -295,8 +337,11 @@ export function createEngine(o: EngineOptions) {
     if (!chosen.length) return 0;
     await openAccounts(chosen.map((c) => c.plan.route));
     const needAlt = chosen.some((c) => c.plan.route.hops.length > 3);
-    if (needAlt && await ensureAlt(chosen.map((c) => c.plan.route))) o.log("lookup table updated; trading on the next check");
-    if (needAlt && !alt) return 0;
+    if (needAlt && await ensureAlt(chosen.filter((c) => c.plan.route.hops.length > 3).map((c) => c.plan.route))) {
+      o.log("lookup table updated: four-swap trades go out from the next check");
+      chosen.splice(0, chosen.length, ...chosen.filter((c) => c.plan.route.hops.length <= 3));
+      if (!chosen.length) return 0;
+    }
     // One wrap for all of them (a separate transaction when several go out together).
     const total = chosen.reduce((t, c) => t + c.plan.xntIn, 0n);
     const wrap = await wrapFor(total);
@@ -311,11 +356,15 @@ export function createEngine(o: EngineOptions) {
       try {
         const sig = await send(ixs, useAlt);
         done++;
+        // What it really made (fee included), next to what the plan expected; a big shortfall is flagged.
+        const actual = await realized(sig);
+        const short = actual !== null && actual * 2n < p.profit;
         const entry = { at: new Date().toISOString(), name: p.route.name, hops: p.route.hops.length, pools: [...poolsOf(p)], pool: p.route.mispriced[0]?.toBase58(),
-          xntIn: p.xntIn.toString(), expectedProfit: p.profit.toString(), ownShare: Number(c.ownShare.toFixed(3)), signature: sig, ...meta(p) };
+          xntIn: p.xntIn.toString(), expectedProfit: p.profit.toString(), actualProfit: actual?.toString() ?? null, ownShare: Number(c.ownShare.toFixed(3)), signature: sig, ...meta(p) };
         fs.mkdirSync(path.dirname(journal), { recursive: true });
         fs.appendFileSync(journal, JSON.stringify(entry) + "\n");
-        await o.alert(`traded ${describe(p)}: ${xnt(p.xntIn)} XNT in, ~+${xnt(p.profit)} XNT${c.ownShare >= 0.5 ? ` (${Math.round(c.ownShare * 100)}% your own pool)` : ""}. ${sig}`);
+        await o.alert(`traded ${describe(p)}: ${xnt(p.xntIn)} XNT in, expected +${xnt(p.profit)}, made ${actual === null ? "?" : `${actual >= 0n ? "+" : ""}${xnt(actual)}`} XNT`
+          + `${short ? " (under half the expected: the pools moved before it landed)" : ""}${c.ownShare >= 0.5 ? ` (${Math.round(c.ownShare * 100)}% your own pool)` : ""}. ${sig}`);
       } catch (e) {
         o.log(`${describe(p)}: didn't go through (nothing traded; only the fee if it landed): ${msg(e).split("\n")[0]}`);
       }
@@ -323,7 +372,7 @@ export function createEngine(o: EngineOptions) {
     return done;
   }
 
-  return { plan, best, bestAll, execute, simulate, send, tripIxs, wrapFor, openAccounts, missingAccounts, ensureAlt, learnFees, ownShare, wxntAta, balanceOf, accountFor, describe };
+  return { plan, best, bestAll, execute, realized, simulate, send, tripIxs, wrapFor, openAccounts, missingAccounts, ensureAlt, learnFees, ownShare, wxntAta, balanceOf, accountFor, describe };
 }
 export type Engine = ReturnType<typeof createEngine>;
 

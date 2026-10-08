@@ -8,6 +8,7 @@
  *     [--execute] [--network mainnet|testnet] [--rpc <url>] [--min-profit 0.02] [--max-in 2]
  *     [--slippage 0.1] [--priority <micro-lamports per CU> (default 1000)]
  *     [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs]
+ *     [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]
  *     [--loop <seconds> (default 20) | --once] [--no-instant] [--clean-every <hours> (default 6, 0 = off)]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
@@ -28,6 +29,11 @@
  * sent if the simulation passes (a gap someone else took costs nothing), and its last swap must return
  * the stake plus the minimum profit, so a trade that moved against you fails as a whole: a missed trade
  * costs its network fee at most, never the stake. Paying routes that share no pool are sent together.
+ *
+ * --scan also runs the XDEX-wide scanner (src/arb-scanner.ts: every other token's triangles, plus four-swap
+ * routes through the busiest hub tokens) in this same process, on this same engine: one wallet and one
+ * queue of trades, so the bot and the scanner never send through the same pool at once. Triangles through
+ * the --mint tokens are left to the bot's own loop.
  *
  * Your own pools: --own lists your wallets; a route whose mispriced pools are mostly their liquidity
  * (LP held, or locked in the 8N4E… locker) mostly moves your own money, so --own-min-profit (default:
@@ -53,6 +59,7 @@ import {
 import { XDEX_PROGRAM_IDS, loadKeypair } from "../src/config.js";
 import { gapPct } from "../src/arb.js";
 import { createEngine, routesFor, type Route } from "../src/arb-engine.js";
+import { createScanner } from "../src/arb-scanner.js";
 import { deepestXntPool, poolsWith, symbolOf } from "../src/pools.js";
 import { cpmmOut, snapshot, snapshotMany, swapIx, type Snapshot, type SnapshotSpec } from "../src/xdex.js";
 
@@ -64,6 +71,7 @@ function usage(problem?: string): never {
   console.error("usage: npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> [--execute] [--network mainnet|testnet] [--rpc <url>]\n"
     + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.1] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
     + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>]\n"
+    + "         [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]\n"
     + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
   process.exit(problem ? 1 : 0);
@@ -392,6 +400,15 @@ async function main() {
     + `${ownMinProfit !== undefined ? ` (+${xnt(ownMinProfit)} on your own pools)` : ""}${pairs ? ", side-pool pairs on" : ""}, `
     + `${loopSecs ? `every ${loopSecs}s${instant ? " and the moment a watched pool changes" : ""}` : "once"}`
     + `${execute && loopSecs && cleanEveryMs ? `, cleans leftovers every ${cleanEveryMs / 3_600_000}h` : ""}${cap !== null ? `, keeps ~${xnt(cap)} XNT (rest to ${skimTo!.toBase58()})` : ""}`);
+  if (has("scan")) {
+    const scanLoop = has("once") ? 0 : num("scan-loop", 300);
+    const scanner = createScanner({ conn, xdex, engine, execute, skip: new Set(mints.map((m) => m.toBase58())),
+      minLiquidity: lamports(num("min-liquidity", 5)), maxSubs: num("max-subs", 400), loopSecs: scanLoop, instant: instant && scanLoop > 0,
+      hubs: num("hubs", 3), hubSides: num("hub-sides", 12), verbose, log });
+    log(`scan: on, in this process (full read ${scanLoop ? `every ${scanLoop}s, live between reads` : "once"})`);
+    // Runs alongside the loop below; both trade through the engine's one queue.
+    void scanner.start().catch((e) => log(`scan stopped: ${msg(e)}`));
+  }
   let lastClean = Date.now(), lastCap = 0, streak = 0;
   for (;;) {
     let traded = false;
