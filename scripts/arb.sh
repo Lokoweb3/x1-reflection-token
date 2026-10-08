@@ -16,8 +16,9 @@ cd "$(dirname "$0")/.."
 mkdir -p state
 TEST=C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz
 GOOGLX=E3v5m81RLR3ZAjNuCeMjbniCmwBUd1j2iWsvtpXiBVe5
-ARB_BOT_ARGS="--mint $TEST --mint $GOOGLX --keypair ./arb.keypair.json --max-in 10 --execute"
-ARB_SCAN_ARGS="--keypair ./arb.keypair.json --loop 300 --execute --skip $TEST,$GOOGLX"
+OWN=99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM,DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n
+ARB_BOT_ARGS="--mint $TEST --mint $GOOGLX --keypair ./arb.keypair.json --max-in 10 --execute --own $OWN"
+ARB_SCAN_ARGS="--keypair ./arb.keypair.json --loop 300 --execute --skip $TEST,$GOOGLX --own $OWN"
 [[ -f state/arb.env ]] && source state/arb.env
 
 script() { [[ $1 == bot ]] && echo scripts/arb-bot.ts || echo scripts/arb-scan.ts; }

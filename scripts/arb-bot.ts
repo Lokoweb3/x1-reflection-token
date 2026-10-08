@@ -1,67 +1,60 @@
 /**
  * Pool arbitrage bot: when a token's side pool (TOKEN/JACK, TOKEN/USDC.X, ...) drifts far
- * enough from its main XNT pool that a round trip pays after every fee and tax, it trades the
- * round trip and pockets the difference in XNT. The maths is src/arb.ts (shared with the gap
- * monitor); this sends the trades.
+ * enough from its main XNT pool (or from another side pool) that a round trip pays after every
+ * fee and tax, it trades the round trip and pockets the difference in XNT. Pricing, sizing and
+ * sending live in src/arb-engine.ts (shared with scripts/arb-scan.ts).
  *
  *   npx tsx scripts/arb-bot.ts --mint <token mint> [--mint <another> ...] --keypair <wallet.json>
  *     [--execute] [--network mainnet|testnet] [--rpc <url>] [--min-profit 0.02] [--max-in 2]
  *     [--slippage 0.1] [--priority <micro-lamports per CU> (default 1000)]
+ *     [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs]
  *     [--loop <seconds> (default 20) | --once] [--no-instant] [--clean-every <hours> (default 6, 0 = off)]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
- *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (only open the token accounts)
- *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --sweep [--execute]
+ *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (open the token accounts and lookup table)
+ *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep [--execute]
  *       (sell the leftovers: every token the wallet holds besides XNT, through its deepest XNT pool)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --close-dust [--keep <mint,...>] [--execute]
  *       (burn token balances worth under 0.001 XNT, too small to sell, and close their accounts to get
  *        the ~0.002 XNT rent each back; empty accounts and --keep tokens are left open for the routes)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --unwrap   (wrapped XNT back to plain XNT)
  *
+ * Routes, for each --mint (one wallet, one process; a route two tokens share is checked once):
+ *   triangles   XNT -> Q (Q/XNT) -> token (side pool) -> XNT (main pool), and the reverse
+ *   side pairs  XNT -> Qa (Qa/XNT) -> token (side pool a) -> Qb (side pool b) -> XNT (Qb/XNT), for
+ *               every two side pools (four swaps; through the wallet's address lookup table). --no-pairs
+ *               turns these off.
+ * Each route is sized to its most profitable stake up to --max-in. A trade is simulated first and only
+ * sent if the simulation passes (a gap someone else took costs nothing), and its last swap must return
+ * the stake plus the minimum profit, so a trade that moved against you fails as a whole: a missed trade
+ * costs its network fee at most, never the stake. Paying routes that share no pool are sent together.
+ *
+ * Your own pools: --own lists your wallets; a route whose mispriced pools are mostly their liquidity
+ * (LP held, or locked in the 8N4E… locker) mostly moves your own money, so --own-min-profit (default:
+ * --min-profit) can hold it to a higher bar. Every trade is logged with its own-pool share.
+ *
  * Speed: besides the --loop timer, the bot subscribes to every route's pool vaults and checks the moment
- * one changes (a trade landed), so a swing is answered within a second or so; after a trade it checks again
- * straight away instead of waiting. --no-instant turns the subscriptions off (timer only). Each check reads
- * every pool it watches in two batched requests.
+ * one changes (a trade landed); after a trade it checks again straight away. --no-instant turns the
+ * subscriptions off. Each check reads every pool it watches in two batched requests.
  *
  * Upkeep (with --execute): every --clean-every hours it runs --sweep and then --close-dust (keeping the
  * route tokens' accounts open). With --cap and --skim-to it keeps the wallet at about --cap XNT, sending
  * anything above it to --skim-to (checked every 10 minutes); it alerts when the wallet holds under --low XNT.
  *
- * Each --mint (or a comma-separated list) is watched against its own deepest XNT pool, all from
- * one wallet in one process; a triangle two of them share (TOKEN/GOOGL.X seen from either side) is
- * checked once a pass.
- *
- * Without --execute it only says what it would trade (and simulates it when the wallet is
- * set up). With it, one round trip is ONE transaction of three swaps:
- *   "buy side":  XNT -> Q (Q/XNT pool) -> token (side pool) -> XNT (main pool)
- *   "buy main":  XNT -> token (main pool) -> Q (side pool) -> XNT (Q/XNT pool)
- * The last swap's minimum output is the XNT put in plus --min-profit, so if prices move
- * before it lands the whole transaction fails and nothing is traded: a missed trade costs
- * its network fee, never the stake. Each swap after the first spends the previous swap's
- * minimum output, so a little slippage on the way leaves dust in the wallet rather than
- * failing the trip.
- *
- * Working balance: the wallet trades out of its wrapped-XNT account. Before a trip it tops
- * that up from plain XNT if needed, keeping --reserve (default 0.1) XNT unwrapped for fees;
- * profits stay wrapped until --unwrap. The first --execute run opens the wallet's token
- * accounts (wrapped XNT, the token, each pair token) in a setup transaction.
- * Every trade is logged to state/arb-trades.jsonl.
+ * Working balance: the wallet trades out of its wrapped-XNT account, topped up from plain XNT as needed
+ * (keeping --reserve, default 0.1, unwrapped for fees). Every trade is logged to state/arb-trades.jsonl.
  */
-import fs from "node:fs";
 import path from "node:path";
+import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import {
-  ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction,
-} from "@solana/web3.js";
-import {
-  NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction,
-  createBurnCheckedInstruction, createCloseAccountInstruction, createHarvestWithheldTokensToMintInstruction,
-  createSyncNativeInstruction, getAssociatedTokenAddressSync,
+  NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction,
+  createBurnCheckedInstruction, createCloseAccountInstruction, createHarvestWithheldTokensToMintInstruction, createSyncNativeInstruction,
 } from "@solana/spl-token";
 import { XDEX_PROGRAM_IDS, loadKeypair } from "../src/config.js";
 import { gapPct } from "../src/arb.js";
+import { createEngine, routesFor, type Route } from "../src/arb-engine.js";
 import { deepestXntPool, poolsWith, symbolOf } from "../src/pools.js";
 import { cpmmOut, snapshot, snapshotMany, swapIx, type Snapshot, type SnapshotSpec } from "../src/xdex.js";
-import { confirmByPolling, fitComputeLimit } from "../src/tx.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
@@ -70,9 +63,9 @@ function usage(problem?: string): never {
   if (problem) console.error(problem);
   console.error("usage: npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> [--execute] [--network mainnet|testnet] [--rpc <url>]\n"
     + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.1] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
-    + "         [--no-instant] [--clean-every <hours>] [--cap <XNT> --skim-to <wallet>] [--low <XNT>]\n"
-    + "         [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
-    + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --unwrap (see the file's header)");
+    + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>]\n"
+    + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
+    + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
   process.exit(problem ? 1 : 0);
 }
 if (has("help") || has("h")) usage();
@@ -87,19 +80,23 @@ const wallet: Keypair = loadKeypair(flag("keypair") ?? usage("--keypair is requi
 const execute = has("execute");
 const minProfit = lamports(num("min-profit", 0.02));
 const maxIn = lamports(num("max-in", 2));
-// The margin each middle swap keeps below its quote. The last swap's minimum (stake + --min-profit) is what
+// The margin each middle swap keeps below its quote. The last swap's minimum (stake + minimum profit) is what
 // protects the trip, so this only trades a little failure risk for profit: what it holds back is left in the
 // wallet as leftover tokens (0.5% of a 5 XNT TEST trip is ~0.03 XNT, enough to make a paying trip look short).
 const slipBps = BigInt(Math.round(num("slippage", 0.1) * 100));
 const reserve = lamports(num("reserve", 0.1));
 const priority = num("priority", 1000);
 const loopSecs = has("once") ? 0 : num("loop", 20);
+const own = (flag("own") ?? "").split(",").filter(Boolean).map((w) => new PublicKey(w));
+const ownMinProfit = flag("own-min-profit") !== undefined ? lamports(num("own-min-profit", 0)) : undefined;
+const pairs = !has("no-pairs");
 const webhook = flag("webhook");
 if (!!flag("telegram-token") !== !!flag("telegram-chat")) usage("Telegram needs both --telegram-token and --telegram-chat");
 const envTg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
 const tgToken = flag("telegram-token") ?? (envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined);
 const tgChat = flag("telegram-chat") ?? (envTg ? process.env.TELEGRAM_CHAT_ID : undefined);
 const instant = !has("no-instant");
+const verbose = has("verbose");
 const cleanEveryMs = num("clean-every", 6) * 3_600_000;
 const cap = flag("cap") !== undefined ? lamports(num("cap", 0)) : null;
 const skimTo = flag("skim-to") ? new PublicKey(flag("skim-to")!) : null;
@@ -107,12 +104,13 @@ const low = lamports(num("low", 1));
 if ((cap === null) !== (skimTo === null)) usage("--cap and --skim-to go together");
 if (cap !== null && cap < maxIn + reserve) usage("--cap must be at least --max-in + --reserve (the bot needs that much to trade)");
 if (minProfit <= 0n) usage("--min-profit must be above 0 (it is what makes a trade that moved against you fail)");
+if (ownMinProfit !== undefined && !own.length) usage("--own-min-profit needs --own <wallet,...>");
 if (skimTo && skimTo.equals(wallet.publicKey)) usage("--skim-to is this wallet");
 
 const log = (s: string) => console.log(`${new Date().toISOString().slice(0, 19).replace("T", " ")} ${s}`);
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const xnt = (l: bigint) => (Number(l) / 1e9).toFixed(4);
-const JOURNAL = path.join(process.env.REFLECT_STATE_DIR ?? path.join(import.meta.dirname, "..", "state"), "arb-trades.jsonl");
+const stateDir = process.env.REFLECT_STATE_DIR ?? path.join(import.meta.dirname, "..", "state");
 
 async function alert(text: string) {
   log(text);
@@ -122,32 +120,8 @@ async function alert(text: string) {
   for (const r of await Promise.allSettled(posts)) if (r.status === "rejected") log(`alert delivery failed: ${msg(r.reason)}`);
 }
 
-// ---------- wrapped XNT ----------
-const wxntAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey, false, TOKEN_PROGRAM_ID);
-const balanceOf = async (ata: PublicKey) => {
-  const b = await conn.getTokenAccountBalance(ata, "confirmed").catch(() => null);
-  return b ? BigInt(b.value.amount) : null;
-};
-
-/** Send `ixs` as one v0 transaction (compute limit fitted by simulation) and wait for it. */
-async function send(ixs: TransactionInstruction[]) {
-  const fitted = await fitComputeLimit(conn, [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority }), ComputeBudgetProgram.setComputeUnitLimit({ units: 600_000 }), ...ixs], wallet.publicKey);
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-  const tx = new VersionedTransaction(new TransactionMessage({ payerKey: wallet.publicKey, recentBlockhash: blockhash, instructions: fitted }).compileToV0Message());
-  tx.sign([wallet]);
-  const raw = tx.serialize();
-  const signature = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 3 });
-  await confirmByPolling(conn, raw, signature, lastValidBlockHeight);
-  return signature;
-}
-
-async function simulate(ixs: TransactionInstruction[]) {
-  const tx = new VersionedTransaction(new TransactionMessage({ payerKey: wallet.publicKey, recentBlockhash: PublicKey.default.toBase58(),
-    instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), ...ixs] }).compileToV0Message());
-  const bytes = tx.serialize().length;
-  const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
-  return { bytes, err: sim.value.err, units: sim.value.unitsConsumed, logs: sim.value.logs ?? [] };
-}
+const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, stateDir, log, alert });
+const { wxntAta, balanceOf, send } = engine;
 
 if (has("unwrap")) {
   const bal = await balanceOf(wxntAta);
@@ -185,101 +159,15 @@ async function discover(mint: PublicKey) {
   return f;
 }
 
-// ---------- planning ----------
-/** One swap: sell `amountIn` of `pool.mints[inSide]`, receive at least `minOut` (net of the output's transfer fee). */
-interface Swap { snap: Snapshot; inSide: number; amountIn: bigint; out: bigint; minOut: bigint }
-interface Plan { dir: "buy-side" | "buy-main"; xntIn: bigint; swaps: Swap[]; xntOut: bigint; profit: bigint }
-
-const NO_FEE = null;
-const fee = (cfg: TransferFeeConfig | null, epoch: bigint, a: bigint) => (cfg ? calculateEpochFee(cfg, epoch, a) : 0n);
-const haircut = (a: bigint) => (a * (10_000n - slipBps)) / 10_000n;
-
-/** A swap in `s` (its "token" side is `s.pool.mints[s.side]`), selling the token side or the pair side. */
-function swap(s: Snapshot, sellTokenSide: boolean, amountIn: bigint, inFee: TransferFeeConfig | null, outFee: TransferFeeConfig | null): Swap {
-  const net = amountIn - fee(inFee, s.epoch, amountIn);
-  const [rIn, rOut] = sellTokenSide ? [s.reserveToken, s.reserveQuote] : [s.reserveQuote, s.reserveToken];
-  const gross = cpmmOut(net, rIn, rOut, s.tradeFeeRate);
-  const out = gross - fee(outFee, s.epoch, gross);
-  return { snap: s, inSide: sellTokenSide ? s.side : 1 - s.side, amountIn, out, minOut: haircut(out) };
-}
-
-/** The three swaps of a round trip of `xntIn`, each spending the previous one's minimum output. */
-function plan(main: Snapshot, side: Snapshot, quote: Snapshot, xntIn: bigint, dir: Plan["dir"]): Plan {
-  const tax = main.feeCfg, qtax = quote.feeCfg; // the token's and Q's transfer fees
-  const s: Swap[] = [];
-  if (dir === "buy-side") {
-    s.push(swap(quote, false, xntIn, NO_FEE, qtax)); // XNT in, Q out
-    s.push(swap(side, false, s[0].minOut, qtax, tax)); // Q in, token out
-    s.push(swap(main, true, s[1].minOut, tax, NO_FEE)); // token in, XNT out
-  } else {
-    s.push(swap(main, false, xntIn, NO_FEE, tax)); // XNT in, token out
-    s.push(swap(side, true, s[0].minOut, tax, qtax)); // token in, Q out
-    s.push(swap(quote, true, s[1].minOut, qtax, NO_FEE)); // Q in, XNT out
-  }
-  const xntOut = s[2].out;
-  return { dir, xntIn, swaps: s, xntOut, profit: xntOut - xntIn };
-}
-
-/** The most profitable trip up to --max-in, both directions (profit is concave in size). */
-function best(main: Snapshot, side: Snapshot, quote: Snapshot): Plan {
-  let b: Plan | null = null;
-  for (const dir of ["buy-side", "buy-main"] as const)
-    for (let x = 10_000_000n; x <= maxIn; x = (x * 5n) / 4n) {
-      const p = plan(main, side, quote, x, dir);
-      if (!b || p.profit > b.profit) b = p;
-    }
-  return b!;
-}
-
-// ---------- instructions ----------
-const ataOf = (m: PublicKey, program: PublicKey) => getAssociatedTokenAddressSync(m, wallet.publicKey, false, program);
-const accountFor = (s: Snapshot, i: number) => (s.pool.mints[i].equals(NATIVE_MINT) ? wxntAta : ataOf(s.pool.mints[i], s.pool.programs[i]));
-
-function tripIxs(p: Plan): TransactionInstruction[] {
-  return p.swaps.map((w, i) => {
-    const minimumOut = i === 2 ? p.xntIn + minProfit : w.minOut;
-    return swapIx(xdex, wallet.publicKey, { pool: w.snap.pool, side: w.inSide, amountIn: w.amountIn, minimumOut },
-      accountFor(w.snap, w.inSide), accountFor(w.snap, 1 - w.inSide));
-  });
-}
-
-/** Token accounts the wallet needs for these pools, opened in one setup transaction. */
-async function setup(snaps: Snapshot[], force = false) {
-  const need = new Map<string, TransactionInstruction>();
-  for (const s of snaps) for (const i of [0, 1]) {
-    const m = s.pool.mints[i], prog = s.pool.programs[i], ata = accountFor(s, i);
-    need.set(ata.toBase58(), createAssociatedTokenAccountIdempotentInstruction(wallet.publicKey, ata, wallet.publicKey, m, prog));
-  }
-  const infos = await conn.getMultipleAccountsInfo([...need.keys()].map((k) => new PublicKey(k)));
-  const missing = [...need.values()].filter((_, i) => !infos[i]);
-  if (!missing.length) return true;
-  if (!execute && !force) return false;
-  log(`setup: opening ${missing.length} token account(s)`);
-  for (let i = 0; i < missing.length; i += 4) log(`setup: ${await send(missing.slice(i, i + 4))}`);
-  return true;
-}
-
-/** Wrap enough XNT to cover `xntIn` (keeping --reserve unwrapped), or null if the wallet is short. */
-async function topUp(xntIn: bigint): Promise<TransactionInstruction[] | null> {
-  const wrapped = (await balanceOf(wxntAta)) ?? 0n;
-  if (wrapped >= xntIn) return [];
-  const plain = BigInt(await conn.getBalance(wallet.publicKey, "confirmed"));
-  const short = xntIn - wrapped;
-  if (plain - reserve < short) return null;
-  return [SystemProgram.transfer({ fromPubkey: wallet.publicKey, toPubkey: wxntAta, lamports: short }), createSyncNativeInstruction(wxntAta, TOKEN_PROGRAM_ID)];
-}
-
-// ---------- one pass ----------
 let epochCache: { at: number; epoch: bigint } | null = null;
 async function epochNow() {
   if (!epochCache || Date.now() - epochCache.at > 10 * 60_000) epochCache = { at: Date.now(), epoch: BigInt((await conn.getEpochInfo("confirmed")).epoch) };
   return epochCache.epoch;
 }
 const key = (pool: PublicKey, mint: PublicKey) => `${pool.toBase58()}:${mint.toBase58()}`;
-let lastSummary = 0;
 
-/** Every watched token's routes, read in two batched requests; true once a trade was sent. */
-async function pass(): Promise<boolean> {
+/** Every route of every watched token, from one batched read of all their pools. */
+async function readRoutes() {
   const founds: Found[] = [];
   for (const mint of mints) founds.push(await discover(mint));
   const specs: SnapshotSpec[] = [];
@@ -288,67 +176,66 @@ async function pass(): Promise<boolean> {
     for (const s of f.sides) specs.push({ pool: s.pool, mint: f.mint, quote: s.quoteMint }, { pool: s.quotePool, mint: s.quoteMint, quote: NATIVE_MINT });
   }
   const snaps = await snapshotMany(conn, xdex, specs, await epochNow());
-  if (instant && loopSecs) watchVaults(snaps);
+  engine.learnFees(snaps.values());
+  const routes: Route[] = [];
+  const gaps: string[] = [];
   const seen = new Set<string>();
-  const lines: string[] = [];
   for (const f of founds) {
-    if (await passFor(f, snaps, seen, lines)) return true; // reserves changed: re-read before trading another pool
+    const main = snaps.get(key(f.main, f.mint));
+    if (!main) { gaps.push(`${f.symbol}/XNT unreadable`); continue; }
+    const sides = f.sides.flatMap((s) => {
+      const side = snaps.get(key(s.pool, f.mint)), quote = snaps.get(key(s.quotePool, s.quoteMint));
+      if (!side || !quote) return [];
+      const g = gapPct({ main, side, quote });
+      gaps.push(`${s.name} ${g >= 0 ? "+" : ""}${g.toFixed(2)}%`);
+      return [{ name: s.name, side, quote, quoteMint: s.quoteMint }];
+    });
+    for (const r of routesFor({ mint: f.mint, symbol: f.symbol, main, sides }, pairs)) {
+      // The same pools in the same order are the same trade: a triangle two watched tokens share
+      // (TEST/GOOGL.X seen from either side) counts once, while opposite directions stay apart.
+      const k = r.hops.map((h) => h.snap.pool.address.toBase58()).join(">");
+      if (seen.has(k)) continue;
+      seen.add(k);
+      routes.push(r);
+    }
   }
-  // With instant checks there can be many passes a minute: log the gaps at most once a minute.
-  if (Date.now() - lastSummary >= 60_000 || !loopSecs) { log(lines.join(" | ") || "no side pools"); lastSummary = Date.now(); }
-  return false;
+  return { snaps, routes, gaps };
 }
 
-/** One token's side pools; true once it has sent a trade. */
-async function passFor(f: Found, snaps: Map<string, Snapshot>, seen: Set<string>, line: string[]) {
-  const main = snaps.get(key(f.main, f.mint));
-  if (!main) { line.push(`${f.symbol}/XNT unreadable`); return false; }
-  for (const s of f.sides) {
-    const triangle = [f.main, s.pool, s.quotePool].map((k) => k.toBase58()).sort().join();
-    if (seen.has(triangle)) continue;
-    seen.add(triangle);
-    const side = snaps.get(key(s.pool, f.mint)), quote = snaps.get(key(s.quotePool, s.quoteMint));
-    if (!side || !quote) continue;
-    const gap = gapPct({ main, side, quote });
-    const p = best(main, side, quote);
-    line.push(`${s.name} ${gap >= 0 ? "+" : ""}${gap.toFixed(2)}% best ${p.profit >= 0n ? "+" : ""}${xnt(p.profit)} @ ${xnt(p.xntIn)}`);
-    if (p.profit < minProfit) continue;
+// ---------- one pass ----------
+let lastSummary = 0;
 
-    const where = p.dir === "buy-side" ? `buy on ${s.name}, sell on ${f.symbol}/XNT` : `buy on ${f.symbol}/XNT, sell on ${s.name}`;
-    const ready = await setup([main, side, quote]);
-    const wrap = ready ? await topUp(p.xntIn) : [];
-    const ixs = [...(wrap ?? []), ...tripIxs(p)];
-    if (!execute) {
-      const sim = await simulate(ixs);
-      log(`[dry run] ${s.name} ${gap.toFixed(2)}%: ${where}, ${xnt(p.xntIn)} XNT -> ~${xnt(p.xntOut)} (+${xnt(p.profit)}). `
-        + (!ready ? `Wallet not set up yet (--execute opens its token accounts); trade tx is ${sim.bytes} of 1232 bytes.` : !wrap ? "Wallet is short of XNT for this size."
-          : sim!.err ? `Simulation failed (${sim!.bytes} bytes): ${JSON.stringify(sim!.err)} ${sim!.logs.filter((l) => /Error|error|failed/.test(l)).slice(-2).join(" | ")}`
-            : `Simulation OK: ${sim!.units} CU, ${sim!.bytes} bytes.`));
-      continue;
-    }
-    if (!wrap) { log(`${s.name}: a trip pays +${xnt(p.profit)} XNT but the wallet is short of XNT for ${xnt(p.xntIn)} (keeping ${xnt(reserve)} for fees)`); continue; }
-    const before = (await balanceOf(wxntAta)) ?? 0n;
-    try {
-      const sig = await send(ixs);
-      const after = (await balanceOf(wxntAta)) ?? 0n;
-      const realized = after - before - (wrap.length ? p.xntIn - before : 0n);
-      const entry = { at: new Date().toISOString(), pool: s.pool.toBase58(), name: s.name, dir: p.dir, gapPct: gap, xntIn: p.xntIn.toString(), expectedProfit: p.profit.toString(), signature: sig };
-      fs.mkdirSync(path.dirname(JOURNAL), { recursive: true });
-      fs.appendFileSync(JOURNAL, JSON.stringify(entry) + "\n");
-      await alert(`traded ${s.name} (${gap.toFixed(2)}%): ${where}, ${xnt(p.xntIn)} XNT in, ~+${xnt(p.profit)} XNT expected (wrapped balance ${xnt(after)}, made ${xnt(realized)}). ${sig}`);
-    } catch (e) {
-      log(`${s.name}: trade didn't go through (nothing was traded, only the fee is spent if it landed): ${msg(e).split("\n")[0]}`);
-    }
-    return true;
+/** Price every route; trade (or, without --execute, report) the ones that pay. True once a trade was sent. */
+async function pass(): Promise<boolean> {
+  const { snaps, routes, gaps } = await readRoutes();
+  if (instant && loopSecs) watchVaults(snaps);
+  const priced = await engine.bestAll(routes);
+  const paying = priced.filter((p) => p.pays);
+  if (Date.now() - lastSummary >= 60_000 || !loopSecs) {
+    const top = [...priced].sort((a, b) => Number(b.plan.profit - a.plan.profit))[0];
+    log(`${gaps.join(" | ") || "no side pools"} || ${routes.length} routes, best ${top ? `${top.plan.route.name} ${top.plan.profit >= 0n ? "+" : ""}${xnt(top.plan.profit)} @ ${xnt(top.plan.xntIn)}` : "none"}`);
+    lastSummary = Date.now();
   }
-  return false;
+  if (!paying.length) return false;
+  if (!execute) {
+    for (const p of paying) {
+      const missing = await engine.missingAccounts([p.plan.route]);
+      const four = p.plan.route.hops.length > 3;
+      const sim = missing.length ? null : await engine.simulate(engine.tripIxs(p.plan), four).catch(() => null);
+      log(`[dry run] ${engine.describe(p.plan)}: ${xnt(p.plan.xntIn)} XNT -> ~${xnt(p.plan.xntOut)} (+${xnt(p.plan.profit)})`
+        + `${p.ownShare >= 0.5 ? `, ${Math.round(p.ownShare * 100)}% your own pool` : ""}. `
+        + (missing.length ? `Needs ${missing.length} new token account(s) (--execute opens them).` : !sim ? "Four swaps: run --setup first (lookup table)."
+          : sim.err ? `Simulation failed: ${JSON.stringify(sim.err)}` : `Simulation OK: ${sim.units} CU, ${sim.bytes} bytes.`));
+    }
+    return false;
+  }
+  return (await engine.execute(paying)) > 0;
 }
 
 // ---------- instant checks: wake up when a watched pool's vault changes ----------
 const subs = new Map<string, number>();
 let wakePending = false;
 let wakeNow: (() => void) | null = null;
-const verbose = has("verbose");
 function wake() { if (verbose && !wakePending) log("a watched pool changed: checking now"); wakePending = true; wakeNow?.(); }
 
 /** Subscribe to the vaults of every pool just read (and drop pools no longer watched). */
@@ -405,6 +292,13 @@ function routeMints() {
   return out;
 }
 
+/** XNT for selling all `amount` of a pool's token side into it (after its transfer fee and the pool fee), and the minimum to ask. */
+function sellQuote(s: Snapshot, amount: bigint) {
+  const net = amount - calculateEpochFee(s.feeCfg, s.epoch, amount);
+  const out = cpmmOut(net, s.reserveToken, s.reserveQuote, s.tradeFeeRate);
+  return { out, minOut: (out * (10_000n - slipBps)) / 10_000n };
+}
+
 /**
  * Sell every token the wallet holds besides XNT (the slippage leftovers trips leave behind) into
  * its deepest XNT pool. The proceeds land in the wrapped-XNT trading balance. Amounts worth under
@@ -423,13 +317,13 @@ async function sweep() {
     const pool = await deepestXntPool(conn, xdex, m);
     if (!pool) { log(`sweep: ${sym} has no XNT pool, kept`); continue; }
     const snap = await snapshot(conn, xdex, pool.address, m);
-    const w = swap(snap, true, amount, snap.feeCfg, NO_FEE);
-    if (w.out < MIN_OUT) { log(`sweep: ${sym} ${info.tokenAmount.amount} raw is worth ~${xnt(w.out)} XNT, under ${xnt(MIN_OUT)}: kept`); continue; }
-    const ix = swapIx(xdex, wallet.publicKey, { pool: snap.pool, side: snap.side, amountIn: amount, minimumOut: w.minOut }, a.pubkey, wxntAta);
-    if (!execute) { log(`[dry run] sweep: sell all ${sym} for ~${xnt(w.out)} XNT (after its transfer fee and the pool fee)`); total += w.out; continue; }
+    const q = sellQuote(snap, amount);
+    if (q.out < MIN_OUT) { log(`sweep: ${sym} ${info.tokenAmount.amount} raw is worth ~${xnt(q.out)} XNT, under ${xnt(MIN_OUT)}: kept`); continue; }
+    const ix = swapIx(xdex, wallet.publicKey, { pool: snap.pool, side: snap.side, amountIn: amount, minimumOut: q.minOut }, a.pubkey, wxntAta);
+    if (!execute) { log(`[dry run] sweep: sell all ${sym} for ~${xnt(q.out)} XNT (after its transfer fee and the pool fee)`); total += q.out; continue; }
     try {
-      log(`sweep: sold all ${sym} for ~${xnt(w.out)} XNT: ${await send([ix])}`);
-      total += w.out;
+      log(`sweep: sold all ${sym} for ~${xnt(q.out)} XNT: ${await send([ix])}`);
+      total += q.out;
     } catch (e) {
       log(`sweep: ${sym} didn't sell: ${msg(e).split("\n")[0]}`);
     }
@@ -458,8 +352,7 @@ async function closeDust(extraKeep: Set<string> = new Set()) {
     const sym = await symbolOf(conn, m);
     const pool = await deepestXntPool(conn, xdex, m);
     if (pool) {
-      const snap = await snapshot(conn, xdex, pool.address, m);
-      const out = swap(snap, true, amount, snap.feeCfg, NO_FEE).out;
+      const out = sellQuote(await snapshot(conn, xdex, pool.address, m), amount).out;
       if (out >= MIN_OUT) { log(`close-dust: ${sym} is worth ~${xnt(out)} XNT, kept (--sweep sells it)`); continue; }
     }
     const ixs = [createBurnCheckedInstruction(a.pubkey, m, wallet.publicKey, amount, info.tokenAmount.decimals, [], a.programId)];
@@ -486,19 +379,17 @@ async function main() {
   if (has("sweep")) return sweep();
   if (has("close-dust")) return closeDust();
   if (has("setup")) {
-    // Every account any route could need, so a dry run can simulate the real transactions.
-    for (const mint of mints) {
-      const f = await discover(mint);
-      const specs: SnapshotSpec[] = [{ pool: f.main, mint, quote: NATIVE_MINT }];
-      for (const s of f.sides) specs.push({ pool: s.pool, mint, quote: s.quoteMint }, { pool: s.quotePool, mint: s.quoteMint, quote: NATIVE_MINT });
-      await setup([...(await snapshotMany(conn, xdex, specs, await epochNow())).values()], true);
-    }
-    log("setup done: the wallet has every token account its routes use");
+    // Every account and lookup-table entry any route could need, so dry runs can simulate the real transactions.
+    const { routes } = await readRoutes();
+    log(`setup: ${await engine.openAccounts(routes)} token account(s) opened`);
+    if (pairs && routes.some((r) => r.hops.length > 3)) { await engine.ensureAlt(routes.filter((r) => r.hops.length > 3)); log("setup: lookup table ready"); }
+    log("setup done");
     return;
   }
   const plain = await conn.getBalance(wallet.publicKey, "confirmed");
   log(`arb bot ${execute ? "LIVE" : "dry run"}: ${mints.map((m) => m.toBase58()).join(", ")} on ${network}, wallet ${wallet.publicKey.toBase58()} `
-    + `(${xnt(BigInt(plain))} XNT + ${xnt((await balanceOf(wxntAta)) ?? 0n)} wrapped), trades up to ${xnt(maxIn)} XNT when a trip pays +${xnt(minProfit)}, `
+    + `(${xnt(BigInt(plain))} XNT + ${xnt((await balanceOf(wxntAta)) ?? 0n)} wrapped), trades up to ${xnt(maxIn)} XNT when a trip pays +${xnt(minProfit)}`
+    + `${ownMinProfit !== undefined ? ` (+${xnt(ownMinProfit)} on your own pools)` : ""}${pairs ? ", side-pool pairs on" : ""}, `
     + `${loopSecs ? `every ${loopSecs}s${instant ? " and the moment a watched pool changes" : ""}` : "once"}`
     + `${execute && loopSecs && cleanEveryMs ? `, cleans leftovers every ${cleanEveryMs / 3_600_000}h` : ""}${cap !== null ? `, keeps ~${xnt(cap)} XNT (rest to ${skimTo!.toBase58()})` : ""}`);
   let lastClean = Date.now(), lastCap = 0, streak = 0;
