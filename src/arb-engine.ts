@@ -58,6 +58,8 @@ export interface EngineOptions {
   /** Plain XNT always kept unwrapped for fees. */
   reserve: bigint;
   priority: number;
+  /** Priority (micro-lamports per compute unit) for trades through a pool another trader is racing for. */
+  racePriority?: number;
   stateDir: string;
   log: (s: string) => void;
   alert: (s: string) => Promise<void>;
@@ -252,35 +254,64 @@ export function createEngine(o: EngineOptions) {
   }
 
   // ---------- sending ----------
-  async function compile(ixs: TransactionInstruction[], useAlt: boolean, blockhash: string) {
+  // A recent blockhash kept warm (refreshed every 2 s once warm() is called), so sending doesn't wait for one.
+  let bh: { blockhash: string; lastValidBlockHeight: number; at: number } | null = null;
+  let bhTimer: NodeJS.Timeout | null = null;
+  async function blockhash() {
+    if (bh && Date.now() - bh.at < 2_500) return bh;
+    const r = await conn.getLatestBlockhash("confirmed");
+    bh = { ...r, at: Date.now() };
+    return bh;
+  }
+  /** Keep a blockhash ready for long-running loops (the timer doesn't keep the process alive). */
+  function warm() {
+    if (bhTimer) return;
+    bhTimer = setInterval(() => { conn.getLatestBlockhash("confirmed").then((r) => { bh = { ...r, at: Date.now() }; }).catch(() => undefined); }, 2_000);
+    bhTimer.unref();
+  }
+
+  async function compile(ixs: TransactionInstruction[], useAlt: boolean, recent: string) {
     const tables = useAlt ? await loadAlts() : [];
-    return new VersionedTransaction(new TransactionMessage({ payerKey: owner, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message(tables));
+    return new VersionedTransaction(new TransactionMessage({ payerKey: owner, recentBlockhash: recent, instructions: ixs }).compileToV0Message(tables));
   }
   /**
-   * Simulate `ixs` (with a generous compute limit) and return the limit it needs, or the error.
-   * This is the "simulate first" check: a trade whose gap is already gone fails here, for free.
+   * Simulate `ixs` (with a generous compute limit) against the latest ("processed") state and return the
+   * compute it used, or the error. This is the "simulate first" check: a trade whose gap is already gone
+   * fails here, for free.
    */
   async function simulate(ixs: TransactionInstruction[], useAlt = false) {
     const probe = [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), ...ixs];
     const tx = await compile(probe, useAlt, PublicKey.default.toBase58());
     const bytes = tx.serialize().length;
-    const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
+    const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "processed" });
     return { bytes, err: sim.value.err, units: sim.value.unitsConsumed ?? 0, logs: sim.value.logs ?? [] };
   }
-  /** Send `ixs` as one v0 transaction, compute limit sized from a simulation, and wait for it. */
-  async function send(ixs: TransactionInstruction[], useAlt = false) {
-    const sim = await simulate(ixs, useAlt);
-    const units = sim.err || !sim.units ? 600_000 : Math.min(1_400_000, Math.ceil(sim.units * 1.2) + 3_000);
-    const all = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: o.priority }), ComputeBudgetProgram.setComputeUnitLimit({ units }), ...ixs];
-    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-    const tx = await compile(all, useAlt, blockhash);
+  /**
+   * Send `ixs` as one v0 transaction and wait for it. The compute limit comes from `units` (a simulation
+   * the caller already ran) or from a fresh simulation; it goes out without the RPC's own preflight check
+   * (already simulated), at `priority` micro-lamports per compute unit.
+   */
+  async function send(ixs: TransactionInstruction[], useAlt = false, opt: { units?: number; priority?: number } = {}) {
+    let used = opt.units;
+    if (used === undefined) { const sim = await simulate(ixs, useAlt); used = sim.err ? 0 : sim.units; }
+    const units = !used ? 600_000 : Math.min(1_400_000, Math.ceil(used * 1.2) + 3_000);
+    const all = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opt.priority ?? o.priority }), ComputeBudgetProgram.setComputeUnitLimit({ units }), ...ixs];
+    const { blockhash: recent, lastValidBlockHeight } = await blockhash();
+    const tx = await compile(all, useAlt, recent);
     tx.sign([wallet]);
     const raw = tx.serialize();
     if (raw.length > MAX_TX) throw new Error(`transaction is ${raw.length} bytes (max ${MAX_TX})`);
-    const signature = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 3 });
+    const signature = await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 3 });
     await confirmByPolling(conn, raw, signature, lastValidBlockHeight);
     return signature;
   }
+
+  // Pools another trader is racing for: a route through one that just failed or vanished between pricing
+  // and sending is "contested" for 30 s, and trades through contested pools pay the higher race priority.
+  const contested = new Map<string, number>();
+  const RACE_WINDOW = 30_000;
+  const markContested = (p: Plan) => { for (const h of p.route.hops) contested.set(h.snap.pool.address.toBase58(), Date.now() + RACE_WINDOW); };
+  const isContested = (p: Plan) => p.route.hops.some((h) => (contested.get(h.snap.pool.address.toBase58()) ?? 0) > Date.now());
 
   function tripIxs(p: Plan) {
     return p.swaps.map((w) => swapIx(xdex, owner, { pool: w.snap.pool, side: w.inSide, amountIn: w.amountIn, minimumOut: w.minOut },
@@ -352,9 +383,10 @@ export function createEngine(o: EngineOptions) {
       const p = c.plan, useAlt = p.route.hops.length > 3;
       const ixs = [...(i === 0 ? wrap : []), ...tripIxs(p)];
       const sim = await simulate(ixs, useAlt);
-      if (sim.err) { o.log(`${describe(p)}: gap gone before sending (simulation failed), skipped`); return; }
+      if (sim.err) { markContested(p); o.log(`${describe(p)}: gap gone before sending (simulation failed), skipped`); return; }
+      const racing = isContested(p);
       try {
-        const sig = await send(ixs, useAlt);
+        const sig = await send(ixs, useAlt, { units: sim.units, priority: racing ? o.racePriority ?? o.priority : o.priority });
         done++;
         // What it really made (fee included), next to what the plan expected; a big shortfall is flagged.
         const actual = await realized(sig);
@@ -363,16 +395,17 @@ export function createEngine(o: EngineOptions) {
           xntIn: p.xntIn.toString(), expectedProfit: p.profit.toString(), actualProfit: actual?.toString() ?? null, ownShare: Number(c.ownShare.toFixed(3)), signature: sig, ...meta(p) };
         fs.mkdirSync(path.dirname(journal), { recursive: true });
         fs.appendFileSync(journal, JSON.stringify(entry) + "\n");
-        await o.alert(`traded ${describe(p)}: ${xnt(p.xntIn)} XNT in, expected +${xnt(p.profit)}, made ${actual === null ? "?" : `${actual >= 0n ? "+" : ""}${xnt(actual)}`} XNT`
+        await o.alert(`traded ${describe(p)}${racing ? " [race priority]" : ""}: ${xnt(p.xntIn)} XNT in, expected +${xnt(p.profit)}, made ${actual === null ? "?" : `${actual >= 0n ? "+" : ""}${xnt(actual)}`} XNT`
           + `${short ? " (under half the expected: the pools moved before it landed)" : ""}${c.ownShare >= 0.5 ? ` (${Math.round(c.ownShare * 100)}% your own pool)` : ""}. ${sig}`);
       } catch (e) {
-        o.log(`${describe(p)}: didn't go through (nothing traded; only the fee if it landed): ${msg(e).split("\n")[0]}`);
+        markContested(p);
+        o.log(`${describe(p)}: didn't go through${racing ? " (at race priority)" : ""} (nothing traded; only the fee if it landed): ${msg(e).split("\n")[0]}`);
       }
     }));
     return done;
   }
 
-  return { plan, best, bestAll, execute, realized, simulate, send, tripIxs, wrapFor, openAccounts, missingAccounts, ensureAlt, learnFees, ownShare, wxntAta, balanceOf, accountFor, describe };
+  return { plan, best, bestAll, execute, realized, simulate, send, warm, tripIxs, wrapFor, openAccounts, missingAccounts, ensureAlt, learnFees, ownShare, wxntAta, balanceOf, accountFor, describe };
 }
 export type Engine = ReturnType<typeof createEngine>;
 

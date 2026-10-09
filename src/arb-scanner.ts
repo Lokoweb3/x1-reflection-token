@@ -11,7 +11,7 @@
  *               liquid side pools; four swaps, through the wallet's lookup tables (filled at each full read)
  *
  * Every `loopSecs` it reads all of XDEX (every pool, vault, fee config and mint, in batches of 100). Between
- * those reads it subscribes to the watched pools' vaults and re-prices the routes a changed pool belongs to
+ * those reads it subscribes (at "processed", as soon as a swap lands) to the watched pools' vaults and re-prices the routes a changed pool belongs to
  * the moment the change arrives (the new balance comes with the notification); before trading it re-reads
  * the pools involved, so a trade is never based on a stale notification.
  *
@@ -218,7 +218,7 @@ export function createScanner(o: ScannerOptions) {
     const keys = new Set<string>();
     for (const p of paying) for (const h of p.plan.route.hops) keys.add(`${h.snap.pool.address.toBase58()}|${h.snap.pool.mints[h.snap.side].toBase58()}`);
     const specs: SnapshotSpec[] = [...keys].map((k) => { const [pool, mint] = k.split("|"); return { pool: new PublicKey(pool), mint: new PublicKey(mint), quote: null }; });
-    const fresh = await snapshotMany(conn, xdex, specs, epoch);
+    const fresh = await snapshotMany(conn, xdex, specs, epoch, "processed");
     engine.learnFees(fresh.values());
     const again = paying.map((p) => refreshed(p.plan.route, fresh)).filter((r): r is Route => !!r);
     const ok = [];
@@ -276,7 +276,7 @@ export function createScanner(o: ScannerOptions) {
         p.vault[w.i] = info.data.readBigUInt64LE(64);
         dirty.add(w.pool);
         schedule();
-      }, { commitment: "confirmed" }));
+      }, { commitment: "processed" }));
     }
     for (const [v, id] of subs) if (!want.has(v)) { conn.removeAccountChangeListener(id).catch(() => undefined); subs.delete(v); }
     return want.size;
@@ -300,6 +300,7 @@ export function createScanner(o: ScannerOptions) {
 
   /** Run forever (or once, with loopSecs 0). */
   async function start() {
+    if (o.loopSecs) engine.warm();
     for (;;) {
       try {
         const n = await pass();

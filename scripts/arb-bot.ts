@@ -6,7 +6,7 @@
  *
  *   npx tsx scripts/arb-bot.ts --mint <token mint> [--mint <another> ...] --keypair <wallet.json>
  *     [--execute] [--network mainnet|testnet] [--rpc <url>] [--min-profit 0.02] [--max-in 2]
- *     [--slippage 0.1] [--priority <micro-lamports per CU> (default 1000)]
+ *     [--slippage 0.1] [--priority <micro-lamports per CU> (default 1000)] [--race-priority <µL/CU> (default 1000000)]
  *     [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs]
  *     [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]
  *     [--loop <seconds> (default 20) | --once] [--no-instant] [--clean-every <hours> (default 6, 0 = off)]
@@ -94,6 +94,9 @@ const maxIn = lamports(num("max-in", 2));
 const slipBps = BigInt(Math.round(num("slippage", 0.1) * 100));
 const reserve = lamports(num("reserve", 0.1));
 const priority = num("priority", 1000);
+// When another trader is racing for a pool (a trade through it just failed or vanished), pay more to land first:
+// 1,000,000 µL/CU on a ~150k-CU trade is ~0.00015 XNT.
+const racePriority = num("race-priority", 1_000_000);
 const loopSecs = has("once") ? 0 : num("loop", 20);
 const own = (flag("own") ?? "").split(",").filter(Boolean).map((w) => new PublicKey(w));
 const ownMinProfit = flag("own-min-profit") !== undefined ? lamports(num("own-min-profit", 0)) : undefined;
@@ -128,7 +131,7 @@ async function alert(text: string) {
   for (const r of await Promise.allSettled(posts)) if (r.status === "rejected") log(`alert delivery failed: ${msg(r.reason)}`);
 }
 
-const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, stateDir, log, alert });
+const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, racePriority, stateDir, log, alert });
 const { wxntAta, balanceOf, send } = engine;
 
 if (has("unwrap")) {
@@ -183,7 +186,8 @@ async function readRoutes() {
     specs.push({ pool: f.main, mint: f.mint, quote: NATIVE_MINT });
     for (const s of f.sides) specs.push({ pool: s.pool, mint: f.mint, quote: s.quoteMint }, { pool: s.quotePool, mint: s.quoteMint, quote: NATIVE_MINT });
   }
-  const snaps = await snapshotMany(conn, xdex, specs, await epochNow());
+  // "processed": a swap is seen as soon as it lands (the trade's own checks still protect it).
+  const snaps = await snapshotMany(conn, xdex, specs, await epochNow(), "processed");
   engine.learnFees(snaps.values());
   const routes: Route[] = [];
   const gaps: string[] = [];
@@ -250,7 +254,7 @@ function wake() { if (verbose && !wakePending) log("a watched pool changed: chec
 function watchVaults(snaps: Map<string, Snapshot>) {
   const want = new Set<string>();
   for (const sn of snaps.values()) for (const v of sn.pool.vaults) want.add(v.toBase58());
-  for (const k of want) if (!subs.has(k)) subs.set(k, conn.onAccountChange(new PublicKey(k), wake, { commitment: "confirmed" }));
+  for (const k of want) if (!subs.has(k)) subs.set(k, conn.onAccountChange(new PublicKey(k), wake, { commitment: "processed" }));
   for (const [k, id] of subs) if (!want.has(k)) { conn.removeAccountChangeListener(id).catch(() => undefined); subs.delete(k); }
 }
 
@@ -409,6 +413,7 @@ async function main() {
     // Runs alongside the loop below; both trade through the engine's one queue.
     void scanner.start().catch((e) => log(`scan stopped: ${msg(e)}`));
   }
+  if (loopSecs) engine.warm();
   let lastClean = Date.now(), lastCap = 0, streak = 0;
   for (;;) {
     let traded = false;

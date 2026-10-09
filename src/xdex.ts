@@ -8,7 +8,7 @@
  */
 import crypto from "node:crypto";
 import {
-  AccountInfo, Connection, Keypair, PublicKey, SYSVAR_RENT_PUBKEY, SystemProgram, TransactionInstruction,
+  AccountInfo, Commitment, Connection, Keypair, PublicKey, SYSVAR_RENT_PUBKEY, SystemProgram, TransactionInstruction,
 } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee,
@@ -143,15 +143,16 @@ export async function snapshot(
 export interface SnapshotSpec { pool: PublicKey; mint: PublicKey; quote: PublicKey | null }
 
 /**
- * `snapshot` for many pools at once, in two batched reads (the pools, then every fee config, vault and
+ * `snapshot` for many pools at once (at `commitment`; "processed" sees a swap as soon as it lands), in two batched reads (the pools, then every fee config, vault and
  * mint they need) instead of three requests per pool. The epoch is passed in (it changes every few days).
  * Same checks and maths as `snapshot`; a pool that fails them is left out of the result (its key is missing).
  * Results are keyed `${pool}:${mint}`.
  */
-export async function snapshotMany(conn: Connection, programId: PublicKey, specs: SnapshotSpec[], epoch: bigint): Promise<Map<string, Snapshot>> {
+export async function snapshotMany(conn: Connection, programId: PublicKey, specs: SnapshotSpec[], epoch: bigint,
+  commitment: Commitment = "confirmed"): Promise<Map<string, Snapshot>> {
   const many = async (keys: PublicKey[]) => {
     const out: (AccountInfo<Buffer> | null)[] = [];
-    for (let i = 0; i < keys.length; i += 100) out.push(...await conn.getMultipleAccountsInfo(keys.slice(i, i + 100)));
+    for (let i = 0; i < keys.length; i += 100) out.push(...await conn.getMultipleAccountsInfo(keys.slice(i, i + 100), commitment));
     return out;
   };
   const poolKeys = [...new Map(specs.map((s) => [s.pool.toBase58(), s.pool])).values()];

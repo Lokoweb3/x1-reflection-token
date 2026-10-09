@@ -59,7 +59,7 @@ async function alert(text: string) {
 }
 
 const engine = createEngine({ conn, xdex, wallet, minProfit: lamports(num("min-profit", 0.02)), ownMinProfit, own, maxIn: lamports(num("max-in", 10)),
-  slipBps: BigInt(Math.round(num("slippage", 0.1) * 100)), reserve: lamports(0.1), priority: 1000,
+  slipBps: BigInt(Math.round(num("slippage", 0.1) * 100)), reserve: lamports(0.1), priority: 1000, racePriority: num("race-priority", 1_000_000),
   stateDir: process.env.REFLECT_STATE_DIR ?? path.join(import.meta.dirname, "..", "state"), log, alert });
 const scanner = createScanner({ conn, xdex, engine, execute, skip: new Set((flag("skip") ?? "").split(",").filter(Boolean)),
   minLiquidity: lamports(num("min-liquidity", 5)), maxSubs: num("max-subs", 400), loopSecs, instant: !has("no-instant") && loopSecs > 0,
