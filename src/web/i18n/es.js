@@ -613,6 +613,7 @@ I18N.add("es", {
   "The payout token must be a token (mint) address.": "El token de pago debe ser una dirección de token (mint).",
   "Leave the payout token empty to pay holders in XNT.": "Deja el token de pago vacío para pagar a los holders en XNT.",
   "A token can't pay its holders in itself.": "Un token no puede pagar a sus holders en sí mismo.",
+  "That token is the creator reward token, so it can't also be the payout token yet. Pick another token.": "Ese token es el token de recompensa del creador, así que aún no puede ser también el token de pago. Elige otro token.",
   "That address isn't a token on this network.": "Esa dirección no es un token en esta red.",
   "That token has a freeze authority, which could freeze the vault's payouts. Pick a token without one.": "Ese token tiene autoridad de congelación, que podría congelar los pagos de la bóveda. Elige un token sin ella.",
   "No XDEX pool between that token and XNT was found; the vault swaps through one.": "No se encontró un pool de XDEX entre ese token y XNT; la bóveda cambia a través de uno.",

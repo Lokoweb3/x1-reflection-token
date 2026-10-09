@@ -588,7 +588,11 @@ export function addLiquidityIx(programId: PublicKey, caller: PublicKey, mint: Pu
  * whole balance into the lock NFT's 7-day vesting vault on lp_locker. `r` must be the
  * vault's reward_swap_pool for its reward_mint. Needs a compute limit of at least 250k.
  */
-export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, creatorNft: PublicKey, r: RewardPoolAccounts) {
+/**
+ * fund_creator. A payout-token vault also passes its payout pool (`payoutPool`, the vault's
+ * payout_pool): the program keeps the holders' tokens when the payout token is the reward token.
+ */
+export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: PublicKey, creatorNft: PublicKey, r: RewardPoolAccounts, payoutPool?: PublicKey) {
   const auth = vaultAuthPda(programId, mint);
   const rewardVault = rewardVaultPda(LOCKER_PROGRAM_ID, creatorNft, r.rewardMint);
   return new TransactionInstruction({
@@ -604,6 +608,7 @@ export function fundCreatorIx(programId: PublicKey, caller: PublicKey, mint: Pub
       m(authRewardAccount(auth, r.rewardMint, r.rewardTokenProgram), false, true), m(r.pool, false, true), m(r.ammConfig, false, false),
       m(poolAuthority(r.xdexProgram), false, false), m(r.rewardVault, false, true), m(r.wxntVault, false, true), m(r.observation, false, true),
       m(r.xdexProgram, false, false), m(NATIVE_MINT, false, false), m(r.rewardTokenProgram, false, false),
+      ...(payoutPool ? [m(payoutPool, false, false)] : []),
     ],
   });
 }

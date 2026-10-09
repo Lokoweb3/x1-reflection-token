@@ -8,6 +8,7 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { ExtensionType, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getExtensionTypes, getTokenMetadata, unpackMint } from "@solana/spl-token";
 import { Config, fromBaseUnits, toBaseUnits } from "../config.js";
+import { REWARD_TOKEN } from "../taxvault.js";
 import { XDEX_CREATE, decodePool, poolAddresses, snapshot } from "../xdex.js";
 
 /** Smallest XNT side of the payout pool a launch may use (factory.taxVault.payoutMinPoolXnt). */
@@ -41,6 +42,10 @@ export async function payoutToken(conn: Connection, cfg: Config, mintStr: string
   try { mint = new PublicKey(String(mintStr).trim()); } catch { throw new Error("The payout token must be a token (mint) address."); }
   if (mint.equals(NATIVE_MINT)) throw new Error("Leave the payout token empty to pay holders in XNT.");
   if (taxMint && mint.toBase58() === taxMint) throw new Error("A token can't pay its holders in itself.");
+  // With the reward token as payout token, auth's reward account is also the holders' payout account.
+  // The first v4 build sent that whole account to the creator; only offer it where the program keeps
+  // the holders' tokens (factory.taxVault.rewardTokenPayouts, v4 from d4a1f210… / 630e4a06…).
+  if (mint.equals(REWARD_TOKEN[cfg.network].mint) && cfg.factory?.taxVault?.rewardTokenPayouts !== true) throw new Error("That token is the creator reward token, so it can't also be the payout token yet. Pick another token.");
   const info = await conn.getAccountInfo(mint, "confirmed");
   if (!info || (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID))) throw new Error("That address isn't a token on this network.");
   const m = unpackMint(mint, info, info.owner);

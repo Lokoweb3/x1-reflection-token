@@ -556,6 +556,18 @@ pub mod tax_vault {
         );
         check_reward_mint(&a.reward_mint.to_account_info(), &reward_program)?;
 
+        // A payout-token vault passes its payout pool (the first remaining account). When the
+        // payout token is the reward token, auth's reward account is also the holders' payout
+        // account: what the holders are owed stays in it and only the rest goes to the creator.
+        let shared = if v.payout_pool != Pubkey::default() {
+            let payout_pool = ctx.remaining_accounts.first().ok_or(error!(VaultError::WrongAccount))?;
+            require_keys_eq!(payout_pool.key(), v.payout_pool, VaultError::WrongAccount);
+            PoolView::read(payout_pool)?.pair_side(&reward_mint, &reward_program).is_ok()
+        } else {
+            false
+        };
+        let keep = if shared { v.holders_funded.checked_sub(v.holders_paid).ok_or(VaultError::Insolvent)? } else { 0 };
+
         // The reward pool: reward token / wXNT, swaps open, its own config/observation/vaults.
         let pool = PoolView::read(&a.reward_pool.to_account_info())?;
         let side = pool.pair_side(&reward_mint, &reward_program)?;
@@ -672,6 +684,7 @@ pub mod tax_vault {
         let held = token_amount(&auth_reward, &reward_program)?;
         let out = held.checked_sub(reward_before).ok_or(VaultError::MathOverflow)?;
         require!(out >= min_out, VaultError::TooSmall);
+        let deposit = math::creator_deposit(reward_before, held, keep)?;
 
         // Unwrap: every lamport of the wXNT account (rent + anything left) comes back to auth.
         token::close_account(CpiContext::new_with_signer(
@@ -681,10 +694,11 @@ pub mod tax_vault {
         ))?;
 
         // Deposit everything auth's reward account holds (the swap output, plus anything
-        // sent to that account before, so it can always be closed).
+        // sent to that account before, so it can always be closed), except the holders'
+        // tokens when it is also their payout account.
         let mut data = Vec::with_capacity(16);
         data.extend_from_slice(&LOCKER_DEPOSIT_REWARD_DISC);
-        data.extend_from_slice(&held.to_le_bytes());
+        data.extend_from_slice(&deposit.to_le_bytes());
         let ix = Instruction {
             program_id: LOCKER_PROGRAM_ID,
             accounts: vec![
@@ -711,27 +725,39 @@ pub mod tax_vault {
             ],
             &[auth_seeds],
         )?;
-        require!(token_amount(&auth_reward, &reward_program)? == 0, VaultError::WrongAccount);
+        require!(token_amount(&auth_reward, &reward_program)? == keep, VaultError::WrongAccount);
         let received = token_amount(&a.reward_tokens.to_account_info(), &reward_program)?
             .checked_sub(vault_tokens_before)
             .ok_or(VaultError::MathOverflow)?;
-        require!(received == held, VaultError::BadRewardMint);
+        require!(received == deposit, VaultError::BadRewardMint);
 
-        token_interface::close_account(CpiContext::new_with_signer(
-            rtok,
-            token_interface::CloseAccount { account: auth_reward.clone(), destination: auth.clone(), authority: auth.clone() },
-            &[auth_seeds],
-        ))?;
-        require!(auth_wxnt.lamports() == 0 && auth_reward.lamports() == 0, VaultError::WrongAccount);
+        if !shared {
+            token_interface::close_account(CpiContext::new_with_signer(
+                rtok,
+                token_interface::CloseAccount { account: auth_reward.clone(), destination: auth.clone(), authority: auth.clone() },
+                &[auth_seeds],
+            ))?;
+            require!(auth_reward.lamports() == 0, VaultError::WrongAccount);
+        }
+        require!(auth_wxnt.lamports() == 0, VaultError::WrongAccount);
         pay_from_auth(&sys, &auth, &caller, add(rent_wxnt, rent_reward)?, auth_seeds)?;
 
         let v = &mut ctx.accounts.vault;
+        // The shared account stays open as the holders' payout account; if it was opened here,
+        // its rent comes out of the holders' XNT, as in `fund_holders`.
+        if shared {
+            v.xnt_holders = v.xnt_holders.checked_sub(rent_reward).ok_or(VaultError::TooSmall)?;
+        }
         v.xnt_creator -= xnt_in;
         v.total_creator_xnt = add(v.total_creator_xnt, xnt_in)?;
-        v.total_reward_out = add(v.total_reward_out, held)?;
+        v.total_reward_out = add(v.total_reward_out, deposit)?;
         v.last_reward_slot = clock.slot;
-        emit!(CreatorFunded { vault: v.key(), xnt_in, reward_out: held, reward_mint });
-        check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
+        emit!(CreatorFunded { vault: v.key(), xnt_in, reward_out: deposit, reward_mint });
+        check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)?;
+        if shared {
+            check_payout_tokens(&auth_reward, &reward_program, &ctx.accounts.vault)?;
+        }
+        Ok(())
     }
 
     /// Payout-token vaults: swap (up to) the holders' XNT into the payout token on the
@@ -1641,6 +1667,16 @@ pub mod math {
         to_u64(expected as u128 * (BPS - OUT_TOLERANCE_BPS) as u128 / BPS as u128)
     }
 
+    /// What `fund_creator` deposits for the creator: everything auth's reward account holds
+    /// after the swap (`held`) except `keep`, the holders' tokens when that account is also
+    /// their payout account (zero otherwise). The holders' tokens must already have been
+    /// there before the swap (`before`).
+    pub fn creator_deposit(before: u64, held: u64, keep: u64) -> Result<u64> {
+        require!(held >= before, VaultError::MathOverflow);
+        require!(before >= keep, VaultError::Insolvent);
+        Ok(held - keep)
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Take {
         pub lp: u64,
@@ -2483,6 +2519,19 @@ mod tests {
             level = next;
         }
         (level[0], proof)
+    }
+
+    #[test]
+    fn creator_deposit_keeps_the_holders_tokens() {
+        // Separate reward account (keep 0): the swap output and any stray tokens go to the creator.
+        assert_eq!(creator_deposit(0, 500, 0).unwrap(), 500);
+        assert_eq!(creator_deposit(7, 507, 0).unwrap(), 507);
+        // Shared with the holders' payout account: 1_000 owed stays, the swap output (and strays above it) goes.
+        assert_eq!(creator_deposit(1_000, 1_500, 1_000).unwrap(), 500);
+        assert_eq!(creator_deposit(1_020, 1_520, 1_000).unwrap(), 520);
+        // The account can't already be short of what the holders are owed.
+        assert!(creator_deposit(900, 1_400, 1_000).is_err());
+        assert!(creator_deposit(1_000, 999, 0).is_err());
     }
 
     #[test]

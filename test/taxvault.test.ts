@@ -191,6 +191,12 @@ test("fund_creator (v2): the spec's 24 accounts, reward swap after the lp_locker
   assert.equal(flags(ix), "sw -w -w -w -- -- -w -w -- -- -- -- -- -- -w -w -- -- -w -w -w -- -- --");
   // The reward vault is keyed by the reward mint, not wXNT (the creator's old XNT vault stays separate).
   assert.ok(!rv.equals(rewardVaultPda(LOCKER_PROGRAM_ID, nft, NATIVE_MINT)));
+  // A payout-token vault appends its payout pool (read-only) as the 25th account.
+  const payoutPool = key();
+  const withPayout = fundCreatorIx(PROGRAM, caller, mint, nft, r, payoutPool);
+  assert.equal(withPayout.keys.length, 25);
+  assert.deepEqual(withPayout.keys.slice(0, 24), ix.keys);
+  assert.ok(withPayout.keys[24].pubkey.equals(payoutPool) && !withPayout.keys[24].isWritable && !withPayout.keys[24].isSigner);
 });
 
 test("upgrade_vault: payer, vault, system program", () => {

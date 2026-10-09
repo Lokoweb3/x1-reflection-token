@@ -437,7 +437,7 @@ export function vaultCrank(env: CrankEnv) {
       const out = info ? `${fromBaseUnits(q.expectedOut, info.decimals)} ${info.symbol}` : `${q.expectedOut} reward base units`;
       try {
         // ~150k CU, up to ~195k when it also creates the reward vault: the default 200k is too tight.
-        await perSlot(() => send(t, v, `fund_creator ${xnt(q.amountIn)} for ~${out}`, [fundCreatorIx(program, signer.publicKey, t.mint, v.creatorNft, rewardPool)], 300_000));
+        await perSlot(() => send(t, v, `fund_creator ${xnt(q.amountIn)} for ~${out}`, [fundCreatorIx(program, signer.publicKey, t.mint, v.creatorNft, rewardPool, paysInToken(v) ? v.payoutPool : undefined)], 300_000));
       } catch (e) {
         // The on-chain quote can come out smaller than ours (live reserves): wait for more.
         if (/: TooSmall$/.test(msg(e))) { notes.push(`creator reward ${xnt(v.xntCreator)} is still too small to swap`); return; }
@@ -656,7 +656,7 @@ export async function planForCaller(conn: Connection, env: { program: PublicKey;
     if (q && q.minimumOut > 0n) {
       const info = rewardTokenInfo(env.network, v.rewardMint);
       steps.push({ kind: "fund_creator", label: `Pay the creator reward (${xnt(q.amountIn)} → ${info?.symbol ?? "reward token"})`,
-        ixs: [fundCreatorIx(program, caller, t.mint, v.creatorNft, rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint))], units: 260_000 });
+        ixs: [fundCreatorIx(program, caller, t.mint, v.creatorNft, rewardPoolAccountsFrom(xdex, q.pool, v.rewardMint), paysInToken(v) ? v.payoutPool : undefined)], units: 260_000 });
     }
   }
   // 4b. fund_holders (payout-token vaults): the holders' XNT, including what the sale adds.

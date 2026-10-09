@@ -444,7 +444,10 @@ curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of 
 > **Payout tokens (v4, live on testnet):** a launch can pay its holders in another token
 > instead of XNT ("Pay holders in" on the launch form, fixed for good). The vault swaps the
 > holders' XNT on that token's XDEX pool and pays the token. See
-> [docs/tax-vault-spec.md](docs/tax-vault-spec.md#payout-token-v4).
+> [docs/tax-vault-spec.md](docs/tax-vault-spec.md#payout-token-v4). The first v4 build sent
+> the holders' tokens to the creator when the payout token was also the creator-reward token
+> (XNM / USDC.X); the fixed build keeps them apart, and until a network runs it the site
+> refuses the reward token as payout token (`factory.taxVault.rewardTokenPayouts`).
 
 The distributor model needs one hot wallet per token that can withdraw that token's tax.
 The **Tax Vault** removes that key: the token's withdraw-withheld authority is a PDA of
@@ -718,7 +721,8 @@ script's header for the validator command):
 | `scripts/vault-v2-rehearsal.ts` | The v2 rollout as it happens on testnet: the previous site + v1 program, then the program upgrade and the new site upgrading the vault by itself |
 | `scripts/local-vault-v3-test.ts` | Tax Vault v3 program alone: v1/v2 vaults upgraded, list CIDs, appointing a publisher, `pay_fallback` maths and error cases |
 | `scripts/vault-v3-rehearsal.ts` | The "operator dies" drill: previous site + v2 program, v3 deployed, the new site upgrades the vault and publishes lists to IPFS (a local stand-in), "Run the vault now" from a visitor's wallet; then the site stops and another wallet keeps holders paid with `scripts/crank.ts` from the IPFS list, through fallback, until the creator's appointed publisher publishes again |
-| `scripts/payout-token-rehearsal.ts` | Tax Vault v4 payout tokens: a launch paying holders in another token (init_vault_payout), the site's checks (a freeze-authority token, XNT and a non-token refused), the crank swapping the holders' XNT into the token and paying it (each holder's balance = its list amount), an XNT pay refused, stats valued in XNT, a visitor's run |
+| `scripts/payout-token-rehearsal.ts` | Tax Vault v4 payout tokens: a launch paying holders in another token (init_vault_payout), the site's checks (a freeze-authority token, XNT and a non-token refused), the crank swapping the holders' XNT into the token and paying it (each holder's balance = its list amount), an XNT pay refused, stats valued in XNT, a visitor's run; then a launch paying in XNM, the creator reward token (one shared account: the creator gets only its part, holders are paid) |
+| `scripts/mainnet-v4-rehearsal.ts` | The v3 → v4 upgrade on a local copy of mainnet: the deployed v3 program and Test's live vault cloned, extend + deploy as in the runbook, Test still paid in XNT, a new launch paying holders in USDC.X (also the creator reward) |
 | `scripts/mainnet-vault-rehearsal.ts` | The mainnet rollout on a local copy of mainnet: deploy, Test migrated, USDC.X creator reward, payouts, a visitor's run, a new launch paying the fee in USDC.X |
 | `scripts/build-recovery.ts --short-windows` | The recovery page, driven in a real browser with a test wallet: on testnet a stranger's wallet ran CUP's due steps (collect, sell, liquidity, creator reward) and earned the crank reward; on a local validator holding a copy of CUP's vault under the short-windows program, the guardian appointed a new publisher and a stranger paid holders with `pay_fallback` from the IPFS list |
 | `scripts/publisher-quorum-rehearsal.ts` | The publisher quorum: the site with a plain key, then a 2-of-3 Squads multisig set up by `scripts/setup-publisher-quorum.ts` and made the publisher; the site's proposals, a co-signer rejection and a new list, the co-signer's approval, execution and payouts; a malicious list and a publisher change proposed by the site's key alone rejected by the co-signer and never on-chain, the recovery clocks unmoved |

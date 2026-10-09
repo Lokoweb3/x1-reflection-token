@@ -13,6 +13,8 @@
  *      pay_token: each holder's PAY account ends with exactly its list amount.
  *   4. The program refuses an XNT `pay` on this vault (PaysInToken); the stats pages value the
  *      PAY payouts in XNT; "Run the vault now" from a visitor's wallet plans and runs.
+ *   5. A launch paying holders in XNM, the creator reward token: auth's XNM account is shared,
+ *      fund_creator sends the creator only its part (twice), holders are paid their XNM.
  *
  * Start the validator (3.1.x) with the v4 short-windows build:
  *   solana-test-validator --reset --ledger <scratch>/ledger --rpc-port 9501 --faucet-port 9505 \
@@ -23,7 +25,7 @@
  *     --clone AvNDf423kEmWNP6AZHFV7DkNG4YRgt6qbdyyryjaa4PQ --clone 6XESNUXbGNT6x3zaB51Axk7Jh6Ba58LFJukkfPUzzSwA \
  *     --clone 5GUzsG219nDBZJvS2xN5L8gQr43G9owzMhEL1X3a6soS --clone FQG6rKgbDCBxVxWZimckZpBMedkGC7RqBLXGMQ379sr2 \
  *     --clone 5nwh3vHNEyhGRA2Hc2o24ekTvqVSr7Dm7C3rkPH7GkP --clone CdQJoNNF1UpYekqzaXKekDc5hsrD6zzuZEMQv8hLavfc \
- *     --bpf-program D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW lp-locker/target/vault4-test/tax_vault.so
+ *     --bpf-program D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW lp-locker/target/vault4b-test/tax_vault.so
  * then:
  *   LOCAL_RPC=http://127.0.0.1:9501 npx tsx scripts/payout-token-rehearsal.ts
  */
@@ -39,7 +41,7 @@ import {
 } from "@solana/spl-token";
 import { buildBuy, buildCreatePool, buildSell, quoteBuy, quoteSell } from "../src/xdex.js";
 import {
-  PAID_RECORD_LEN, buildVaultTree, cidFromBytes, decodePaidRecord, decodeVault, errorOf, payIx, paysInToken, rawCid, vaultAuthPda, vaultPda, type Vault,
+  PAID_RECORD_LEN, REWARD_TOKEN, buildVaultTree, cidFromBytes, decodePaidRecord, decodeVault, errorOf, payIx, paysInToken, rawCid, vaultAuthPda, vaultPda, type Vault,
 } from "../src/taxvault.js";
 
 const RPC = process.env.LOCAL_RPC ?? "http://127.0.0.1:9501";
@@ -99,7 +101,7 @@ const cfg = {
     ...base.factory, port: PORT, publicUrl: SITE, hosts: [], faucet: undefined, turnstile: undefined, curve: undefined, quoteTokens: undefined, launchesPaused: undefined,
     feeToken: { mint: feeMint.toBase58(), symbol: "TST", amount: "1" },
     pinataJwt: JWT, pinataApiUrl: `${IPFS}/v3/files`, ipfsGateway: `${IPFS}/ipfs/`,
-    taxVault: { programId: PROGRAM.toBase58(), publisherKeypair: keyFile("publisher", publisher), payoutTokens: true, payoutMinPoolXnt: "10" },
+    taxVault: { programId: PROGRAM.toBase58(), publisherKeypair: keyFile("publisher", publisher), payoutTokens: true, payoutMinPoolXnt: "10", rewardTokenPayouts: true },
   },
 };
 delete cfg.creatorReward;
@@ -213,6 +215,40 @@ if ("txs" in plan) {
   }
   ok(`visitor ran ${sigs.length}/${plan.txs.length} step(s): ${(plan.txs as { label: string }[]).map((t) => t.label).join(" · ")}`);
 } else ok(`nothing due for a visitor (${plan.error.slice(0, 100)})`);
+console.log("5. A launch paying holders in XNM, the creator reward token (one shared auth account)");
+const XNM = REWARD_TOKEN.testnet;
+const p5 = { ...params, name: "Pays In XNM", symbol: "PIX", payoutMint: XNM.mint.toBase58() };
+const { mint: mint5 } = await step("/api/launch/token", p5, creator);
+await step("/api/launch/pool", { mint: mint5, creator: p5.creator }, creator);
+await step("/api/launch/lock", { mint: mint5, creator: p5.creator }, creator);
+await step("/api/launch/vault", { mint: mint5, creator: p5.creator }, creator);
+await api("/api/launch/register", { mint: mint5, creator: p5.creator });
+const read5 = async (): Promise<Vault> => { const a = vaultPda(PROGRAM, new PublicKey(mint5)); return decodeVault(a, (await conn.getAccountInfo(a, "confirmed"))!.data); };
+assert.ok((await read5()).payoutPool.equals(XNM.pool) && (await read5()).rewardMint.equals(XNM.mint), "pays holders in XNM; creator reward XNM");
+const rec5 = JSON.parse(fs.readFileSync(path.join(dir, "factory", "launches", mint5, "launch.json"), "utf8"));
+for (let i = 0; i < 2; i++) {
+  for (const t of traders) await sendAndConfirmTransaction(conn, new Transaction().add(...(await buildBuy(conn, XDEX, t, await quoteBuy(conn, XDEX, new PublicKey(rec5.pool), new PublicKey(mint5), 3n * 10n ** 9n, 300)))), [t]);
+}
+const authXnm = getAssociatedTokenAddressSync(XNM.mint, vaultAuthPda(PROGRAM, new PublicKey(mint5)), true, TOKEN_2022_PROGRAM_ID);
+const owedCovered = async () => { const v = await read5(); return (await getAccount(conn, authXnm, "confirmed", TOKEN_2022_PROGRAM_ID)).amount >= v.holdersFunded - v.holdersPaid; };
+await waitFor("fund_holders and fund_creator both ran (XNM to holders and to the creator)", async () => { const v = await read5(); return v.holdersFunded > 0n && v.totalRewardOut > 0n; });
+assert.ok(await owedCovered(), "after fund_creator the shared account still holds what holders are owed");
+ok(`holders funded ${(Number((await read5()).holdersFunded) / 1e9).toFixed(6)} XNM, creator ${(Number((await read5()).totalRewardOut) / 1e9).toFixed(6)} XNM; auth still covers the holders`);
+for (const t of traders) await sendAndConfirmTransaction(conn, new Transaction().add(...(await buildBuy(conn, XDEX, t, await quoteBuy(conn, XDEX, new PublicKey(rec5.pool), new PublicKey(mint5), 5n * 10n ** 9n, 300)))), [t]);
+const r0 = (await read5()).totalRewardOut;
+await waitFor("a second fund_creator on the shared account", async () => (await read5()).totalRewardOut > r0 && await owedCovered());
+await waitFor("XNM holders paid: every PaidRecord's amount arrived", async () => {
+  const v = await read5();
+  if (v.listEpoch === 0n || v.holdersPaid === 0n) return false;
+  const raw = await conn.getProgramAccounts(PROGRAM, { filters: [{ dataSize: PAID_RECORD_LEN }, { memcmp: { offset: 8, bytes: v.address.toBase58() } }] });
+  for (const { pubkey, account } of raw) {
+    const r = decodePaidRecord(pubkey, account.data);
+    const bal = (await getAccount(conn, getAssociatedTokenAddressSync(XNM.mint, r.wallet, true, TOKEN_2022_PROGRAM_ID), "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null))?.amount ?? 0n;
+    if (bal < r.paid) return false;
+  }
+  return raw.length > 0 && await owedCovered();
+}, 300_000, 5_000);
+
 server.kill();
 console.log("\nPayout token rehearsal passed.");
 process.exit(0);

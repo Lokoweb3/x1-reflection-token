@@ -107,6 +107,11 @@ export interface Config {
       payoutTokens?: boolean;
       /** Smallest XNT side of a payout token's pool a launch may use (default "10"). */
       payoutMinPoolXnt?: string;
+      /**
+       * Allow the creator-reward token (USDC.X / XNM) as payout token. Only with a program whose
+       * fund_creator keeps the holders' tokens in the shared account (mainnet d4a1f210…, testnet 630e4a06…).
+       */
+      rewardTokenPayouts?: boolean;
       /** Warn (vault panels, server log) when the crank wallet's XNT for fees drops below this (default "0.2"). */
       crankLowXnt?: string;
       /** Names for crank wallets in the vault panels' activity list, e.g. { "<address>": "GitHub crank" }. */

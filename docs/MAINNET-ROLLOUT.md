@@ -128,6 +128,53 @@ Each phase ends with a check; stop there if it fails. Launches stay paused until
    trade a little; watch a list publish and pay.
 3. Announce (with the beta notice if path B).
 
+### Phase 5: payout tokens, `tax_vault` v3 → v4 (owner, laptop + VM)
+
+v4 lets a launch pay its holders in another token (spec: [tax-vault-spec.md](tax-vault-spec.md#payout-token-v4)).
+It is an in-place upgrade: existing vaults (Test) keep their layout and keep paying XNT, with
+no migration step. Rehearsed on a local copy of mainnet: `scripts/mainnet-v4-rehearsal.ts`
+(the deployed v3 program and Test's live vault cloned, the upgrade below, Test paid in XNT
+on v4, then a new launch paying holders in USDC.X).
+
+> **The first v4 build (`f2c2b1b`, testnet `ed68f18b…`) must not go to mainnet.** With the
+> creator-reward token as payout token (USDC.X / XNM), `fund_creator` sent the holders' tokens
+> to the creator and closed their account (found by the mainnet rehearsal, 8 Oct 2026; no vault
+> on either network had a payout token). The fixed build keeps them apart; testnet is upgraded
+> to it first.
+
+1. Dev rebuilds both binaries with the 3.1.15 toolchain and confirms the hashes (700,992 bytes each):
+   ```
+   cargo-build-sbf --manifest-path programs/tax_vault/Cargo.toml --sbf-out-dir target/vault4b-mainnet                     # d4a1f210d667b20435aae5e39b213d7936939b2f28fa02c61d2bcf6b29bf6114
+   cargo-build-sbf --manifest-path programs/tax_vault/Cargo.toml --features testnet --sbf-out-dir target/vault4b-testnet  # 630e4a062b1ab81336be5cca98228527223959d7a4de3d1bbaa538c0e671a145
+   ```
+2. **Testnet first** (53fT has plenty of testnet XNT): extend by 616 bytes (700,992 − 700,376),
+   deploy `target/vault4b-testnet/tax_vault.so`, dump and compare. Then on the VM add
+   `"rewardTokenPayouts": true` under the testnet site's `factory.taxVault` and restart it.
+   Until the testnet program is upgraded, the testnet site refuses XNM as a payout token.
+3. Mainnet funds: 53fT needs **~5.7 XNT**: 0.771 kept as rent for the extra 110,616 bytes,
+   4.880 for the upload buffer (refunded when the upgrade lands), plus fees.
+4. Mainnet: extend by exactly the missing bytes (700,992 − 590,376), then upgrade:
+   ```
+   solana program extend D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW 110616 \
+     --keypair ~/.config/solana/id.json --url https://rpc.mainnet.x1.xyz
+   solana program deploy --program-id D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW \
+     --upgrade-authority ~/.config/solana/id.json --keypair ~/.config/solana/id.json \
+     --url https://rpc.mainnet.x1.xyz lp-locker/target/vault4b-mainnet/tax_vault.so
+   ```
+   If the deploy stops halfway, `solana program show --buffers --url https://rpc.mainnet.x1.xyz`
+   lists the buffer; `solana program close <buffer>` returns its XNT.
+5. Check: `solana program dump D9jt… <file> --url https://rpc.mainnet.x1.xyz`, sha256 equals
+   the build (`d4a1f210…`). The next crank pass on Test is OK and its next list pays in XNT.
+6. VM: `git pull --ff-only && npm install`, add `"payoutTokens": true, "rewardTokenPayouts": true`
+   under `factory.taxVault` in `mainnet/config.json` (optionally `payoutMinPoolXnt`, default 10),
+   `systemctl restart reflect-mainnet-factory`. Check `/api/info` shows `payoutTokens: true` and
+   `/api/payout-token?mint=B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq` accepts USDC.X.
+7. Update REVIEW.md's deployed-programs table (both networks: v4, hash, commit).
+
+Rollback: before step 6 nothing uses the new instructions; redeploying the v3 build
+(`target/vault3-mainnet`, `25e9881f…`) is possible as long as no vault was created with
+`init_vault_payout`. After a payout-token launch exists, fix forward only.
+
 ## Costs
 
 | Item | XNT |

@@ -769,13 +769,21 @@ With a payout token, `holders_funded`, `holders_paid`, list totals, `fallback_pa
 * `pay_token` / `pay_fallback_token`: the same proofs and bookkeeping as `pay` /
   `pay_fallback`; the amount moves from auth's payout account to the wallet's (opened if needed,
   paid by `payer`) with `transfer_checked`, and the wallet must receive exactly that amount.
+* `fund_creator` on a payout-token vault also takes the vault's payout pool as its first
+  remaining account (required; it must equal `payout_pool`). When the payout token is the
+  creator-reward token (USDC.X / XNM), auth's reward account and its payout account are the
+  same ATA: the creator gets everything in it except `holders_funded − holders_paid`, the
+  account stays open (if `fund_creator` opened it, its rent comes out of `xnt_holders`, as in
+  `fund_holders`), and the payout invariant below is checked afterwards. Otherwise it behaves
+  as before (deposit everything, close the account). The first v4 build lacked this and sent
+  the holders' tokens to the creator; it was replaced before any vault used a payout token.
 * `pay` / `pay_fallback` refuse a payout-token vault (`PaysInToken`); the token versions refuse
   an XNT vault (`PaysInXnt`). New errors: `PaysInToken`, `PaysInXnt`, `BadPayoutMint`, `BadPayoutPool`.
 
 ## Invariants
 
 * Lamports: auth holds `xnt_lp + xnt_creator + (XNT vault ? holders_funded − holders_paid : xnt_holders)` plus its reserve.
-* Payout tokens (checked after `fund_holders` and every token payment): auth's payout account
+* Payout tokens (checked after `fund_holders`, a shared-account `fund_creator` and every token payment): auth's payout account
   holds at least `holders_funded − holders_paid`.
 
 ## Off-chain
