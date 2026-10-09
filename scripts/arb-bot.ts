@@ -118,7 +118,13 @@ if (minProfit <= 0n) usage("--min-profit must be above 0 (it is what makes a tra
 if (ownMinProfit !== undefined && !own.length) usage("--own-min-profit needs --own <wallet,...>");
 if (skimTo && skimTo.equals(wallet.publicKey)) usage("--skim-to is this wallet");
 
-const log = (s: string) => console.log(`${new Date().toISOString().slice(0, 19).replace("T", " ")} ${s}`);
+// Log times in the owner's zone (US Eastern, EST/EDT; ARB_TZ overrides, e.g. ARB_TZ=UTC).
+const TZ = process.env.ARB_TZ ?? "America/New_York";
+const stamp = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short" });
+const log = (s: string) => {
+  const p = Object.fromEntries(stamp.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  console.log(`${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} ${p.timeZoneName} ${s}`);
+};
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const xnt = (l: bigint) => (Number(l) / 1e9).toFixed(4);
 const stateDir = process.env.REFLECT_STATE_DIR ?? path.join(import.meta.dirname, "..", "state");

@@ -48,7 +48,13 @@ const envTg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
 const tgToken = flag("telegram-token") ?? (envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined);
 const tgChat = flag("telegram-chat") ?? (envTg ? process.env.TELEGRAM_CHAT_ID : undefined);
 
-const log = (s: string) => console.log(`${new Date().toISOString().slice(0, 19).replace("T", " ")} ${s}`);
+// Log times in the owner's zone (US Eastern, EST/EDT; ARB_TZ overrides, e.g. ARB_TZ=UTC).
+const TZ = process.env.ARB_TZ ?? "America/New_York";
+const stamp = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short" });
+const log = (s: string) => {
+  const p = Object.fromEntries(stamp.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  console.log(`${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} ${p.timeZoneName} ${s}`);
+};
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 async function alert(text: string) {
   log(text);
