@@ -164,22 +164,37 @@ export function createVaultCosts(o: {
       before = page.at(-1)!.signature;
     }
     if (!sigs.length) return;
-    const fresh: CostLine[] = [];
+    // Oldest first, saved every 100: an interrupted backfill (a restart) keeps what it read, and the next
+    // run carries on from the newest saved transaction.
+    sigs.reverse();
     const prog = o.program.toBase58();
-    for (let i = 0; i < sigs.length; i += 4) {
-      await Promise.all(sigs.slice(i, i + 4).map(async (s) => {
-        const t = await o.conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
-        if (!t?.meta || !t.blockTime) return;
-        const keys = t.transaction.message.getAccountKeys({ accountKeysFromLookups: t.meta.loadedAddresses });
-        fresh.push({ sig: s.signature, at: t.blockTime * 1000, fee: t.meta.fee, step: stepOf(instructionNames(t.meta.logMessages ?? [], prog)),
-          payer: keys.get(0)!.toBase58(), err: !!t.meta.err });
-      }));
+    let added = 0;
+    for (let start = 0; start < sigs.length; start += 100) {
+      const fresh: CostLine[] = [];
+      const chunk = sigs.slice(start, start + 100);
+      for (let i = 0; i < chunk.length; i += 4) {
+        await Promise.all(chunk.slice(i, i + 4).map(async (s) => {
+          const t = await o.conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+          if (!t?.meta || !t.blockTime) return;
+          const keys = t.transaction.message.getAccountKeys({ accountKeysFromLookups: t.meta.loadedAddresses });
+          fresh.push({ sig: s.signature, at: t.blockTime * 1000, fee: t.meta.fee, step: stepOf(instructionNames(t.meta.logMessages ?? [], prog)),
+            payer: keys.get(0)!.toBase58(), err: !!t.meta.err });
+        }));
+      }
+      // A transaction that couldn't be read now is skipped for good: stop before it, so the next run retries it.
+      const gap = chunk.findIndex((c) => !fresh.some((f) => f.sig === c.signature));
+      const keep = gap < 0 ? fresh : fresh.filter((f) => chunk.findIndex((c) => c.signature === f.sig) < gap);
+      keep.sort((a, b) => a.at - b.at);
+      if (keep.length) {
+        fs.mkdirSync(path.dirname(file(mint)), { recursive: true });
+        fs.appendFileSync(file(mint), keep.map((x) => JSON.stringify(x)).join("\n") + "\n");
+        lines.push(...keep);
+        lines.sort((a, b) => a.at - b.at);
+        added += keep.length;
+      }
+      if (gap >= 0) break;
     }
-    fresh.sort((a, b) => a.at - b.at);
-    fs.mkdirSync(path.dirname(file(mint)), { recursive: true });
-    fs.appendFileSync(file(mint), fresh.map((x) => JSON.stringify(x)).join("\n") + "\n");
-    lines.push(...fresh);
-    lines.sort((a, b) => a.at - b.at);
+    const fresh = { length: added };
     o.log(`[vault costs] ${mint}: +${fresh.length} transaction(s)`);
   }
 
