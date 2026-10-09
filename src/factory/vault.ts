@@ -363,6 +363,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       activity: v ? activity(mint) : [],
       // The site's crank: its last pass and whether its fee wallet is running low (panel warning).
       crank: crankJson(mint),
+      // What running the vault costs in network fees, last 7 days (the panel's "Cost to run").
+      costs: v ? costs.json(mint) : null,
       // Publisher quorum: the newest list's co-signer status and the last rejection.
       ...(q ? { listCheck: listCheck(file?.next ?? file?.active ?? null), listCheckEpoch: (file?.next ?? file?.active)?.epoch ?? null, lastRejected: lastRejected(file) } : {}),
     };
