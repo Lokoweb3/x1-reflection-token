@@ -1558,5 +1558,8 @@ if (vaults) {
     setTimeout(() => vaults.crankOnce().catch(() => undefined), 12_000);
     setInterval(() => vaults.crankOnce().catch(() => undefined), vaults.passMs).unref();
   }
+  // Each vault's network fees for the token pages' "Cost to run" (read-only, every 10 minutes).
+  setTimeout(() => vaults.refreshCosts().catch(() => undefined), 30_000);
+  setInterval(() => vaults.refreshCosts().catch(() => undefined), 600_000).unref();
 }
 server.listen(port, bind, () => console.log(`Token factory (${cfg.network}): http://${bind}:${port}  (metadata URIs use ${publicUrl})`));

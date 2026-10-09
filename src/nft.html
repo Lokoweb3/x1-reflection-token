@@ -182,6 +182,14 @@ table.burns .num { text-align: right; }
 .vault-panel .vp-activity { margin-top: 12px; }
 .vault-panel .vp-activity h4 { margin: 0 0 6px; font-size: 14px; }
 .vault-panel .vp-activity ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.vault-panel .vp-costs { margin-top: 12px; }
+.vault-panel .vp-costs h4 { margin: 0 0 6px; font-size: 14px; }
+.vault-panel .vp-costs p { font-size: 13px; margin: 0 0 8px; }
+.vault-panel .vp-costs .vp-table { overflow-x: auto; }
+.vault-panel .vp-costs table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.vault-panel .vp-costs th { text-align: right; font-weight: 600; color: var(--text-secondary); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.vault-panel .vp-costs td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.vault-panel .vp-costs th:first-child, .vault-panel .vp-costs td:first-child { text-align: left; }
 .vault-panel ul.vp-log { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
 .vault-panel ul.vp-log .bad { color: var(--critical); }
 .vault-panel ul.vp-log .good { color: var(--lime); }
@@ -421,7 +429,38 @@ function vaultPanel(d, s) {
     recoveryUrl ? el("p", { class: "muted", style: "font-size:12px;margin:8px 0 0" }, tr("If this site is ever down, the vault keeps working from the "),
       recoveryPath ? el("a", { href: recoveryPath, target: "_blank", rel: "noopener", text: tr("recovery page") }) : null, recoveryPath ? tr(", also ") : null,
       el("a", { href: recoveryUrl, target: "_blank", rel: "noopener", text: tr("recovery page on IPFS ↗") }), tr(" (any wallet, no server).")) : null,
-    log, form, activityList(d, v.activity));
+    log, form, costsBlock(v.costs), activityList(d, v.activity));
+}
+/**
+ * "Cost to run": the network fees of every transaction that touched the vault (whoever sent it),
+ * per UTC day for the last 7, next to the XNT its tax was sold for; plus a summary in words.
+ */
+function costsBlock(c) {
+  if (!c?.days?.length) return null;
+  const x = (lamports, digits = 4) => (Number(lamports) / 1e9).toFixed(digits);
+  const t = c.total;
+  const said = [tr("Running this vault costs about {perDay} XNT a day in network fees.", { perDay: x(t.perDay) })];
+  if (t.feePct !== null) said.push(tr("That's {pct}% of the XNT its tax was sold for.", { pct: t.feePct < 10 ? t.feePct.toFixed(2) : t.feePct.toFixed(1) }));
+  if (t.perPayment !== null) said.push(tr("Paying holders costs about {perPayment} XNT per wallet payment.", { perPayment: x(t.perPayment, 5) }));
+  if (t.fees > 0) {
+    const crankPct = Math.round((t.crankFees / t.fees) * 100);
+    said.push(crankPct >= 100 ? tr("99 + Tax's crank paid all of it.")
+      : tr("99 + Tax's crank paid {crankPct}% of the fees; other cranks and visitors the rest.", { crankPct }));
+  }
+  if (t.coveredDays < 7) said.push(tr("Recorded since {since}.", { since: when(Date.parse(c.since) / 1000) }));
+  const rows = [...c.days].reverse().filter((d) => d.txs || d.taxSold);
+  return el("div", { class: "vp-costs" },
+    el("h4", { text: tr("Cost to run") }),
+    el("p", { class: "muted", text: said.join(" ") }),
+    rows.length ? el("div", { class: "vp-table" }, el("table", {},
+      el("thead", {}, el("tr", {}, ...[tr("Day (UTC)"), tr("Transactions"), tr("Fees (XNT)"), tr("Tax sold (XNT)"), tr("Fees vs tax")].map((h) => el("th", { text: h })))),
+      el("tbody", {}, ...rows.map((d) => el("tr", {},
+        el("td", { text: d.day.slice(5) }),
+        el("td", { text: String(d.txs) }),
+        el("td", { text: x(d.fees) }),
+        el("td", { text: d.taxSold ? x(d.taxSold, 2) : "–" }),
+        el("td", { text: d.taxSold ? `${((d.fees / d.taxSold) * 100).toFixed(2)}%` : "–" })))))) : null,
+    el("p", { class: "muted", style: "font-size:12px;margin:4px 0 0", text: tr("Every transaction that touched the vault counts, whoever sent it. Tax sold is the XNT the vault got for the tax it collected that day.") }));
 }
 /** The latest vault actions, whoever sent them (this site, another crank, a visitor): what, when, by whom. */
 function activityList(d, items) {

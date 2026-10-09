@@ -55,6 +55,7 @@ import {
   readVaultAccount, rulesJson, vaultCrank,
 } from "../vault-crank.js";
 import { TRUSTLESS_GATEWAY, fetchFromGateways, gatewayBase, gatewayUrl, ipfsEnabled, pinJson } from "./ipfs.js";
+import { createVaultCosts } from "./vault-costs.js";
 import {
   SQUADS_PROGRAM_IDS, closeIx, executeIx, memberOf, proposalVotes, proposeIxs, quorumJson, readProposal, readQuorum, rejectIx, squadsVaultPda,
   type ProposalStatus as SquadsProposalStatus, type Quorum,
@@ -200,6 +201,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
 
   const authOf = (mint: string) => vaultAuthPda(program, new PublicKey(mint));
   const addrOf = (mint: string) => vaultPda(program, new PublicKey(mint));
+  // What running each vault costs in network fees (the page's "Cost to run"), kept from the chain by refreshCosts().
+  const costs = createVaultCosts({ conn, program, crank: crank?.publicKey ?? null, addrOf, stateDirOf, log: (s) => console.log(s) });
   /** XNT-paired launches only: the vault is TOKEN/wXNT only. */
   const xntPaired = (r: LaunchRecord) => !pairOf(cfg, r).xntPool;
   /** Where list files are read from: this site's gateway, then a public one. */
@@ -281,6 +284,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       ...(v3Status(v, q) ?? {}),
       crank: crankJson(mint),
       activity: activity(mint),
+      costs: costs.json(mint),
     };
   }
   /** A payout-token vault's token (from its fixed pool), cached; null for an XNT vault. */
@@ -937,6 +941,11 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     }
   }
 
+  /** Bring every vault token's cost ledger up to date (run every few minutes; read-only). */
+  async function refreshCosts() {
+    await costs.refresh((await vaultTokens()).map((r) => r.mint));
+  }
+
   /** Without a crank: still find the vault tokens (read-only), so the pages show their vault and reward token. */
   async function discover() {
     await vaultTokens().catch((e) => console.error(`[vault] listing vault tokens failed: ${msg(e)}`));
@@ -1012,7 +1021,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   const forget = (mint: string) => { viewCache.delete(mint); };
 
   return {
-    program, isVaultMint, authOf, view, listView, badge, rewardMintOf, crankOnce, discover, crankPlan, crankResult, appointIxs, forget,
+    program, isVaultMint, authOf, view, listView, badge, rewardMintOf, crankOnce, discover, refreshCosts, crankPlan, crankResult, appointIxs, forget,
     crankOn: () => !!crank, passMs: PASS_MS,
   };
 }
