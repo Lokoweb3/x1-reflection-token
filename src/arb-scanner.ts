@@ -25,7 +25,7 @@ import {
   AccountState, ExtensionType, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TransferFeeConfig, getDefaultAccountState, getExtensionTypes,
   getTransferFeeConfig, unpackAccount, unpackMint,
 } from "@solana/spl-token";
-import { routesFor, type Engine, type Route } from "./arb-engine.js";
+import { ACCOUNT_RENT, routesFor, type Engine, type Route } from "./arb-engine.js";
 import { symbolOf } from "./pools.js";
 import { decodePool, snapshotMany, type Pool, type Snapshot, type SnapshotSpec } from "./xdex.js";
 
@@ -52,7 +52,6 @@ export interface ScannerOptions {
 }
 
 const X = NATIVE_MINT.toBase58();
-const ACCOUNT_RENT = 2_100_000n;
 const NO_FEE: TransferFeeConfig = {
   transferFeeConfigAuthority: PublicKey.default, withdrawWithheldAuthority: PublicKey.default, withheldAmount: 0n,
   olderTransferFee: { epoch: 0n, maximumFee: 0n, transferFeeBasisPoints: 0 },

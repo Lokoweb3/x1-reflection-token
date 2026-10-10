@@ -70,6 +70,9 @@ const xnt = (l: bigint) => (Number(l) / 1e9).toFixed(4);
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const MAX_TX = 1232;
 
+/** Rent of one new token account (about 0.0021 XNT): a route that needs accounts opened must earn it on top of its minimum. */
+export const ACCOUNT_RENT = 2_100_000n;
+
 export function createEngine(o: EngineOptions) {
   const { conn, xdex, wallet } = o;
   const owner = wallet.publicKey;
@@ -288,12 +291,17 @@ export function createEngine(o: EngineOptions) {
   }
   /**
    * Send `ixs` as one v0 transaction and wait for it. The compute limit comes from `units` (a simulation
-   * the caller already ran) or from a fresh simulation; it goes out without the RPC's own preflight check
+   * the caller already ran) or from a fresh simulation, which must pass: a transaction the simulation
+   * rejects is never sent (it would only burn its fee). It goes out without the RPC's own preflight check
    * (already simulated), at `priority` micro-lamports per compute unit.
    */
   async function send(ixs: TransactionInstruction[], useAlt = false, opt: { units?: number; priority?: number } = {}) {
     let used = opt.units;
-    if (used === undefined) { const sim = await simulate(ixs, useAlt); used = sim.err ? 0 : sim.units; }
+    if (used === undefined) {
+      const sim = await simulate(ixs, useAlt);
+      if (sim.err) throw new Error(`simulation failed, not sent: ${JSON.stringify(sim.err)}${sim.logs.length ? ` (${sim.logs.at(-1)})` : ""}`);
+      used = sim.units;
+    }
     const units = !used ? 600_000 : Math.min(1_400_000, Math.ceil(used * 1.2) + 3_000);
     const all = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opt.priority ?? o.priority }), ComputeBudgetProgram.setComputeUnitLimit({ units }), ...ixs];
     const { blockhash: recent, lastValidBlockHeight } = await blockhash();

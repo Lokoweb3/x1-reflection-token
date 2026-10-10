@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, type TransferFeeConfig } from "@solana/spl-token";
 import { createEngine, routesFor, type Route } from "../src/arb-engine.js";
 import { roundTrip } from "../src/arb.js";
@@ -138,4 +138,18 @@ test("bestAll marks a route as paying only at or above its minimum", async () =>
   for (const o of out) assert.equal(o.pays, o.plan.profit >= 20_000_000n);
   assert.ok(out.some((o) => o.pays) && out.some((o) => !o.pays));
   assert.ok(out.every((o) => o.ownShare === 0), "no own wallets: nothing counts as your own pool");
+});
+
+test("send() never sends a transaction its own simulation rejected (it would only burn the fee)", async () => {
+  let sent = 0;
+  const conn = {
+    simulateTransaction: async () => ({ value: { err: { InstructionError: [2, { Custom: 6005 }] }, unitsConsumed: 0, logs: ["Program log: Error: ExceededSlippage"] } }),
+    getLatestBlockhash: async () => ({ blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 1 }),
+    sendRawTransaction: async () => { sent++; return "sig"; },
+  } as unknown as Connection;
+  const e = createEngine({ conn, xdex: key(), wallet: Keypair.generate(), minProfit: 1n, maxIn: XNT, slipBps: 10n,
+    reserve: 0n, priority: 1000, stateDir: os.tmpdir(), log: () => {}, alert: async () => {} });
+  const ix = new TransactionInstruction({ programId: key(), keys: [], data: Buffer.alloc(0) });
+  await assert.rejects(e.send([ix]), /simulation failed, not sent/);
+  assert.equal(sent, 0);
 });

@@ -31,7 +31,7 @@ Hashes are sha256 of `solana program dump`, taken 30 Sep 2026.
 | Network | Program | Address | Bytes | sha256 | Source commit · build flags |
 |---|---|---|---|---|---|
 | mainnet | `tax_vault` v3 | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 590,376 | `25e9881f2cc77f0b07f218d64f4abc57b4fa9ad6ed3dc3f18304cc38332ad6f4` | `7f2097d` (the v3 program source; deployed 1 Oct 2026 as a marked beta) · no features |
-| testnet | `tax_vault` v4 (payout tokens) | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 697,608 (account 700,376, zero-padded) | `ed68f18bafa074f9c642925575a49551a80e259c70ecfc5169e3595577dce27e` (of the first 697,608 bytes) | `f2c2b1b` (deployed 1 Oct 2026, upgraded in place from v3 `4d334f40…`) · `--features testnet` |
+| testnet | `tax_vault` v4 (payout tokens) | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` | 700,992 | `630e4a062b1ab81336be5cca98228527223959d7a4de3d1bbaa538c0e671a145` | `42bc724` (fund_creator keeps the holders' tokens; upgraded in place from the first v4 build `ed68f18b…` of `f2c2b1b`) · `--features testnet` |
 | testnet | `bonding_curve` | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` | 478,184 (account 478,840, zero-padded) | `6fa319a082599f892b9db77565549b8878cafcb39f7e5d949a9bfdae0bdc47dc` (of the first 478,184 bytes) | `b8150df` (testnet-only: 10 / 20 XNT targets, creator may buy; deployed 30 Sep 2026) · `--features testnet` |
 | mainnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 554,776 | `f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b` | `fd136f3` (unchanged since) · no features |
 | testnet | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | 474,704 | `d1749193963f6560c6428b8697917511d1e1dff0b94028fff3c36379bb6776f4` | **not reproduced**: deployed from a revision before `fd136f3` (before Holder Passes); no build from the current source matches it |
@@ -47,8 +47,10 @@ testnet `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf`, mainnet
 
 ### Reproduce a build and compare it with the chain
 
-Builds use `cargo-build-sbf` from the Solana/Agave **3.1.15** release (the output is
-byte-identical run to run on the same toolchain):
+Builds use `cargo-build-sbf` from the Solana/Agave **3.1.15** release (`solana --version`:
+`solana-cli 3.1.15 (src:40a31afe; feat:687058115, client:Agave)`; the output is byte-identical
+run to run on the same toolchain). If `agave-install init 3.1.15` doesn't offer it, build that
+release from the Agave source at `40a31afe`; 3.1.14 and 4.x give different bytes:
 
 ```bash
 cd lp-locker

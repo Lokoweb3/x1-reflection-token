@@ -58,7 +58,7 @@ import {
 } from "@solana/spl-token";
 import { XDEX_PROGRAM_IDS, loadKeypair } from "../src/config.js";
 import { gapPct } from "../src/arb.js";
-import { createEngine, routesFor, type Route } from "../src/arb-engine.js";
+import { ACCOUNT_RENT, createEngine, routesFor, type Route } from "../src/arb-engine.js";
 import { createScanner } from "../src/arb-scanner.js";
 import { deepestXntPool, poolsWith, symbolOf } from "../src/pools.js";
 import { cpmmOut, snapshot, snapshotMany, swapIx, type Snapshot, type SnapshotSpec } from "../src/xdex.js";
@@ -228,7 +228,13 @@ async function pass(): Promise<boolean> {
   const { snaps, routes, gaps } = await readRoutes();
   if (instant && loopSecs) watchVaults(snaps);
   const priced = await engine.bestAll(routes);
-  const paying = priced.filter((p) => p.pays);
+  // Like the scanner: a route that needs new token accounts must also earn their rent (~0.0021 XNT each).
+  const paying = [];
+  for (const p of priced.filter((x) => x.pays)) {
+    const rent = ACCOUNT_RENT * BigInt((await engine.missingAccounts([p.plan.route])).length);
+    if (p.plan.profit >= p.plan.minProfit + rent) paying.push(p);
+    else if (verbose) log(`${p.plan.route.name}: +${xnt(p.plan.profit)} doesn't cover ${xnt(rent)} of new-account rent`);
+  }
   if (Date.now() - lastSummary >= 60_000 || !loopSecs) {
     const top = [...priced].sort((a, b) => Number(b.plan.profit - a.plan.profit))[0];
     log(`${gaps.join(" | ") || "no side pools"} || ${routes.length} routes, best ${top ? `${top.plan.route.name} ${top.plan.profit >= 0n ? "+" : ""}${xnt(top.plan.profit)} @ ${xnt(top.plan.xntIn)}` : "none"}`);
