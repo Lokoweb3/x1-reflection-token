@@ -256,6 +256,9 @@ export function createEngine(o: EngineOptions) {
     return true;
   }
 
+  /** Trades that went through (bot and scanner alike): how many, and when the latest landed (ms). */
+  const traded = { count: 0, lastAt: 0 };
+
   // ---------- sending ----------
   // A recent blockhash kept warm (refreshed every 2 s once warm() is called), so sending doesn't wait for one.
   let bh: { blockhash: string; lastValidBlockHeight: number; at: number } | null = null;
@@ -396,6 +399,8 @@ export function createEngine(o: EngineOptions) {
       try {
         const sig = await send(ixs, useAlt, { units: sim.units, priority: racing ? o.racePriority ?? o.priority : o.priority });
         done++;
+        traded.count++;
+        traded.lastAt = Date.now();
         // What it really made (fee included), next to what the plan expected; a big shortfall is flagged.
         const actual = await realized(sig);
         const short = actual !== null && actual * 2n < p.profit;
@@ -413,7 +418,7 @@ export function createEngine(o: EngineOptions) {
     return done;
   }
 
-  return { plan, best, bestAll, execute, realized, simulate, send, warm, tripIxs, wrapFor, openAccounts, missingAccounts, ensureAlt, learnFees, ownShare, wxntAta, balanceOf, accountFor, describe };
+  return { traded, plan, best, bestAll, execute, realized, simulate, send, warm, tripIxs, wrapFor, openAccounts, missingAccounts, ensureAlt, learnFees, ownShare, wxntAta, balanceOf, accountFor, describe };
 }
 export type Engine = ReturnType<typeof createEngine>;
 

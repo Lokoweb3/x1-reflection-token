@@ -10,6 +10,7 @@
  *     [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs]
  *     [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]
  *     [--loop <seconds> (default 20) | --once] [--no-instant] [--clean-every <hours> (default 6, 0 = off)]
+ *     [--sweep-after <minutes> (default 2, 0 = off)]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (open the token accounts and lookup table)
@@ -44,7 +45,8 @@
  * subscriptions off. Each check reads every pool it watches in two batched requests.
  *
  * Upkeep (with --execute): every --clean-every hours it runs --sweep and then --close-dust (keeping the
- * route tokens' accounts open). With --cap and --skim-to it keeps the wallet at about --cap XNT, sending
+ * route tokens' accounts open). After a burst of trades (any trade, the bot's or the scanner's) it also
+ * sweeps once the market has been quiet for --sweep-after minutes, so leftovers don't sit in the wallet. With --cap and --skim-to it keeps the wallet at about --cap XNT, sending
  * anything above it to --skim-to (checked every 10 minutes); it alerts when the wallet holds under --low XNT.
  *
  * Working balance: the wallet trades out of its wrapped-XNT account, topped up from plain XNT as needed
@@ -70,7 +72,7 @@ function usage(problem?: string): never {
   if (problem) console.error(problem);
   console.error("usage: npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> [--execute] [--network mainnet|testnet] [--rpc <url>]\n"
     + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.1] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
-    + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>]\n"
+    + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>] [--sweep-after <minutes>]\n"
     + "         [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]\n"
     + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
@@ -109,6 +111,7 @@ const tgChat = flag("telegram-chat") ?? (envTg ? process.env.TELEGRAM_CHAT_ID : 
 const instant = !has("no-instant");
 const verbose = has("verbose");
 const cleanEveryMs = num("clean-every", 6) * 3_600_000;
+const sweepAfterMs = num("sweep-after", 2) * 60_000;
 const cap = flag("cap") !== undefined ? lamports(num("cap", 0)) : null;
 const skimTo = flag("skim-to") ? new PublicKey(flag("skim-to")!) : null;
 const low = lamports(num("low", 1));
@@ -415,7 +418,8 @@ async function main() {
     + `(${xnt(BigInt(plain))} XNT + ${xnt((await balanceOf(wxntAta)) ?? 0n)} wrapped), trades up to ${xnt(maxIn)} XNT when a trip pays +${xnt(minProfit)}`
     + `${ownMinProfit !== undefined ? ` (+${xnt(ownMinProfit)} on your own pools)` : ""}${pairs ? ", side-pool pairs on" : ""}, `
     + `${loopSecs ? `every ${loopSecs}s${instant ? " and the moment a watched pool changes" : ""}` : "once"}`
-    + `${execute && loopSecs && cleanEveryMs ? `, cleans leftovers every ${cleanEveryMs / 3_600_000}h` : ""}${cap !== null ? `, keeps ~${xnt(cap)} XNT (rest to ${skimTo!.toBase58()})` : ""}`);
+    + `${execute && loopSecs && cleanEveryMs ? `, cleans leftovers every ${cleanEveryMs / 3_600_000}h` : ""}`
+    + `${execute && loopSecs && sweepAfterMs ? ` and ${sweepAfterMs / 60_000} min after a burst of trades` : ""}${cap !== null ? `, keeps ~${xnt(cap)} XNT (rest to ${skimTo!.toBase58()})` : ""}`);
   if (has("scan")) {
     const scanLoop = has("once") ? 0 : num("scan-loop", 300);
     const scanner = createScanner({ conn, xdex, engine, execute, skip: new Set(mints.map((m) => m.toBase58())),
@@ -426,7 +430,7 @@ async function main() {
     void scanner.start().catch((e) => log(`scan stopped: ${msg(e)}`));
   }
   if (loopSecs) engine.warm();
-  let lastClean = Date.now(), lastCap = 0, streak = 0;
+  let lastClean = Date.now(), lastCap = 0, streak = 0, sweptAt = 0;
   for (;;) {
     let traded = false;
     try { traded = await pass(); } catch (e) { log(`pass failed: ${msg(e)}`); }
@@ -437,6 +441,14 @@ async function main() {
       log("upkeep: selling leftovers and closing dust accounts");
       await sweep().catch((e) => log(`sweep failed: ${msg(e)}`));
       await closeDust(routeMints()).catch((e) => log(`close-dust failed: ${msg(e)}`));
+      sweptAt = Date.now();
+    }
+    // A burst is over (trades since the last sweep, none for --sweep-after minutes): sell its leftovers now.
+    const t = engine.traded;
+    if (execute && sweepAfterMs && t.lastAt > sweptAt && Date.now() - t.lastAt >= sweepAfterMs) {
+      sweptAt = Date.now();
+      log("upkeep: the trades have gone quiet, selling their leftovers");
+      await sweep().catch((e) => log(`sweep failed: ${msg(e)}`));
     }
     // After a trade, check again straight away (a swing usually takes a few trips); at most 30 in a row.
     if (traded && ++streak <= 30) continue;
