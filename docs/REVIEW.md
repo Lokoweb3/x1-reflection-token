@@ -154,6 +154,33 @@ Questions, or anything that doesn't match the specs: open an issue on the reposi
 
 ## Review log
 
+### 2026-10-10: follow-up review by Theo (Cyberdyne), commit e74d8b0
+
+Covers what changed since September: Tax Vault v4 (payout tokens), the bonding-curve
+target changes and the arb bot. No critical or high findings in the programs; the v4
+additions (`init_vault_payout`'s mint checks, `fund_holders`, `fund_creator`'s shared-account
+path, `pay_token` / `pay_fallback_token`, `check_solvent` / `check_payout_tokens`) reviewed
+sound. Mainnet `tax_vault` v3 and `lp_locker` dumps match the table above; `tsc` clean,
+`npm test` 125/125, `cargo test` 21 + 8 + 8. Findings and what was done:
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | Testnet `tax_vault` didn't match its documented hash | Resolved (reviewer's method) | The reviewer had hashed only the first 697,608 bytes (the old build's size). The full dump is `630e4a06…`, the `42bc724` build, reproduced with Agave 3.1.15 (src `40a31afe`) and confirmed by the reviewer on the live account. The table above still listed the 1 Oct build: **updated** in `ad554d9`. |
+| 2 | Arb bot: `send()` sent a transaction its own simulation had rejected (the trade path checked; the sweep, wrap, account and lookup-table sends didn't) | Low (reported High; fee only, never funds) | **Fixed** in `ad554d9`: `send()` throws `simulation failed, not sent`; the loop and the sweep / close-dust helpers catch and log it. Test: `send() never sends a transaction its own simulation rejected`. |
+| 3 | Arb bot: the trade loop didn't require new-account rent on top of the minimum profit (the scanner did) | Low | **Fixed** in `ad554d9`: `ACCOUNT_RENT` is exported once from `src/arb-engine.ts`, and the bot's `pass()` applies the scanner's rule (profit >= minimum + rent of each missing account). |
+| 4 | Arb bot: the cached blockhash could be ~2.5 s old | Withdrawn | A blockhash stays valid for ~150 blocks (~60 s+); the cache is never used past 2.5 s, and confirmation keys off `lastValidBlockHeight`. |
+| 5 | Arb bot: a trade that makes much less than expected is only flagged | Low | **Accepted.** Each trade's last swap enforces stake + minimum profit on-chain; of the 82 trades of 9 Oct, 79 landed within ~0.0015 XNT of their expected profit, the other three (all PLAT/USDC.X, a pool other traders race for) between -0.015 and +0.018 XNT; together they made 99.3% of the expected 12.76 XNT and none lost money (the reviewer's report repeats an earlier "all within ~0.001", which overstated it). Auto-disabling a route after repeated shortfalls stays an option. |
+
+**Post-review verification (Theo, 10 Oct 2026).** Pulled and checked out `ad554d9`: `tsc`
+clean, `npm test` 126/126 (the new `send()` test present and green), and the rent filter
+in `pass()` matches the scanner's. The new throw also reaches `openAccounts` / `ensureAlt`:
+in the bot loop it is caught and logged; only the one-shot `--setup` stops on it, as intended.
+
+Still open, unchanged: the single publisher key (the 2-of-N publisher quorum is implemented
+and rehearsed but not live), and the end-to-end validator rehearsals and fee rounding against
+the real Token-2022 / XDEX programs, which the reviewer did not run. Rerun the rehearsals
+before the mainnet v4 upgrade.
+
 ### 2026-09-30: independent review by Theo (Cyberdyne), commit ce38a49
 
 No critical or high findings. Build hashes of all three deployed programs reproduced from
