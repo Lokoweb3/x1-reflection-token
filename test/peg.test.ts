@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, type TransferFeeConfig } from "@solana/spl-token";
-import { createPeg, dayLeft, referencePrice, sizeFor, USDC_X, type PegSpec } from "../src/peg.js";
+import { createPeg, dayLeft, pegAction, referencePrice, sizeFor, USDC_X, type PegSpec } from "../src/peg.js";
 import type { Pool, Snapshot } from "../src/xdex.js";
 
 // Maths and checks only: no network, no funds.
@@ -63,4 +63,16 @@ test("the day's limit counts as used when the float sum of today's trades falls 
   assert.ok(0.1 - used > 0, "a hair short");
   assert.equal(dayLeft(0.1, used), 0);
   assert.equal(dayLeft(0.1, 0.07), 0.1 - 0.07);
+});
+
+test("buys wait for the buy window (10–30% below here); sells keep the ±1.5% band", () => {
+  const o = { bandPct: 1.5, buyBelowPct: 10, buyMaxPct: 30 };
+  assert.equal(pegAction(0.03, o), "sell");
+  assert.equal(pegAction(0.01, o), "in band");
+  assert.equal(pegAction(-0.01, o), "in band");
+  assert.equal(pegAction(-0.05, o), "not low enough");
+  assert.equal(pegAction(-0.12, o), "buy");
+  assert.equal(pegAction(-0.35, o), "too far below");
+  // Without a buy window it's the plain band both ways.
+  assert.equal(pegAction(-0.02, { bandPct: 1.5 }), "buy");
 });

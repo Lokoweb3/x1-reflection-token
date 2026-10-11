@@ -11,7 +11,7 @@
  *     [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]
  *     [--loop <seconds> (default 20) | --once] [--no-instant] [--clean-every <hours> (default 6, 0 = off)]
  *     [--sweep-after <minutes> (default 2, 0 = off)]
- *     [--peg <xStock mint,...> [--peg-band 1.5] [--peg-max-trade 0.02] [--peg-max-day 0.1]]
+ *     [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (open the token accounts and lookup table)
@@ -81,7 +81,7 @@ function usage(problem?: string): never {
   console.error("usage: npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> [--execute] [--network mainnet|testnet] [--rpc <url>]\n"
     + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.1] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
     + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>] [--sweep-after <minutes>]\n"
-    + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--keep <mint,...>]\n"
+    + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--keep <mint,...>]\n"
     + "         [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]\n"
     + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
@@ -460,8 +460,11 @@ async function main() {
     if (!best) { log(`peg ${x.ticker}: no USDC.X pool for ${m}, not pegging it`); continue; }
     pegs.push(createPeg({ mint, ticker: x.ticker, coingeckoId: x.coingeckoId, solanaMint: x.solanaMint, pool: best.address, quoteMint: USDC_X },
       { conn, xdex, owner: wallet.publicKey, send: (ixs) => send(ixs), log, alert, stateDir, execute,
-        bandPct: num("peg-band", 1.5), maxTrade: num("peg-max-trade", 0.02), maxDay: num("peg-max-day", 0.1) }));
+        bandPct: num("peg-band", 1.5),
+        buyBelowPct: flag("peg-buy-below") !== undefined ? num("peg-buy-below", 1.5) : undefined,
+        buyMaxPct: flag("peg-buy-max") !== undefined ? num("peg-buy-max", 30) : undefined, maxTrade: num("peg-max-trade", 0.02), maxDay: num("peg-max-day", 0.1) }));
     log(`peg ${x.ticker}: holding ${m} at the ${x.ticker}x price in pool ${best.address.toBase58()} (band ±${num("peg-band", 1.5)}%, `
+      + (flag("peg-buy-below") !== undefined ? `buys only ${num("peg-buy-below", 1.5)}–${flag("peg-buy-max") !== undefined ? num("peg-buy-max", 30) : "∞"}% below, ` : "")
       + `up to ${num("peg-max-trade", 0.02)} a trade and ${num("peg-max-day", 0.1)} a day); the sweep keeps it and USDC.X`);
   }
   // What the sweep must keep, for runs without --peg (empty when this bot pegs nothing).

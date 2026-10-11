@@ -37,6 +37,13 @@ export interface PegOptions {
   execute: boolean;
   /** Trade when the pool is more than this many percent from the reference (default 1.5). */
   bandPct?: number;
+  /**
+   * Buy only when the pool is at least this many percent below the reference (default: bandPct), and then only
+   * up to that discount: every token bought costs at least this much under the reference.
+   */
+  buyBelowPct?: number;
+  /** Don't buy when the pool is more than this many percent below (a crash or a bad price; default: no limit). */
+  buyMaxPct?: number;
   /** Tokens (whole units) per trade and per New York day, both directions together (defaults 0.02 and 0.1). */
   maxTrade?: number;
   maxDay?: number;
@@ -99,6 +106,14 @@ export function sizeFor(s: Snapshot, done: (reserveIn: bigint, reserveOut: bigin
   return { amountIn: hi, ...quote(hi) };
 }
 
+/** What the peg does at `off` (pool / reference - 1): sell above the band, buy only within the buy window below. */
+export function pegAction(off: number, o: { bandPct?: number; buyBelowPct?: number; buyMaxPct?: number }): "sell" | "buy" | "in band" | "not low enough" | "too far below" {
+  if (off > (o.bandPct ?? 1.5) / 100) return "sell";
+  if (off >= 0 || -off <= (o.buyBelowPct ?? o.bandPct ?? 1.5) / 100) return -off > (o.bandPct ?? 1.5) / 100 ? "not low enough" : "in band";
+  if (o.buyMaxPct != null && -off > o.buyMaxPct / 100) return "too far below";
+  return "buy";
+}
+
 /** What's left of the day's limit; under a millionth of a token is none (the day's total is a sum of floats). */
 export const dayLeft = (maxDay: number, used: number) => (maxDay - used < 1e-6 ? 0 : maxDay - used);
 
@@ -139,14 +154,24 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
     }
     const d = dec;
     const pool = priceOf(sTok, d.tok, d.quote), off = pool / ref.price - 1;
-    if (Math.abs(off) <= band) {
+    const action = pegAction(off, o);
+    if (action === "in band") {
       problem(`in band: pool $${pool.toFixed(2)} vs $${ref.price.toFixed(2)} (${(off * 100).toFixed(2)}%; ${ref.sources})`);
+      return "in band";
+    }
+    if (action === "not low enough") {
+      problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% below $${ref.price.toFixed(2)}, not a buy until ${o.buyBelowPct}% below ($${(ref.price * (1 - o.buyBelowPct! / 100)).toFixed(2)})`);
+      return "in band";
+    }
+    if (action === "too far below") {
+      problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% below $${ref.price.toFixed(2)}, more than ${o.buyMaxPct}%: no buy (a crash or a bad price)`);
       return "in band";
     }
     const left = dayLeft(o.maxDay ?? 0.1, used());
     if (left <= 0) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% off $${ref.price.toFixed(2)}, but today's ${o.maxDay ?? 0.1} ${spec.ticker} limit is used`); return "day limit"; }
     const capTok = Math.min(o.maxTrade ?? 0.02, left);
-    const target = ref.price;
+    // A sell brings the pool down to the reference; a buy lifts it only to the edge of the buy window.
+    const target = off > 0 ? ref.price : ref.price * (1 - (o.buyBelowPct ?? 0) / 100);
     let ixs: TransactionInstruction[], amountIn: bigint, minOut: bigint, tokens: number, what: string;
     if (off > 0) {
       // Pool too high: sell the token until its price is down to the reference.
@@ -163,7 +188,7 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
         swapIx(o.xdex, o.owner, { pool: sTok.pool, side: sTok.side, amountIn, minimumOut: minOut }, ata, dest)];
       what = `sell ${tokens.toFixed(6)} ${spec.ticker}.X for ~${(Number(out) / 10 ** d.quote).toFixed(4)} USDC.X`;
     } else {
-      // Pool too low: buy the token with USDC.X until its price is up to the reference.
+      // Pool too low: buy the token with USDC.X until its price is up to the target.
       const sQ = await snapshot(o.conn, o.xdex, spec.pool, spec.quoteMint, spec.mint);
       const { ata, raw } = await balance(spec.quoteMint, d.quoteProgram);
       const want = sizeFor(sQ, (rIn, rOut) => (Number(rIn) / 10 ** d.quote) / (Number(rOut) / 10 ** d.tok) >= target);
