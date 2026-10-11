@@ -12,6 +12,7 @@
  *     [--loop <seconds> (default 20) | --once] [--no-instant] [--clean-every <hours> (default 6, 0 = off)]
  *     [--sweep-after <minutes> (default 2, 0 = off)]
  *     [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]]
+ *     [--limit-buy <mint>@<price>[:<USDC.X budget>],...]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (open the token accounts and lookup table)
@@ -52,7 +53,10 @@
  * Peg (--peg <mint>, a bridged xStock such as GOOGL.X): once a minute it compares the token's USDC.X pool with
  * the xStock's price on Solana (CoinGecko, checked against Jupiter) and, when the pool is more than --peg-band
  * percent off, trades it back from the wallet's own inventory (src/peg.ts); the arb routes carry the price to the
- * token's other pools. The sweep and close-dust leave the pegged tokens and USDC.X alone: they are its inventory. With --cap and --skim-to it keeps the wallet at about --cap XNT, sending
+ * token's other pools. The sweep and close-dust leave the pegged tokens and USDC.X alone: they are its inventory.
+ * Limit buys (--limit-buy <mint>@<price>[:<budget>]): once a minute, when the token's USDC.X pool is at or under
+ * <price> USDC.X, it buys with USDC.X, never lifting the pool past <price>, until <budget> USDC.X is spent (no
+ * budget: all the wallet's USDC.X) (src/limit.ts). The sweep keeps the token and USDC.X. With --cap and --skim-to it keeps the wallet at about --cap XNT, sending
  * anything above it to --skim-to (checked every 10 minutes); it alerts when the wallet holds under --low XNT.
  *
  * Working balance: the wallet trades out of its wrapped-XNT account, topped up from plain XNT as needed
@@ -72,6 +76,7 @@ import { createScanner } from "../src/arb-scanner.js";
 import { deepestXntPool, poolsWith, symbolOf } from "../src/pools.js";
 import { cpmmOut, snapshot, snapshotMany, swapIx, type Snapshot, type SnapshotSpec } from "../src/xdex.js";
 import { USDC_X, XSTOCKS, createPeg } from "../src/peg.js";
+import { createLimitBuy } from "../src/limit.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
@@ -81,7 +86,7 @@ function usage(problem?: string): never {
   console.error("usage: npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> [--execute] [--network mainnet|testnet] [--rpc <url>]\n"
     + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.1] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
     + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>] [--sweep-after <minutes>]\n"
-    + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--keep <mint,...>]\n"
+    + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--limit-buy <mint>@<price>[:<budget>],...] [--keep <mint,...>]\n"
     + "         [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]\n"
     + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
@@ -123,13 +128,18 @@ const cleanEveryMs = num("clean-every", 6) * 3_600_000;
 const sweepAfterMs = num("sweep-after", 2) * 60_000;
 const pegMints = (flag("peg") ?? "").split(",").filter(Boolean);
 for (const m of pegMints) if (!XSTOCKS[m]) usage(`--peg: ${m} isn't a known bridged xStock (src/peg.ts XSTOCKS)`);
+const limitBuys = (flag("limit-buy") ?? "").split(",").filter(Boolean).map((o) => {
+  const m = /^(\w+)@([\d.]+)(?::([\d.]+))?$/.exec(o);
+  if (!m || !(Number(m[2]) > 0) || (m[3] !== undefined && !(Number(m[3]) > 0))) usage(`--limit-buy: "${o}" isn't <mint>@<price>[:<budget>]`);
+  return { mint: m![1], price: Number(m![2]), budget: m![3] !== undefined ? Number(m![3]) : undefined };
+});
 // Tokens the sweep and close-dust never sell: --keep, plus each pegged token and USDC.X (the peg's inventory).
 // The running bot records its peg tokens in state/peg-keep.json, so a separate --sweep / --close-dust run (which
 // doesn't get --peg) keeps them too.
 const pegKeepFile = path.join(process.env.REFLECT_STATE_DIR ?? path.join(import.meta.dirname, "..", "state"), "peg-keep.json");
 const recordedKeep = (() => { try { return (JSON.parse(fs.readFileSync(pegKeepFile, "utf8")) as { mints: string[] }).mints; } catch { return []; } })();
 const keepMints = new Set([...(flag("keep") ?? "").split(",").filter(Boolean), ...recordedKeep,
-  ...(pegMints.length ? [...pegMints, USDC_X.toBase58()] : [])]);
+  ...(pegMints.length ? [...pegMints, USDC_X.toBase58()] : []), ...(limitBuys.length ? [...limitBuys.map((l) => l.mint), USDC_X.toBase58()] : [])]);
 const cap = flag("cap") !== undefined ? lamports(num("cap", 0)) : null;
 const skimTo = flag("skim-to") ? new PublicKey(flag("skim-to")!) : null;
 const low = lamports(num("low", 1));
@@ -448,15 +458,20 @@ async function main() {
     void scanner.start().catch((e) => log(`scan stopped: ${msg(e)}`));
   }
   if (loopSecs) engine.warm();
-  // Peg keepers: each pegged token's deepest USDC.X pool, checked once a minute.
-  const pegs = [];
-  for (const m of pegMints) {
-    const mint = new PublicKey(m), x = XSTOCKS[m];
+  /** A token's deepest USDC.X pool. */
+  async function usdcPool(mint: PublicKey) {
     let best: { address: PublicKey; usdc: bigint } | null = null;
     for (const p of await poolsWith(conn, xdex, mint, USDC_X)) {
       const sn = await snapshot(conn, xdex, p.address, mint, USDC_X).catch(() => null);
       if (sn && (!best || sn.reserveQuote > best.usdc)) best = { address: p.address, usdc: sn.reserveQuote };
     }
+    return best;
+  }
+  // Peg keepers: each pegged token's deepest USDC.X pool, checked once a minute.
+  const pegs = [];
+  for (const m of pegMints) {
+    const mint = new PublicKey(m), x = XSTOCKS[m];
+    const best = await usdcPool(mint);
     if (!best) { log(`peg ${x.ticker}: no USDC.X pool for ${m}, not pegging it`); continue; }
     pegs.push(createPeg({ mint, ticker: x.ticker, coingeckoId: x.coingeckoId, solanaMint: x.solanaMint, pool: best.address, quoteMint: USDC_X },
       { conn, xdex, owner: wallet.publicKey, send: (ixs) => send(ixs), log, alert, stateDir, execute,
@@ -467,18 +482,30 @@ async function main() {
       + (flag("peg-buy-below") !== undefined ? `buys only ${num("peg-buy-below", 1.5)}–${flag("peg-buy-max") !== undefined ? num("peg-buy-max", 30) : "∞"}% below, ` : "")
       + `up to ${num("peg-max-trade", 0.02)} a trade and ${num("peg-max-day", 0.1)} a day); the sweep keeps it and USDC.X`);
   }
-  // What the sweep must keep, for runs without --peg (empty when this bot pegs nothing).
+  // Limit buys: the token's deepest USDC.X pool, checked once a minute with the pegs.
+  const limits = [];
+  for (const l of limitBuys) {
+    const mint = new PublicKey(l.mint), sym = XSTOCKS[l.mint] ? `${XSTOCKS[l.mint].ticker}.X` : await symbolOf(conn, mint);
+    const best = await usdcPool(mint);
+    if (!best) { log(`limit ${sym}: no USDC.X pool for ${l.mint}, no order`); continue; }
+    limits.push(createLimitBuy({ mint, symbol: sym, pool: best.address, quoteMint: USDC_X, price: l.price, budget: l.budget },
+      { conn, xdex, owner: wallet.publicKey, send: (ixs) => send(ixs), log, alert, stateDir, execute }));
+    log(`limit ${sym}: buy with ${l.budget !== undefined ? `up to ${l.budget}` : "all the wallet's"} USDC.X when pool ${best.address.toBase58()} is at or under $${l.price}, never lifting it past $${l.price}; the sweep keeps it and USDC.X`);
+  }
+  // What the sweep must keep, for runs without --peg / --limit-buy (empty when this bot has neither).
+  const keepNow = [...pegs.map((p) => p.spec.mint.toBase58()), ...limits.map((l) => l.spec.mint.toBase58())];
   fs.mkdirSync(path.dirname(pegKeepFile), { recursive: true });
-  fs.writeFileSync(pegKeepFile, JSON.stringify({ mints: pegs.length ? [...pegs.map((p) => p.spec.mint.toBase58()), USDC_X.toBase58()] : [] }) + "\n");
+  fs.writeFileSync(pegKeepFile, JSON.stringify({ mints: keepNow.length ? [...new Set(keepNow), USDC_X.toBase58()] : [] }) + "\n");
   let lastClean = Date.now(), lastCap = 0, streak = 0, sweptAt = 0, lastPeg = 0;
   for (;;) {
     let traded = false;
     try { traded = await pass(); } catch (e) { log(`pass failed: ${msg(e)}`); }
     if (!loopSecs) return;
     if (Date.now() - lastCap >= 10 * 60_000) { lastCap = Date.now(); await capAndLow().catch((e) => log(`cap check failed: ${msg(e)}`)); }
-    if (pegs.length && Date.now() - lastPeg >= 60_000) {
+    if ((pegs.length || limits.length) && Date.now() - lastPeg >= 60_000) {
       lastPeg = Date.now();
       for (const p of pegs) await p.check().catch((e) => log(`peg ${p.spec.ticker} failed: ${msg(e)}`));
+      for (const l of limits) await l.check().catch((e) => log(`limit ${l.spec.symbol} failed: ${msg(e)}`));
     }
     if (execute && cleanEveryMs && Date.now() - lastClean >= cleanEveryMs) {
       lastClean = Date.now();

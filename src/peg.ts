@@ -86,7 +86,7 @@ export async function referencePrice(spec: PegSpec): Promise<{ price: number; so
 }
 
 /** Price of `s`'s token in its pair, in whole units (quote per token). */
-const priceOf = (s: Pick<Snapshot, "reserveToken" | "reserveQuote">, tokDec: number, quoteDec: number) =>
+export const priceOf = (s: Pick<Snapshot, "reserveToken" | "reserveQuote">, tokDec: number, quoteDec: number) =>
   (Number(s.reserveQuote) / 10 ** quoteDec) / (Number(s.reserveToken) / 10 ** tokDec);
 
 /**
