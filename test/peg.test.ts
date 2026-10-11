@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, type TransferFeeConfig } from "@solana/spl-token";
-import { createPeg, referencePrice, sizeFor, USDC_X, type PegSpec } from "../src/peg.js";
+import { createPeg, dayLeft, referencePrice, sizeFor, USDC_X, type PegSpec } from "../src/peg.js";
 import type { Pool, Snapshot } from "../src/xdex.js";
 
 // Maths and checks only: no network, no funds.
@@ -56,4 +56,11 @@ test("the reference needs CoinGecko and Jupiter within 1% of each other", async 
     const bad = await referencePrice(spec);
     assert.ok("error" in bad && /disagree/.test(bad.error));
   } finally { globalThis.fetch = real; }
+});
+
+test("the day's limit counts as used when the float sum of today's trades falls a hair short of it", () => {
+  const used = 0.09999999999999999; // what state/peg-googl.json held on 2026-10-10 after the day's last trade
+  assert.ok(0.1 - used > 0, "a hair short");
+  assert.equal(dayLeft(0.1, used), 0);
+  assert.equal(dayLeft(0.1, 0.07), 0.1 - 0.07);
 });

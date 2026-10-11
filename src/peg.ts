@@ -99,6 +99,9 @@ export function sizeFor(s: Snapshot, done: (reserveIn: bigint, reserveOut: bigin
   return { amountIn: hi, ...quote(hi) };
 }
 
+/** What's left of the day's limit; under a millionth of a token is none (the day's total is a sum of floats). */
+export const dayLeft = (maxDay: number, used: number) => (maxDay - used < 1e-6 ? 0 : maxDay - used);
+
 export function createPeg(spec: PegSpec, o: PegOptions) {
   const band = (o.bandPct ?? 1.5) / 100, slip = (o.slippagePct ?? 0.5) / 100;
   const fetchPrice = o.fetchPrice ?? referencePrice;
@@ -140,7 +143,7 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
       problem(`in band: pool $${pool.toFixed(2)} vs $${ref.price.toFixed(2)} (${(off * 100).toFixed(2)}%; ${ref.sources})`);
       return "in band";
     }
-    const left = (o.maxDay ?? 0.1) - used();
+    const left = dayLeft(o.maxDay ?? 0.1, used());
     if (left <= 0) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% off $${ref.price.toFixed(2)}, but today's ${o.maxDay ?? 0.1} ${spec.ticker} limit is used`); return "day limit"; }
     const capTok = Math.min(o.maxTrade ?? 0.02, left);
     const target = ref.price;
@@ -150,7 +153,8 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
       const { ata, raw } = await balance(spec.mint, d.tokProgram);
       const want = sizeFor(sTok, (rIn, rOut) => priceOf({ reserveToken: rIn, reserveQuote: rOut }, d.tok, d.quote) <= target);
       amountIn = [want.amountIn, BigInt(Math.floor(capTok * 10 ** d.tok)), raw].reduce((a, b) => (a < b ? a : b));
-      if (amountIn <= 0n) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% above $${target.toFixed(2)}, but the wallet holds no ${spec.ticker} to sell`); return "no inventory"; }
+      if (raw <= 0n) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% above $${target.toFixed(2)}, but the wallet holds no ${spec.ticker} to sell`); return "no inventory"; }
+      if (amountIn <= 0n) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% above $${target.toFixed(2)}, but the trade rounds to nothing`); return "in band"; }
       const out = cpmmOut(amountIn - calculateEpochFee(sTok.feeCfg, sTok.epoch, amountIn), sTok.reserveToken, sTok.reserveQuote, sTok.tradeFeeRate);
       minOut = BigInt(Math.floor(Number(out) * (1 - slip)));
       tokens = Number(amountIn) / 10 ** d.tok;
@@ -165,7 +169,8 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
       const want = sizeFor(sQ, (rIn, rOut) => (Number(rIn) / 10 ** d.quote) / (Number(rOut) / 10 ** d.tok) >= target);
       const capQuote = BigInt(Math.floor(capTok * target * 10 ** d.quote));
       amountIn = [want.amountIn, capQuote, raw].reduce((a, b) => (a < b ? a : b));
-      if (amountIn <= 0n) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% below $${target.toFixed(2)}, but the wallet holds no USDC.X to buy with`); return "no inventory"; }
+      if (raw <= 0n) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% below $${target.toFixed(2)}, but the wallet holds no USDC.X to buy with`); return "no inventory"; }
+      if (amountIn <= 0n) { problem(`pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% below $${target.toFixed(2)}, but the trade rounds to nothing`); return "in band"; }
       const out = cpmmOut(amountIn - calculateEpochFee(sQ.feeCfg, sQ.epoch, amountIn), sQ.reserveToken, sQ.reserveQuote, sQ.tradeFeeRate);
       minOut = BigInt(Math.floor(Number(out) * (1 - slip)));
       tokens = Number(out) / 10 ** d.tok;
