@@ -57,7 +57,8 @@ export async function pinFile(t: PinTarget, blob: Blob, filename: string, label:
   form.append("name", label.slice(0, 100));
   const r = await fetch(t.uploadUrl || PINATA_UPLOAD_URL, { method: "POST", body: form, headers: { Authorization: `Bearer ${t.jwt}` }, signal: AbortSignal.timeout(30_000) });
   const text = await r.text();
-  if (r.status === 401 || r.status === 403) throw new Error("IPFS upload was refused: check the Pinata key has Files: Write.");
+  // Pinata's own reason (a revoked key, missing Files: Write, the plan's file or storage limit) is in the body.
+  if (r.status === 401 || r.status === 403) throw new Error(`IPFS upload was refused (${r.status}: ${text.replace(/\s+/g, " ").slice(0, 160) || "no reason given"}): check the Pinata key is active, has Files: Write, and the plan isn't at its limit.`);
   if (!r.ok) throw new Error(`IPFS upload failed (${r.status}): ${text.slice(0, 160)}`);
   const cid = (JSON.parse(text) as { data?: { cid?: string } }).data?.cid;
   if (!cid) throw new Error("IPFS upload returned no content ID");
