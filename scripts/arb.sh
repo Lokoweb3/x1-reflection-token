@@ -12,7 +12,8 @@
 #   ARB_BOT_ARGS="--mint <TEST> --mint <GOOGL.X> --keypair ./arb.keypair.json --max-in 10 --execute --cap 20 --skim-to <your wallet>"
 #   ARB_SCAN_ARGS="--keypair ./arb.keypair.json --loop 300 --execute --skip <TEST>,<GOOGL.X>"
 # otherwise the defaults below. Each keeps running after the terminal closes, until stopped or until
-# WSL/Windows shuts down (for always-on, use deploy/systemd/reflect-arb-*.service on a server).
+# WSL/Windows shuts down (for always-on, use deploy/systemd/reflect-arb-*.service on a server, or on
+# WSL scripts/arb-watchdog.sh, which restarts the bot unless it was stopped here).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p state
@@ -34,6 +35,7 @@ which_ones() { case "${1:-}" in bot|scan) echo "$1" ;; "") echo bot ;; all) echo
 case "${1:-status}" in
   start)
     for w in $(which_ones "${2:-}"); do
+      rm -f "state/arb-$w.stopped"
       if running "$w"; then echo "$w: already running (pid $(cat "$(pidf "$w")"))"; continue; fi
       # shellcheck disable=SC2046 # word-splitting the argument string is intended
       setsid nohup npx tsx "$(script "$w")" $(args "$w") >>"$(logf "$w")" 2>&1 < /dev/null &
@@ -48,6 +50,7 @@ case "${1:-status}" in
       if running "$w"; then pid=$(cat "$(pidf "$w")"); kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid"; echo "$w: stopped"
       else echo "$w: not running"; fi
       rm -f "$(pidf "$w")"
+      touch "state/arb-$w.stopped" # tells scripts/arb-watchdog.sh not to restart it
     done
     ;;
   status)
