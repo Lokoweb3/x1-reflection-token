@@ -9,7 +9,7 @@ export NVM_DIR="$HOME/.nvm"
 # shellcheck disable=SC1091
 [[ -s $NVM_DIR/nvm.sh ]] && . "$NVM_DIR/nvm.sh"
 while true; do
-  if [[ ! -f state/arb-bot.stopped ]] && ! scripts/arb.sh status | grep -q '^bot: running'; then
+  if [[ ! -f state/arb-bot.stopped ]] && ! scripts/arb.sh status | grep '^bot: running' >/dev/null; then
     echo "$(date '+%F %T %Z') watchdog: bot not running, starting it"
     scripts/arb.sh start bot
   fi
