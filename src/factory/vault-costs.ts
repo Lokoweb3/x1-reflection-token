@@ -57,6 +57,8 @@ export interface DayCosts {
   taxSold: number;
   paidHolders: number;
   payments: number;
+  /** The reward each sale paid whoever sent it ("Distribute now"), in lamports: what wins the fees back. */
+  rewards: number;
 }
 
 /** Group a ledger and the token's events into UTC days (newest last), the last `days` of them. */
@@ -69,7 +71,7 @@ export function summarize(lines: CostLine[], events: Record<string, unknown>[], 
   const byDay = new Map<string, DayCosts>();
   const get = (d: string) => {
     let x = byDay.get(d);
-    if (!x) { x = { day: d, txs: 0, failed: 0, fees: 0, byStep: {}, crankFees: 0, taxSold: 0, paidHolders: 0, payments: 0 }; byDay.set(d, x); }
+    if (!x) { x = { day: d, txs: 0, failed: 0, fees: 0, byStep: {}, crankFees: 0, taxSold: 0, paidHolders: 0, payments: 0, rewards: 0 }; byDay.set(d, x); }
     return x;
   };
   for (let i = 0; i < days; i++) get(dayOf(now - (days - 1 - i) * DAY));
@@ -88,6 +90,7 @@ export function summarize(lines: CostLine[], events: Record<string, unknown>[], 
     if (!Number.isFinite(at) || dayOf(at) < first) continue;
     const x = get(dayOf(at));
     if (e.kind === "sell") x.taxSold += Number(e.xnt ?? 0);
+    if (e.kind === "clicker-reward") x.rewards += Number(e.xnt ?? 0);
     if (e.kind === "payout") { x.paidHolders += Number(e.total ?? 0); x.payments += Array.isArray(e.payments) ? e.payments.length : 0; }
   }
   const list = [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
@@ -97,7 +100,7 @@ export function summarize(lines: CostLine[], events: Record<string, unknown>[], 
   return {
     days: list,
     total: {
-      txs: sum("txs"), failed: sum("failed"), fees, crankFees: sum("crankFees"), taxSold, paidHolders: sum("paidHolders"), payments,
+      txs: sum("txs"), failed: sum("failed"), fees, crankFees: sum("crankFees"), taxSold, paidHolders: sum("paidHolders"), payments, rewards: sum("rewards"),
       /** Fees as a share of the XNT the tax was sold for (percent), null without sales. */
       feePct: taxSold > 0 ? (fees / taxSold) * 100 : null,
       /** Fees per wallet payment (lamports), null without payments. */

@@ -40,6 +40,7 @@ test("costs are grouped by UTC day with steps, the site crank's share, and the t
   ];
   const events = [
     { at: new Date(NOW - 2 * H).toISOString(), kind: "sell", xnt: "100000000" },
+    { at: new Date(NOW - 2 * H).toISOString(), kind: "clicker-reward", xnt: "1000000", wallet: "crank" },
     { at: new Date(NOW - 1 * H).toISOString(), kind: "payout", total: "50000000", payments: [["w1", "1"], ["w2", "1"]] },
   ];
   const s = summarize(lines, events, "crank", 7, NOW);
@@ -48,7 +49,8 @@ test("costs are grouped by UTC day with steps, the site crank's share, and the t
   assert.equal(today.day, "2026-10-09");
   assert.deepEqual([today.txs, today.failed, today.fees, today.crankFees], [3, 1, 2_000_000, 1_600_000]);
   assert.deepEqual(today.byStep, { sell: 1_000_000, pay: 1_000_000 });
-  assert.deepEqual([today.taxSold, today.paidHolders, today.payments], [100_000_000, 50_000_000, 2]);
+  assert.deepEqual([today.taxSold, today.paidHolders, today.payments, today.rewards], [100_000_000, 50_000_000, 2, 1_000_000]);
+  assert.equal(s.total.rewards, 1_000_000);
   assert.equal(yesterday.fees, 2_000_000);
   assert.equal(s.total.fees, 4_000_000, "the 9-day-old line is outside the window");
   assert.equal(s.total.feePct, 4, "4,000,000 of fees on 100,000,000 of tax sold");
