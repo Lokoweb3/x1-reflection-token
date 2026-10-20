@@ -213,4 +213,5 @@ writeJournal(entries);
 const sent = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 0, minContextSlot: sim.context.slot });
 if (sent !== signature) fail(`the RPC returned signature ${sent}, expected ${signature}; the journal keeps the transfer reserved`);
 console.log(`sent: https://explorer.x1.xyz/tx/${signature}\nwaiting for X1 finality and the Solana payout...`);
-await waitForArrival(entries);
+// Exit 2 while it is still on its way, so a caller (scripts/googl-bridge-buy.ts) doesn't carry on without it.
+if (!(await waitForArrival(entries))) process.exit(2);

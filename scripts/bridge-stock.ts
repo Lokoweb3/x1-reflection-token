@@ -205,3 +205,4 @@ while (Date.now() < until) {
   await sleep(10_000);
 }
 console.log("still on its way; check later with: npx tsx scripts/bridge-stock.ts --status");
+process.exit(2);
