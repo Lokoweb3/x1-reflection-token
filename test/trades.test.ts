@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, type PublicKey, type VersionedTransactionResponse } from "@solana/web3.js";
-import { parseSwap, parseTx, positions, type Trade } from "../src/trades.js";
+import { parseSwap, parseTx, positions, tradeSizes, type Trade } from "../src/trades.js";
 
 const T = (wallet: string, tokens: number, xnt: number, at: number): Trade =>
   ({ sig: `s${at}`, at, wallet, tokens: String(BigInt(Math.round(tokens * 1e9))), xnt: String(BigInt(Math.round(xnt * 1e9))) });
@@ -109,4 +109,23 @@ test("parseSwap: paid with another token is unpriced", () => {
   const me = Keypair.generate().publicKey, mint = Keypair.generate().publicKey.toBase58(), other = Keypair.generate().publicKey.toBase58();
   const tx = txOf(me, [{ owner: me.toBase58(), mint, pre: 0n, post: 100n }, { owner: me.toBase58(), mint: other, pre: 50n, post: 0n }], [[1e9, 1e9 - 5000]], ["Program log: Instruction: SwapBaseInput"]);
   assert.equal(parseSwap(tx, mint)?.kind, "unpriced");
+});
+
+test("trade sizes: swaps by their own XNT, other trades at the nearest same-side price", () => {
+  const unpriced = (wallet: string, tokens: number, at: number): Trade => ({ ...T(wallet, tokens, 0, at), kind: "unpriced" });
+  const sizes = tradeSizes([
+    T("a", 100, -1, 1_000),          // buy at 0.01
+    T("b", -100, 0.9, 1_100),        // sale at 0.009 (after tax)
+    unpriced("c", 50, 1_050),        // a buy paid in USDC.X: priced off a's buy, not b's nearer sale
+    unpriced("d", -20, 1_090),       // a sale settled in another token: b's sale price
+    { ...T("e", 10, 0, 1_200), kind: "move" },  // a transfer: not a trade
+    { ...T("pool", -100, 0, 1_000), kind: "move" },
+    T("skipme", 10, -0.1, 1_300),
+  ], new Set(["skipme"]));
+  assert.deepEqual(sizes.map((s) => [s.wallet, Math.round(s.size) / 1e9]), [["a", 1], ["b", 0.9], ["c", 0.5], ["d", 0.18]]);
+});
+
+test("trade sizes: no priced swap within a day leaves a trade out", () => {
+  const sizes = tradeSizes([T("a", 100, -1, 0), { ...T("c", 50, 0, 200_000), kind: "unpriced" }], new Set());
+  assert.deepEqual(sizes.map((s) => s.wallet), ["a"]);
 });

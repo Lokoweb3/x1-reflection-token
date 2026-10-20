@@ -291,3 +291,48 @@ export function positions(trades: Trade[], skip: Set<string>) {
   }
   return out;
 }
+
+/**
+ * A token's indexed trades as saved (no RPC), and whether its older history has all been read.
+ * Entries from an older index version count until they're read again, as in the leaderboard.
+ */
+export function savedTrades(stateDir: string): { trades: Trade[]; complete: boolean } {
+  const idx = loadIndex(stateDir);
+  return { trades: idx.trades, complete: !idx.backfill };
+}
+
+/**
+ * Each buy and sale's size in the price unit (XNT, or JACK for a JACK pool), for trading
+ * volume: a swap by its own XNT, one paid or settled in another token (or a limit-order fill)
+ * at the market price nearest in time, as `positions` values it. Transfers, liquidity moves
+ * and wallets in `skip` are left out; so is a trade with no priced swap within a day.
+ */
+export function tradeSizes(trades: Trade[], skip: Set<string>): { at: number; wallet: string; size: number }[] {
+  const isPriced = (t: Trade) => t.kind === undefined && (BigInt(t.tokens) > 0n ? BigInt(t.xnt) < 0n : BigInt(t.xnt) > 0n);
+  // Priced swaps by side, oldest first, for a binary search by time.
+  const side = { buy: [] as { at: number; price: number }[], sell: [] as { at: number; price: number }[] };
+  for (const t of trades) if (isPriced(t)) (BigInt(t.tokens) > 0n ? side.buy : side.sell).push({ at: t.at, price: Math.abs(Number(t.xnt) / Number(t.tokens)) });
+  side.buy.sort((a, b) => a.at - b.at); side.sell.sort((a, b) => a.at - b.at);
+  const nearest = (list: { at: number; price: number }[], at: number) => {
+    let lo = 0, hi = list.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].at < at) lo = m + 1; else hi = m; }
+    let best: { at: number; price: number } | null = null;
+    for (const c of [list[lo - 1], list[lo]]) if (c && (!best || Math.abs(c.at - at) < Math.abs(best.at - at))) best = c;
+    return best && Math.abs(best.at - at) <= ESTIMATE_WITHIN_S ? best : null;
+  };
+  const out: { at: number; wallet: string; size: number }[] = [];
+  for (const t of trades) {
+    if (skip.has(t.wallet) || !(t.kind === undefined || t.kind === "unpriced" || t.kind === "order")) continue;
+    if (isPriced(t)) { out.push({ at: t.at, wallet: t.wallet, size: Math.abs(Number(t.xnt)) }); continue; }
+    const buy = BigInt(t.tokens) > 0n;
+    // The nearest swap on the same side (buys and sells differ by the tax), else either side.
+    const same = nearest(buy ? side.buy : side.sell, t.at);
+    let hit = same;
+    if (!hit) {
+      const a = nearest(side.buy, t.at), b = nearest(side.sell, t.at);
+      hit = a && b ? (Math.abs(a.at - t.at) <= Math.abs(b.at - t.at) ? a : b) : a ?? b;
+    }
+    if (hit) out.push({ at: t.at, wallet: t.wallet, size: Math.abs(hit.price * Number(t.tokens)) });
+  }
+  return out;
+}

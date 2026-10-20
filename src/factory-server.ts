@@ -34,7 +34,7 @@ import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, buildRecei
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
 import { cpmmOut, snapshot, spotValue } from "./xdex.js";
-import { positions, refreshTrades, type Position } from "./trades.js";
+import { positions, refreshTrades, savedTrades, tradeSizes, type Position } from "./trades.js";
 import { tokenPools } from "./pools.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
 import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
@@ -999,47 +999,94 @@ function tokenList() {
   return data;
 }
 
-/** The Analytics page: platform totals, activity per day, per-token breakdown, recent events. */
-let analyticsCache: { at: number; data: unknown } | null = null;
+/**
+ * The Analytics page: platform totals, activity per day, per-token breakdown, recent events,
+ * and trading: buy and sale volume in XNT from each token's trade index (the one the
+ * leaderboard keeps), traders, and each token's holder yield.
+ */
+let analyticsCache: { at: number; data: Promise<unknown> } | null = null;
 function analytics() {
   if (analyticsCache && Date.now() - analyticsCache.at < 30_000) return analyticsCache.data;
-  const days = new Map<string, { holders: bigint; liquidity: bigint; creator: bigint }>();
-  const wallets = new Set<string>();
-  const perToken = [];
-  const recent: Record<string, unknown>[] = [];
-  const total = { holdersXnt: 0n, liquidityXnt: 0n, creatorXnt: 0n, clickerXnt: 0n, payouts: 0, burns: 0 };
-  for (const t of targets(cfg)) {
-    const events = tokenEvents(t.stateDir);
-    const e = eventTotals(events);
-    for (const w of e.wallets) wallets.add(w);
-    total.holdersXnt += e.holdersXnt; total.liquidityXnt += e.liquidityXnt; total.creatorXnt += e.creatorXnt; total.clickerXnt += e.clickerXnt;
-    total.payouts += e.payouts; total.burns += events.filter((x) => x.kind === "burn").length;
-    perToken.push({ symbol: t.symbol, mint: t.mint, holdersXnt: e.holdersXnt.toString(), liquidityXnt: e.liquidityXnt.toString(),
-      creatorXnt: e.creatorXnt.toString(), burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun });
-    for (const x of events) {
-      if (!x.at) continue;
-      const hour = String(x.at).slice(0, 13); // YYYY-MM-DDTHH; the page groups by day for long spans
-      const b = days.get(hour) ?? { holders: 0n, liquidity: 0n, creator: 0n };
-      if (x.kind === "payout") b.holders += BigInt(x.total ?? 0);
-      else if (x.kind === "auto-lp") b.liquidity += BigInt(x.xnt ?? 0);
-      else if (x.kind === "creator-reward") b.creator += creatorXntOf(x);
-      days.set(hour, b);
-      if (["payout", "auto-lp", "burn", "creator-reward", "clicker-reward"].includes(x.kind)) {
-        recent.push({ at: x.at, kind: x.kind, symbol: t.symbol, signature: x.signature ?? null,
-          xnt: x.kind === "payout" ? String(x.total ?? 0) : x.kind === "creator-reward" ? creatorXntOf(x).toString() : x.xnt ?? null,
-          tokens: x.kind === "burn" ? String(x.tokens ?? 0) : null, wallets: x.kind === "payout" ? (x.payments ?? []).length : null });
+  const data = (async () => {
+    const days = new Map<string, { holders: bigint; liquidity: bigint; creator: bigint }>();
+    const volumeHours = new Map<string, number>();
+    const wallets = new Set<string>();
+    const traders = { day: new Set<string>(), week: new Set<string>() };
+    const perToken = [];
+    const recent: Record<string, unknown>[] = [];
+    const total = { holdersXnt: 0n, liquidityXnt: 0n, creatorXnt: 0n, clickerXnt: 0n, payouts: 0, burns: 0 };
+    const volume = { all: 0, day: 0, week: 0 };
+    let historyComplete = true;
+    const now = Date.now() / 1000;
+    const pool = poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58();
+    const lamports = (n: number) => BigInt(Math.round(n * 1e9)).toString();
+    // Each token's stats (for its yield) and pair price, fetched together rather than one token at a time.
+    const list = targets(cfg);
+    const fetched = await Promise.all(list.map((t) => Promise.all([
+      (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null),
+      pairValue(pairForMint(t.mint)).catch(() => null),
+    ])));
+    for (const [i, t] of list.entries()) {
+      const events = tokenEvents(t.stateDir);
+      const e = eventTotals(events);
+      for (const w of e.wallets) wallets.add(w);
+      total.holdersXnt += e.holdersXnt; total.liquidityXnt += e.liquidityXnt; total.creatorXnt += e.creatorXnt; total.clickerXnt += e.clickerXnt;
+      total.payouts += e.payouts; total.burns += events.filter((x) => x.kind === "burn").length;
+
+      // Trading: wallets' buys and sales, valued in XNT (a JACK pool's JACK at today's
+      // JACK/XNT price). The pool, burn address, distributor (its tax sales) and vault are
+      // not traders; arbitrage that passes straight through moves no tokens and isn't counted.
+      const [stats, value] = fetched[i];
+      const skip = new Set([t.distributor, pool, ...BURN_OWNERS]);
+      const vaultAuth = vaultAuthFor(t.mint);
+      if (vaultAuth) skip.add(vaultAuth);
+      const saved = savedTrades(t.stateDir);
+      if (!saved.complete) historyComplete = false;
+      const v = { all: 0, day: 0, week: 0, traders: new Set<string>() };
+      for (const x of value ? tradeSizes(saved.trades, skip) : []) {
+        const xntAmt = (x.size * value!.xntPer) / 1e9;
+        v.all += xntAmt;
+        if (x.at >= now - 7 * 86_400) { v.week += xntAmt; v.traders.add(x.wallet); traders.week.add(x.wallet); }
+        if (x.at >= now - 86_400) { v.day += xntAmt; traders.day.add(x.wallet); }
+        const hour = new Date(x.at * 1000).toISOString().slice(0, 13);
+        volumeHours.set(hour, (volumeHours.get(hour) ?? 0) + xntAmt);
+      }
+      volume.all += v.all; volume.day += v.day; volume.week += v.week;
+
+      perToken.push({ symbol: t.symbol, mint: t.mint, holdersXnt: e.holdersXnt.toString(), liquidityXnt: e.liquidityXnt.toString(),
+        creatorXnt: e.creatorXnt.toString(), burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun,
+        volumeXnt: lamports(v.all), volume7dXnt: lamports(v.week), traders7d: v.traders.size, historyComplete: saved.complete,
+        yield: stats?.yield ?? null });
+      for (const x of events) {
+        if (!x.at) continue;
+        const hour = String(x.at).slice(0, 13); // YYYY-MM-DDTHH; the page groups by day for long spans
+        const b = days.get(hour) ?? { holders: 0n, liquidity: 0n, creator: 0n };
+        if (x.kind === "payout") b.holders += BigInt(x.total ?? 0);
+        else if (x.kind === "auto-lp") b.liquidity += BigInt(x.xnt ?? 0);
+        else if (x.kind === "creator-reward") b.creator += creatorXntOf(x);
+        days.set(hour, b);
+        if (["payout", "auto-lp", "burn", "creator-reward", "clicker-reward"].includes(x.kind)) {
+          recent.push({ at: x.at, kind: x.kind, symbol: t.symbol, signature: x.signature ?? null,
+            xnt: x.kind === "payout" ? String(x.total ?? 0) : x.kind === "creator-reward" ? creatorXntOf(x).toString() : x.xnt ?? null,
+            tokens: x.kind === "burn" ? String(x.tokens ?? 0) : null, wallets: x.kind === "payout" ? (x.payments ?? []).length : null });
+        }
       }
     }
-  }
-  const data = {
-    tokens: perToken.length, launches: registeredLaunches().length, walletsPaid: wallets.size,
-    holdersXnt: total.holdersXnt.toString(), liquidityXnt: total.liquidityXnt.toString(), creatorXnt: total.creatorXnt.toString(),
-    clickerXnt: total.clickerXnt.toString(), payouts: total.payouts, burns: total.burns,
-    hourly: [...days.entries()].sort(([a], [b]) => a.localeCompare(b))
-      .map(([hour, v]) => ({ hour, holders: v.holders.toString(), liquidity: v.liquidity.toString(), creator: v.creator.toString() })),
-    perToken: perToken.sort((a, b) => Number(BigInt(b.holdersXnt) - BigInt(a.holdersXnt))),
-    recent: recent.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20),
-  };
+    return {
+      tokens: perToken.length, launches: registeredLaunches().length, walletsPaid: wallets.size,
+      holdersXnt: total.holdersXnt.toString(), liquidityXnt: total.liquidityXnt.toString(), creatorXnt: total.creatorXnt.toString(),
+      clickerXnt: total.clickerXnt.toString(), payouts: total.payouts, burns: total.burns,
+      hourly: [...days.entries()].sort(([a], [b]) => a.localeCompare(b))
+        .map(([hour, v]) => ({ hour, holders: v.holders.toString(), liquidity: v.liquidity.toString(), creator: v.creator.toString() })),
+      // Trading volume (XNT, base units) and distinct trading wallets.
+      volumeXnt: lamports(volume.all), volume24hXnt: lamports(volume.day), volume7dXnt: lamports(volume.week),
+      traders24h: traders.day.size, traders7d: traders.week.size, volumeHistoryComplete: historyComplete,
+      volumeHourly: [...volumeHours.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([hour, x]) => ({ hour, xnt: lamports(x) })),
+      perToken: perToken.sort((a, b) => Number(BigInt(b.holdersXnt) - BigInt(a.holdersXnt))),
+      recent: recent.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20),
+    };
+  })();
+  data.catch(() => { analyticsCache = null; });
   analyticsCache = { at: Date.now(), data };
   return data;
 }

@@ -1027,6 +1027,17 @@ I18N.add("es", {
   "Recent activity": "Actividad reciente",
   "No tokens launched on this network yet, so there's nothing to chart.": "Aún no se ha lanzado ningún token en esta red, así que no hay nada que graficar.",
   "Couldn't load analytics: {message}": "No se pudieron cargar las analíticas: {message}",
+  "Volume": "Volumen",
+  "XNT traded per {period}": "XNT negociados por {period}",
+  "Volume, 7 days": "Volumen, 7 días",
+  "Volume, 24 hours": "Volumen, 24 horas",
+  "Volume, all time": "Volumen total",
+  "Traders, 7 days": "Traders, 7 días",
+  "{traders24h} in the last 24 hours": "{traders24h} en las últimas 24 horas",
+  "Yield per 1,000": "Rendimiento por cada 1,000",
+  "Trading, per {period}": "Trading, por {period}",
+  "Buys and sales by wallets, in XNT. Tax sales and arbitrage that passes straight through aren't counted.": "Compras y ventas de billeteras, en XNT. No se cuentan las ventas del impuesto ni el arbitraje que solo pasa de largo.",
+  "Older trades are still being read, so these totals will grow.": "Todavía se están leyendo operaciones antiguas, así que estos totales irán creciendo.",
 
   // ---------- bonding curve ----------
   "Curve · 99 + Tax": "Curva · 99 + Tax",

@@ -53,6 +53,9 @@ h2 { font-family: "Tilt Neon", system-ui, sans-serif; font-weight: 400; font-siz
 .tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .tile.big .v { font-size: 34px; color: var(--lime); text-shadow: 0 0 14px rgb(182 255 59 / .35); }
 .tile .n { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.tiles.in-card { margin: 12px 0 14px; }
+.note { margin: 2px 0 0; font-size: 13px; }
+td .n { color: var(--text-muted); font-size: 12px; }
 .card { background: var(--surface-1); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 22px; }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px; }
@@ -117,38 +120,41 @@ const link = (href, text, cls) => el("a", { href, target: "_blank", rel: "noopen
 const units = (v, dec = 9) => Number(BigInt(v ?? 0)) / 10 ** dec;
 const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
 const xnt = (v) => `${fmt(units(v))} XNT`;
+const xntRound = (v) => `${fmt(units(v), units(v) < 10 ? 2 : 0)} XNT`;
 const SERIES = [["holders", tr("Holders"), "var(--series-1)"], ["liquidity", tr("Liquidity"), "var(--series-2)"], ["creator", tr("Creators"), "var(--series-3)"]];
+const VOLUME = [["xnt", tr("Volume"), "var(--series-2)"]];
+const fmtSig = (v) => v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(12, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 });
 const KIND = { payout: tr("Payout"), "auto-lp": tr("Auto-LP"), burn: tr("Burn"), "creator-reward": tr("Creator"), "clicker-reward": tr("Clicker") };
 let explorer = "";
 
-/** Hourly buckets; grouped by day once the history spans more than three days. */
-function buckets(hourly) {
+/** Hourly buckets of `series` (keys of each hour, XNT base units); grouped by day once the history spans more than three days. */
+function buckets(hourly, series) {
   if (!hourly.length) return { rows: [], daily: false };
   const span = Date.parse(hourly.at(-1).hour + ":00:00Z") - Date.parse(hourly[0].hour + ":00:00Z");
   const daily = span > 3 * 86_400_000;
   const map = new Map();
   for (const h of hourly) {
     const k = daily ? h.hour.slice(0, 10) : h.hour;
-    const b = map.get(k) ?? { k, holders: 0, liquidity: 0, creator: 0 };
-    b.holders += units(h.holders); b.liquidity += units(h.liquidity); b.creator += units(h.creator);
+    const b = map.get(k) ?? Object.fromEntries([["k", k], ...series.map(([s]) => [s, 0])]);
+    for (const [s] of series) b[s] += units(h[s]);
     map.set(k, b);
   }
   // Hours with only burns carry no XNT; leave them off the XNT chart.
-  return { rows: [...map.values()].filter((r) => r.holders + r.liquidity + r.creator > 0), daily };
+  return { rows: [...map.values()].filter((r) => series.some(([s]) => r[s] > 0)), daily };
 }
 const label = (k, daily) => daily ? new Date(k + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", day: "numeric" })
   : new Date(k + ":00:00Z").toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" });
 
-function chart(hourly) {
-  const { rows, daily } = buckets(hourly);
+function chart(hourly, series, empty, aria) {
+  const { rows, daily } = buckets(hourly, series);
   const wrap = el("div", { class: "chart-wrap" });
-  if (!rows.length) { wrap.append(el("p", { class: "muted", text: tr("No distributions yet.") })); return { node: wrap, rows, daily }; }
+  if (!rows.length) { wrap.append(el("p", { class: "muted", text: empty })); return { node: wrap, rows, daily }; }
   const W = 1000, H = 260, L = 56, R = 10, T = 10, B = 28;
-  const max = Math.max(...rows.map((r) => r.holders + r.liquidity + r.creator)) || 1;
+  const max = Math.max(...rows.map((r) => series.reduce((a, [s]) => a + r[s], 0))) || 1;
   const nice = (() => { const p = 10 ** Math.floor(Math.log10(max)); return Math.ceil(max / p) * p; })();
   const y = (v) => T + (H - T - B) * (1 - v / nice);
   const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
-    "aria-label": tr("XNT from the tax per {period}: to holders, to liquidity and to creators", { period: daily ? tr("day") : tr("hour") }) });
+    "aria-label": aria(daily ? tr("day") : tr("hour")) });
   for (let i = 0; i <= 4; i++) {
     const v = nice * i / 4, yy = y(v);
     svg.append(svgEl("line", { x1: L, x2: W - R, y1: yy, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
@@ -160,7 +166,7 @@ function chart(hourly) {
   rows.forEach((r, i) => {
     const cx = L + slot * i + slot / 2;
     let base = 0;
-    const segs = SERIES.filter(([k]) => r[k] > 0);
+    const segs = series.filter(([k]) => r[k] > 0);
     segs.forEach(([k, , c], j) => {
       const y0 = y(base), y1 = y(base + r[k]);
       const top = j === segs.length - 1;
@@ -177,7 +183,7 @@ function chart(hourly) {
     const hit = svgEl("rect", { x: L + slot * i, y: T, width: slot, height: H - T - B, fill: "transparent" });
     hit.addEventListener("mouseenter", () => {
       tip.replaceChildren(el("div", { class: "t", text: label(r.k, daily) }),
-        ...SERIES.map(([k, l, c]) => el("div", { class: "row" }, el("span", {}, el("i", { style: `background:${c}` }), l), el("b", { text: `${fmt(r[k], 6)} XNT` }))));
+        ...series.map(([k, l, c]) => el("div", { class: "row" }, el("span", {}, el("i", { style: `background:${c}` }), l), el("b", { text: `${fmt(r[k], series === VOLUME ? 2 : 6)} XNT` }))));
       tip.hidden = false;
       const box = svg.getBoundingClientRect(), px = (cx / W) * box.width;
       tip.style.left = `${Math.min(Math.max(0, px - 90), box.width - 190)}px`; tip.style.top = "0px";
@@ -189,22 +195,40 @@ function chart(hourly) {
   return { node: wrap, rows, daily };
 }
 
-function render(d) {
-  const c = chart(d.hourly);
-  const table = el("table", { hidden: "" }, el("tr", {}, el("th", { text: c.daily ? tr("Day") : tr("Hour") }), ...SERIES.map(([, l]) => el("th", { class: "num", text: tr("{label} (XNT)", { label: l }) }))),
-    ...c.rows.map((r) => el("tr", {}, el("td", { text: label(r.k, c.daily) }), ...SERIES.map(([k]) => el("td", { class: "num", text: fmt(r[k], 6) })))));
+/** A chart's data table, hidden behind a Show/Hide button. */
+function dataTable(c, series, digits) {
+  const table = el("table", { hidden: "" }, el("tr", {}, el("th", { text: c.daily ? tr("Day") : tr("Hour") }), ...series.map(([, l]) => el("th", { class: "num", text: tr("{label} (XNT)", { label: l }) }))),
+    ...c.rows.map((r) => el("tr", {}, el("td", { text: label(r.k, c.daily) }), ...series.map(([k]) => el("td", { class: "num", text: fmt(r[k], digits) })))));
   const toggle = el("button", { class: "btn sm", type: "button", text: tr("Show data table") });
   toggle.onclick = () => { table.hidden = !table.hidden; toggle.textContent = table.hidden ? tr("Show data table") : tr("Hide data table"); };
+  return { table, toggle };
+}
+
+/** Holder yield for the table: XNT a day per 1,000 tokens held, and the yearly rate at today's price. */
+function yieldCell(y) {
+  if (!y || !(y.per1000PerDay > 0)) return el("td", { class: "num muted", text: "–" });
+  return el("td", { class: "num", title: tr("From payouts over the last {windowDays} days, split across tokens that earn now. Not guaranteed.", { windowDays: y.windowDays }) },
+    tr("{per1000PerDay} XNT/day", { per1000PerDay: fmtSig(y.per1000PerDay) }),
+    y.aprPct != null ? el("div", { class: "n", text: tr("≈ {aprPct}% a year", { aprPct: fmtSig(y.aprPct) }) }) : null);
+}
+
+function render(d) {
+  const c = chart(d.hourly, SERIES, tr("No distributions yet."), (period) => tr("XNT from the tax per {period}: to holders, to liquidity and to creators", { period }));
+  const { table, toggle } = dataTable(c, SERIES, 6);
+  const v = chart(d.volumeHourly ?? [], VOLUME, tr("No trades yet."), (period) => tr("XNT traded per {period}", { period }));
+  const vt = dataTable(v, VOLUME, 2);
   const totalOut = BigInt(d.holdersXnt) + BigInt(d.liquidityXnt) + BigInt(d.creatorXnt);
 
   const perToken = el("table", {},
     el("tr", {}, el("th", { text: tr("Token") }), el("th", { class: "num", text: tr("To holders") }), el("th", { class: "num", text: tr("Wallets") }),
-      el("th", { class: "num", text: tr("To liquidity") }), el("th", { class: "num", text: tr("To creator") }), el("th", { class: "num", text: tr("Payouts") }), el("th", { text: tr("Last run") })),
+      el("th", { class: "num", text: tr("To liquidity") }), el("th", { class: "num", text: tr("To creator") }), el("th", { class: "num", text: tr("Payouts") }),
+      el("th", { class: "num", text: tr("Volume, 7 days") }), el("th", { class: "num", text: tr("Traders, 7 days") }), el("th", { class: "num", text: tr("Yield per 1,000") }), el("th", { text: tr("Last run") })),
     ...d.perToken.map((t) => el("tr", {},
       el("td", {}, link(`${explorer}/address/${t.mint}`, t.symbol)),
       el("td", { class: "num", text: xnt(t.holdersXnt) }), el("td", { class: "num", text: String(t.walletsPaid) }),
       el("td", { class: "num", text: xnt(t.liquidityXnt) }), el("td", { class: "num", text: xnt(t.creatorXnt) }),
       el("td", { class: "num", text: String(t.payouts) }),
+      el("td", { class: "num", text: xntRound(t.volume7dXnt) }), el("td", { class: "num", text: String(t.traders7d ?? 0) }), yieldCell(t.yield),
       el("td", { class: "muted", text: t.lastRun ? new Date(t.lastRun).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–" }))));
 
   const feed = el("ul", { class: "feed" }, ...d.recent.map((e) => {
@@ -229,6 +253,17 @@ function render(d) {
       el("div", { class: "tile" }, el("div", { class: "k", text: tr("Total XNT from tax") }), el("div", { class: "v", text: xnt(totalOut) })),
       el("div", { class: "tile" }, el("div", { class: "k", text: tr("Burns") }), el("div", { class: "v", text: String(d.burns) })),
       el("div", { class: "tile" }, el("div", { class: "k", text: tr("Clicker rewards") }), el("div", { class: "v", text: xnt(d.clickerXnt) }), el("div", { class: "n", text: tr("paid for “Distribute now”") }))),
+    el("div", { class: "card", id: "trading" },
+      el("div", { class: "card-head" }, el("h2", { text: tr("Trading, per {period}", { period: v.daily ? tr("day") : tr("hour") }) }), vt.toggle),
+      el("p", { class: "muted note", text: tr("Buys and sales by wallets, in XNT. Tax sales and arbitrage that passes straight through aren't counted.") }),
+      d.volumeHistoryComplete === false ? el("p", { class: "muted note", text: tr("Older trades are still being read, so these totals will grow.") }) : null,
+      el("div", { class: "tiles in-card" },
+        el("div", { class: "tile" }, el("div", { class: "k", text: tr("Volume, 24 hours") }), el("div", { class: "v", text: xntRound(d.volume24hXnt) })),
+        el("div", { class: "tile" }, el("div", { class: "k", text: tr("Volume, 7 days") }), el("div", { class: "v", text: xntRound(d.volume7dXnt) })),
+        el("div", { class: "tile" }, el("div", { class: "k", text: tr("Traders, 7 days") }), el("div", { class: "v", text: String(d.traders7d ?? 0) }),
+          el("div", { class: "n", text: tr("{traders24h} in the last 24 hours", { traders24h: d.traders24h ?? 0 }) })),
+        el("div", { class: "tile" }, el("div", { class: "k", text: tr("Volume, all time") }), el("div", { class: "v", text: xntRound(d.volumeXnt) }))),
+      v.node, el("div", { class: "table-wrap" }, vt.table)),
     el("div", { class: "card" },
       el("div", { class: "card-head" }, el("h2", { text: tr("XNT from the tax, per {period}", { period: c.daily ? tr("day") : tr("hour") }) }), toggle),
       el("div", { class: "legend" }, ...SERIES.map(([, l, col]) => el("span", {}, el("i", { style: `background:${col}` }), l))),
