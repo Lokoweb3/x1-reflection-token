@@ -17,8 +17,8 @@ CUP, RFLT, every launch and curve token), stop both distributors and keep them f
 starting on boot: `systemctl disable --now reflect-distributor reflect-factory-distributor`
 (`systemctl enable --now …` brings one back, e.g. for a token that isn't on the vault). The
 live server also runs mainnet as `reflect-mainnet-factory` and
-`reflect-mainnet-factory-distributor` (mainnet's "Test" is on a distributor until the vault
-is on mainnet).
+`reflect-mainnet-factory-distributor` (mainnet's "Test" has been on the Tax Vault since late
+September 2026, so the mainnet distributor only matters for a token that isn't on the vault).
 
 **Fees on X1:** X1 charges for the compute units a transaction *requests* (about 0.01 XNT
 per million), so every transaction here is simulated first and asks only for what it uses
