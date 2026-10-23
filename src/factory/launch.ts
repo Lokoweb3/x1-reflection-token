@@ -24,7 +24,9 @@
  * the vault's auth PDA from the start (the curve program doesn't check it). The curve
  * crank registers the token at graduation; the creator then starts the vault with the same
  * init_vault transaction (their lock NFT only exists after graduation). Until then the tax
- * stays withheld in the holders' token accounts, where nobody can move it.
+ * stays withheld in the holders' token accounts, where nobody can move it. A holder-passes
+ * curve launch (testnet trial) is the same under the passes program: after graduation the
+ * creator starts the vault, then turns the passes on.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -460,13 +462,15 @@ export function validateCurveParams(raw: Record<string, unknown>, network: "main
  * A bonding-curve launch: the same mint (tax, metadata, launch fee, distributor or vault)
  * with minting handed to the curve's auth PDA and nothing minted, then create_curve. The
  * program checks the mint and holds the creator's 0.3 XNT graduation deposit.
+ * `passesProgram`: a holder-passes curve launch, its vault under that program.
  */
-export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, curveProgram: PublicKey) {
+export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, curveProgram: PublicKey, passesProgram: PublicKey | null = null) {
   // With the Tax Vault set up (curves are always XNT-paired), the vault's auth PDA gets the
   // withdraw authority now; the creator starts the vault after graduation (init_vault needs
   // their signature and the lock NFT). Otherwise the token gets a distributor wallet.
   const vault = vaultLaunches(cfg);
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? vaultProgramOf(cfg) : null);
+  if (passesProgram && !vault) throw new Error("Holder passes need a Tax Vault launch.");
+  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? passesProgram ?? vaultProgramOf(cfg) : null);
   const mint = mintKp.publicKey;
   const target = parseTarget(p.poolXnt, cfg.network); // validateCurveParams put the target there
   ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply), target));
@@ -477,7 +481,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
     // What the program puts into the pool at graduation (tokens before the transfer fee).
     poolTokens: fromBaseUnits(setup.Pg, DECIMALS), poolXnt: target.toString(), lockDays: null,
     mint: mint.toBase58(), distributor: withdrawAuthority.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
-    ...(vault ? { taxVault: true } : {}),
+    ...(vault ? { taxVault: true } : {}), ...(passesProgram ? { vaultProgram: passesProgram.toBase58() } : {}),
   };
   saveNewLaunch(record, distributor);
   return { ixs, signers: [mintKp], record };
@@ -523,7 +527,7 @@ async function vaultStarted(conn: Connection, cfg: Config, r: LaunchRecord) {
 const passBookOn = (info: AccountInfo<Buffer> | null, program: PublicKey) => !!info && info.owner.equals(program) && info.data.subarray(0, 8).some((b) => b !== 0);
 
 /** A holder-passes launch: whether the creator has turned its passes on. */
-async function passesStarted(conn: Connection, cfg: Config, r: LaunchRecord) {
+export async function passesStarted(conn: Connection, cfg: Config, r: LaunchRecord) {
   const program = vaultProgramOf(cfg, r);
   return passBookOn(await conn.getAccountInfo(passBookPda(program, vaultPda(program, new PublicKey(r.mint))), "confirmed"), program);
 }
@@ -536,8 +540,11 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
     const graduated = !!c && c.status >= CurveStatus.Graduated;
     const out = { token: !!c, pool: !!c && c.status >= CurveStatus.PoolCreated, lock: graduated,
       lockNft: graduated ? c!.lockNft.toBase58() : null, registered: !!r.registeredAt, curveStatus: c?.status ?? null };
-    // A vault curve token: the creator starts the vault once it has graduated.
-    return r.taxVault ? { ...out, taxVault: true, vault: graduated && (await vaultStarted(conn, cfg, r)) } : out;
+    // A vault curve token: the creator starts the vault once it has graduated (and turns passes on, for a holder-passes one).
+    if (!r.taxVault) return out;
+    const vault = graduated && (await vaultStarted(conn, cfg, r));
+    const passes = r.vaultProgram ? { holderPasses: true, passes: vault && (await passesStarted(conn, cfg, r)) } : {};
+    return { ...out, taxVault: true, vault, ...passes };
   }
   const [mintInfo, poolInfo] = await conn.getMultipleAccountsInfo([new PublicKey(r.mint), new PublicKey(r.pool)], "confirmed");
   const token = !!mintInfo;
