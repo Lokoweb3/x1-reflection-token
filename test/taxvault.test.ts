@@ -464,8 +464,14 @@ test("program errors are named from simulation messages", () => {
   assert.equal(errorOf("custom program error: 0x1787"), "FallbackNotActive"); // 6023
   assert.equal(errorOf(`{"Custom":6024}`), "PaysInToken");
   assert.equal(errorOf(`{"Custom":6027}`), "BadPayoutPool");
-  assert.equal(errorOf(`{"Custom":6028}`), null);
-  assert.equal(ERRORS.length, 28);
+  // Holder passes (the v4 trial program).
+  assert.equal(errorOf(`{"Custom":6028}`), "NotPassMode");
+  assert.equal(errorOf("custom program error: 0x1790"), "RoundOpen"); // 6032
+  assert.equal(errorOf(`{"Custom":6036}`), "RoundTooSoon");
+  assert.equal(errorOf(`{"Custom":6043}`), "HoldingTooSmall");
+  assert.equal(errorOf(`{"Custom":6045}`), "PassTablesFull");
+  assert.equal(errorOf(`{"Custom":6046}`), null);
+  assert.equal(ERRORS.length, 46);
   assert.equal(errorOf("something else"), null);
 });
 

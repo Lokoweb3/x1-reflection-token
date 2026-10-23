@@ -28,7 +28,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { type AccountInfo, Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
 import {
   AuthorityType, ExtensionType, LENGTH_SIZE, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TYPE_SIZE,
@@ -40,6 +40,7 @@ import {
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
 import { Config, FACTORY_DIR, ROOT, fromBaseUnits, loadKeypair, toBaseUnits } from "../config.js";
 import { decodeVault, initVaultIx, initVaultPayoutIx, paysInToken, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
+import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passes.js";
 import { payoutToken } from "./payout.js";
 import { buildCreatePool, decodePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
@@ -159,6 +160,11 @@ export interface LaunchRecord extends LaunchParams {
    * vault launch `distributor` is that auth PDA; a migrated token keeps its old distributor.
    */
   taxVault?: boolean;
+  /**
+   * The vault program this token's vault is under, when it isn't factory.taxVault.programId:
+   * a holder-passes launch (testnet trial) uses factory.taxVault.passesProgramId.
+   */
+  vaultProgram?: string;
 }
 
 /**
@@ -171,6 +177,22 @@ export function vaultLaunches(cfg: Config) {
 }
 /** Whether a launch with this pair would be a vault launch. */
 export const isVaultLaunch = (cfg: Config, pair: Pair) => vaultLaunches(cfg) && !pair.xntPool;
+
+/**
+ * The holder-passes vault program (testnet trial), when this server offers it alongside the
+ * regular one: factory.taxVault.passesProgramId with factory.taxVault.passes, testnet only.
+ */
+export function passesProgram(cfg: Config) {
+  const tv = cfg.factory?.taxVault;
+  return cfg.network === "testnet" && tv?.passes && tv.passesProgramId ? new PublicKey(tv.passesProgramId) : null;
+}
+
+/** The vault program a launch's vault is under: its record's, else factory.taxVault.programId. */
+export function vaultProgramOf(cfg: Config, r?: Pick<LaunchRecord, "vaultProgram"> | null) {
+  const id = r?.vaultProgram ?? cfg.factory?.taxVault?.programId;
+  if (!id) throw new Error("This token uses the Tax Vault, which isn't set up on this server (factory.taxVault).");
+  return new PublicKey(id);
+}
 
 /** Whether the vault program handles this launch's tax: its record or its per-launch config says so. */
 export function vaultManaged(r: Pick<LaunchRecord, "mint" | "taxVault">) {
@@ -320,7 +342,7 @@ export const registeredLaunches = () => listLaunches().filter((r) => r.registere
  *   a PDA      mint nothing and hand minting to that address (a bonding curve's auth PDA,
  *              which depends on the new mint's address, hence a function of it)
  */
-async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, authorityFor: (mint: PublicKey) => PublicKey | null, vault = false) {
+async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, authorityFor: (mint: PublicKey) => PublicKey | null, vault: PublicKey | null = null) {
   const f = cfg.factory;
   if (!f?.feeReceiver) throw new Error("factory.feeReceiver is not set in config.json");
   const creator = new PublicKey(p.creator);
@@ -329,7 +351,7 @@ async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, pu
   // A vault launch has no distributor wallet: the vault's auth PDA (from the new mint's
   // address) withdraws the tax, and the vault crank pays its own fees.
   const distributor = vault ? null : Keypair.generate();
-  const withdrawAuthority = distributor ? distributor.publicKey : vaultAuthPda(new PublicKey(f.taxVault!.programId), mint);
+  const withdrawAuthority = distributor ? distributor.publicKey : vaultAuthPda(vault!, mint);
   const mintAuthority = authorityFor(mint);
 
   // Metadata on IPFS when uploads are set up (the token then doesn't depend on this
@@ -399,17 +421,22 @@ export function markTaxVault(mint: string) {
   }
 }
 
-/** Step 1: new mint + distributor wallet; returns the instructions and the mint keypair to co-sign. */
-export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string) {
+/**
+ * Step 1: new mint + distributor wallet; returns the instructions and the mint keypair to co-sign.
+ * `passesProgram`: a holder-passes vault launch, under that program instead of the regular one.
+ */
+export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchParams, publicUrl: string, passesProgram: PublicKey | null = null) {
   const pair = pairOf(cfg, p);
   const vault = isVaultLaunch(cfg, pair);
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, () => null, vault);
+  if (passesProgram && !vault) throw new Error("Holder passes need a Tax Vault launch paired with XNT.");
+  const program = vault ? passesProgram ?? vaultProgramOf(cfg) : null;
+  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, () => null, program);
   const mint = mintKp.publicKey;
   const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint, pair.mint).pool;
   const record: LaunchRecord = {
     ...p, ...(pair.xntPool ? { quoteMint: pair.mint.toBase58(), quoteXntPool: pair.xntPool.toBase58() } : {}),
     mint: mint.toBase58(), distributor: withdrawAuthority.toBase58(), pool: pool.toBase58(), createdAt: new Date().toISOString(),
-    ...(vault ? { taxVault: true } : {}),
+    ...(vault ? { taxVault: true } : {}), ...(passesProgram ? { vaultProgram: passesProgram.toBase58() } : {}),
   };
   saveNewLaunch(record, distributor);
   return { ixs, signers: [mintKp], record };
@@ -439,7 +466,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
   // withdraw authority now; the creator starts the vault after graduation (init_vault needs
   // their signature and the lock NFT). Otherwise the token gets a distributor wallet.
   const vault = vaultLaunches(cfg);
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault);
+  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? vaultProgramOf(cfg) : null);
   const mint = mintKp.publicKey;
   const target = parseTarget(p.poolXnt, cfg.network); // validateCurveParams put the target there
   ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply), target));
@@ -488,8 +515,17 @@ export async function readCurveOf(conn: Connection, cfg: Config, r: LaunchRecord
 
 /** Whether a vault launch's vault account exists (the creator started it). */
 async function vaultStarted(conn: Connection, cfg: Config, r: LaunchRecord) {
-  const id = cfg.factory?.taxVault?.programId;
-  return !!id && !!(await conn.getAccountInfo(vaultPda(new PublicKey(id), new PublicKey(r.mint)), "confirmed"));
+  if (!r.vaultProgram && !cfg.factory?.taxVault?.programId) return false;
+  return !!(await conn.getAccountInfo(vaultPda(vaultProgramOf(cfg, r), new PublicKey(r.mint)), "confirmed"));
+}
+
+/** A pass book set up by init_passes (anyone may grow one beforehand; it's all zeros until then). */
+const passBookOn = (info: AccountInfo<Buffer> | null, program: PublicKey) => !!info && info.owner.equals(program) && info.data.subarray(0, 8).some((b) => b !== 0);
+
+/** A holder-passes launch: whether the creator has turned its passes on. */
+async function passesStarted(conn: Connection, cfg: Config, r: LaunchRecord) {
+  const program = vaultProgramOf(cfg, r);
+  return passBookOn(await conn.getAccountInfo(passBookPda(program, vaultPda(program, new PublicKey(r.mint))), "confirmed"), program);
 }
 
 /** Which steps are done, read from the chain. */
@@ -513,8 +549,13 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
     lock = !!mine;
     lockNft = mine?.nftMint.toBase58() ?? null;
   }
-  // Vault launches have one more creator-signed step: starting the tax vault (init_vault).
-  if (r.taxVault) return { token, pool, lock, lockNft, taxVault: true, vault: await vaultStarted(conn, cfg, r), registered: !!r.registeredAt };
+  // Vault launches have one more creator-signed step: starting the tax vault (init_vault);
+  // a holder-passes launch then turns its passes on (the pass book) in the same step.
+  if (r.taxVault) {
+    const vault = await vaultStarted(conn, cfg, r);
+    const passes = r.vaultProgram ? { holderPasses: true, passes: vault && (await passesStarted(conn, cfg, r)) } : {};
+    return { token, pool, lock, lockNft, taxVault: true, vault, ...passes, registered: !!r.registeredAt };
+  }
   return { token, pool, lock, lockNft, registered: !!r.registeredAt };
 }
 
@@ -529,7 +570,7 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   const tv = cfg.factory?.taxVault;
   if (!r.taxVault) throw new Error("This token doesn't use the Tax Vault.");
   if (!tv?.programId || !tv.publisherKeypair) throw new Error("The Tax Vault isn't set up on this server right now; try again later.");
-  const program = new PublicKey(tv.programId);
+  const program = vaultProgramOf(cfg, r);
   const mint = new PublicKey(r.mint);
   if (await conn.getAccountInfo(vaultPda(program, mint), "confirmed")) throw new Error("The tax vault is already started.");
   const burnBps = r.burnBps ?? 0, lpBps = r.autoLpBps;
@@ -548,16 +589,35 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   return [initVaultIx(program, base)];
 }
 
+/** A holder-passes launch's rules: earning from a millionth of the supply, rounds of 0.05 XNT or more, 5 minutes apart. */
+export const PASS_MIN_POT_XNT = "0.05";
+export const PASS_MIN_INTERVAL_SECS = 300n;
+
+/**
+ * Holder-passes launches, after the vault starts: the creator (its guardian) turns passes on,
+ * growing the pass book to full size and setting its rules, in one transaction.
+ */
+export async function buildPassesStep(conn: Connection, cfg: Config, r: LaunchRecord) {
+  if (!r.vaultProgram) throw new Error("This token doesn't use holder passes.");
+  const program = vaultProgramOf(cfg, r);
+  const mint = new PublicKey(r.mint);
+  if (!(await vaultStarted(conn, cfg, r))) throw new Error("Start the tax vault first.");
+  const book = await conn.getAccountInfo(passBookPda(program, vaultPda(program, mint)), "confirmed");
+  if (passBookOn(book, program)) throw new Error("Holder passes are already on for this token.");
+  const creator = new PublicKey(r.creator);
+  const grow = Array.from({ length: allocSteps(book?.data.length ?? 0) }, () => allocPassBookIx(program, creator, mint));
+  return [...grow, initPassesIx(program, creator, mint, toBaseUnits(minHoldingFor(r.supply), DECIMALS), toBaseUnits(PASS_MIN_POT_XNT, 9), PASS_MIN_INTERVAL_SECS)];
+}
+
 /** A vault launch's vault must exist with this site's publisher, the creator as guardian and the recorded split. */
 async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
   const tv = cfg.factory?.taxVault;
-  if (!tv?.programId) throw new Error("This token uses the Tax Vault, which isn't set up on this server (factory.taxVault).");
-  const program = new PublicKey(tv.programId);
+  const program = vaultProgramOf(cfg, r);
   const addr = vaultPda(program, new PublicKey(r.mint));
   const info = await conn.getAccountInfo(addr, "confirmed");
   if (!info || !info.owner.equals(program)) throw new Error("Start the tax vault first (the step after the LP lock).");
   const v = decodeVault(addr, info.data);
-  const publisher = tv.publisherKeypair ? loadKeypair(tv.publisherKeypair).publicKey : null;
+  const publisher = tv?.publisherKeypair ? loadKeypair(tv.publisherKeypair).publicKey : null;
   if (!v.mint.equals(new PublicKey(r.mint)) || !v.guardian.equals(new PublicKey(r.creator)) || (publisher && !v.publisher.equals(publisher))
       || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps) {
     throw new Error("This token's tax vault doesn't match the launch (publisher, guardian or split differ).");
@@ -593,9 +653,7 @@ export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRec
 /** Who must be able to withdraw the tax: the vault's auth PDA for a vault token, else its distributor wallet. */
 function withdrawAuthorityOf(cfg: Config, r: LaunchRecord) {
   if (!r.taxVault) return new PublicKey(r.distributor);
-  const id = cfg.factory?.taxVault?.programId;
-  if (!id) throw new Error("This token uses the Tax Vault, which isn't set up on this server (factory.taxVault).");
-  return vaultAuthPda(new PublicKey(id), new PublicKey(r.mint));
+  return vaultAuthPda(vaultProgramOf(cfg, r), new PublicKey(r.mint));
 }
 
 /**

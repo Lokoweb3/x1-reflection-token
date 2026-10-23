@@ -101,6 +101,11 @@ export interface Config {
       programId: string; publisherKeypair?: string; allowListRebuild?: boolean;
       /** Holder passes ("v4" tab, X1 testnet trial): the program splits the holders' share on-chain. */
       passes?: boolean;
+      /**
+       * Testnet: the holder-passes vault program, run alongside programId (its own crank, the v4
+       * tab and a "Holder passes" launch option). Unset: the v4 tab uses programId itself.
+       */
+      passesProgramId?: string;
       /** Vault launches are testnet-only unless this is set (the mainnet rollout switch). */
       mainnet?: boolean;
       /** Show the "Tax Vault beta: not formally audited yet" notice on the launch form and vault panels. */

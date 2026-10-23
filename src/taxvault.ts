@@ -160,6 +160,10 @@ export const ERRORS = [
   "PublisherActive", "FallbackNotActive",
   // payout token
   "PaysInToken", "PaysInXnt", "BadPayoutMint", "BadPayoutPool",
+  // Holder passes (the v4 trial program).
+  "NotPassMode", "PassModeOn", "NotTopLevel", "PassBookFull", "RoundOpen", "RoundNotOpen", "RoundExpired", "BadBatch",
+  "RoundTooSoon", "PotTooSmall", "RoundIncomplete", "PassNotEmpty", "BadIndex", "PendingList", "BadPassConfig",
+  "HoldingTooSmall", "NothingToIndex", "PassTablesFull",
 ] as const;
 export const errorName = (code: number) => ERRORS[code - 6000] ?? null;
 /** The program's error name in a simulation/transaction error ({"Custom":6012} etc.), or null. */
