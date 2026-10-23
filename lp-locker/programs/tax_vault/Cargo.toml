@@ -12,6 +12,8 @@ name = "tax_vault"
 default = []
 # Build with --features testnet for X1 testnet's XDEX program.
 testnet = []
+# X1 testnet trial of holder passes, under its own program ID (implies testnet).
+passes-testnet = ["testnet"]
 # Local testing only: a published list activates after 5 seconds instead of 600.
 short-windows = []
 cpi = ["no-entrypoint"]
@@ -28,6 +30,8 @@ anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 anchor-spl = "0.32.1"
 # SHA-256 for the rewards-list Merkle tree (already a dependency of anchor-lang).
 solana-sha256-hasher = "2.3"
+# Zero-copy holder-pass book (already a dependency of anchor-lang).
+bytemuck = { version = "1.24", features = ["derive", "min_const_generics"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

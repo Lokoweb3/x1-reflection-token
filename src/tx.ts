@@ -1,5 +1,5 @@
 import {
-  ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction, TransactionMessage, VersionedTransaction,
+  AddressLookupTableAccount, ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction, TransactionMessage, VersionedTransaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 
@@ -29,13 +29,13 @@ const isBudget = (ix: TransactionInstruction) => ix.programId.equals(ComputeBudg
  * they use plus headroom (never above the limit asked for). Unchanged if the simulation
  * fails (the caller's own simulation then reports why) or there's no budget instruction.
  */
-export async function fitComputeLimit(conn: Connection, ixs: TransactionInstruction[], payer: PublicKey): Promise<TransactionInstruction[]> {
+export async function fitComputeLimit(conn: Connection, ixs: TransactionInstruction[], payer: PublicKey, tables: AddressLookupTableAccount[] = []): Promise<TransactionInstruction[]> {
   if (!ixs.some(isBudget)) return ixs;
   const asked = ixs.filter(isLimit).map((ix) => ix.data.readUInt32LE(1))[0] ?? MAX_UNITS;
   const probe = [...ixs.filter((ix) => !isLimit(ix)), ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_UNITS })];
   try {
     const { blockhash } = await conn.getLatestBlockhash("confirmed");
-    const tx = new VersionedTransaction(new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: probe }).compileToV0Message());
+    const tx = new VersionedTransaction(new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: probe }).compileToV0Message(tables));
     const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
     const used = sim.value.unitsConsumed;
     if (sim.value.err || !used) return ixs;
@@ -60,6 +60,15 @@ export async function sign(conn: Connection, ixs: TransactionInstruction[], paye
   return { tx, signature: bs58.encode(tx.signature!), lastValidBlockHeight };
 }
 
+/** A v0 transaction that reads its accounts from address lookup tables, signed by `payer`. */
+export async function signV0(conn: Connection, ixs: TransactionInstruction[], payer: Keypair, tables: AddressLookupTableAccount[]) {
+  ixs = await fitComputeLimit(conn, ixs, payer.publicKey, tables);
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const tx = new VersionedTransaction(new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message(tables));
+  tx.sign([payer]);
+  return { tx, signature: bs58.encode(tx.signatures[0]), lastValidBlockHeight };
+}
+
 export async function simulate(conn: Connection, tx: Transaction) {
   const sim = await conn.simulateTransaction(tx);
   if (sim.value.err) {
@@ -69,7 +78,7 @@ export async function simulate(conn: Connection, tx: Transaction) {
 }
 
 /** Send a signed transaction and wait until it is confirmed or its blockhash expires. */
-export async function sendAndConfirm(conn: Connection, s: Signed): Promise<void> {
+export async function sendAndConfirm(conn: Connection, s: Signed | { tx: VersionedTransaction; signature: string; lastValidBlockHeight: number }): Promise<void> {
   const raw = s.tx.serialize();
   await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 5 });
   await confirmByPolling(conn, raw, s.signature, s.lastValidBlockHeight);
