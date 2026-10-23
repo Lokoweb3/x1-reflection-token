@@ -103,7 +103,7 @@ export function passesApi(conn: Connection, cfg: Config, program: PublicKey, opt
     const [, mintStr, action] = m;
     const mint = new PublicKey(mintStr);
     const a = await readAll(mint);
-    if (!a) throw new Error("No vault under the v4 program for this token yet; launch it from this tab first.");
+    if (!a) throw new Error("No holder-passes vault for this token; launch one with “Holder passes” ticked on the launch page.");
 
     if (action === "init-tx") {
       const guardian = new PublicKey(String(body.wallet));

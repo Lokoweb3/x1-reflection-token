@@ -50,7 +50,7 @@ import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
-import { buildVaultStep, isVaultLaunch } from "./factory/launch.js";
+import { buildPassesStep, buildVaultStep, isVaultLaunch, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
 
@@ -105,10 +105,20 @@ const opts = { microLamports: cfg.distribution.priorityMicroLamports };
 /** Tax Vault: on only when factory.taxVault.programId is set (the crank also needs publisherKeypair). */
 const vaults = f.taxVault?.programId ? vaultService(conn, cfg, opts) : null;
 if (vaults) allowRelayProgram(vaults.program.toBase58());
+/**
+ * Holder passes under their own program (testnet trial, factory.taxVault.passesProgramId), run
+ * next to the regular vaults: its own crank pass over the launches recorded under it.
+ */
+const passProgram = passesProgram(cfg);
+const passVaults = vaults && passProgram ? vaultService(conn, cfg, opts, passProgram) : null;
+if (passVaults) allowRelayProgram(passVaults.program.toBase58());
+/** Every vault service this server runs, and the one that handles a given token. */
+const vaultServices = [vaults, passVaults].filter((v): v is NonNullable<typeof v> => !!v);
+const vaultsFor = (mint: string) => (passVaults?.isVaultMint(mint) ? passVaults : vaults);
 /** Holder passes ("v4" tab, testnet trial): on with factory.taxVault.passes. */
-const v4 = vaults && f.taxVault?.passes ? passesApi(conn, cfg, vaults.program, opts) : null;
+const v4 = vaults && f.taxVault?.passes ? passesApi(conn, cfg, passVaults?.program ?? vaults.program, opts) : null;
 /** The vault's auth PDA for a vault token (holds its collected tax; never a holder), else null. */
-const vaultAuthFor = (mint: string) => (vaults?.isVaultMint(mint) ? vaults.authOf(mint).toBase58() : null);
+const vaultAuthFor = (mint: string) => { const v = vaultsFor(mint); return v?.isVaultMint(mint) ? v.authOf(mint).toBase58() : null; };
 
 /** Legacy (hot-wallet distributor) tokens: the network's configured creator reward (native XNT on testnet, USDC.X on mainnet). */
 const rewardMint = new PublicKey(CREATOR_REWARD[cfg.network].rewardMint ?? NATIVE_MINT);
@@ -124,9 +134,10 @@ const rewardMeta = (mint: PublicKey) => (mint.equals(rewardMint) ? { symbol: rew
  * configured one only.
  */
 async function rewardMintsFor(tokenMint: string | null | undefined): Promise<PublicKey[]> {
-  if (!tokenMint || !vaults?.isVaultMint(tokenMint)) return [rewardMint];
+  const v = tokenMint ? vaultsFor(tokenMint) : null;
+  if (!tokenMint || !v?.isVaultMint(tokenMint)) return [rewardMint];
   const out: PublicKey[] = [];
-  for (const m of [await vaults.rewardMintOf(tokenMint), NATIVE_MINT, rewardMint]) if (!out.some((x) => x.equals(m))) out.push(m);
+  for (const m of [await v.rewardMintOf(tokenMint), NATIVE_MINT, rewardMint]) if (!out.some((x) => x.equals(m))) out.push(m);
   return out;
 }
 
@@ -327,7 +338,13 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
       if (!isVaultLaunch(cfg, pair)) throw new Error("Paying holders in another token needs a Tax Vault launch.");
       await payoutToken(conn, cfg, p.payoutMint);
     }
-    const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl);
+    // Holder passes (testnet trial): the vault goes under the passes program; holders register and are paid in XNT.
+    const passes = body.passes === true;
+    if (passes) {
+      if (!passVaults) throw new Error("Holder passes aren't offered on this site.");
+      if (p.payoutMint) throw new Error("Holder passes pay in XNT; leave the payout token empty.");
+    }
+    const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl, passes ? passVaults!.program : null);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
   if (url === "/api/launch/pool") {
@@ -362,6 +379,12 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     if (!s.lock || !s.lockNft) throw new Error(r.kind === "curve" ? "The curve hasn't graduated yet; the tax vault starts after graduation." : "Step 3 (LP lock) hasn't confirmed yet.");
     const ixs = await buildVaultStep(conn, cfg, r, s.lockNft);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, units: 200_000 }) };
+  }
+  if (url === "/api/launch/passes") {
+    // Holder-passes launches, after the vault starts: the creator turns passes on (pass book and rules).
+    const r = ownLaunch(body);
+    const ixs = await buildPassesStep(conn, cfg, r);
+    return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, units: 400_000 }) };
   }
   if (url === "/api/launch/receipt") {
     // Print the lock receipt into the NFT: a PNG + metadata JSON on IPFS when the browser sent
@@ -496,7 +519,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     // A curve trade: show it on the next page load instead of after the cache expires.
     if (curves && typeof body.curveMint === "string") { try { curves.invalidate(new PublicKey(body.curveMint).toBase58()); } catch { /* ignore */ } }
     // A creator just started a tax vault: the pages show it at once.
-    if (vaults && typeof body.vaultMint === "string") { try { vaults.forget(new PublicKey(body.vaultMint).toBase58()); } catch { /* ignore */ } }
+    if (typeof body.vaultMint === "string") { try { const m = new PublicKey(body.vaultMint).toBase58(); for (const v of vaultServices) v.forget(m); } catch { /* ignore */ } }
     return { signature };
   }
   return null;
@@ -511,10 +534,10 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
  *   appoint-tx    v3: the guardian (creator) appoints a new publisher once allowed
  */
 async function vaultPost(url: string, body: Record<string, unknown>) {
-  const v = vaults!;
   const m = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})\/(crank-tx|crank-result|appoint-tx)$/.exec(url);
   if (!m) return null;
   const [, mint, action] = m;
+  const v = vaultsFor(mint)!;
   if (action === "crank-tx") {
     const caller = new PublicKey(String(body.caller));
     const plan = await v.crankPlan(mint, caller);
@@ -763,7 +786,7 @@ async function getView(url: URL) {
     if (!curves) return null;
     // A Tax Vault curve token: whether its creator has started the vault (after graduation).
     const [view, vault] = await Promise.all([curves.view(cv[1], url.searchParams.get("wallet")),
-      vaults ? vaults.badge(new PublicKey(cv[1]).toBase58()).catch(() => null) : null]);
+      vaults ? vaultsFor(cv[1])!.badge(new PublicKey(cv[1]).toBase58()).catch(() => null) : null]);
     return { ...view, vault };
   }
   if (url.pathname === "/api/v4") return v4 ? v4.tokens() : null;
@@ -772,7 +795,7 @@ async function getView(url: URL) {
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (nftApi) return nftView(nftApi[1]);
   const va = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})(\/list)?$/.exec(url.pathname);
-  if (va) return vaults ? (va[2] ? vaults.listView(va[1]) : vaults.view(va[1])) : null;
+  if (va) { const v = vaultsFor(va[1]); return v ? (va[2] ? v.listView(va[1]) : v.view(va[1])) : null; }
   if (url.pathname === "/api/info") {
     const [poolCreateFeeXnt, lockerAuthority] = await Promise.all([poolCreateFee(), lockerUpgradeAuthority()]);
     return {
@@ -796,7 +819,9 @@ async function getView(url: URL) {
       // New XNT launches hand their tax to the Tax Vault program (no distributor gas to pre-fund).
       // Their creator reward is swapped on-chain into the network's reward token (XNM on testnet).
       ...(vaults ? { taxVault: { programId: vaults.program.toBase58(), launches: isVaultLaunch(cfg, XNT_PAIR),
-        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true, payoutTokens: payoutTokensOn(cfg), recoveryUrl: recoveryUrl(cfg.network), recoveryPath: RECOVERY_FILE ? "/recovery" : null } } : {}),
+        rewardSymbol: REWARD_TOKEN[cfg.network].symbol, rewardMint: REWARD_TOKEN[cfg.network].mint.toBase58(), beta: cfg.factory?.taxVault?.beta === true, payoutTokens: payoutTokensOn(cfg),
+        // A "Holder passes" launch option (testnet trial): the vault under the passes program.
+        passes: passVaults ? { programId: passVaults.program.toBase58() } : null, recoveryUrl: recoveryUrl(cfg.network), recoveryPath: RECOVERY_FILE ? "/recovery" : null } } : {}),
     };
   }
   if (url.pathname === "/api/launches") {
@@ -989,7 +1014,7 @@ function tokenList() {
     const value = await pairValue(pair).catch(() => null);
     const e = eventTotals(tokenEvents(t.stateDir));
     const st = await (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null);
-    const vault = vaults ? await vaults.badge(t.mint).catch(() => null) : null;
+    const vault = vaults ? await vaultsFor(t.mint)!.badge(t.mint).catch(() => null) : null;
     const priceQuote = snap && snap.reserveToken > 0n ? Number(snap.reserveQuote) / Number(snap.reserveToken) : null;
     return {
       mint: t.mint, symbol: t.symbol, name: t.name, pool: t.pool, ...info, yield: st?.yield ?? null, holderPass: claimsOn(t),
@@ -1166,7 +1191,7 @@ function tokenStats(mintStr: string) {
       // (A token launched on the vault, curve ones included, records the auth PDA itself there.)
       if (t.distributor && t.distributor !== vaultAuth) labels.set(t.distributor, "Old distributor (retired)");
     }
-    const vault = vaults ? await vaults.badge(t.mint).catch(() => null) : null;
+    const vault = vaults ? await vaultsFor(t.mint)!.badge(t.mint).catch(() => null) : null;
     const minHolding = toBaseUnits(dc.minHoldingTokens, m.decimals);
     const earning = eligibleBalances(rows, { excluded, excludeOffCurve: dc.excludeOffCurveOwners, minHolding });
 
@@ -1610,7 +1635,7 @@ if (curves) {
 }
 // Tax Vault crank: collect, sell, add liquidity, fund creators, publish rewards lists and
 // pay holders for every vault token. Transactions only go out with factory.taxVault.publisherKeypair.
-if (vaults) {
+for (const vaults of vaultServices) {
   if (vaults.crankOn() && !ipfsEnabled(cfg)) console.log("Tax vault crank: no Pinata key (factory.pinataJwt), so no new rewards lists are published (their files must be on IPFS); payouts of published lists go on.");
   if (!vaults.crankOn()) {
     console.log("Tax vault crank: no factory.taxVault.publisherKeypair, so vault tokens are not cranked by this server.");

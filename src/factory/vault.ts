@@ -60,7 +60,7 @@ import {
   SQUADS_PROGRAM_IDS, closeIx, executeIx, memberOf, proposalVotes, proposeIxs, quorumJson, readProposal, readQuorum, rejectIx, squadsVaultPda,
   type ProposalStatus as SquadsProposalStatus, type Quorum,
 } from "../squads.js";
-import { DECIMALS, type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged } from "./launch.js";
+import { DECIMALS, type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged, vaultProgramOf } from "./launch.js";
 
 /** Crank pass interval; TAX_VAULT_PASS_SECS shortens it for local rehearsals (short-windows builds). */
 /** Warn when the crank wallet has less XNT than this for fees (factory.taxVault.crankLowXnt). */
@@ -144,8 +144,14 @@ function logEventAt(mint: string, e: Record<string, unknown>) {
   fs.appendFileSync(path.join(dir, "events.jsonl"), JSON.stringify({ at: new Date().toISOString(), ...e }) + "\n", { mode: 0o600 });
 }
 
-export function vaultService(conn: Connection, cfg: Config, opts: { microLamports: number }) {
-  const program = new PublicKey(cfg.factory!.taxVault!.programId);
+/**
+ * `program`: the vault program this service runs (default factory.taxVault.programId). A
+ * server can run one per program (the holder-passes trial next to the regular one); each
+ * handles only the launches recorded under its program (LaunchRecord.vaultProgram).
+ */
+export function vaultService(conn: Connection, cfg: Config, opts: { microLamports: number }, program = vaultProgramOf(cfg)) {
+  /** Whether this launch's vault is under this service's program. */
+  const mine = (r: LaunchRecord) => vaultProgramOf(cfg, r).equals(program);
   const xdex = new PublicKey(cfg.xdex.programId);
   /** Mints whose vault account was seen on-chain (covers tokens not flagged in their files). */
   const seen = new Set<string>();
@@ -214,7 +220,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     if (seen.has(mint)) return true;
     let r: LaunchRecord | null = null;
     try { r = readLaunch(mint); } catch { return false; }
-    return !!r && vaultManaged(r);
+    return !!r && vaultManaged(r) && mine(r);
   }
 
   const readVault = (mint: PublicKey) => readVaultAccount(conn, program, mint);
@@ -929,13 +935,13 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   /** Vault tokens: flagged launches, plus XNT-paired launches whose vault exists on-chain (checked in one read). */
   async function vaultTokens(): Promise<LaunchRecord[]> {
     const launches = registeredLaunches().filter(xntPaired);
-    const unflagged = launches.filter((r) => !vaultManaged(r) && !seen.has(r.mint));
+    const unflagged = launches.filter((r) => !vaultManaged(r) && !r.vaultProgram && !seen.has(r.mint));
     for (let i = 0; i < unflagged.length; i += 100) {
       const chunk = unflagged.slice(i, i + 100);
       const infos = await conn.getMultipleAccountsInfo(chunk.map((r) => addrOf(r.mint)), "confirmed");
       chunk.forEach((r, j) => { if (infos[j]?.owner.equals(program)) seen.add(r.mint); });
     }
-    return launches.filter((r) => vaultManaged(r) || seen.has(r.mint));
+    return launches.filter((r) => (vaultManaged(r) && mine(r)) || seen.has(r.mint));
   }
 
   let cranking = false;

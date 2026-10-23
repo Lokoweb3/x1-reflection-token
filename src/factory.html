@@ -65,6 +65,9 @@ input, select, textarea { font: inherit; font-size: 14px; padding: 8px 10px; bor
 input:focus, select:focus, textarea:focus { outline: 3px solid var(--yellow); outline-offset: 1px; }
 textarea { resize: vertical; min-height: 56px; }
 .hint { color: var(--text-muted); font-size: 12px; }
+label.check { grid-template-columns: auto 1fr; align-items: center; column-gap: 8px; }
+label.check input { width: auto; margin: 0; }
+label.check .hint { grid-column: 1 / -1; }
 fieldset { border: 2px dashed var(--border); border-radius: 12px; padding: 10px 12px 2px; margin: 0 0 12px; }
 legend { font-size: 12px; color: var(--text-secondary); padding: 0 4px; }
 .split { font-size: 12px; color: var(--text-secondary); margin: -4px 0 10px; }
@@ -307,6 +310,11 @@ form .row[hidden], .hint[hidden] { display: none; }
               <span class="hint" id="payoutHint">Optional. Holders get this token instead of XNT: the vault swaps their share on the token's XDEX pool. Fixed for good once launched.</span>
             </label>
           </div>
+          <div class="row" id="passesRow" hidden>
+            <label class="check"><input name="passes" type="checkbox" value="1"> Holder passes (testnet trial)
+              <span class="hint">Holders register a pass and the vault program splits their share itself, on-chain, in rounds anyone can run. Paid in XNT. One more wallet approval at the end of the launch.</span>
+            </label>
+          </div>
           <div class="row" id="pairRow" hidden>
             <label>Pair with
               <select name="quote"><option value="XNT" selected>XNT</option></select>
@@ -468,6 +476,7 @@ function readForm() {
     poolTokens, poolXnt: String(v.poolXnt).trim(), lockDays: v.lock === "forever" ? null : Number(v.lock),
     quote: String(v.quote ?? "XNT"),
     ...(String(v.payoutMint ?? "").trim() ? { payoutMint: String(v.payoutMint).trim() } : {}),
+    ...(v.passes ? { passes: true } : {}),
   };
 }
 // Payout token: checked as it's typed (its XNT pool, freeze authority, extensions).
@@ -569,18 +578,22 @@ form.elements.quote.addEventListener("change", () => {
 // ---------- Launch flow ----------
 let running = false;
 /** Tax Vault launches have one more step after the lock; add or remove it and renumber. */
-function vaultStepShown(on) {
+function vaultStepShown(on, passes) {
   const list = document.getElementById("steps");
   let li = list.querySelector('li[data-step="vault"]');
+  if (li && li.dataset.passes !== String(!!passes)) { li.remove(); li = null; }
   if (on && !li) {
-    li = el("li", { "data-step": "vault" }, el("span", { class: "dot", text: "4" }),
-      el("div", {}, el("div", { class: "t", text: tr("Start the tax vault") }), el("div", { class: "muted", text: tr("The vault program, not a wallet, holds and splits the tax") })));
+    li = el("li", { "data-step": "vault", "data-passes": String(!!passes) }, el("span", { class: "dot", text: "4" }),
+      el("div", {}, el("div", { class: "t", text: passes ? tr("Start the tax vault and holder passes") : tr("Start the tax vault") }),
+        el("div", { class: "muted", text: passes ? tr("The vault program holds the tax and splits the holders' share itself") : tr("The vault program, not a wallet, holds and splits the tax") })));
     list.insertBefore(li, list.querySelector('li[data-step="registered"]'));
   } else if (!on && li) li.remove();
   list.querySelector('li[data-step="registered"] .dot').textContent = on ? "5" : "4";
 }
 function setSteps(status, active, errorStep) {
-  vaultStepShown(!!status?.taxVault);
+  vaultStepShown(!!status?.taxVault, !!status?.holderPasses);
+  // A holder-passes launch's vault step is done once its passes are on too.
+  if (status?.holderPasses) status = { ...status, vault: status.vault && status.passes };
   for (const li of document.querySelectorAll("#steps li")) {
     const s = li.dataset.step;
     li.className = status?.[s] ? "done" : s === errorStep ? "error" : s === active ? "active" : "";
@@ -643,6 +656,12 @@ async function continueLaunch(mint) {
       await signAndSend(tr("Start the tax vault"), () => api("/api/launch/vault", { mint, creator }), mint);
       status = { ...status, vault: true };
     }
+    if (status.holderPasses && !status.passes) {
+      // Only the creator (the vault's guardian) can turn its holder passes on.
+      step = "vault"; setSteps(status, "vault");
+      await signAndSend(tr("Turn on holder passes"), () => api("/api/launch/passes", { mint, creator }), mint);
+      status = { ...status, passes: true };
+    }
     step = "registered"; setSteps(status, "registered");
     await api("/api/launch/register", { mint, creator });
     status = { ...status, registered: true };
@@ -675,7 +694,7 @@ form.addEventListener("submit", async (ev) => {
   const lock = p.lockDays === null ? tr("locked FOREVER") : tr("locked for {lockDays} days", { lockDays: p.lockDays });
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", tr("Liquidity + burn can't be more than {MAX_LP_PLUS_BURN}% of the tax.", { MAX_LP_PLUS_BURN })); return; }
   const pair = pairOf(p.quote);
-  const ok = confirm(tr("Launch {name} ({symbol})?\n\n• Supply {supply} (fixed)\n• Tax {taxBps}% on every transfer (can never change){extra}\n• Pool: {poolTokens} tokens + {poolXnt}, LP {lock}{extra2}\n• Launch fee {feeAmount} {feeSymbol}\n• Your creator reward: {creatorBps}% of the tax, paid in {rewardSymbol}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n{extra3}", { name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), taxBps: p.taxBps / 100, extra: p.burnBps ? tr(", {burnBps}% of it burned", { burnBps: p.burnBps / 100 }) : "", poolTokens: Number(p.poolTokens).toLocaleString(), poolXnt: pairAmount(p.poolXnt, pair), lock, extra2: pair.symbol !== "XNT" ? tr("\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT") : "", feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, creatorBps: (info.creatorBps ?? 1000) / 100, rewardSymbol: info.taxVault?.launches && pair.symbol === "XNT" ? info.taxVault.rewardSymbol : info.creatorRewardSymbol ?? "USDC", extra3: info.taxVault?.launches && pair.symbol === "XNT" ? tr("The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault.") : tr("Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain).") }));
+  const ok = confirm(tr("Launch {name} ({symbol})?\n\n• Supply {supply} (fixed)\n• Tax {taxBps}% on every transfer (can never change){extra}\n• Pool: {poolTokens} tokens + {poolXnt}, LP {lock}{extra2}\n• Launch fee {feeAmount} {feeSymbol}\n• Your creator reward: {creatorBps}% of the tax, paid in {rewardSymbol}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n{extra3}", { name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), taxBps: p.taxBps / 100, extra: p.burnBps ? tr(", {burnBps}% of it burned", { burnBps: p.burnBps / 100 }) : "", poolTokens: Number(p.poolTokens).toLocaleString(), poolXnt: pairAmount(p.poolXnt, pair), lock, extra2: pair.symbol !== "XNT" ? tr("\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT") : "", feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, creatorBps: (info.creatorBps ?? 1000) / 100, rewardSymbol: info.taxVault?.launches && pair.symbol === "XNT" ? info.taxVault.rewardSymbol : info.creatorRewardSymbol ?? "USDC", extra3: info.taxVault?.launches && pair.symbol === "XNT" && p.passes ? tr("The tax is held by the Tax Vault program, not a wallet, and holders with a pass are paid by the program itself.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault and a 6th to turn on holder passes.") : info.taxVault?.launches && pair.symbol === "XNT" ? tr("The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault.") : tr("Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain).") }));
   if (!ok) return;
   running = true; renderWallet();
   document.getElementById("launchResult").replaceChildren();
@@ -804,7 +823,7 @@ async function loadMine() {
 function launchCard(l) {
   const s = l.status;
   // Tax Vault launches have a 5th step (start the vault).
-  const done = [s.token, s.pool, s.lock, ...(s.taxVault ? [s.vault] : []), s.registered].filter(Boolean).length;
+  const done = [s.token, s.pool, s.lock, ...(s.taxVault ? [s.vault && (!s.holderPasses || s.passes)] : []), s.registered].filter(Boolean).length;
   const btn = (text, cls, fn, disabled, title) => { const b = el("button", { class: `btn small ${cls}`, type: "button", text }); b.disabled = !!disabled || running; if (title) b.title = title; b.onclick = fn; return b; };
   const row = (label, value, ...buttons) => el("div", { class: "lc-row" },
     el("div", {}, el("div", { class: "lc-k", text: label }), el("div", { class: "lc-v" }, ...[].concat(value))),
@@ -1041,6 +1060,8 @@ async function loadTokens() {
     if (info.taxVault?.beta) document.getElementById("vaultBetaLi").hidden = false;
     // Paying holders in another token: only where the site offers it (the vault program's v4).
     if (info.taxVault?.payoutTokens && info.taxVault?.launches) document.getElementById("payoutRow").hidden = false;
+    // Holder passes (testnet trial): only where the server runs the passes program.
+    if (info.taxVault?.passes && info.taxVault?.launches) document.getElementById("passesRow").hidden = false;
     // Pair choice: only when the site offers pair tokens besides XNT.
     if (info.quoteTokens?.length) {
       const sel = form.elements.quote;
