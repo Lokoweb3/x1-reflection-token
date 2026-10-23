@@ -22,7 +22,9 @@ mainnet the vault went live on 1 Oct 2026 as an **unaudited beta** (the site say
 first token, "Test", moved onto it from its old hot-wallet distributor and was paid out by
 it the same morning. New mainnet launches reopen on the vault shortly. Testnet also runs
 **payout tokens** (v4, live since 1 Oct 2026): holders paid in a token the creator picks
-instead of XNT.
+instead of XNT, and, as a trial since 23 Oct 2026, **on-chain holder passes**: holders
+register once and the program itself splits and pays the holders' share, with no
+published list (see [On-chain holder passes](#on-chain-holder-passes-v4-trial-testnet)).
 
 **Reviewing the code?** Start with [docs/REVIEW.md](docs/REVIEW.md): scope, deployed
 program hashes and how to reproduce them, tests, trust assumptions and what to look at.
@@ -58,6 +60,7 @@ a bonding curve (testnet) and an off-chain distributor around them.
 | `lp_locker` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` | `5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C` |
 | `bonding_curve` | – | `CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY` |
 | `tax_vault` | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` (v3, beta) | `D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW` |
+| `tax_vault` with holder passes (trial) | – | `Aqt57qzgBy9cJLiygL6V8fHK7Sov7DwXeQFAm8aphxc8` |
 | XDEX | `sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN` | `7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf` |
 
 The home page's **Contracts** section lists every address the live site uses.
@@ -66,7 +69,7 @@ The home page's **Contracts** section lists every address the live site uses.
 (launch app, your launches, Distribute now) · `/tokens` · `/nft` and `/nft/<mint>` (lock
 NFTs, withdraw, full token stats incl. burns) · `/leaderboard/<mint>` (holders' average
 cost, rewards earned, total return) · `/wallet/<address>` (My earnings) · `/analytics` ·
-`/curve` (testnet) · `/faucet` (testnet). A Mainnet/Testnet toggle and a theme picker
+`/curve` (testnet) · `/faucet` (testnet) · `/v4` and `/v4/standalone` (holder passes, testnet). A Mainnet/Testnet toggle and a theme picker
 (Notebook by default) sit in every header.
 
 ## The original single token (RFLT)
@@ -333,6 +336,10 @@ the wallet can afford the whole launch. Their wallet approves three transactions
 4. **Start the tax vault** (when `factory.taxVault` is set, i.e. testnet): `init_vault`
    hands the token's withdraw authority to the vault program, so no distributor key is
    ever created for it.
+5. **Turn on holder passes** (testnet, only with **Holder passes (testnet trial)** ticked):
+   the vault is started under the holder-passes program instead, and one more approval
+   allocates the pass book and sets its rules (`init_passes`). See
+   [On-chain holder passes](#on-chain-holder-passes-v4-trial-testnet).
 
 **Pairs other than XNT.** List them in `factory.quoteTokens` and the launch form shows
 "Pair with: XNT / JACK" (XNT stays the default; without the list the choice is hidden):
@@ -375,6 +382,10 @@ lists are pinned the same way (v3). For rehearsals the upload API and the gatewa
 pointed at a local stand-in (`factory.pinataApiUrl` / `PINATA_API_URL`, `IPFS_GATEWAY`).
 
 ## Holder passes (pull-based holder rewards)
+
+> This is the older, NFT-based design in `lp_locker` (built, not deployed). The holder
+> passes running on testnet are the Tax Vault's own: see
+> [On-chain holder passes](#on-chain-holder-passes-v4-trial-testnet).
 
 Paying every holder a transfer each cycle costs gas per holder, and X1 fees are
 ~0.001–0.004 XNT per transaction. With `distribution.holderRewards: "claims"` a token
@@ -511,6 +522,65 @@ The publisher key also pays every vault transaction's network fee, so it needs X
 `factory.taxVault.crankLowXnt` (default 0.2 XNT) the vault panels show a warning and the
 server logs `[vault crank] LOW BALANCE` hourly. If it runs dry the vaults just wait (the tax
 stays collected-in-place), and anyone can still press **Run the vault now** with their own wallet.
+
+## On-chain holder passes (v4 trial, testnet)
+
+The Tax Vault normally pays holders from a list the site computes off-chain and publishes
+(Merkle root on-chain, file on IPFS). **Holder passes** move that split on-chain: holders
+register once, and the program reads their balances and pays them itself. No list, no
+publisher, no 10-minute cancel window for the holders' share.
+
+Live on X1 testnet as a trial under a separate program,
+`Aqt57qzgBy9cJLiygL6V8fHK7Sov7DwXeQFAm8aphxc8`, built from the same
+`lp-locker/programs/tax_vault` source. The testnet site runs both programs side by side:
+existing vaults stay on `D9jt…`, and a launch with **Holder passes (testnet trial)** ticked
+gets its vault under `Aqt57…`. Mainnet doesn't offer it.
+
+**How it works**
+
+- **Pass book:** one account per token with room for 256 passes, grown in place by
+  `alloc_pass_book` and switched on by `init_passes`, which sets the rules. The launch page
+  uses: minimum holding = supply / 1,000,000, minimum pot 0.05 XNT, at least 5 minutes
+  between rounds.
+- **Register:** a wallet registers its own pass (`register_pass`, top-level instruction
+  only, so a pool or other program address can't). It must hold at least **2× the
+  minimum** to register; empty wallets can't take the book's slots. Its associated
+  Token-2022 account is what each round reads. `remove_pass` (anyone) drops a fully paid
+  pass whose wallet fell under the minimum and returns its rent to the wallet.
+- **Rounds:** the vault's holder share (after burn, liquidity and creator reward) builds a
+  pot. Once it reaches the minimum, anyone runs a round: `snapshot_batch` reads the
+  registered balances (all within ~60 s), `close_round` sets the payout, and `pay_passes`
+  sends each pass's share straight to its wallet, in proportion to its balance.
+- **Cap for multi-transaction rounds:** a round read in one transaction pays the whole pot.
+  A round read over several (256 passes needs several) pays at most **80% of the transfer
+  tax on the eligible tokens' value** at the pool price, so moving tokens between batches
+  to be counted twice always costs more in tax than it earns. The rest waits for the next
+  round. So small holdings earn little per round however large the pot is.
+- **Caller reward:** whoever runs the round earns 1% of it (at most 0.05 XNT).
+- **Extras:** `sponsor_holders` lets anyone add XNT to the holders' pot; `index_passes`
+  keeps program-owned address lookup tables so a round's transactions fit.
+
+**Running it**
+
+- The site's crank runs due rounds every 60 s, next to the usual collect / sell /
+  liquidity / creator reward steps. Config (testnet only):
+  `factory.taxVault.passes: true` and `factory.taxVault.passesProgramId`. Each launch
+  record carries `vaultProgram`, so the server routes every token to the right program.
+- **`/v4`** lists the tokens with passes (book, pot, rounds, paid) and lets any wallet
+  register, run a round or pay with its own key. **`/v4/standalone`** is the same as one
+  self-contained HTML file (`scripts/build-recovery.ts --program`), also pinned to IPFS,
+  that talks only to an X1 RPC. It has to be served over http(s); opened as a local file,
+  the RPC refuses it.
+- API: `/api/v4` (all tokens), `/api/v4/<mint>?wallet=<address>` (one token, one wallet),
+  `/api/launch/passes` (the launch step).
+- Test helpers (testnet only): `scripts/v4-test-wallets.ts --mint <token> --funder
+  <keypair.json> [--count 5]` makes wallets that buy the token and register passes (keys
+  in the git-ignored `test-wallets/`); `scripts/v4-spread-tokens.ts` spreads tokens over them.
+
+**Testnet so far:** WAY (`JAAz…9GFs`) has a full book of 256 passes and has paid about
+23.1 XNT over 22 rounds; PASST (`CViB…S85H`) was launched from the launch page with holder
+passes ticked and paid its first round to 256 passes on 23 Oct 2026, all cranked by the
+site. The program is **unaudited**, like the rest.
 
 ## If 99 + Tax goes offline
 
