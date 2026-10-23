@@ -3,6 +3,7 @@
 ' down (wsl --shutdown, an update, a crash) it starts it again 30 seconds later.
 Set sh = CreateObject("WScript.Shell")
 Do
-  sh.Run "wsl.exe -d Ubuntu -u steven -- /home/steven/X1_PROJECTS/REFLECTION_TOKEN/scripts/arb-watchdog.sh", 0, True
+  ' Runs as WSL's default user; change the path if the repo isn't at ~/X1_PROJECTS/REFLECTION_TOKEN.
+  sh.Run "wsl.exe -d Ubuntu -- bash -lc ""~/X1_PROJECTS/REFLECTION_TOKEN/scripts/arb-watchdog.sh""", 0, True
   WScript.Sleep 30000
 Loop
