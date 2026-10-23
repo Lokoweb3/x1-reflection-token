@@ -900,6 +900,17 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     }
     await step("fund_creator", () => c.creator(t, notes));
     await step("fund_holders", () => c.holders(t, notes));
+    // Holder passes (v4): the program splits the holders' share itself; no list to build.
+    const passes = await c.readPassBook(vault).catch(() => null);
+    if (passes) {
+      await step("holder passes", async () => {
+        const now = (await readVault(t.mint)) ?? vault;
+        if (pool) await c.passRound(t, now, pool, notes);
+      });
+      viewCache.delete(r.mint);
+      status.set(r.mint, { at: new Date().toISOString(), ok, notes });
+      return;
+    }
     await step("rewards list", async () => {
       const now = await readVault(t.mint);
       if (!now) return;

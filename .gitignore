@@ -22,3 +22,4 @@ dist/
 
 # Recorded tour videos (scripts/video-tour.ts)
 video/out/
+test-wallets/

@@ -15,7 +15,7 @@
  * appointed publisher runs scripts/crank.ts for that, and after 30 days pay_fallback pays
  * holders from the last list without anyone publishing. Built by scripts/build-recovery.ts.
  */
-import { ComputeBudgetProgram, Connection, PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, PublicKey, Transaction, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getTokenMetadata, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
 import bs58 from "bs58";
 import { XDEX_PROGRAM_IDS, fromBaseUnits } from "../config.js";
@@ -26,6 +26,8 @@ import {
 import { ACTIVATION_MARGIN_SECS, defaultRules, inFallback, nowSecs, parseListFile, planForCaller, rulesFromJson, type CrankRules, type PayList, type PlannedStep } from "../vault-crank.js";
 import { confirmByPolling, fitComputeLimit } from "../tx.js";
 import { TRUSTLESS_GATEWAY, fetchFromGateways, gatewayFor, normGateway } from "../factory/ipfs.js";
+import { passesPanel } from "./passes-ui.js";
+import { passModeOn } from "../passes.js";
 
 declare const X1Wallet: {
   state: { address: string | null; name: string | null };
@@ -36,7 +38,7 @@ declare const X1Wallet: {
   onChange(f: (address: string | null) => void): void;
 };
 // Legacy (non Wallet Standard) wallets sign web3.js Transactions; wallet.js looks for this.
-(window as unknown as { solanaWeb3: unknown }).solanaWeb3 = { Transaction };
+(window as unknown as { solanaWeb3: unknown }).solanaWeb3 = { Transaction, VersionedTransaction };
 
 type Net = "testnet" | "mainnet";
 const NETS: Record<Net, { rpc: string; explorer: string }> = {
@@ -45,6 +47,8 @@ const NETS: Record<Net, { rpc: string; explorer: string }> = {
 };
 const GATEWAYS = `https://gateway.pinata.cloud/ipfs/, ${TRUSTLESS_GATEWAY}, https://ipfs.io/ipfs/`;
 const MICRO_LAMPORTS = 10_000;
+/** The program this copy opens (the build's --program; the Tax Vault by default). */
+const DEFAULT_PROGRAM = (window as unknown as { RECOVERY_PROGRAM?: string }).RECOVERY_PROGRAM || TAX_VAULT_PROGRAM_ID.toBase58();
 /** Wallets paid per run (one transaction); run again for more. */
 const MAX_PAYS = 6;
 
@@ -65,7 +69,11 @@ function ago(secs: number) {
   const t = a < 3600 ? `${Math.round(a / 60)} min` : a < 172_800 ? `${Math.round(a / 3600)} h` : `${Math.round(a / 86_400)} days`;
   return d >= 0 ? `${t} ago` : `in ${t}`;
 }
-const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const msg = (e: unknown) => {
+  const m = e instanceof Error ? e.message : String(e);
+  // X1 reports a fee payer that doesn't exist on this network as AccountNotFound.
+  return /AccountNotFound/.test(m) ? "your wallet has no XNT on this network to pay the fees (AccountNotFound). Fund it, or connect a wallet that has XNT here." : m;
+};
 
 function log(text: string, kind: "" | "good" | "bad" = "", href?: string) {
   $("log").querySelector("li.placeholder")?.remove();
@@ -78,7 +86,7 @@ function log(text: string, kind: "" | "good" | "bad" = "", href?: string) {
 function settings() {
   const net = ($<HTMLSelectElement>("net").value as Net);
   const rpc = $<HTMLInputElement>("rpc").value.trim() || NETS[net].rpc;
-  const program = new PublicKey($<HTMLInputElement>("program").value.trim() || TAX_VAULT_PROGRAM_ID.toBase58());
+  const program = new PublicKey($<HTMLInputElement>("program").value.trim() || DEFAULT_PROGRAM);
   const gateways = ($<HTMLInputElement>("gateways").value.trim() || GATEWAYS).split(/[\s,]+/).filter(Boolean).map(normGateway);
   return { net, rpc, program, gateways, explorer: NETS[net].explorer };
 }
@@ -92,7 +100,7 @@ function connect() {
 // ---------- reading a vault ----------
 interface Loaded {
   v: Vault; mint: PublicKey; symbol: string; name: string; taxBps: number; supply: bigint;
-  xdex: PublicKey; network: Net; rules: CrankRules;
+  xdex: PublicKey; network: Net; rules: CrankRules; decimals: number; passes: boolean;
   list: (PayList & { cid: string; wallets: Record<string, string> }) | null; listError: string | null;
 }
 let current: Loaded | null = null;
@@ -130,7 +138,8 @@ async function load(mint: PublicKey): Promise<Loaded> {
       } catch (e) { listError = msg(e); }
     }
   }
-  return { v, mint, symbol: md?.symbol || short(mint.toBase58()), name: md?.name ?? "", taxBps, supply: m.supply, xdex, network, rules, list, listError };
+  return { v, mint, symbol: md?.symbol || short(mint.toBase58()), name: md?.name ?? "", taxBps, supply: m.supply, xdex, network, rules, list, listError,
+    decimals: m.decimals, passes: passModeOn(info.data) };
 }
 
 // ---------- rendering ----------
@@ -151,10 +160,25 @@ function renderStatus(L: Loaded) {
       row("Vault", addrLink(v.address), ` · v${v.version}${v.version < VAULT_VERSION ? " (the next run upgrades it)" : ""}`),
       row("Split of the tax", `burn ${v.burnBps / 100}% · liquidity ${v.lpBps / 100}% · creator ${v.creatorBps / 100}% (${rewardInfo?.symbol ?? "reward token"}) · holders ${holdersSplit / 100}%`),
       row("Holders", `${xnt(v.holdersFunded)} funded · ${xnt(v.holdersPaid)} paid · ${xnt(v.holdersFunded - v.holdersPaid)} still to pay`),
-      row("Publisher", addrLink(v.publisher), v.version >= 3 ? ` · last list ${when(v.lastPublishAt)} (${ago(v.lastPublishAt)})` : ""),
+      L.passes ? null : row("Publisher", addrLink(v.publisher), v.version >= 3 ? ` · last list ${when(v.lastPublishAt)} (${ago(v.lastPublishAt)})` : ""),
       row("Guardian (creator)", addrLink(v.guardian)),
     ),
   );
+  $("how").hidden = L.passes;
+  $("listNote").hidden = L.passes;
+  if (L.passes) {
+    box.querySelector("dl")!.append(row("Holders' split", "on-chain holder passes (no rewards lists, publisher or recovery windows)"));
+    const host = el("div", {}, el("p", { class: "muted", text: "Reading the pass book…" }));
+    box.append(host);
+    void passesPanel({
+      conn, program: S.program, explorer: S.explorer, mint: L.mint, v, xdex: L.xdex, decimals: L.decimals,
+      wallet: () => X1Wallet.state.address, signAll: (list) => X1Wallet.signAll(list), log, el,
+      reload: () => { void load(L.mint).then((n) => { current = n; renderStatus(n); }).catch(() => undefined); },
+    }).then((p) => host.replaceChildren(p ?? el("p", { class: "bad", text: "Holder passes are on but the pass book couldn't be read." })))
+      .catch((e) => host.replaceChildren(el("p", { class: "bad", text: `Couldn't read the pass book: ${msg(e)}` })));
+    renderActions();
+    return;
+  }
   // The active list and where it came from.
   const eff = effectiveList(v, now - ACTIVATION_MARGIN_SECS);
   const listRow = !eff ? "no list published yet"
@@ -311,7 +335,7 @@ async function run() {
       txs.push(new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight }).add(...ixs));
     }
     const first = await conn.simulateTransaction(txs[0]);
-    if (first.value.err) throw new Error(`the first step fails in simulation: ${errorOf((first.value.logs ?? []).join(" ")) ?? JSON.stringify(first.value.err)}`);
+    if (first.value.err) throw new Error(`the first step fails in simulation: ${msg(errorOf((first.value.logs ?? []).join(" ")) ?? JSON.stringify(first.value.err))}`);
     log(`Approve ${txs.length} transaction${txs.length === 1 ? "" : "s"} in your wallet…`);
     const signed = await X1Wallet.signAll(txs.map((t) => t.serialize({ requireAllSignatures: false, verifySignatures: false })));
     let reward = 0n, ok = 0;
@@ -405,14 +429,15 @@ function init() {
   const syncNet = () => { $<HTMLInputElement>("rpc").placeholder = NETS[net.value as Net].rpc; };
   net.onchange = () => { syncNet(); current = null; $("status").replaceChildren(); $("vaults").replaceChildren(); renderActions(); };
   syncNet();
-  $<HTMLInputElement>("program").placeholder = TAX_VAULT_PROGRAM_ID.toBase58();
+  $<HTMLInputElement>("program").placeholder = DEFAULT_PROGRAM;
+  $("progFoot").textContent = DEFAULT_PROGRAM;
   $<HTMLInputElement>("gateways").placeholder = GATEWAYS;
   $("find").onclick = () => void findVaults();
   $("open").onclick = () => void open();
   $("mint").onkeydown = (e) => { if ((e as KeyboardEvent).key === "Enter") void open(); };
   $("plan").onclick = () => void plan();
   $("appoint").onclick = () => void appoint();
-  X1Wallet.onChange(() => renderWallet());
+  X1Wallet.onChange(() => { renderWallet(); if (current?.passes) renderStatus(current); });
   renderWallet();
   setTimeout(renderWallet, 900); // wallets can announce themselves late
   // #<mint> (and #testnet / #mainnet) open straight to a vault.

@@ -49,6 +49,7 @@ import { buildCurveStep, validateCurveParams } from "./factory/launch.js";
 import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
+import { passesApi } from "./factory/passes-api.js";
 import { buildVaultStep, isVaultLaunch } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
@@ -76,10 +77,12 @@ const WALLET_PAGE = path.join(ROOT, "src", "wallet.html");
 const FAUCET_PAGE = path.join(ROOT, "src", "faucet.html");
 const LEADERBOARD_PAGE = path.join(ROOT, "src", "leaderboard.html");
 const CURVE_PAGE = path.join(ROOT, "src", "curve.html");
+const V4_PAGE = path.join(ROOT, "src", "v4.html");
 /** Serve a page; without a faucet (e.g. mainnet), leave its "Faucet" tab out, and the "Curve" tab without the curve program. */
 function page(file: string) {
   let html = fs.readFileSync(file, "utf8");
   if (!faucetOn()) html = html.replace(/\s*<a href="\/faucet"[^>]*>Faucet<\/a>/g, "");
+  if (!v4) html = html.replace(/\s*<a href="\/v4"[^>]*>v4<\/a>/g, "");
   if (!curves) html = html.replace(/\s*<a href="\/curve"[^>]*>Curve<\/a>/g, "");
   return html;
 }
@@ -102,6 +105,8 @@ const opts = { microLamports: cfg.distribution.priorityMicroLamports };
 /** Tax Vault: on only when factory.taxVault.programId is set (the crank also needs publisherKeypair). */
 const vaults = f.taxVault?.programId ? vaultService(conn, cfg, opts) : null;
 if (vaults) allowRelayProgram(vaults.program.toBase58());
+/** Holder passes ("v4" tab, testnet trial): on with factory.taxVault.passes. */
+const v4 = vaults && f.taxVault?.passes ? passesApi(conn, cfg, vaults.program, opts) : null;
 /** The vault's auth PDA for a vault token (holds its collected tax; never a holder), else null. */
 const vaultAuthFor = (mint: string) => (vaults?.isVaultMint(mint) ? vaults.authOf(mint).toBase58() : null);
 
@@ -483,6 +488,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     return { started: true };
   }
   if (url.startsWith("/api/vault/")) return vaults ? vaultPost(url, body) : null;
+  if (url.startsWith("/api/v4/")) return v4 ? v4.post(url, body) : null;
   if (url.startsWith("/api/curve/")) return curves ? curvePost(url, body, ip) : null;
   if (url === "/api/send") rateLimit("send", ip, "transactions");
   if (url === "/api/send") {
@@ -760,6 +766,9 @@ async function getView(url: URL) {
       vaults ? vaults.badge(new PublicKey(cv[1]).toBase58()).catch(() => null) : null]);
     return { ...view, vault };
   }
+  if (url.pathname === "/api/v4") return v4 ? v4.tokens() : null;
+  const v4m = /^\/api\/v4\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
+  if (v4m) return v4 ? v4.detail(v4m[1], url.searchParams.get("wallet")) : null;
   const nftApi = /^\/api\/nft\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (nftApi) return nftView(nftApi[1]);
   const va = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})(\/list)?$/.exec(url.pathname);
@@ -1501,6 +1510,13 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, page(CURVE_PAGE), "text/html; charset=utf-8"); return;
     }
     if (url.pathname === "/launch") { send(res, 200, page(PAGE), "text/html; charset=utf-8"); return; }
+    if (v4 && url.pathname === "/v4") { send(res, 200, page(V4_PAGE), "text/html; charset=utf-8"); return; }
+    // The standalone holder-passes page (scripts/build-recovery.ts --program …): one file that
+    // runs with no server; the copy to keep or pin is the same bytes.
+    if (v4 && url.pathname === "/v4/standalone") {
+      const f = path.join(ROOT, "dist", `v4-standalone-${cfg.network}.html`);
+      if (fs.existsSync(f)) { send(res, 200, fs.readFileSync(f), "text/html; charset=utf-8"); return; }
+    }
     // The pinned recovery page, byte-identical to its IPFS copy (checked by sha256 at start).
     // It talks to X1 RPCs and IPFS gateways itself, so it gets its own connect-src.
     if (url.pathname === "/recovery" && RECOVERY_FILE) {

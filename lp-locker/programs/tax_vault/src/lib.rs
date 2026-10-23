@@ -37,7 +37,8 @@
 //! end of every instruction that can move lamports. Every rounding favours the vault.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    instruction::{AccountMeta, Instruction},
+    instruction::{get_stack_height, AccountMeta, Instruction, TRANSACTION_LEVEL_STACK_HEIGHT},
+    entrypoint::MAX_PERMITTED_DATA_INCREASE,
     program::{invoke, invoke_signed},
     program_option::COption,
     sysvar::instructions as ix_sysvar,
@@ -60,6 +61,11 @@ use anchor_spl::token_interface::{self, TokenInterface};
 use anchor_spl::token_2022_extensions::spl_token_metadata_interface::state::TokenMetadata;
 use solana_sha256_hasher::hashv;
 
+// The holder-pass build is tried out on X1 testnet under its own program ID, so the live
+// testnet vault program keeps running untouched.
+#[cfg(feature = "passes-testnet")]
+declare_id!("Aqt57qzgBy9cJLiygL6V8fHK7Sov7DwXeQFAm8aphxc8");
+#[cfg(not(feature = "passes-testnet"))]
 declare_id!("D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW");
 
 pub const LOCKER_PROGRAM_ID: Pubkey = pubkey!("5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C");
@@ -917,6 +923,8 @@ pub mod tax_vault {
         let now = Clock::get()?.unix_timestamp;
         let v = &mut ctx.accounts.vault;
         require_keys_eq!(ctx.accounts.publisher.key(), v.publisher, VaultError::NotPublisher);
+        // A vault with holder passes splits the holders' share on-chain; no more lists.
+        require!(v.reserved[PASS_MODE_BYTE] == 0, VaultError::PassModeOn);
         activate_if_due(v, now);
         math::check_publish(
             v.list_epoch,
@@ -1016,6 +1024,659 @@ pub mod tax_vault {
     pub fn pay_fallback_token(ctx: Context<PayToken>, cumulative: u64, proof: Vec<[u8; 32]>) -> Result<()> {
         pay_token_inner(ctx, cumulative, proof, true)
     }
+
+    /// Anyone adds XNT to an XNT vault's holders' share: it goes to `auth` and counts in
+    /// `holders_funded`, so the next rewards list or holder-pass round shares it out like
+    /// tax. It can't be taken back.
+    pub fn sponsor_holders(ctx: Context<SponsorHolders>, amount: u64) -> Result<()> {
+        require!(amount > 0, VaultError::TooSmall);
+        require!(ctx.accounts.vault.payout_pool == Pubkey::default(), VaultError::PaysInToken);
+        let sys = ctx.accounts.system_program.to_account_info();
+        let auth = ctx.accounts.auth.to_account_info();
+        system_program::transfer(CpiContext::new(sys, system_program::Transfer { from: ctx.accounts.sponsor.to_account_info(), to: auth.clone() }), amount)?;
+        let v = &mut ctx.accounts.vault;
+        v.holders_funded = add(v.holders_funded, amount)?;
+        emit!(HoldersSponsored { vault: v.key(), sponsor: ctx.accounts.sponsor.key(), amount, holders_funded: v.holders_funded });
+        check_solvent(&auth, v)
+    }
+
+    // ---------- holder passes: the holders' share split on-chain ----------
+
+    /// Create or grow a vault's pass book toward PASS_BOOK_LEN, by at most
+    /// MAX_PERMITTED_DATA_INCREASE per call (a full book is larger than one instruction may
+    /// create, so it takes several calls, which can share one transaction). `payer` pays the
+    /// rent; anyone may send it. `init_passes` needs the full size. An existing book grows in
+    /// place: its entries stay where they are and the new slots are empty.
+    pub fn alloc_pass_book(ctx: Context<AllocPassBook>) -> Result<()> {
+        let book = ctx.accounts.book.to_account_info();
+        let payer = ctx.accounts.payer.to_account_info();
+        let sys = ctx.accounts.system_program.to_account_info();
+        let vault_key = ctx.accounts.vault.key();
+        let seeds: &[&[u8]] = &[b"passes", vault_key.as_ref(), &[ctx.bumps.book]];
+        let len = book.data_len();
+        let new_len = if len == 0 {
+            require_keys_eq!(*book.owner, system_program::ID, VaultError::WrongAccount);
+            PASS_BOOK_LEN.min(MAX_PERMITTED_DATA_INCREASE)
+        } else {
+            require_keys_eq!(*book.owner, crate::ID, VaultError::WrongAccount);
+            require!(len < PASS_BOOK_LEN, VaultError::BadPassConfig);
+            (len + MAX_PERMITTED_DATA_INCREASE).min(PASS_BOOK_LEN)
+        };
+        let need = Rent::get()?.minimum_balance(new_len).saturating_sub(book.lamports());
+        if need > 0 {
+            system_program::transfer(CpiContext::new(sys.clone(), system_program::Transfer { from: payer, to: book.clone() }), need)?;
+        }
+        if len == 0 {
+            // allocate + assign rather than create_account, which a few lamports sent to
+            // the address first would block.
+            system_program::allocate(CpiContext::new_with_signer(sys.clone(), system_program::Allocate { account_to_allocate: book.clone() }, &[seeds]), new_len as u64)?;
+            system_program::assign(CpiContext::new_with_signer(sys, system_program::Assign { account_to_assign: book }, &[seeds]), &crate::ID)?;
+        } else {
+            book.resize(new_len)?;
+        }
+        Ok(())
+    }
+
+    /// The guardian turns on holder passes for an XNT vault with no pending list. From then on
+    /// the holders' share is split on-chain over registered wallets' live balances
+    /// (`snapshot_batch` + `close_round`) and paid with `pay_passes`; `publish_list` is
+    /// refused. Whatever lists already allocated stays counted as allocated.
+    pub fn init_passes(ctx: Context<InitPasses>, min_holding: u64, min_pot: u64, min_interval: i64) -> Result<()> {
+        let vault_key = ctx.accounts.vault.key();
+        let v = &mut ctx.accounts.vault;
+        require_keys_eq!(ctx.accounts.guardian.key(), v.guardian, VaultError::NotGuardian);
+        require!(v.payout_pool == Pubkey::default(), VaultError::PaysInToken);
+        require!(v.reserved[PASS_MODE_BYTE] == 0, VaultError::PassModeOn);
+        require!(v.pending_epoch == 0, VaultError::PendingList);
+        require!(min_interval >= 0, VaultError::BadPassConfig);
+        v.reserved[PASS_MODE_BYTE] = 1;
+        let mut b = ctx.accounts.book.load_init()?;
+        b.vault = vault_key;
+        b.min_holding = min_holding;
+        b.min_pot = min_pot;
+        b.min_interval = min_interval;
+        b.allocated = v.list_total.max(v.holders_paid);
+        b.bump = ctx.bumps.book;
+        Ok(())
+    }
+
+    /// A wallet registers its own pass (top-level instruction only, so a program address,
+    /// such as a pool, can't register). Its associated Token-2022 account for the tax token
+    /// is what each snapshot reads, and it must already hold REGISTER_HOLDING_MULT times the
+    /// reward minimum, so empty wallets can't take the book's slots. Not while a round is
+    /// being read.
+    pub fn register_pass(ctx: Context<RegisterPass>) -> Result<()> {
+        require!(get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT, VaultError::NotTopLevel);
+        require!(ctx.accounts.vault.reserved[PASS_MODE_BYTE] == 1, VaultError::NotPassMode);
+        let wallet = ctx.accounts.wallet.key();
+        let mint = ctx.accounts.vault.mint;
+        let token_account = ata(&wallet, &mint, &token_2022::ID);
+        require_keys_eq!(ctx.accounts.token_account.key(), token_account, VaultError::WrongAccount);
+        let mut b = ctx.accounts.book.load_mut()?;
+        let bal = holder_balance(&ctx.accounts.token_account.to_account_info(), &mint, &wallet)?;
+        require!(bal >= math::register_minimum(b.min_holding), VaultError::HoldingTooSmall);
+        let now_slot = Clock::get()?.slot;
+        require!(!round_live(&b, now_slot), VaultError::RoundOpen);
+        let i = b.count as usize;
+        require!(i < MAX_PASSES, VaultError::PassBookFull);
+        b.entries[i] = PassEntry { wallet, token_account, weight: 0, owed: 0, paid: 0 };
+        b.count += 1;
+        let p = &mut ctx.accounts.pass;
+        p.wallet = wallet;
+        p.index = i as u32;
+        p.bump = ctx.bumps.pass;
+        emit!(PassRegistered { vault: ctx.accounts.vault.key(), wallet, index: i as u32 });
+        Ok(())
+    }
+
+    /// Read one batch of registered wallets' balances, in book order; the remaining accounts
+    /// are their token accounts for entries `start..`. `start == 0` opens a round (once
+    /// `min_interval` has passed and at least `min_pot` is waiting); every later batch must
+    /// continue where the last one stopped, within MAX_BATCH_SLOTS of the first.
+    pub fn snapshot_batch<'info>(ctx: Context<'_, '_, 'info, 'info, SnapshotBatch<'info>>, start: u32) -> Result<()> {
+        let clock = Clock::get()?;
+        let v = &ctx.accounts.vault;
+        require!(v.reserved[PASS_MODE_BYTE] == 1, VaultError::NotPassMode);
+        let accs = ctx.remaining_accounts;
+        let mut b = ctx.accounts.book.load_mut()?;
+        if start == 0 {
+            require!(!round_live(&b, clock.slot), VaultError::RoundOpen);
+            require!(clock.unix_timestamp >= b.last_round_at.saturating_add(b.min_interval), VaultError::RoundTooSoon);
+            let pot = v.holders_funded.checked_sub(b.allocated).ok_or(VaultError::Insolvent)?;
+            require!(pot > 0 && pot >= b.min_pot, VaultError::PotTooSmall);
+            b.round_open = 1;
+            b.round_start_slot = clock.slot;
+            b.round_weight = 0;
+            b.round_next = 0;
+            b.round_batches = 1;
+        } else {
+            require!(b.round_open == 1, VaultError::RoundNotOpen);
+            require!(round_live(&b, clock.slot), VaultError::RoundExpired);
+            require!(start == b.round_next, VaultError::BadBatch);
+            b.round_batches = b.round_batches.saturating_add(1);
+        }
+        let end = start as usize + accs.len();
+        require!(!accs.is_empty() && end <= b.count as usize, VaultError::BadBatch);
+        for (k, acc) in accs.iter().enumerate() {
+            let i = start as usize + k;
+            let (wallet, token_account) = (b.entries[i].wallet, b.entries[i].token_account);
+            require_keys_eq!(acc.key(), token_account, VaultError::WrongAccount);
+            let bal = holder_balance(acc, &v.mint, &wallet)?;
+            let w = if bal >= b.min_holding { bal } else { 0 };
+            b.entries[i].weight = w;
+            b.round_weight = b.round_weight.checked_add(w).ok_or(VaultError::MathOverflow)?;
+        }
+        b.round_next = end as u32;
+        Ok(())
+    }
+
+    /// Split the waiting pot over the round's balances once every registered wallet has
+    /// been read. A round read in one batch pays the whole pot (nothing can move during a
+    /// single instruction). A round read over several batches pays at most
+    /// POT_CAP_PCT_OF_TAX of the transfer tax rate on the eligible tokens' value at the
+    /// pool's price, so moving tokens between batches to be counted twice always costs more
+    /// in tax than it can earn; the rest waits for the next round.
+    pub fn close_round(ctx: Context<CloseRound>) -> Result<()> {
+        let clock = Clock::get()?;
+        let a = &ctx.accounts;
+        let v = &a.vault;
+        let mut b = a.book.load_mut()?;
+        require!(b.round_open == 1, VaultError::RoundNotOpen);
+        require!(round_live(&b, clock.slot), VaultError::RoundExpired);
+        require!(b.round_next == b.count, VaultError::RoundIncomplete);
+        require_keys_eq!(a.pool.key(), v.pool, VaultError::WrongAccount);
+        let pool = PoolView::read(&a.pool.to_account_info())?;
+        let side = pool.token_side(&v.mint)?;
+        let reserve_token = pool.reserve(side, &a.token_vault.to_account_info())?;
+        let reserve_xnt = pool.reserve(1 - side, &a.wxnt_vault.to_account_info())?;
+        let pot = v.holders_funded.checked_sub(b.allocated).ok_or(VaultError::Insolvent)?;
+        let total = b.round_weight;
+        let alloc = if b.round_batches == 1 {
+            pot
+        } else {
+            let fee = epoch_fee(&a.mint.to_account_info(), clock.epoch)?;
+            let tax_on_all = fee.calculate_fee(total).ok_or(VaultError::MathOverflow)?;
+            math::pass_pot(pot, total, reserve_xnt, reserve_token, math::pass_cap_bps(tax_on_all, total))?
+        };
+        // Whoever closes the round earns a share of it, so anyone has a reason to run rounds.
+        let reward = if total > 0 { math::round_reward(alloc) } else { 0 };
+        let alloc = alloc - reward;
+        let mut given = 0u64;
+        if total > 0 && alloc > 0 {
+            for i in 0..b.count as usize {
+                let w = b.entries[i].weight;
+                if w == 0 {
+                    continue;
+                }
+                let share = math::pass_share(alloc, w, total)?;
+                b.entries[i].owed = add(b.entries[i].owed, share)?;
+                given = add(given, share)?;
+            }
+        }
+        b.allocated = add(add(b.allocated, given)?, reward)?;
+        require!(b.allocated <= v.holders_funded, VaultError::OverFunded);
+        b.rounds += 1;
+        b.last_round_at = clock.unix_timestamp;
+        b.round_open = 0;
+        let (round, allocated) = (b.rounds, b.allocated);
+        drop(b);
+        emit!(RoundClosed { vault: v.key(), round, weight: total, pot, allocated: given, reward });
+        let mint_key = v.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[v.auth_bump]];
+        let auth = a.auth.to_account_info();
+        pay_from_auth(&a.system_program.to_account_info(), &auth, &a.caller.to_account_info(), reward, auth_seeds)?;
+        let v = &mut ctx.accounts.vault;
+        v.holders_paid = add(v.holders_paid, reward)?;
+        require!(v.holders_paid <= allocated && allocated <= v.holders_funded, VaultError::OverFunded);
+        check_solvent(&auth, v)
+    }
+
+    /// Pay registered wallets what their passes are owed (anyone may send it; it only ever
+    /// pays each pass's own wallet). The remaining accounts are the wallets, writable, in
+    /// the order of `indices`.
+    pub fn pay_passes<'info>(ctx: Context<'_, '_, 'info, 'info, PayPasses<'info>>, indices: Vec<u32>) -> Result<()> {
+        let accs = ctx.remaining_accounts;
+        require!(!indices.is_empty() && indices.len() == accs.len(), VaultError::BadBatch);
+        require!(ctx.accounts.vault.reserved[PASS_MODE_BYTE] == 1, VaultError::NotPassMode);
+        let mint_key = ctx.accounts.vault.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[ctx.accounts.vault.auth_bump]];
+        let sys = ctx.accounts.system_program.to_account_info();
+        let auth = ctx.accounts.auth.to_account_info();
+        let vault_key = ctx.accounts.vault.key();
+        let mut total = 0u64;
+        let allocated;
+        {
+            let mut b = ctx.accounts.book.load_mut()?;
+            for (k, &i) in indices.iter().enumerate() {
+                let i = i as usize;
+                require!(i < b.count as usize, VaultError::BadIndex);
+                let wallet = &accs[k];
+                require_keys_eq!(wallet.key(), b.entries[i].wallet, VaultError::WrongAccount);
+                let amount = b.entries[i].owed.checked_sub(b.entries[i].paid).ok_or(VaultError::MathOverflow)?;
+                if amount == 0 {
+                    continue;
+                }
+                b.entries[i].paid = b.entries[i].owed;
+                pay_from_auth(&sys, &auth, wallet, amount, auth_seeds)?;
+                total = add(total, amount)?;
+                emit!(PassPaid { vault: vault_key, wallet: wallet.key(), amount, paid: b.entries[i].paid });
+            }
+            allocated = b.allocated;
+        }
+        let v = &mut ctx.accounts.vault;
+        v.holders_paid = add(v.holders_paid, total)?;
+        require!(v.holders_paid <= allocated && allocated <= v.holders_funded, VaultError::OverFunded);
+        check_solvent(&auth, v)
+    }
+
+    /// Add the next registered passes' addresses (token account, wallet) to the book's address
+    /// lookup tables, which this program owns (authority: the PDA `["pass_lut", vault]`), so
+    /// rounds can use short transactions with no outside key keeping tables up to date. The
+    /// first call creates the tables' record and starts with the vault, book and auth. A new
+    /// table is made when the current one is full: `table` is then the address derived from
+    /// `recent_slot`. Anyone may send it (the payer pays the tables' rent); the program
+    /// decides every address, so a table can only ever hold this book's accounts.
+    pub fn index_passes(ctx: Context<IndexPasses>, recent_slot: u64, max_passes: u8) -> Result<()> {
+        require!(ctx.accounts.vault.reserved[PASS_MODE_BYTE] == 1, VaultError::NotPassMode);
+        let vault_key = ctx.accounts.vault.key();
+        let mint = ctx.accounts.vault.mint;
+        let auth_key = Pubkey::find_program_address(&[b"auth", mint.as_ref()], &crate::ID).0;
+        let lt = &mut ctx.accounts.tables;
+        if lt.vault == Pubkey::default() {
+            lt.vault = vault_key;
+            lt.bump = ctx.bumps.tables;
+            lt.auth_bump = ctx.bumps.table_auth;
+        }
+        let mut addrs: Vec<Pubkey> = Vec::new();
+        if !lt.head_done {
+            addrs.extend([vault_key, ctx.accounts.book.key(), auth_key]);
+        }
+        let end = {
+            let b = ctx.accounts.book.load()?;
+            let n = (max_passes as usize).clamp(1, INDEX_BATCH);
+            let end = (b.count as usize).min(lt.indexed as usize + n);
+            for i in lt.indexed as usize..end {
+                addrs.push(b.entries[i].token_account);
+                addrs.push(b.entries[i].wallet);
+            }
+            end
+        };
+        require!(!addrs.is_empty(), VaultError::NothingToIndex);
+
+        let table_auth = ctx.accounts.table_auth.to_account_info();
+        let table = ctx.accounts.table.to_account_info();
+        let payer = ctx.accounts.payer.to_account_info();
+        let sys = ctx.accounts.system_program.to_account_info();
+        let alt = ctx.accounts.alt_program.to_account_info();
+        let seeds: &[&[u8]] = &[b"pass_lut", vault_key.as_ref(), &[lt.auth_bump]];
+        let n = lt.n_tables as usize;
+        if n == 0 || lt.lens[n - 1] as usize + addrs.len() > LUT_CAPACITY {
+            require!(n < MAX_PASS_TABLES, VaultError::PassTablesFull);
+            let (expected, bump) = Pubkey::find_program_address(&[table_auth.key.as_ref(), &recent_slot.to_le_bytes()], &ALT_PROGRAM_ID);
+            require_keys_eq!(table.key(), expected, VaultError::WrongAccount);
+            // CreateLookupTable { recent_slot, bump_seed } (bincode: u32 tag 0).
+            let mut data = 0u32.to_le_bytes().to_vec();
+            data.extend_from_slice(&recent_slot.to_le_bytes());
+            data.push(bump);
+            invoke_signed(
+                &Instruction { program_id: ALT_PROGRAM_ID, data, accounts: vec![
+                    AccountMeta::new(table.key(), false), AccountMeta::new_readonly(table_auth.key(), true),
+                    AccountMeta::new(payer.key(), true), AccountMeta::new_readonly(sys.key(), false)] },
+                &[table.clone(), table_auth.clone(), payer.clone(), sys.clone(), alt.clone()], &[seeds],
+            )?;
+            lt.tables[n] = expected;
+            lt.lens[n] = 0;
+            lt.n_tables += 1;
+        } else {
+            require_keys_eq!(table.key(), lt.tables[n - 1], VaultError::WrongAccount);
+        }
+        // ExtendLookupTable { new_addresses } (bincode: u32 tag 2, u64 length, the keys). The
+        // lookup-table program reads at most one packet (1,232 bytes) of instruction data, so
+        // add EXTEND_CHUNK addresses at a time.
+        for chunk in addrs.chunks(EXTEND_CHUNK) {
+            let mut data = 2u32.to_le_bytes().to_vec();
+            data.extend_from_slice(&(chunk.len() as u64).to_le_bytes());
+            for k in chunk {
+                data.extend_from_slice(k.as_ref());
+            }
+            invoke_signed(
+                &Instruction { program_id: ALT_PROGRAM_ID, data, accounts: vec![
+                    AccountMeta::new(table.key(), false), AccountMeta::new_readonly(table_auth.key(), true),
+                    AccountMeta::new(payer.key(), true), AccountMeta::new_readonly(sys.key(), false)] },
+                &[table.clone(), table_auth.clone(), payer.clone(), sys.clone(), alt.clone()], &[seeds],
+            )?;
+        }
+        let k = lt.n_tables as usize - 1;
+        lt.lens[k] += addrs.len() as u16;
+        lt.head_done = true;
+        lt.indexed = end as u32;
+        Ok(())
+    }
+
+    /// Remove a fully paid pass whose wallet now holds under `min_holding` (anyone may send
+    /// it), so the book only carries wallets that can earn. The last pass moves into its
+    /// place; its pass account comes as `moved`. The pass account's rent goes back to its
+    /// wallet.
+    pub fn remove_pass(ctx: Context<RemovePass>) -> Result<()> {
+        let now_slot = Clock::get()?.slot;
+        let mint = ctx.accounts.vault.mint;
+        let mut b = ctx.accounts.book.load_mut()?;
+        require!(!round_live(&b, now_slot), VaultError::RoundOpen);
+        b.round_open = 0;
+        let i = ctx.accounts.pass.index as usize;
+        let last = (b.count as usize).checked_sub(1).ok_or(VaultError::BadIndex)?;
+        require!(i <= last, VaultError::BadIndex);
+        require_keys_eq!(b.entries[i].wallet, ctx.accounts.pass.wallet, VaultError::WrongAccount);
+        require!(b.entries[i].owed == b.entries[i].paid, VaultError::PassNotEmpty);
+        require_keys_eq!(ctx.accounts.token_account.key(), b.entries[i].token_account, VaultError::WrongAccount);
+        let bal = holder_balance(&ctx.accounts.token_account.to_account_info(), &mint, &b.entries[i].wallet)?;
+        require!(bal < b.min_holding, VaultError::PassNotEmpty);
+        if i != last {
+            let moved = ctx.accounts.moved.as_mut().ok_or(VaultError::WrongAccount)?;
+            require_keys_eq!(moved.wallet, b.entries[last].wallet, VaultError::WrongAccount);
+            b.entries[i] = b.entries[last];
+            moved.index = i as u32;
+        }
+        b.entries[last] = PassEntry::default();
+        b.count -= 1;
+        // The moved pass's addresses are in the tables only if it was indexed; if not, index
+        // again from its new place (duplicates in a table are harmless).
+        if let Some(t) = ctx.accounts.tables.as_mut() {
+            if last as u32 >= t.indexed && (i as u32) < t.indexed {
+                t.indexed = i as u32;
+            }
+            t.indexed = t.indexed.min(b.count);
+        }
+        Ok(())
+    }
+}
+
+// ---------- holder passes: state and helpers ----------
+
+/// Byte of `Vault::reserved` that marks a vault with holder passes (1).
+pub const PASS_MODE_BYTE: usize = 0;
+/// Passes one book holds (256: ~22.6 KB, grown by alloc_pass_book in 10 KB steps).
+pub const MAX_PASSES: usize = 256;
+/// A full pass book's account size.
+pub const PASS_BOOK_LEN: usize = 8 + std::mem::size_of::<PassBook>();
+/// A round's batches must all land within this many slots of its first (~60 s: room for a
+/// wallet to send five batches one after another). The window's length doesn't change the
+/// pot cap's argument: every move between batches pays the transfer tax.
+pub const MAX_BATCH_SLOTS: u64 = 150;
+/// A round read over several batches pays out at most this percentage of the transfer tax
+/// rate on the eligible tokens' value (80%: 4% on a 5% tax). Moving tokens between batches
+/// to be counted twice then costs the tax for a smaller gain. The rate is the one the
+/// whole eligible amount would pay, so a token's maximum fee can only lower the cap.
+pub const POT_CAP_PCT_OF_TAX: u64 = 80;
+/// Registering needs this many times the reward minimum (`min_holding`) in the wallet.
+pub const REGISTER_HOLDING_MULT: u64 = 2;
+/// Closing a round pays its caller this share of the round (1%), at most ROUND_REWARD_CAP.
+pub const ROUND_REWARD_BPS: u64 = 100;
+pub const ROUND_REWARD_CAP: u64 = CRANK_REWARD_CAP;
+/// The address lookup table program (holder-pass tables are owned by this program's PDA).
+pub const ALT_PROGRAM_ID: Pubkey = pubkey!("AddressLookupTab1e1111111111111111111111111");
+/// Lookup tables one book's addresses can take (256 addresses each; a full book needs 3).
+pub const MAX_PASS_TABLES: usize = 4;
+/// Passes index_passes adds per call (two addresses each).
+pub const INDEX_BATCH: usize = 25;
+/// Addresses an address lookup table holds.
+pub const LUT_CAPACITY: usize = 256;
+/// Addresses per ExtendLookupTable call (its data must fit one 1,232-byte packet: 12 + 32 each).
+pub const EXTEND_CHUNK: usize = 30;
+
+/// One registered wallet.
+#[zero_copy]
+#[derive(Default)]
+pub struct PassEntry {
+    pub wallet: Pubkey,
+    /// The wallet's associated Token-2022 account for the tax token: what snapshots read.
+    pub token_account: Pubkey,
+    /// Counted balance in the round being read (0 under `min_holding`).
+    pub weight: u64,
+    /// Cumulative XNT allocated to this pass.
+    pub owed: u64,
+    /// Cumulative XNT paid to its wallet.
+    pub paid: u64,
+}
+
+/// A vault's holder passes and its round state (PDA `["passes", vault]`).
+#[account(zero_copy)]
+pub struct PassBook {
+    pub vault: Pubkey,
+    pub min_holding: u64,
+    pub min_pot: u64,
+    pub min_interval: i64,
+    /// Cumulative XNT of the holders' share allocated to passes (plus what lists allocated
+    /// before passes were turned on).
+    pub allocated: u64,
+    pub rounds: u64,
+    pub round_start_slot: u64,
+    pub round_weight: u64,
+    pub last_round_at: i64,
+    pub count: u32,
+    pub round_next: u32,
+    pub round_open: u8,
+    pub bump: u8,
+    /// Snapshot batches read in the current (or last) round.
+    pub round_batches: u8,
+    pub _pad: [u8; 5],
+    pub entries: [PassEntry; MAX_PASSES],
+}
+
+/// A wallet's pass (PDA `["pass", vault, wallet]`): one per wallet, and where it sits in the book.
+#[account]
+#[derive(InitSpace)]
+pub struct Pass {
+    pub wallet: Pubkey,
+    pub index: u32,
+    pub bump: u8,
+}
+
+/// A round is being read and its window hasn't run out.
+fn round_live(b: &PassBook, slot: u64) -> bool {
+    b.round_open == 1 && slot <= b.round_start_slot.saturating_add(MAX_BATCH_SLOTS)
+}
+
+/// The tax-token balance a snapshot counts for `wallet`: its associated account's amount,
+/// or 0 when that account doesn't exist (yet) or isn't a Token-2022 account of `mint` owned
+/// by `wallet`.
+fn holder_balance(acc: &AccountInfo, mint: &Pubkey, wallet: &Pubkey) -> Result<u64> {
+    if *acc.owner != token_2022::ID {
+        return Ok(0);
+    }
+    let d = acc.try_borrow_data()?;
+    if d.len() < 165 || d[0..32] != mint.to_bytes() || d[32..64] != wallet.to_bytes() {
+        return Ok(0);
+    }
+    Ok(u64::from_le_bytes(d[64..72].try_into().unwrap()))
+}
+
+#[derive(Accounts)]
+pub struct InitPasses<'info> {
+    #[account(mut)]
+    pub guardian: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    /// Created at full size by alloc_pass_book, not yet initialised.
+    #[account(zero, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AllocPassBook<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    /// CHECK: the vault's pass book PDA, created or grown here (owner and size checked).
+    #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RegisterPass<'info> {
+    #[account(mut)]
+    pub wallet: Signer<'info>,
+    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+    #[account(init, payer = wallet, space = 8 + Pass::INIT_SPACE, seeds = [b"pass", vault.key().as_ref(), wallet.key().as_ref()], bump)]
+    pub pass: Account<'info, Pass>,
+    /// CHECK: the wallet's associated Token-2022 account (checked in the instruction).
+    pub token_account: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SnapshotBatch<'info> {
+    pub caller: Signer<'info>,
+    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+}
+
+#[derive(Accounts)]
+pub struct CloseRound<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    /// CHECK: the vault's mint, for its transfer tax.
+    #[account(address = vault.mint)]
+    pub mint: UncheckedAccount<'info>,
+    #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+    /// CHECK: must be the vault's pool (checked in the instruction).
+    pub pool: UncheckedAccount<'info>,
+    /// CHECK: the pool's tax-token vault (checked by PoolView::reserve).
+    pub token_vault: UncheckedAccount<'info>,
+    /// CHECK: the pool's wXNT vault (checked by PoolView::reserve).
+    pub wxnt_vault: UncheckedAccount<'info>,
+    #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct PayPasses<'info> {
+    pub caller: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+    #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SponsorHolders<'info> {
+    #[account(mut)]
+    pub sponsor: Signer<'info>,
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RemovePass<'info> {
+    pub caller: Signer<'info>,
+    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+    #[account(mut, close = wallet, seeds = [b"pass", vault.key().as_ref(), pass.wallet.as_ref()], bump = pass.bump)]
+    pub pass: Account<'info, Pass>,
+    /// CHECK: the pass's wallet; gets the pass account's rent back.
+    #[account(mut, address = pass.wallet)]
+    pub wallet: UncheckedAccount<'info>,
+    /// CHECK: the wallet's tax-token account (checked against the book in the instruction).
+    pub token_account: UncheckedAccount<'info>,
+    /// The last pass in the book, which moves into the removed one's place (omit when it is the removed one).
+    #[account(mut, seeds = [b"pass", vault.key().as_ref(), moved.wallet.as_ref()], bump = moved.bump)]
+    pub moved: Option<Account<'info, Pass>>,
+    /// The book's lookup-table record, once index_passes has made it.
+    #[account(mut, seeds = [b"pass_tables", vault.key().as_ref()], bump = tables.bump)]
+    pub tables: Option<Box<Account<'info, PassTables>>>,
+}
+
+#[derive(Accounts)]
+pub struct IndexPasses<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+    #[account(init_if_needed, payer = payer, space = 8 + PassTables::INIT_SPACE, seeds = [b"pass_tables", vault.key().as_ref()], bump)]
+    pub tables: Box<Account<'info, PassTables>>,
+    /// CHECK: the tables' authority: a PDA of this program that signs by its seeds.
+    #[account(seeds = [b"pass_lut", vault.key().as_ref()], bump)]
+    pub table_auth: UncheckedAccount<'info>,
+    /// CHECK: the current table, or the new one's derived address (checked in the instruction).
+    #[account(mut)]
+    pub table: UncheckedAccount<'info>,
+    /// CHECK: the address lookup table program.
+    #[account(address = ALT_PROGRAM_ID)]
+    pub alt_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// The lookup tables this program keeps for a book (PDA `["pass_tables", vault]`).
+#[account]
+#[derive(InitSpace)]
+pub struct PassTables {
+    pub vault: Pubkey,
+    pub tables: [Pubkey; MAX_PASS_TABLES],
+    /// Addresses in each table.
+    pub lens: [u16; MAX_PASS_TABLES],
+    pub n_tables: u8,
+    /// Passes whose addresses are in the tables (book order).
+    pub indexed: u32,
+    /// The vault, book and auth are in the first table.
+    pub head_done: bool,
+    pub bump: u8,
+    pub auth_bump: u8,
+}
+
+#[event]
+pub struct PassRegistered {
+    pub vault: Pubkey,
+    pub wallet: Pubkey,
+    pub index: u32,
+}
+
+#[event]
+pub struct RoundClosed {
+    pub vault: Pubkey,
+    pub round: u64,
+    pub weight: u64,
+    pub pot: u64,
+    pub allocated: u64,
+    /// Paid to whoever closed the round (ROUND_REWARD_BPS of it, capped).
+    pub reward: u64,
+}
+
+#[event]
+pub struct HoldersSponsored {
+    pub vault: Pubkey,
+    pub sponsor: Pubkey,
+    pub amount: u64,
+    pub holders_funded: u64,
+}
+
+#[event]
+pub struct PassPaid {
+    pub vault: Pubkey,
+    pub wallet: Pubkey,
+    pub amount: u64,
+    pub paid: u64,
 }
 
 /// Check a payout proof against the active list (or, in fallback, the scaled-up share),
@@ -1842,6 +2503,45 @@ pub mod math {
         require!(paid_total <= holders_funded, VaultError::OverFunded);
         Ok(Fallback { entitled, amount })
     }
+
+    /// What a multi-batch holder-pass round pays out: the waiting pot, capped at `cap_bps` of
+    /// the eligible tokens' value at the pool's price (`weight * reserve_xnt / reserve_token`,
+    /// u128, rounded down).
+    pub fn pass_pot(pot: u64, weight: u64, reserve_xnt: u64, reserve_token: u64, cap_bps: u64) -> Result<u64> {
+        require!(reserve_token > 0, VaultError::BadPool);
+        let value = weight as u128 * reserve_xnt as u128 / reserve_token as u128;
+        let cap = value * cap_bps as u128 / BPS as u128;
+        Ok((pot as u128).min(cap) as u64)
+    }
+
+    /// The multi-batch pot cap in basis points: POT_CAP_PCT_OF_TAX of the tax rate that
+    /// moving the whole eligible amount (`weight`, taxed `tax_on_weight`) would pay.
+    pub fn pass_cap_bps(tax_on_weight: u64, weight: u64) -> u64 {
+        if weight == 0 {
+            return 0;
+        }
+        let rate_bps = tax_on_weight as u128 * BPS as u128 / weight as u128;
+        (rate_bps * POT_CAP_PCT_OF_TAX as u128 / 100) as u64
+    }
+
+    /// What closing a round pays its caller: ROUND_REWARD_BPS of the round, capped at
+    /// ROUND_REWARD_CAP (the same 1% / 0.05 XNT as a sale's crank reward).
+    pub fn round_reward(alloc: u64) -> u64 {
+        ((alloc as u128 * ROUND_REWARD_BPS as u128 / BPS as u128) as u64).min(ROUND_REWARD_CAP)
+    }
+
+    /// The balance a wallet needs to register a pass: REGISTER_HOLDING_MULT times the reward
+    /// minimum, and never zero.
+    pub fn register_minimum(min_holding: u64) -> u64 {
+        min_holding.saturating_mul(REGISTER_HOLDING_MULT).max(1)
+    }
+
+    /// One pass's share of a round: floor(alloc * weight / total); the shares never add up
+    /// to more than `alloc`.
+    pub fn pass_share(alloc: u64, weight: u64, total: u64) -> Result<u64> {
+        require!(total > 0 && weight <= total, VaultError::MathOverflow);
+        to_u64(alloc as u128 * weight as u128 / total as u128)
+    }
 }
 
 // ---------- State ----------
@@ -2488,6 +3188,42 @@ pub enum VaultError {
     BadPayoutMint,
     #[msg("Payout pool must be the payout token's XDEX pool against wXNT, with swaps open")]
     BadPayoutPool,
+    #[msg("This vault has no holder passes")]
+    NotPassMode,
+    #[msg("This vault splits the holders' share with holder passes")]
+    PassModeOn,
+    #[msg("Register from a top-level instruction (a wallet, not a program)")]
+    NotTopLevel,
+    #[msg("The pass book is full")]
+    PassBookFull,
+    #[msg("A round is being read; try after it closes or expires")]
+    RoundOpen,
+    #[msg("No round is being read")]
+    RoundNotOpen,
+    #[msg("This round's batches ran past their window; start a new round")]
+    RoundExpired,
+    #[msg("Batch must continue where the last one stopped, inside the book")]
+    BadBatch,
+    #[msg("Too soon after the last round")]
+    RoundTooSoon,
+    #[msg("Not enough waiting for holders yet")]
+    PotTooSmall,
+    #[msg("Every registered pass must be read before the round closes")]
+    RoundIncomplete,
+    #[msg("Pass still holds enough tokens or is owed XNT")]
+    PassNotEmpty,
+    #[msg("No pass at that index")]
+    BadIndex,
+    #[msg("A list is pending")]
+    PendingList,
+    #[msg("Bad holder-pass settings")]
+    BadPassConfig,
+    #[msg("Wallet holds too few tokens to register")]
+    HoldingTooSmall,
+    #[msg("Every pass is already in the lookup tables")]
+    NothingToIndex,
+    #[msg("The book's lookup tables are full")]
+    PassTablesFull,
 }
 
 #[cfg(test)]
@@ -3087,5 +3823,67 @@ mod tests {
         assert_eq!(promised(&v).unwrap(), 10 + 20 + 7);
         v.holders_paid = 101;
         assert!(promised(&v).is_err(), "paid can never pass funded");
+    }
+
+    #[test]
+    fn pass_pot_caps_below_the_tax() {
+        // 368M tokens (9 decimals) at 0.0000231 XNT each ≈ 8,500 XNT eligible; 4% ≈ 340 XNT.
+        let weight = 368_000_000 * 1_000_000_000u64;
+        let (reserve_xnt, reserve_token) = (3_560 * 1_000_000_000u64, 154_000_000 * 1_000_000_000u64);
+        let cap_bps = pass_cap_bps(weight / 20, weight); // 5% tax
+        assert_eq!(cap_bps, 400);
+        let value = weight as u128 * reserve_xnt as u128 / reserve_token as u128;
+        let cap = (value * 4 / 100) as u64;
+        assert_eq!(pass_pot(2_000_000_000, weight, reserve_xnt, reserve_token, cap_bps).unwrap(), 2_000_000_000, "small pot paid whole");
+        assert_eq!(pass_pot(1_000 * 1_000_000_000, weight, reserve_xnt, reserve_token, cap_bps).unwrap(), cap, "big pot capped");
+        assert_eq!(pass_pot(5, 0, reserve_xnt, reserve_token, cap_bps).unwrap(), 0, "nothing eligible, nothing paid");
+        assert!(pass_pot(5, 1, 1, 0, cap_bps).is_err());
+        assert_eq!(pass_cap_bps(weight / 1_000, weight), 8, "a maximum fee that binds lowers the cap");
+        assert_eq!(pass_cap_bps(0, weight), 0, "no tax, no multi-batch payout");
+        assert_eq!(pass_cap_bps(5, 0), 0);
+    }
+
+    #[test]
+    fn round_reward_is_one_percent_capped() {
+        assert_eq!(round_reward(2_523_976_000), 25_239_760);
+        assert_eq!(round_reward(20_000_000_000), ROUND_REWARD_CAP);
+        assert_eq!(round_reward(0), 0);
+    }
+
+    #[test]
+    fn lut_data_matches_the_program_layout() {
+        // A new table starts when the next batch doesn't fit, so each table may leave up to
+        // one batch minus one address unused; a full book (3 + 2 × 256) must still fit.
+        assert!(3 + 2 * MAX_PASSES <= MAX_PASS_TABLES * (LUT_CAPACITY - (2 * INDEX_BATCH - 1)));
+        assert!(3 + 2 * INDEX_BATCH <= LUT_CAPACITY);
+        assert!(12 + 32 * EXTEND_CHUNK <= 1_232, "one extend's data fits a packet");
+    }
+
+    #[test]
+    fn registering_needs_more_than_the_reward_minimum() {
+        assert_eq!(register_minimum(1_000), 2_000);
+        assert_eq!(register_minimum(0), 1, "an empty wallet never registers");
+        assert_eq!(register_minimum(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn pass_shares_never_exceed_the_round() {
+        let ws = [3u64, 5, 7, 11, 13, 1_000_003];
+        let total: u64 = ws.iter().sum();
+        for alloc in [0u64, 1, 999, 1_000_000_007, u64::MAX / 2] {
+            let given: u128 = ws.iter().map(|&w| pass_share(alloc, w, total).unwrap() as u128).sum();
+            assert!(given <= alloc as u128);
+            assert!(alloc as u128 - given < ws.len() as u128, "rounding loses under one unit per pass");
+        }
+        assert!(pass_share(10, 2, 1).is_err());
+        assert!(pass_share(10, 0, 0).is_err());
+    }
+
+    #[test]
+    fn pass_book_grows_in_three_steps() {
+        assert_eq!(std::mem::size_of::<PassEntry>(), 88);
+        assert!(PASS_BOOK_LEN > 2 * MAX_PERMITTED_DATA_INCREASE && PASS_BOOK_LEN <= 3 * MAX_PERMITTED_DATA_INCREASE, "{PASS_BOOK_LEN}");
+        // The entries come last, so a 100-pass book grown to 256 keeps its passes in place.
+        assert_eq!(std::mem::offset_of!(PassBook, entries) + 8, PASS_BOOK_LEN - MAX_PASSES * 88);
     }
 }

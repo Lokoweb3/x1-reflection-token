@@ -27,11 +27,11 @@
  */
 import crypto from "node:crypto";
 import bs58 from "bs58";
-import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { AddressLookupTableAccount, Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
 import { DEFAULT_MIN_HARVEST_XNT, fromBaseUnits, toBaseUnits, xnt } from "./config.js";
 import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, type EligibilityRules } from "./holders.js";
-import { outcome, sendAndConfirm, sign, simulate, withPriority } from "./tx.js";
+import { outcome, sendAndConfirm, sign, signV0, simulate, withPriority } from "./tx.js";
 import { decodePool, maxLpFor, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "./xdex.js";
 import {
   CID_CODEC, CRANK_REWARD_BPS, CRANK_REWARD_CAP, fundHoldersIx, payFallbackTokenIx, payTokenIx, paysInToken, payoutPoolAccountsFrom, MIN_LP_XNT, MIN_SELL_XNT, OUT_TOLERANCE_BPS, PAID_RECORD_DISC, PAID_RECORD_LEN, RENT_EXEMPT_EMPTY,
@@ -40,6 +40,10 @@ import {
   rewardPoolAccountsFrom, rewardTokenInfo, sellBuckets, sellImpactBps, sellIx, upgradeVaultIx, vaultAuthPda, vaultPda,
   type Vault, type VaultEvent, type VaultPoolAccounts,
 } from "./taxvault.js";
+import {
+  MAX_PASSES, PAY_BATCH_LUT, SNAPSHOT_BATCH_LUT, allocPassBookIx, allocSteps, closeRoundIx, decodePassBook, indexPlan, passBookPda, passModeOn, passTablesFor, passPot, payBatches, payPassesIx,
+  snapshotBatchIx, snapshotBatches, type PassBook,
+} from "./passes.js";
 
 /** Most harvest accounts one collect carries (also capped by transaction size). */
 export const MAX_HARVEST_PER_TX = 20;
@@ -318,10 +322,15 @@ export function vaultCrank(env: CrankEnv) {
     return null;
   }
 
-  async function send(t: CrankToken, v: Vault, label: string, ixs: TransactionInstruction[], units: number) {
-    const signed = await sign(conn, withPriority(ixs, env.microLamports, units), signer);
+  async function send(t: CrankToken, v: Vault, label: string, ixs: TransactionInstruction[], units: number, tables: AddressLookupTableAccount[] = []) {
+    const budgeted = withPriority(ixs, env.microLamports, units);
+    const signed = tables.length ? await signV0(conn, budgeted, signer, tables) : await sign(conn, budgeted, signer);
     try {
-      await simulate(conn, signed.tx);
+      if (signed.tx instanceof Transaction) await simulate(conn, signed.tx);
+      else {
+        const sim = await conn.simulateTransaction(signed.tx, { commitment: "confirmed" });
+        if (sim.value.err) throw new Error(`Simulation failed: ${JSON.stringify(sim.value.err)}\n${(sim.value.logs ?? []).join("\n")}`);
+      }
     } catch (e) {
       const name = errorOf(msg(e));
       throw new Error(name ? `${label}: ${name}` : `${label}: ${msg(e).split("\n")[0]}`);
@@ -574,7 +583,75 @@ export function vaultCrank(env: CrankEnv) {
     return { signature, activeAt: pub?.name === "ListPublished" ? pub.activeAt : null };
   }
 
-  return { readVault, send, upgrade, poolOf, taxWaiting, collect, sell, liquidity, creator, creatorQuote, holders, pay, nextList, publish, fits };
+  // ---------- holder passes (testnet trial): the holders' share split on-chain ----------
+
+  /** The vault's pass book, or null when holder passes aren't on. */
+  async function readPassBook(v: Vault): Promise<PassBook | null> {
+    const [raw, book] = await conn.getMultipleAccountsInfo([v.address, passBookPda(program, v.address)], "confirmed");
+    if (!raw || !passModeOn(raw.data) || !book) return null;
+    return decodePassBook(passBookPda(program, v.address), book.data);
+  }
+
+  /**
+   * The book's address lookup tables, which the vault program owns: first send index_passes
+   * for any passes not yet in them (the program decides every address; the crank only pays
+   * the transaction and rent), then the tables that cover the book, or [] (rounds then use
+   * plain transactions). A table only shortens transactions: the program checks every
+   * account either way.
+   */
+  async function passTables(t: CrankToken, v: Vault, book: PassBook, notes: string[]): Promise<AddressLookupTableAccount[]> {
+    const plan = await indexPlan(conn, program, t.mint, book, signer.publicKey);
+    for (const ix of plan) await send(t, v, "index_passes", [ix], 120_000);
+    if (plan.length) {
+      notes.push(`passes: program lookup tables +${plan.length} batch${plan.length === 1 ? "" : "es"}`);
+      // New entries can be used from the slot after they were added.
+      const s0 = await conn.getSlot("confirmed");
+      while ((await conn.getSlot("confirmed")) <= s0 + 1) await sleep(400);
+    }
+    return passTablesFor(conn, program, t.mint, book);
+  }
+
+  /**
+   * One holder-pass pass: when a round is due (pot ≥ the book's minimum, interval passed,
+   * someone registered), read every pass in batches back to back, close the round, then
+   * pay every pass owed something. With the crank's lookup table the batches are larger
+   * (SNAPSHOT_BATCH_LUT, PAY_BATCH_LUT); without it, plain transactions. A round that runs
+   * past its window is simply started again next time.
+   */
+  async function passRound(t: CrankToken, v: Vault, pool: VaultPoolAccounts, notes: string[]) {
+    let book = await readPassBook(v);
+    if (!book) return;
+    // A book made before passes went to MAX_PASSES grows in place first (the program can't load it until then).
+    const len = (await conn.getAccountInfo(book.address, "confirmed"))?.data.length ?? 0;
+    const steps = allocSteps(len);
+    if (steps) {
+      await send(t, v, `alloc_pass_book ×${steps}`, Array.from({ length: steps }, () => allocPassBookIx(program, signer.publicKey, t.mint)), 60_000);
+      notes.push(`passes: book grown to ${MAX_PASSES} passes`);
+    }
+    const pot = passPot(v.holdersFunded, book);
+    const due = book.count > 0 && pot > 0n && pot >= book.minPot && nowSecs() >= book.lastRoundAt + book.minInterval;
+    const owed = payBatches(book).length > 0;
+    const tables = due || owed ? await passTables(t, v, book, notes).catch((e): AddressLookupTableAccount[] => { notes.push(`passes: no lookup table (${msg(e)})`); return []; }) : [];
+    const table = tables.length > 0;
+    if (!due) {
+      notes.push(`passes: ${book.count} registered, ${xnt(pot)} waiting (round at ${xnt(book.minPot)})`);
+    } else {
+      const batches = snapshotBatches(book, table ? SNAPSHOT_BATCH_LUT : undefined);
+      for (const b of batches) {
+        await send(t, v, `snapshot_batch ${b.start}+${b.accounts.length}`, [snapshotBatchIx(program, signer.publicKey, t.mint, b.start, b.accounts)], 1_000_000, tables);
+      }
+      await send(t, v, `close_round (${book.count} passes)`, [closeRoundIx(program, signer.publicKey, t.mint, pool.pool, pool.tokenVault, pool.wxntVault)], 600_000, tables);
+      const before = book.allocated;
+      book = (await readPassBook(v)) ?? book;
+      notes.push(`passes: round read ${book.count} wallets in ${batches.length} batch${batches.length === 1 ? "" : "es"} and gave ${xnt(book.allocated - before)} of ${xnt(pot)}`);
+    }
+    for (const batch of payBatches(book, table ? PAY_BATCH_LUT : undefined)) {
+      await send(t, v, `pay_passes (${batch.length} wallets)`, [payPassesIx(program, signer.publicKey, t.mint, batch)], 1_000_000, tables);
+      notes.push(`passes: paid ${batch.length} wallets`);
+    }
+  }
+
+  return { readVault, send, upgrade, poolOf, taxWaiting, collect, sell, liquidity, creator, creatorQuote, holders, pay, nextList, publish, fits, readPassBook, passRound };
 }
 
 /** Whether the vault is in fallback now, with a margin so the chain's clock agrees. */

@@ -58,6 +58,10 @@ dl { margin: 0; display: grid; gap: 4px; }
 .win { border: 1px dashed var(--rule); border-radius: 6px; padding: 10px; display: grid; gap: 2px; font-size: 14px; }
 .win.open { background: var(--open); border: 1px solid var(--accent); }
 ol.steps { margin: 8px 0; padding-left: 22px; }
+table.passes { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+table.passes th, table.passes td { padding: 3px 6px; border-bottom: 1px solid var(--rule); text-align: left; }
+table.passes td.n { text-align: right; font-variant-numeric: tabular-nums; }
+table.passes tr.me { background: var(--open); }
 ol.log { list-style: none; padding: 0; margin: 0; font-size: 14px; display: grid; gap: 4px; }
 .how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 @media (max-width: 700px) { .how { grid-template-columns: 1fr; } }
@@ -75,7 +79,7 @@ footer { margin-top: 40px; font-size: 13px; color: var(--ink-3); border-top: 1px
     <p class="lede">Keeps any 99 + Tax vault running if the 99 + Tax site is gone. This page is one file on IPFS. It talks only to an X1 RPC, IPFS gateways and your wallet, and the program decides every amount: whoever runs it can't take anything.</p>
   </header>
 
-  <div class="how">
+  <div class="how" id="how">
     <div><b>Anyone: run the vault</b>Collect the tax, sell it, add liquidity, pay the creator reward and pay holders from the published list. You earn the crank reward.</div>
     <div><b>Creator, after 7 days: appoint</b>If no rewards list is published for 7 days, the token's creator appoints a new publisher.</div>
     <div><b>Anyone, after 30 days: fallback</b>If still no list, running the vault pays holders their share of everything funded, from the last list.</div>
@@ -131,13 +135,13 @@ footer { margin-top: 40px; font-size: 13px; color: var(--ink-3); border-top: 1px
   <h2>Activity</h2>
   <section class="panel"><ol class="log" id="log"><li class="muted placeholder">Nothing yet.</li></ol></section>
 
-  <p class="note">This page can't publish <em>new</em> rewards lists (that needs a holder snapshot and an IPFS upload). The appointed publisher does that with <code>scripts/crank.ts --publisher</code> from the open-source repo; until then, fallback payouts keep holders paid.</p>
+  <p class="note" id="listNote">This page can't publish <em>new</em> rewards lists (that needs a holder snapshot and an IPFS upload). The appointed publisher does that with <code>scripts/crank.ts --publisher</code> from the open-source repo; until then, fallback payouts keep holders paid.</p>
 
   <footer>
-    Built from github.com/Lokoweb3/x1-reflection-token (src/recovery) · commit <span class="mono">__COMMIT__</span> · Tax Vault program <span class="mono">D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW</span>. Save a copy of this file: it works from any IPFS gateway or web host.
+    Built from github.com/Lokoweb3/x1-reflection-token (src/recovery) · commit <span class="mono">__COMMIT__</span> · Tax Vault program <span class="mono" id="progFoot">D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW</span>. Save a copy of this file: it works from any IPFS gateway or web host.
   </footer>
 </main>
-<script>window.RECOVERY_NET = "__NET__";</script>
+<script>window.RECOVERY_NET = "__NET__"; window.RECOVERY_PROGRAM = "__PROGRAM__";</script>
 <script>__WALLET__</script>
 <script>__APP__</script>
 </body>

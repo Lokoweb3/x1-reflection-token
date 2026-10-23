@@ -146,8 +146,8 @@ window.X1Wallet = (() => {
       }
       if (state.legacy?.signAllTransactions) {
         await loadWeb3();
-        const signed = await state.legacy.signAllTransactions(list.map((b) => window.solanaWeb3.Transaction.from(b)));
-        return signed.map((t) => t.serialize({ requireAllSignatures: true }));
+        const signed = await state.legacy.signAllTransactions(list.map(txFrom));
+        return signed.map(txBytes);
       }
     } catch (e) {
       const m = String(e?.message ?? e), net = siteNet();
@@ -167,9 +167,15 @@ window.X1Wallet = (() => {
     }
     if (!state.legacy) throw new Error(tr("Connect a wallet first."));
     await loadWeb3();
-    const signed = await state.legacy.signTransaction(window.solanaWeb3.Transaction.from(bytes));
-    return signed.serialize({ requireAllSignatures: true });
+    const signed = await state.legacy.signTransaction(txFrom(bytes));
+    return txBytes(signed);
   }
+  /** A legacy or a v0 transaction from its bytes (a v0 message starts with the high bit set). */
+  function txFrom(bytes) {
+    const W3 = window.solanaWeb3;
+    return bytes[1 + bytes[0] * 64] & 0x80 ? W3.VersionedTransaction.deserialize(bytes) : W3.Transaction.from(bytes);
+  }
+  const txBytes = (t) => (t instanceof window.solanaWeb3.VersionedTransaction ? t.serialize() : t.serialize({ requireAllSignatures: true }));
 
   const b64ToBytes = (b) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
   function bytesToB64(bytes) {

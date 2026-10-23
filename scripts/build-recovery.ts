@@ -30,7 +30,10 @@ const network = flag("network") ?? "testnet";
 if (network !== "testnet" && network !== "mainnet") throw new Error("--network must be testnet or mainnet");
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const shortWindows = argv.includes("--short-windows");
-const out = path.resolve(flag("out") ?? path.join(root, "dist", `recovery-${network}${shortWindows ? "-rehearsal" : ""}.html`));
+// --program: the vault program this copy opens by default (e.g. the holder-passes trial's).
+const program = flag("program") ?? "";
+if (program && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(program)) throw new Error("--program must be a program address");
+const out = path.resolve(flag("out") ?? path.join(root, "dist", `recovery-${network}${program ? `-${program.slice(0, 5)}` : ""}${shortWindows ? "-rehearsal" : ""}.html`));
 const shim = (f: string) => path.join(root, "src/recovery/shims", f);
 
 const res = await build({
@@ -47,7 +50,7 @@ const wallet = fs.readFileSync(path.join(root, "src/web/wallet.js"), "utf8").rep
 let commit = "unknown";
 try { commit = execSync("git rev-parse --short HEAD", { cwd: root }).toString().trim() + (execSync("git status --porcelain src scripts", { cwd: root }).toString().trim() ? "+local" : ""); } catch {}
 const html = fs.readFileSync(path.join(root, "src/recovery/page.html"), "utf8")
-  .replace("__NET__", network).replace("__COMMIT__", commit + (shortWindows ? " · REHEARSAL BUILD (short windows), not for real vaults" : ""))
+  .replace("__NET__", network).replace("__PROGRAM__", program).replace("__COMMIT__", commit + (shortWindows ? " · REHEARSAL BUILD (short windows), not for real vaults" : ""))
   .replace("<script>__WALLET__</script>", () => `<script>${wallet}</script>`)
   .replace("<script>__APP__</script>", () => `<script>${app}</script>`);
 fs.mkdirSync(path.dirname(out), { recursive: true });
