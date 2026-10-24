@@ -249,7 +249,9 @@ export function validateParams(raw: Record<string, unknown>, quoteSymbols: strin
     }
     return v;
   };
-  const supply = whole("supply", 1_000n, 1_000_000_000_000n);
+  // At 9 decimals u64 holds about 18.4 billion whole tokens; above that the mint amount wraps
+  // (spl-token drops the high bits) and the pool step can never be built. Same cap as curves.
+  const supply = whole("supply", 1_000n, 10_000_000_000n);
   // The whole supply always goes into the pool: creators start with no tokens.
   const poolTokens = whole("poolTokens", 1n, BigInt(supply));
   if (poolTokens !== supply) throw new Error("The whole supply must go into the pool (100%)");

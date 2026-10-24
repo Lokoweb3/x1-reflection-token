@@ -181,6 +181,10 @@ test("launch pair: XNT by default, only offered pairs, and pool amounts per pair
   assert.throws(() => validateParams({ ...ok, quote: "JACK", poolXnt: "0" }, ["JACK"]));
   assert.throws(() => validateParams({ ...ok, quote: "JACK", poolXnt: "0.0000000001" }, ["JACK"]));
   assert.throws(() => validateParams({ ...ok, poolXnt: "0.001" }), /at least 0.01/);
+  // Supplies whose base units (9 decimals) don't fit in a u64 are refused before anything is built.
+  assert.equal(validateParams({ ...ok, supply: "10000000000", poolTokens: "10000000000" }).supply, "10000000000");
+  assert.ok(10_000_000_000n * 10n ** 9n < 2n ** 64n);
+  for (const big of ["10000000001", "100000000000", "1000000000000"]) assert.throws(() => validateParams({ ...ok, supply: big, poolTokens: big }), /1,000 to 10,000,000,000/);
 
   const cfg = { factory: { quoteTokens: [{ symbol: "JACK", mint: JACK.toBase58(), xntPool: "wdLWfF28MtU6Tns7nix5xnfGPZufFKoME4FpFyaf3VW" }] } } as unknown as Config;
   assert.equal(pairOf(cfg, {}), XNT_PAIR);
