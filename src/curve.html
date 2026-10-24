@@ -367,7 +367,7 @@ function createForm() {
       // Holder passes (testnet trial): only where the site runs the passes program.
       info?.taxVault?.passes && info.taxVault.launches ? el("div", { class: "row" },
         el("label", { class: "check" }, el("input", { name: "passes", type: "checkbox", value: "1" }), tr("Holder passes (testnet trial)"),
-          el("span", { class: "hint", text: tr("Holders register a pass and the vault program splits their share itself, on-chain, in rounds anyone can run. Paid in XNT. After graduation you approve one more transaction to turn the passes on.") }))) : null),
+          el("span", { class: "hint", text: tr("Only holders who register a pass earn (up to 256 wallets; holding alone earns nothing). The vault program splits their share itself, on-chain, in rounds anyone can run; whoever runs a round keeps 1% of it. Paid in XNT. After graduation you approve two more transactions: start the vault, then turn the passes on.") }))) : null),
     el("p", { class: "callout", text: tr("No tax while on the curve; the tax starts at graduation. Tokens arrive in your wallet at graduation.") }),
     el("table", { class: "costs", id: "costs" }),
     el("p", { class: "muted", text: p.creatorCanBuy ? tr("On testnet the creator can also buy (for testing); on mainnet you can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") : tr("You can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") }),

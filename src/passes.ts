@@ -161,6 +161,61 @@ export function payPassesIx(program: PublicKey, caller: PublicKey, mint: PublicK
   });
 }
 
+/**
+ * remove_pass for the pass at `index` (anyone may send it once the wallet holds less than
+ * the book's minimum and is owed nothing): the book's last pass moves into its place, and
+ * the pass account's rent goes back to its wallet. `tables`: whether the book's lookup-table
+ * record exists (the program then keeps its `indexed` count right; leave it out and it
+ * isn't). An omitted optional account is passed as the program's own ID (Anchor's rule).
+ */
+export function removePassIx(program: PublicKey, caller: PublicKey, mint: PublicKey, book: Pick<PassBook, "count" | "entries">, index: number, tables: boolean) {
+  const vault = vaultPda(program, mint);
+  const e = book.entries[index], last = book.entries[book.count - 1];
+  return new TransactionInstruction({
+    programId: program, data: disc("remove_pass"),
+    keys: [m(caller, true, false), m(vault, false, false), m(passBookPda(program, vault), false, true),
+      m(passPda(program, vault, e.wallet), false, true), m(e.wallet, false, true), m(e.tokenAccount, false, false),
+      index === book.count - 1 ? m(program, false, false) : m(passPda(program, vault, last.wallet), false, true),
+      tables ? m(passTablesPda(program, vault), false, true) : m(program, false, false)],
+  });
+}
+
+/** The tax-token balance remove_pass and snapshots count: the account's amount, or 0 unless it is `wallet`'s Token-2022 account of `mint`. */
+export function heldBy(info: { owner: PublicKey; data: Buffer } | null, mint: PublicKey, wallet: PublicKey): bigint {
+  if (!info || !info.owner.equals(TOKEN_2022_PROGRAM_ID) || info.data.length < 165) return 0n;
+  if (!info.data.subarray(0, 32).equals(mint.toBuffer()) || !info.data.subarray(32, 64).equals(wallet.toBuffer())) return 0n;
+  return info.data.readBigUInt64LE(64);
+}
+
+/** The wallets whose pass remove_pass accepts now: holding under the book's minimum and owed nothing. */
+export async function removablePasses(conn: Connection, mint: PublicKey, book: PassBook): Promise<Set<string>> {
+  const out = new Set<string>();
+  const candidates = book.entries.filter((e) => e.owed === e.paid);
+  for (let i = 0; i < candidates.length; i += 100) {
+    const part = candidates.slice(i, i + 100);
+    const infos = await conn.getMultipleAccountsInfo(part.map((e) => e.tokenAccount), "confirmed");
+    part.forEach((e, j) => { if (heldBy(infos[j], mint, e.wallet) < book.minHolding) out.add(e.wallet.toBase58()); });
+  }
+  return out;
+}
+
+/**
+ * remove_pass calls (one per transaction, sent in order) for up to `max` of `wallets`,
+ * each against the book as the earlier ones leave it (the last pass moves into a removed
+ * one's place).
+ */
+export function removalPlan(program: PublicKey, caller: PublicKey, mint: PublicKey, book: PassBook, wallets: Set<string>, tables: boolean, max = 10) {
+  const entries = book.entries.map((e) => ({ ...e }));
+  const out: { wallet: PublicKey; ix: TransactionInstruction }[] = [];
+  for (let i = entries.length - 1; i >= 0 && out.length < max; i--) {
+    if (!wallets.has(entries[i].wallet.toBase58())) continue;
+    out.push({ wallet: entries[i].wallet, ix: removePassIx(program, caller, mint, { count: entries.length, entries }, i, tables) });
+    const last = entries.pop()!;
+    if (i < entries.length) entries[i] = { ...last, index: i };
+  }
+  return out;
+}
+
 export const ALT_PROGRAM_ID = AddressLookupTableProgram.programId;
 export const INDEX_BATCH = 25;
 export const MAX_PASS_TABLES = 4;

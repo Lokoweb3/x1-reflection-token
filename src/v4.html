@@ -47,6 +47,7 @@ tr.me td { font-weight: 700; }
 .toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 560px; margin: 0 auto; padding: 10px 14px; z-index: 10; }
 .toast[hidden] { display: none; }
 .error { color: var(--critical); }
+.earn { margin: 10px 0 4px; max-width: 72ch; }
 @media (max-width: 640px) { .stats { grid-template-columns: 1fr 1fr; } header nav { margin-left: 0; } }
 </style>
 <link rel="stylesheet" href="/theme.css">
@@ -127,6 +128,8 @@ function friendly(m) {
   if (/PotTooSmall/.test(m)) return "not enough XNT is waiting for a round yet.";
   if (/RoundExpired/.test(m)) return "the round's time window ran out before it closed. Nothing is lost; run it again.";
   if (/HoldingTooSmall/.test(m)) return "this wallet holds too few tokens to register.";
+  if (/PassBookFull/.test(m)) return "all 256 passes are taken. A slot frees up when a pass holder sells below the minimum and their pass is removed.";
+  if (/PassNotEmpty/.test(m)) return "that wallet bought back above the minimum (or is owed XNT), so its pass stays.";
   return m;
 }
 
@@ -164,9 +167,11 @@ async function tokenCard(t) {
   if (!t.passes) {
     card.append(el("p", { class: "muted", text: `Holders' share funded so far: ${fmt(t.fundedXnt)} XNT. The creator (${short(t.guardian)}) turns on holder passes once; after that the program splits it on-chain.` }));
     if (me === t.guardian) {
-      const minHolding = el("input", { id: `mh-${t.mint}`, value: "1000", inputmode: "decimal" });
-      const minPot = el("input", { id: `mp-${t.mint}`, value: "0.05", inputmode: "decimal" });
-      const interval = el("input", { id: `mi-${t.mint}`, value: "300", inputmode: "numeric" });
+      // The launchpad's own rules: earning from a millionth of the supply, rounds of 0.05 XNT, 5 minutes apart.
+      const dflt = t.defaults ?? { minHolding: "1000", minPotXnt: "0.05", minIntervalSecs: 300 };
+      const minHolding = el("input", { id: `mh-${t.mint}`, value: String(dflt.minHolding), inputmode: "decimal" });
+      const minPot = el("input", { id: `mp-${t.mint}`, value: String(dflt.minPotXnt), inputmode: "decimal" });
+      const interval = el("input", { id: `mi-${t.mint}`, value: String(dflt.minIntervalSecs), inputmode: "numeric" });
       const go = el("button", { class: "btn primary", type: "button", text: "Turn on holder passes" });
       go.onclick = () => run("Turn on holder passes", `/api/v4/${t.mint}/init-tx`, { minHolding: minHolding.value, minPotXnt: minPot.value, minIntervalSecs: interval.value });
       card.append(el("div", { class: "row" },
@@ -179,7 +184,10 @@ async function tokenCard(t) {
   card.append(el("div", { class: "stats" },
     stat("Passes", `${b.count} / ${b.capacity}`), stat("Waiting for holders", `${fmt(b.potXnt)} XNT`),
     stat("Paid to holders", `${fmt(t.paidXnt)} XNT`), stat("Rounds", b.rounds)));
-  card.append(el("p", { class: "muted", text: `Rounds run once ${fmt(b.minPotXnt)} XNT is waiting and ${b.minIntervalSecs}s have passed. Wallets holding ${fmt(b.minHolding)}+ tokens earn; registering needs ${fmt(b.registerMin)}. Last round: ${ago(b.lastRoundAt)}.${b.roundLive ? ` A round is being read now (${b.roundRead} of ${b.count}).` : ""}` }));
+  const left = b.capacity - b.count;
+  card.append(el("p", { class: "earn" }, el("b", { text: left > 0 ? `Register to earn: ${left} of ${b.capacity} passes left.` : `All ${b.capacity} passes are taken.` }),
+    ` Holding ${t.symbol} alone earns nothing here: only wallets with a pass are paid. Registering needs ${fmt(b.registerMin)} tokens; a pass earns while its wallet holds ${fmt(b.minHolding)}+. Sell below that and anyone can remove the pass (its rent goes back to you), freeing the slot.`));
+  card.append(el("p", { class: "muted", text: `Rounds run once ${fmt(b.minPotXnt)} XNT is waiting and ${b.minIntervalSecs}s have passed. Whoever closes a round keeps 1% of it (at most 0.05 XNT); the rest goes to the passes by balance. Last round: ${ago(b.lastRoundAt)}.${b.roundLive ? ` A round is being read now (${b.roundRead} of ${b.count}).` : ""}` }));
 
   let d = null;
   try { d = await api(`/api/v4/${t.mint}${me ? `?wallet=${me}` : ""}`); } catch (e) { card.append(el("p", { class: "error", text: e.message })); }
@@ -202,8 +210,17 @@ async function tokenCard(t) {
   pay.onclick = () => run("Pay passes", `/api/v4/${t.mint}/pay-tx`, {});
   pay.disabled = !me || !(d?.entries ?? []).some((e) => Number(e.dueXnt) > 0);
   actions.append(round, pay);
+  // Passes whose wallets sold below the minimum (and are owed nothing): anyone may free their slots.
+  if (d?.removable) {
+    const rm = el("button", { class: "btn", type: "button", text: `Remove ${d.removable} empty pass${d.removable === 1 ? "" : "es"}` });
+    rm.onclick = () => run("Remove empty passes", `/api/v4/${t.mint}/remove-tx`, {});
+    rm.disabled = !me || b.roundLive;
+    actions.append(rm);
+  }
   if (!me) actions.append(el("span", { class: "muted", text: "Connect a wallet to register or run a round." }));
   card.append(actions);
+  if (d?.mine?.removable) card.append(el("p", { class: "error", text: `Your wallet holds less than ${fmt(b.minHolding)} tokens, so your pass no longer earns and can be removed (its rent comes back to you). Buy back above ${fmt(b.minHolding)} to keep it.` }));
+  if (d?.removable) card.append(el("p", { class: "muted", text: `The site removes empty passes on its own every few minutes; the button does it now.` }));
   const dueRows = (d?.entries ?? []).filter((e) => Number(e.dueXnt) > 0);
   if (dueRows.length) card.append(el("p", { class: "muted", text: `Paying the last round: ${dueRows.length} wallet${dueRows.length === 1 ? "" : "s"} still due ${fmt(dueRows.reduce((x, e) => x + Number(e.dueXnt), 0))} XNT (the crank, or anyone with "Pay passes", sends it).` }));
 
@@ -222,12 +239,13 @@ async function tokenCard(t) {
       const tr = el("tr", { class: e.wallet === me ? "me" : "" },
         el("td", { text: String(e.index + 1) }), el("td", { class: "mono" }, link(`${explorer}/address/${e.wallet}`, e.short)),
         el("td", { class: "n", text: fmt(e.counted, 2) }), el("td", { class: "n", text: fmt(e.owedXnt) }),
-        el("td", { class: "n", text: fmt(e.paidXnt) }), el("td", { class: "n", text: fmt(e.dueXnt) }));
+        el("td", { class: "n", text: fmt(e.paidXnt) }), el("td", { class: "n", text: fmt(e.dueXnt) }),
+        el("td", { text: e.removable ? "Under the minimum" : "Earning" }));
       return tr;
     });
     card.append(el("h3", { text: "Passes" }), el("div", { class: "tbl" }, el("table", {},
       el("thead", {}, el("tr", {}, el("th", { text: "#" }), el("th", { text: "Wallet" }), el("th", { class: "n", text: "Counted last round" }),
-        el("th", { class: "n", text: "Earned (XNT)" }), el("th", { class: "n", text: "Paid (XNT)" }), el("th", { class: "n", text: "Due (XNT)" }))),
+        el("th", { class: "n", text: "Earned (XNT)" }), el("th", { class: "n", text: "Paid (XNT)" }), el("th", { class: "n", text: "Due (XNT)" }), el("th", { text: "Status" }))),
       el("tbody", {}, ...rows))));
   } else {
     card.append(el("p", { class: "muted", text: "No passes yet. Holders register above." }));
