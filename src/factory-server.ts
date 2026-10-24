@@ -577,7 +577,13 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
       if (!isVaultLaunch(cfg, XNT_PAIR)) throw new Error("Paying holders in another token needs a Tax Vault launch.");
       await payoutToken(conn, cfg, p.payoutMint);
     }
-    const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program);
+    // Holder passes (testnet trial): the vault goes under the passes program; the creator turns them on after graduation.
+    const passes = body.passes === true;
+    if (passes) {
+      if (!passVaults) throw new Error("Holder passes aren't offered on this site.");
+      if (p.payoutMint) throw new Error("Holder passes pay in XNT; leave the payout token empty.");
+    }
+    const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program, passes ? passVaults!.program : null);
     c.invalidate();
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
@@ -1537,10 +1543,11 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/launch") { send(res, 200, page(PAGE), "text/html; charset=utf-8"); return; }
     if (v4 && url.pathname === "/v4") { send(res, 200, page(V4_PAGE), "text/html; charset=utf-8"); return; }
     // The standalone holder-passes page (scripts/build-recovery.ts --program …): one file that
-    // runs with no server; the copy to keep or pin is the same bytes.
+    // runs with no server; the copy to keep or pin is the same bytes. Like /recovery it talks to
+    // X1 RPCs and IPFS gateways itself, so it gets the recovery page's connect-src.
     if (v4 && url.pathname === "/v4/standalone") {
       const f = path.join(ROOT, "dist", `v4-standalone-${cfg.network}.html`);
-      if (fs.existsSync(f)) { send(res, 200, fs.readFileSync(f), "text/html; charset=utf-8"); return; }
+      if (fs.existsSync(f)) { res.setHeader("content-security-policy", RECOVERY_CSP); send(res, 200, fs.readFileSync(f), "text/html; charset=utf-8"); return; }
     }
     // The pinned recovery page, byte-identical to its IPFS copy (checked by sha256 at start).
     // It talks to X1 RPCs and IPFS gateways itself, so it gets its own connect-src.

@@ -674,12 +674,13 @@ async function continueLaunch(mint) {
   }
   loadMine(); loadTokens();
 }
-/** A graduated Tax Vault curve token: the creator starts its vault ("Your launches"). */
-async function startCurveVault(mint) {
+/** A graduated Tax Vault curve token: the creator starts its vault, then turns holder passes on for a holder-passes one ("Your launches"). */
+async function startCurveVault(mint, s) {
   if (running) return;
   running = true; renderWallet();
   try {
-    await signAndSend(tr("Start the tax vault"), () => api("/api/launch/vault", { mint, creator: W.state.address }), mint);
+    if (!s.vault) await signAndSend(tr("Start the tax vault"), () => api("/api/launch/vault", { mint, creator: W.state.address }), mint);
+    if (s.holderPasses && !s.passes) await signAndSend(tr("Turn on holder passes"), () => api("/api/launch/passes", { mint, creator: W.state.address }), mint);
   } catch (e) { toast("error", tr("Start the tax vault failed: {message}", { message: e.message || e })); }
   running = false; renderWallet();
   loadMine();
@@ -836,10 +837,13 @@ function launchCard(l) {
     const curveStatus = [tr("On the curve"), tr("Graduating"), tr("Graduating"), tr("Delivering tokens"), tr("Live")][s.curveStatus ?? -1] ?? tr("Not started (the create transaction was not sent)");
     const open = el("a", { class: "btn small", href: `/curve/${l.mint}`, text: tr("Open curve") });
     // A Tax Vault curve token, graduated: the creator starts its vault (the tax waits safely until then).
-    const startVault = s.taxVault && s.lock && !s.vault
-      ? btn(tr("Start the tax vault"), "primary", () => startCurveVault(l.mint), false, tr("Sign init_vault: the Tax Vault program then holds and pays out the tax"))
+    // A holder-passes one then turns its passes on (the same button does whichever is left).
+    const passesLeft = s.holderPasses && s.vault && !s.passes;
+    const startVault = s.taxVault && s.lock && (!s.vault || passesLeft)
+      ? btn(passesLeft ? tr("Turn on holder passes") : s.holderPasses ? tr("Start the tax vault and holder passes") : tr("Start the tax vault"), "primary", () => startCurveVault(l.mint, s), false,
+        passesLeft ? tr("Sign init_passes: holders can then register a pass and be paid in rounds") : tr("Sign init_vault: the Tax Vault program then holds and pays out the tax"))
       : null;
-    rows.push(row(tr("Status"), startVault ? tr("Graduated: start the tax vault (the tax waits safely until then)") : s.registered ? tr("Live") : curveStatus, s.token ? open : null, startVault));
+    rows.push(row(tr("Status"), startVault ? (passesLeft ? tr("Graduated: turn on holder passes (the holders' share waits safely until then)") : tr("Graduated: start the tax vault (the tax waits safely until then)")) : s.registered ? tr("Live") : curveStatus, s.token ? open : null, startVault));
   } else {
     const cont = s.token && !s.registered
       ? btn(tr("Continue"), "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })

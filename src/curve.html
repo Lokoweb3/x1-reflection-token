@@ -52,6 +52,9 @@ h2 { margin: 0 0 10px; font-size: 20px; }
 
 /* create form */
 form label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; }
+form label.check { grid-template-columns: auto 1fr; align-items: center; column-gap: 8px; }
+form label.check input { width: auto; margin: 0; }
+form label.check .hint { grid-column: 1 / -1; font-weight: 400; }
 form input, form textarea, form select { padding: 8px 10px; font: inherit; font-weight: 400; width: 100%; }
 form textarea { min-height: 70px; resize: vertical; }
 .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
@@ -360,7 +363,11 @@ function createForm() {
       info?.taxVault?.payoutTokens && info.taxVault.launches ? el("div", { class: "row" },
         el("label", {}, tr("Pay holders in"),
           el("input", { name: "payoutMint", id: "payoutMint", placeholder: tr("XNT (leave empty), or a token's mint address"), autocomplete: "off", spellcheck: "false" }),
-          el("span", { class: "hint", id: "payoutHint", text: tr("Optional. Holders get this token instead of XNT: the vault swaps their share on the token's XDEX pool. Fixed for good once launched.") }))) : null),
+          el("span", { class: "hint", id: "payoutHint", text: tr("Optional. Holders get this token instead of XNT: the vault swaps their share on the token's XDEX pool. Fixed for good once launched.") }))) : null,
+      // Holder passes (testnet trial): only where the site runs the passes program.
+      info?.taxVault?.passes && info.taxVault.launches ? el("div", { class: "row" },
+        el("label", { class: "check" }, el("input", { name: "passes", type: "checkbox", value: "1" }), tr("Holder passes (testnet trial)"),
+          el("span", { class: "hint", text: tr("Holders register a pass and the vault program splits their share itself, on-chain, in rounds anyone can run. Paid in XNT. After graduation you approve one more transaction to turn the passes on.") }))) : null),
     el("p", { class: "callout", text: tr("No tax while on the curve; the tax starts at graduation. Tokens arrive in your wallet at graduation.") }),
     el("table", { class: "costs", id: "costs" }),
     el("p", { class: "muted", text: p.creatorCanBuy ? tr("On testnet the creator can also buy (for testing); on mainnet you can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") : tr("You can't buy on your own curve. The curve's liquidity is locked forever at graduation and the lock NFT is sent to you: it collects the pool's trading fees and your creator reward.") }),
@@ -391,6 +398,7 @@ function readForm() {
     supply: String(v.supply === "custom" ? v.supplyCustom ?? "" : v.supply).replace(/[,_\s]/g, ""), taxBps: Math.round(Number(v.tax) * 100), targetXnt: String(v.targetXnt ?? ""),
     autoLpBps: Math.round(Number(v.autoLp) * 100), burnBps: Math.round(Number(v.burn) * 100),
     ...(String(v.payoutMint ?? "").trim() ? { payoutMint: String(v.payoutMint).trim() } : {}),
+    ...(v.passes ? { passes: true } : {}),
   };
 }
 // Payout token: checked as it's typed (its XNT pool, freeze authority, extensions).
@@ -477,7 +485,7 @@ async function createCurve(ev) {
   const p = readForm();
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", tr("Liquidity + burn can't be more than {MAX_LP_PLUS_BURN}% of the tax.", { MAX_LP_PLUS_BURN })); return; }
   const target = fmt(p.targetXnt, 0);
-  const ok = confirm(tr("Create {name} ({symbol}) on the bonding curve?\n\n• Supply {supply} (fixed); {curveBps}% sold on the curve\n• Tax {taxBps}% on every transfer once it graduates (can never change)\n• Graduates at {target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee {feeAmount} {feeSymbol}, plus a {depositXnt} XNT graduation deposit (the rest comes back when it finishes)\n\n{buyNote}Your wallet will ask you to approve 1 transaction.{extra}", { buyNote: listData.params.creatorCanBuy ? "" : tr("You can't buy on your own curve. "), name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), curveBps: listData.params.curveBps / 100, taxBps: p.taxBps / 100, target, feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, depositXnt: fmt(units(listData.params.depositXnt), 3), extra: info.taxVault?.launches ? tr("\n\nThe tax is held by the Tax Vault program, not a wallet. After graduation you sign one more transaction to start the tax vault (the tax waits safely until then).") : "" }));
+  const ok = confirm(tr("Create {name} ({symbol}) on the bonding curve?\n\n• Supply {supply} (fixed); {curveBps}% sold on the curve\n• Tax {taxBps}% on every transfer once it graduates (can never change)\n• Graduates at {target} XNT raised: the pool is created and its liquidity locked forever; the lock NFT is sent to you\n• Launch fee {feeAmount} {feeSymbol}, plus a {depositXnt} XNT graduation deposit (the rest comes back when it finishes)\n\n{buyNote}Your wallet will ask you to approve 1 transaction.{extra}", { buyNote: listData.params.creatorCanBuy ? "" : tr("You can't buy on your own curve. "), name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), curveBps: listData.params.curveBps / 100, taxBps: p.taxBps / 100, target, feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, depositXnt: fmt(units(listData.params.depositXnt), 3), extra: !info.taxVault?.launches ? "" : p.passes ? tr("\n\nThe tax is held by the Tax Vault program, not a wallet, with holder passes (testnet trial). After graduation you sign two more transactions: start the tax vault, then turn the holder passes on (the tax waits safely until then).") : tr("\n\nThe tax is held by the Tax Vault program, not a wallet. After graduation you sign one more transaction to start the tax vault (the tax waits safely until then).") }));
   if (!ok) return;
   creating = true; renderCosts();
   try {
@@ -517,22 +525,29 @@ function banner(v) {
  */
 let vaultBusy = false;
 function vaultStart(v) {
-  if (!v.vault || v.vault.exists || v.statusCode < 3) return null;
+  // A holder-passes token also waits for its passes to be turned on (pass book and rules).
+  const passesOff = !!v.vault?.holderPasses && !v.vault.holderPasses.on;
+  if (!v.vault || (v.vault.exists && !passesOff) || v.statusCode < 3) return null;
   if (!W.state.address || W.state.address !== v.creator) {
-    return el("div", { class: "banner" }, el("b", { text: tr("Tax vault not started yet") }), tr("Waiting for the creator to start the tax vault — the tax waits safely until then."));
+    return el("div", { class: "banner" }, el("b", { text: v.vault.exists ? tr("Holder passes not on yet") : tr("Tax vault not started yet") }),
+      v.vault.exists ? tr("Waiting for the creator to turn the holder passes on — the holders' share waits safely until then.") : tr("Waiting for the creator to start the tax vault — the tax waits safely until then."));
   }
-  const go = el("button", { class: "btn primary", type: "button", text: vaultBusy ? tr("Starting…") : tr("Start the tax vault") });
+  const label = v.vault.exists ? tr("Turn on holder passes") : v.vault.holderPasses ? tr("Start the tax vault and holder passes") : tr("Start the tax vault");
+  const go = el("button", { class: "btn primary", type: "button", text: vaultBusy ? tr("Starting…") : label });
   go.disabled = vaultBusy;
-  go.onclick = startVault;
-  return el("div", { class: "banner" }, el("b", { text: tr("Start the tax vault") }),
-    tr("Your token has graduated. Sign one transaction to start its tax vault: from then on the Tax Vault program, not a wallet, collects the tax, burns, adds liquidity, funds your creator reward and pays holders. Until you do, the tax waits safely in the holders' token accounts."),
+  go.onclick = () => startVault(v);
+  return el("div", { class: "banner" }, el("b", { text: label }),
+    v.vault.holderPasses
+      ? tr("Your token has graduated. Sign {n} to start its tax vault with holder passes: the Tax Vault program, not a wallet, collects the tax, burns, adds liquidity and funds your creator reward, and holders who register a pass are paid in rounds anyone can run. Until you do, the tax waits safely in the holders' token accounts.", { n: v.vault.exists ? tr("one transaction") : tr("two transactions") })
+      : tr("Your token has graduated. Sign one transaction to start its tax vault: from then on the Tax Vault program, not a wallet, collects the tax, burns, adds liquidity, funds your creator reward and pays holders. Until you do, the tax waits safely in the holders' token accounts."),
     el("div", {}, go));
 }
-async function startVault() {
+async function startVault(v) {
   if (vaultBusy) return;
   vaultBusy = true; renderDetail();
   try {
-    await signAndSend(tr("Start the tax vault"), () => api("/api/launch/vault", { mint: view.mint, creator: W.state.address }), view.mint, view.mint);
+    if (!v.vault.exists) await signAndSend(tr("Start the tax vault"), () => api("/api/launch/vault", { mint: view.mint, creator: W.state.address }), view.mint, view.mint);
+    if (v.vault.holderPasses && !v.vault.holderPasses.on) await signAndSend(tr("Turn on holder passes"), () => api("/api/launch/passes", { mint: view.mint, creator: W.state.address }), view.mint, view.mint);
   } catch (e) { toast("error", tr("Start the tax vault failed: {message}", { message: e.message || e })); }
   vaultBusy = false;
   await loadDetail();

@@ -60,7 +60,7 @@ import {
   SQUADS_PROGRAM_IDS, closeIx, executeIx, memberOf, proposalVotes, proposeIxs, quorumJson, readProposal, readQuorum, rejectIx, squadsVaultPda,
   type ProposalStatus as SquadsProposalStatus, type Quorum,
 } from "../squads.js";
-import { DECIMALS, type LaunchRecord, pairOf, readLaunch, registeredLaunches, vaultManaged, vaultProgramOf } from "./launch.js";
+import { DECIMALS, type LaunchRecord, pairOf, passesStarted, readLaunch, registeredLaunches, vaultManaged, vaultProgramOf } from "./launch.js";
 
 /** Crank pass interval; TAX_VAULT_PASS_SECS shortens it for local rehearsals (short-windows builds). */
 /** Warn when the crank wallet has less XNT than this for fees (factory.taxVault.crankLowXnt). */
@@ -365,6 +365,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       // Holders are paid in this token instead of XNT (null: XNT).
       payout: v ? await payoutInfo(v).catch(() => null) : null,
       xntHolders: v && paysInToken(v) ? v.xntHolders.toString() : null,
+      // A holder-passes token (testnet trial): whether its creator has turned the passes on yet.
+      holderPasses: r?.vaultProgram ? { on: !!v && (await passesStarted(conn, cfg, r).catch(() => false)) } : null,
       ...(v3Status(v, q) ?? {}),
       activity: v ? activity(mint) : [],
       // The site's crank: its last pass and whether its fee wallet is running low (panel warning).

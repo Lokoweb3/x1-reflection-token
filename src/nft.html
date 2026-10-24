@@ -352,7 +352,7 @@ let recoveryUrl = null, recoveryPath = null;
 function vaultPanel(d, s) {
   const v = s.vault;
   if (!v) return null;
-  if (!v.exists) return vaultStartPanel(d, s);
+  if (!v.exists || (v.holderPasses && !v.holderPasses.on)) return vaultStartPanel(d, s);
   const me = W.state.address;
   const now = Date.now() / 1000;
   const addr = (a) => link(`${d.explorer}/address/${a}`, short(a), "mono");
@@ -495,32 +495,48 @@ function activityList(d, items) {
  * stays withheld in the holders' token accounts meanwhile, where nobody can move it.
  */
 function vaultStartPanel(d, s) {
-  const mine = !!W.state.address && W.state.address === s.vault.creator;
-  const go = mine ? el("button", { class: "btn primary", type: "button", text: tr("Start the tax vault") }) : null;
+  const v = s.vault, mine = !!W.state.address && W.state.address === v.creator;
+  // A holder-passes token (testnet trial): after the vault, the creator turns its passes on.
+  const passesOnly = v.exists && v.holderPasses && !v.holderPasses.on;
+  const label = passesOnly ? tr("Turn on holder passes") : v.holderPasses ? tr("Start the tax vault and holder passes") : tr("Start the tax vault");
+  const go = mine ? el("button", { class: "btn primary", type: "button", text: label }) : null;
   if (go) { go.disabled = busy; go.onclick = () => startVault(d, s); }
   return el("div", { class: "panel vault-panel", id: "vault" },
-    el("div", { class: "vp-head" }, el("h3", { text: tr("Tax Vault"), style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: tr("not started yet") })),
-    el("p", { class: "vp-state muted", text: mine
+    el("div", { class: "vp-head" }, el("h3", { text: tr("Tax Vault"), style: "margin:0" }), el("span", { class: "muted", style: "font-size:12px", text: passesOnly ? tr("holder passes not on yet") : tr("not started yet") })),
+    el("p", { class: "vp-state muted", text: passesOnly
+      ? (mine ? tr("Sign one transaction to turn the holder passes on: holders can then register a pass and are paid in rounds anyone can run. The holders' share waits safely until then.")
+        : tr("Waiting for the creator to turn the holder passes on — the holders' share waits safely until then."))
+      : mine
       ? tr("Your token has graduated. Sign one transaction to start its tax vault: from then on the Tax Vault program collects the tax, burns, adds liquidity, funds your creator reward and pays holders. Until you do, the tax waits safely in the holders' token accounts.")
       : tr("Waiting for the creator to start the tax vault — the tax waits safely until then.") }),
     go ? el("div", { class: "vp-run" }, go) : null);
 }
+/** Sign and send one creator transaction built by the server (start the vault, or turn passes on). */
+async function creatorStep(d, s, title, url, done) {
+  toast("info", tr("{step}: preparing and simulating…", { step: title }));
+  const { tx } = await api(url, { mint: s.mint, creator: W.state.address });
+  toast("info", tr("Approve it in your wallet…"));
+  const signed = await W.sign(W.b64ToBytes(tx));
+  const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), vaultMint: s.mint });
+  toast("success", done, link(`${d.explorer}/tx/${signature}`, tr("View transaction ↗")));
+}
 async function startVault(d, s) {
   if (busy) return;
   busy = true;
+  let step = tr("Start the tax vault");
   try {
-    toast("info", tr("Start the tax vault: preparing and simulating…"));
-    const { tx } = await api("/api/launch/vault", { mint: s.mint, creator: W.state.address });
-    toast("info", tr("Approve it in your wallet…"));
-    const signed = await W.sign(W.b64ToBytes(tx));
-    const { signature } = await api("/api/send", { tx: W.bytesToB64(signed), vaultMint: s.mint });
-    toast("success", tr("Tax vault started: the vault crank takes it from here. "), link(`${d.explorer}/tx/${signature}`, tr("View transaction ↗")));
+    const v = s.vault;
+    if (!v.exists) await creatorStep(d, s, step, "/api/launch/vault", tr("Tax vault started: the vault crank takes it from here. "));
+    if (v.holderPasses && !v.holderPasses.on) {
+      step = tr("Turn on holder passes");
+      await creatorStep(d, s, step, "/api/launch/passes", tr("Holder passes on: holders can register a pass now. "));
+    }
     busy = false;
     const host = document.querySelector(".stats-card");
     if (host) await loadTokenStats(d, host, true);
     return;
   } catch (e) {
-    toast("error", tr("Start the tax vault failed: {message}", { message: e.message || e }));
+    toast("error", tr("{step} failed: {message}", { step, message: e.message || e }));
   }
   busy = false;
 }
