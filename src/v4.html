@@ -29,7 +29,7 @@ h3 { margin: 16px 0 6px; font-size: 16px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 .row label { display: grid; gap: 4px; font-size: 13px; color: var(--text-secondary); }
-.row input { width: 140px; padding: 8px 10px; font: inherit; }
+.row input { width: 140px; max-width: 100%; padding: 8px 10px; font: inherit; }
 .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0 4px; }
 .stat { border: 1px dashed var(--line); padding: 10px 12px; min-width: 0; }
 .stat .k { font-size: 12px; color: var(--text-muted); }
@@ -43,7 +43,10 @@ th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--lin
 th { font-size: 12px; color: var(--text-muted); font-weight: 600; }
 td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
 tr.me td { font-weight: 700; }
-.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+.mono { font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+#programLine { overflow-wrap: anywhere; }
+.pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.row label { min-width: 0; }
 .toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 560px; margin: 0 auto; padding: 10px 14px; z-index: 10; }
 .toast[hidden] { display: none; }
 .error { color: var(--critical); }
@@ -123,41 +126,74 @@ function toast(kind, ...parts) {
 
 /** Program errors a visitor can hit by racing the crank, in plain words. */
 function friendly(m) {
-  if (/RoundOpen/.test(m)) return "a round is being read right now (most likely by the site's crank). It finishes within a minute; nothing was sent from your wallet.";
-  if (/RoundTooSoon/.test(m)) return "the last round was too recent. The button shows when the next one can run.";
-  if (/PotTooSmall/.test(m)) return "not enough XNT is waiting for a round yet.";
-  if (/RoundExpired/.test(m)) return "the round's time window ran out before it closed. Nothing is lost; run it again.";
-  if (/HoldingTooSmall/.test(m)) return "this wallet holds too few tokens to register.";
-  if (/PassBookFull/.test(m)) return "all 256 passes are taken. A slot frees up when a pass holder sells below the minimum and their pass is removed, or you can take the smallest pass's slot by holding twice its balance.";
-  if (/EvictTooSmall/.test(m)) return "taking a pass's slot needs twice that pass's balance; its holder bought more since this was prepared. Try again.";
-  if (/PassBookNotFull/.test(m)) return "a pass just freed up, so there's no need to take someone's slot. Try registering again.";
-  if (/HadList/.test(m)) return "this vault has had a payout list, so holder passes can't be turned on for it.";
-  if (/PassNotEmpty/.test(m)) return "that wallet bought back above the minimum (or is owed XNT), so its pass stays.";
+  if (/RoundOpen/.test(m)) return tr("a round is being read right now (most likely by the site's crank). It finishes within a minute; nothing was sent from your wallet.");
+  if (/RoundTooSoon/.test(m)) return tr("the last round was too recent. The button shows when the next one can run.");
+  if (/PotTooSmall/.test(m)) return tr("not enough XNT is waiting for a round yet.");
+  if (/RoundExpired/.test(m)) return tr("the round's time window ran out before it closed. Nothing is lost; run it again.");
+  if (/HoldingTooSmall/.test(m)) return tr("this wallet holds too few tokens to register.");
+  if (/PassBookFull/.test(m)) return tr("all 256 passes are taken. A slot frees up when a pass holder sells below the minimum and their pass is removed, or you can take the smallest pass's slot by holding twice its balance.");
+  if (/EvictTooSmall/.test(m)) return tr("taking a pass's slot needs twice that pass's balance; its holder bought more since this was prepared. Try again.");
+  if (/PassBookNotFull/.test(m)) return tr("a pass just freed up, so there's no need to take someone's slot. Try registering again.");
+  if (/HadList/.test(m)) return tr("this vault has had a payout list, so holder passes can't be turned on for it.");
+  if (/PassNotEmpty/.test(m)) return tr("that wallet bought back above the minimum (or is owed XNT), so its pass stays.");
   return m;
 }
 
 /** Ask the server for unsigned transactions, sign them all at once, send them in order. */
 async function run(label, url, body) {
   if (busy) return;
-  if (!W.state.address) { toast("error", "Connect a wallet first."); return; }
+  if (!W.state.address) { toast("error", tr("Connect a wallet first.")); return; }
   busy = true;
   try {
-    toast("info", `${label}: preparing…`);
+    toast("info", tr("{label}: preparing…", { label }));
     const res = await api(url, { wallet: W.state.address, ...body });
     const list = res.txs ?? [{ label, tx: res.tx }];
-    toast("info", `${label}: approve ${list.length} transaction${list.length === 1 ? "" : "s"} in your wallet…`);
+    toast("info", list.length === 1 ? tr("{label}: approve 1 transaction in your wallet…", { label }) : tr("{label}: approve {count} transactions in your wallet…", { label, count: list.length }));
     const signed = list.length === 1 ? [await W.sign(W.b64ToBytes(list[0].tx))] : await W.signAll(list.map((t) => W.b64ToBytes(t.tx)));
     let last = "";
     for (const [i, s] of signed.entries()) {
-      toast("info", `${label}: sending ${i + 1} of ${signed.length} (${list[i].label})…`);
+      toast("info", tr("{label}: sending {n} of {count} ({step})…", { label, n: i + 1, count: signed.length, step: list[i].label }));
       ({ signature: last } = await api("/api/send", { tx: W.bytesToB64(s) }));
     }
-    toast("success", `${label}: done. `, link(`${explorer}/tx/${last}`, "View transaction ↗"));
+    toast("success", tr("{label}: done. ", { label }), link(`${explorer}/tx/${last}`, tr("View transaction ↗")));
   } catch (e) {
-    toast("error", `${label} failed: ${friendly(String(e.message || e))}`);
+    toast("error", tr("{label} failed: {message}", { label, message: friendly(String(e.message || e)) }));
   }
   busy = false;
   render();
+}
+
+/** A book holds up to 256 passes: show them a page at a time (phones can't take a 256-row table). */
+const PAGE = 20;
+const pageOf = new Map();
+function passTable(box, mint, entries, me) {
+  const pages = Math.max(1, Math.ceil(entries.length / PAGE));
+  const page = Math.min(pageOf.get(mint) ?? 0, pages - 1);
+  const rows = entries.slice(page * PAGE, page * PAGE + PAGE).map((e) =>
+    el("tr", { class: e.wallet === me ? "me" : "" },
+      el("td", { text: String(e.index + 1) }), el("td", { class: "mono" }, link(`${explorer}/address/${e.wallet}`, e.short)),
+      el("td", { class: "n", text: fmt(e.counted, 2) }), el("td", { class: "n", text: fmt(e.owedXnt) }),
+      el("td", { class: "n", text: fmt(e.paidXnt) }), el("td", { class: "n", text: fmt(e.dueXnt) }),
+      el("td", { text: e.removable ? tr("Under the minimum") : tr("Earning") })));
+  const go = (p) => { pageOf.set(mint, p); passTable(box, mint, entries, me); };
+  const nav = el("div", { class: "pager" });
+  if (pages > 1) {
+    const prev = el("button", { class: "btn sm", type: "button", text: tr("← Previous") });
+    prev.disabled = page === 0; prev.onclick = () => go(page - 1);
+    const next = el("button", { class: "btn sm", type: "button", text: tr("Next →") });
+    next.disabled = page === pages - 1; next.onclick = () => go(page + 1);
+    nav.append(prev, el("span", { class: "muted", text: tr("Page {page} of {pages} ({count} passes)", { page: page + 1, pages, count: entries.length }) }), next);
+    const mine = entries.findIndex((e) => e.wallet === me);
+    if (mine >= 0 && Math.floor(mine / PAGE) !== page) {
+      const find = el("button", { class: "btn sm", type: "button", text: tr("Show my pass") });
+      find.onclick = () => go(Math.floor(mine / PAGE));
+      nav.append(find);
+    }
+  }
+  box.replaceChildren(el("div", { class: "tbl" }, el("table", {},
+    el("thead", {}, el("tr", {}, el("th", { text: "#" }), el("th", { text: tr("Wallet") }), el("th", { class: "n", text: tr("Counted last round") }),
+      el("th", { class: "n", text: tr("Earned (XNT)") }), el("th", { class: "n", text: tr("Paid (XNT)") }), el("th", { class: "n", text: tr("Due (XNT)") }), el("th", { text: tr("Status") }))),
+    el("tbody", {}, ...rows))), nav);
 }
 
 function stat(k, v) { return el("div", { class: "stat" }, el("div", { class: "k", text: k }), el("div", { class: "v", text: v })); }
@@ -165,39 +201,40 @@ function stat(k, v) { return el("div", { class: "stat" }, el("div", { class: "k"
 async function tokenCard(t) {
   const me = W.state.address;
   const card = el("div", { class: "card" });
-  card.append(el("h2", {}, `${t.symbol} `, el("span", { class: `pill${t.passes ? " on" : ""}`, text: t.passes ? "passes on" : "passes off" })));
+  card.append(el("h2", {}, `${t.symbol} `, el("span", { class: `pill${t.passes ? " on" : ""}`, text: t.passes ? tr("passes on") : tr("passes off") })));
   card.append(el("div", { class: "muted mono" }, link(`${explorer}/address/${t.mint}`, t.mint)));
   if (!t.passes) {
-    card.append(el("p", { class: "muted", text: `Holders' share funded so far: ${fmt(t.fundedXnt)} XNT. The creator (${short(t.guardian)}) turns on holder passes once; after that the program splits it on-chain.` }));
+    card.append(el("p", { class: "muted", text: tr("Holders' share funded so far: {funded} XNT. The creator ({creator}) turns on holder passes once; after that the program splits it on-chain.", { funded: fmt(t.fundedXnt), creator: short(t.guardian) }) }));
     if (me === t.guardian) {
       // The launchpad's own rules: earning from a millionth of the supply, rounds of 0.05 XNT, 5 minutes apart.
       const dflt = t.defaults ?? { minHolding: "1000", minPotXnt: "0.05", minIntervalSecs: 300 };
       const minHolding = el("input", { id: `mh-${t.mint}`, value: String(dflt.minHolding), inputmode: "decimal" });
       const minPot = el("input", { id: `mp-${t.mint}`, value: String(dflt.minPotXnt), inputmode: "decimal" });
       const interval = el("input", { id: `mi-${t.mint}`, value: String(dflt.minIntervalSecs), inputmode: "numeric" });
-      const go = el("button", { class: "btn primary", type: "button", text: "Turn on holder passes" });
-      go.onclick = () => run("Turn on holder passes", `/api/v4/${t.mint}/init-tx`, { minHolding: minHolding.value, minPotXnt: minPot.value, minIntervalSecs: interval.value });
+      const go = el("button", { class: "btn primary", type: "button", text: tr("Turn on holder passes") });
+      go.onclick = () => run(tr("Turn on holder passes"), `/api/v4/${t.mint}/init-tx`, { minHolding: minHolding.value, minPotXnt: minPot.value, minIntervalSecs: interval.value });
       card.append(el("div", { class: "row" },
-        el("label", {}, "Minimum holding to earn (tokens; registering needs twice this)", minHolding), el("label", {}, "Round once this much XNT waits", minPot),
-        el("label", {}, "Seconds between rounds", interval), go));
+        el("label", {}, tr("Minimum holding to earn (tokens; registering needs twice this)"), minHolding), el("label", {}, tr("Round once this much XNT waits"), minPot),
+        el("label", {}, tr("Seconds between rounds"), interval), go));
     }
     return card;
   }
   const b = t.book;
   card.append(el("div", { class: "stats" },
-    stat("Passes", `${b.count} / ${b.capacity}`), stat("Waiting for holders", `${fmt(b.potXnt)} XNT`),
-    stat("Paid to holders", `${fmt(t.paidXnt)} XNT`), stat("Rounds", b.rounds)));
+    stat(tr("Passes"), `${b.count} / ${b.capacity}`), stat(tr("Waiting for holders"), `${fmt(b.potXnt)} XNT`),
+    stat(tr("Paid to holders"), `${fmt(t.paidXnt)} XNT`), stat(tr("Rounds"), b.rounds)));
   const left = b.capacity - b.count;
-  card.append(el("p", { class: "earn" }, el("b", { text: left > 0 ? `Register to earn: ${left} of ${b.capacity} passes left.` : `All ${b.capacity} passes are taken: hold twice the smallest pass's balance to take its slot.` }),
-    ` Holding ${t.symbol} alone earns nothing here: only wallets with a pass are paid. Registering needs ${fmt(b.registerMin)} tokens; a pass earns while its wallet holds ${fmt(b.minHolding)}+. Sell below that and anyone can remove the pass (its rent goes back to you), freeing the slot. When the book is full, a wallet holding twice a pass's balance can take that pass's slot (its rent goes back to its holder).`));
-  card.append(el("p", { class: "muted", text: `Rounds run once ${fmt(b.minPotXnt)} XNT is waiting and ${b.minIntervalSecs}s have passed. Whoever closes a round keeps 1% of it (at most 0.05 XNT); the rest goes to the passes by balance. Last round: ${ago(b.lastRoundAt)}.${b.roundLive ? ` A round is being read now (${b.roundRead} of ${b.count}).` : ""}` }));
+  card.append(el("p", { class: "earn" }, el("b", { text: left > 0 ? tr("Register to earn: {left} of {capacity} passes left.", { left, capacity: b.capacity }) : tr("All {capacity} passes are taken: hold twice the smallest pass's balance to take its slot.", { capacity: b.capacity }) }),
+    " ", tr("Holding {symbol} alone earns nothing here: only wallets with a pass are paid. Registering needs {registerMin} tokens; a pass earns while its wallet holds {minHolding}+. Sell below that and anyone can remove the pass (its rent goes back to you), freeing the slot. When the book is full, a wallet holding twice a pass's balance can take that pass's slot (its rent goes back to its holder).", { symbol: t.symbol, registerMin: fmt(b.registerMin), minHolding: fmt(b.minHolding) })));
+  card.append(el("p", { class: "muted", text: tr("Rounds run once {minPot} XNT is waiting and {secs}s have passed. Whoever closes a round keeps 1% of it (at most 0.05 XNT); the rest goes to the passes by balance. Last round: {last}.", { minPot: fmt(b.minPotXnt), secs: b.minIntervalSecs, last: b.lastRoundAt ? ago(b.lastRoundAt) : tr("never") })
+    + (b.roundLive ? " " + tr("A round is being read now ({read} of {count}).", { read: b.roundRead, count: b.count }) : "") }));
 
   let d = null;
   try { d = await api(`/api/v4/${t.mint}${me ? `?wallet=${me}` : ""}`); } catch (e) { card.append(el("p", { class: "error", text: e.message })); }
   const actions = el("div", { class: "row" });
   if (me && d && !d.mine) {
-    const reg = el("button", { class: "btn primary", type: "button", text: left > 0 ? "Register my pass" : "Take the smallest pass's slot" });
-    reg.onclick = () => run("Register pass", `/api/v4/${t.mint}/register-tx`, {});
+    const reg = el("button", { class: "btn primary", type: "button", text: left > 0 ? tr("Register my pass") : tr("Take the smallest pass's slot") });
+    reg.onclick = () => run(tr("Register pass"), `/api/v4/${t.mint}/register-tx`, {});
     actions.append(reg);
   }
   // A round can start once the last one closed, the interval passed and enough XNT waits.
@@ -205,53 +242,44 @@ async function tokenCard(t) {
   const wait = b.nextRoundAt ? Math.ceil(b.nextRoundAt - now) : 0;
   const potShort = Number(b.potXnt) < Number(b.minPotXnt);
   const round = el("button", { class: "btn", type: "button",
-    text: b.roundLive ? "Round being read…" : wait > 0 ? `Next round in ${Math.floor(wait / 60)}:${String(wait % 60).padStart(2, "0")}` : potShort ? `Round at ${fmt(b.minPotXnt)} XNT` : "Run a round now" });
-  round.onclick = () => run("Run a round", `/api/v4/${t.mint}/round-tx`, {});
+    text: b.roundLive ? tr("Round being read…") : wait > 0 ? tr("Next round in {min}:{sec}", { min: Math.floor(wait / 60), sec: String(wait % 60).padStart(2, "0") }) : potShort ? tr("Round at {minPot} XNT", { minPot: fmt(b.minPotXnt) }) : tr("Run a round now") });
+  round.onclick = () => run(tr("Run a round"), `/api/v4/${t.mint}/round-tx`, {});
   round.disabled = !me || !b.count || b.roundLive || wait > 0 || potShort;
   if (wait > 0 || b.roundLive) setTimeout(() => { if (!busy) render(); }, Math.min(Math.max(wait, 5), 60) * 1000);
-  const pay = el("button", { class: "btn", type: "button", text: "Pay passes" });
-  pay.onclick = () => run("Pay passes", `/api/v4/${t.mint}/pay-tx`, {});
+  const pay = el("button", { class: "btn", type: "button", text: tr("Pay passes") });
+  pay.onclick = () => run(tr("Pay passes"), `/api/v4/${t.mint}/pay-tx`, {});
   pay.disabled = !me || !(d?.entries ?? []).some((e) => Number(e.dueXnt) > 0);
   actions.append(round, pay);
   // Passes whose wallets sold below the minimum (and are owed nothing): anyone may free their slots.
   if (d?.removable) {
-    const rm = el("button", { class: "btn", type: "button", text: `Remove ${d.removable} empty pass${d.removable === 1 ? "" : "es"}` });
-    rm.onclick = () => run("Remove empty passes", `/api/v4/${t.mint}/remove-tx`, {});
+    const rm = el("button", { class: "btn", type: "button", text: d.removable === 1 ? tr("Remove 1 empty pass") : tr("Remove {count} empty passes", { count: d.removable }) });
+    rm.onclick = () => run(tr("Remove empty passes"), `/api/v4/${t.mint}/remove-tx`, {});
     rm.disabled = !me || b.roundLive;
     actions.append(rm);
   }
-  if (!me) actions.append(el("span", { class: "muted", text: "Connect a wallet to register or run a round." }));
+  if (!me) actions.append(el("span", { class: "muted", text: tr("Connect a wallet to register or run a round.") }));
   card.append(actions);
-  if (d?.mine?.removable) card.append(el("p", { class: "error", text: `Your wallet holds less than ${fmt(b.minHolding)} tokens, so your pass no longer earns and can be removed (its rent comes back to you). Buy back above ${fmt(b.minHolding)} to keep it.` }));
-  if (d?.removable) card.append(el("p", { class: "muted", text: `The site removes empty passes on its own every few minutes; the button does it now.` }));
+  if (d?.mine?.removable) card.append(el("p", { class: "error", text: tr("Your wallet holds less than {minHolding} tokens, so your pass no longer earns and can be removed (its rent comes back to you). Buy back above {minHolding} to keep it.", { minHolding: fmt(b.minHolding) }) }));
+  if (d?.removable) card.append(el("p", { class: "muted", text: tr("The site removes empty passes on its own every few minutes; the button does it now.") }));
   const dueRows = (d?.entries ?? []).filter((e) => Number(e.dueXnt) > 0);
-  if (dueRows.length) card.append(el("p", { class: "muted", text: `Paying the last round: ${dueRows.length} wallet${dueRows.length === 1 ? "" : "s"} still due ${fmt(dueRows.reduce((x, e) => x + Number(e.dueXnt), 0))} XNT (the crank, or anyone with "Pay passes", sends it).` }));
+  if (dueRows.length) card.append(el("p", { class: "muted", text: tr("Paying the last round: {count} wallet(s) still due {due} XNT (the crank, or anyone with \"Pay passes\", sends it).", { count: dueRows.length, due: fmt(dueRows.reduce((x, e) => x + Number(e.dueXnt), 0)) }) }));
 
   // Sponsor: anyone adds XNT to the holders' share; rounds split it like tax.
   const amount = el("input", { value: "1", inputmode: "decimal" });
-  const give = el("button", { class: "btn", type: "button", text: "Sponsor holders" });
-  give.onclick = () => run("Sponsor holders", `/api/v4/${t.mint}/sponsor-tx`, { amountXnt: amount.value });
+  const give = el("button", { class: "btn", type: "button", text: tr("Sponsor holders") });
+  give.onclick = () => run(tr("Sponsor holders"), `/api/v4/${t.mint}/sponsor-tx`, { amountXnt: amount.value });
   give.disabled = !me;
-  const capNote = d?.roundCapXnt ? ` A round pays at most ~${fmt(d.roundCapXnt, 4)} XNT right now (${fmt((d.taxBps * 0.8) / 100, 2)}% of the counted tokens' value), so a bigger pot is paid out over several rounds.` : "";
-  card.append(el("h3", { text: "Sponsor holders" }),
-    el("p", { class: "muted", text: `Add XNT to the holders' share from your wallet. It can't be taken back; the next rounds split it by balance.${capNote}` }),
+  const capNote = d?.roundCapXnt ? " " + tr("A round pays at most ~{cap} XNT right now ({pct}% of the counted tokens' value), so a bigger pot is paid out over several rounds.", { cap: fmt(d.roundCapXnt, 4), pct: fmt((d.taxBps * 0.8) / 100, 2) }) : "";
+  card.append(el("h3", { text: tr("Sponsor holders") }),
+    el("p", { class: "muted", text: tr("Add XNT to the holders' share from your wallet. It can't be taken back; the next rounds split it by balance.") + capNote }),
     el("div", { class: "row" }, el("label", {}, "XNT", amount), give));
 
   if (d?.entries?.length) {
-    const rows = d.entries.map((e) => {
-      const tr = el("tr", { class: e.wallet === me ? "me" : "" },
-        el("td", { text: String(e.index + 1) }), el("td", { class: "mono" }, link(`${explorer}/address/${e.wallet}`, e.short)),
-        el("td", { class: "n", text: fmt(e.counted, 2) }), el("td", { class: "n", text: fmt(e.owedXnt) }),
-        el("td", { class: "n", text: fmt(e.paidXnt) }), el("td", { class: "n", text: fmt(e.dueXnt) }),
-        el("td", { text: e.removable ? "Under the minimum" : "Earning" }));
-      return tr;
-    });
-    card.append(el("h3", { text: "Passes" }), el("div", { class: "tbl" }, el("table", {},
-      el("thead", {}, el("tr", {}, el("th", { text: "#" }), el("th", { text: "Wallet" }), el("th", { class: "n", text: "Counted last round" }),
-        el("th", { class: "n", text: "Earned (XNT)" }), el("th", { class: "n", text: "Paid (XNT)" }), el("th", { class: "n", text: "Due (XNT)" }), el("th", { text: "Status" }))),
-      el("tbody", {}, ...rows))));
+    const box = el("div");
+    card.append(el("h3", { text: tr("Passes") }), box);
+    passTable(box, t.mint, d.entries, me);
   } else {
-    card.append(el("p", { class: "muted", text: "No passes yet. Holders register above." }));
+    card.append(el("p", { class: "muted", text: tr("No passes yet. Holders register above.") }));
   }
   return card;
 }
@@ -260,11 +288,11 @@ async function render() {
   const out = $("out");
   let data;
   try { data = await api("/api/v4"); }
-  catch (e) { out.replaceChildren(el("p", { class: "error", text: `Couldn't load v4 tokens: ${e.message || e}` })); return; }
-  $("programLine").replaceChildren("Vault program: ", link(`${explorer}/address/${data.program}`, data.program), ` (${data.network}).`);
+  catch (e) { out.replaceChildren(el("p", { class: "error", text: tr("Couldn't load v4 tokens: {message}", { message: e.message || e }) })); return; }
+  $("programLine").replaceChildren(tr("Vault program: "), link(`${explorer}/address/${data.program}`, data.program), ` (${data.network}).`);
   if (!data.tokens.length) {
-    out.replaceChildren(el("div", { class: "card" }, el("h2", { text: "No v4 tokens yet" }),
-      el("p", { class: "muted" }, "Launch one from ", el("a", { href: "/launch", text: "the launch page" }), ", start its vault, then turn on holder passes here.")));
+    out.replaceChildren(el("div", { class: "card" }, el("h2", { text: tr("No v4 tokens yet") }),
+      el("p", { class: "muted" }, tr("Launch one from "), el("a", { href: "/launch", text: tr("the launch page") }), tr(", start its vault, then turn on holder passes here."))));
     return;
   }
   const cards = [];
@@ -276,11 +304,11 @@ async function render() {
 function renderWallet() {
   const area = $("walletArea");
   if (W.state.address) {
-    const b = el("button", { class: "btn sm", type: "button", text: "Disconnect" });
+    const b = el("button", { class: "btn sm", type: "button", text: tr("Disconnect") });
     b.onclick = () => W.disconnect();
     area.replaceChildren(el("span", { class: "mono muted", text: short(W.state.address) }), b);
   } else {
-    const b = el("button", { class: "btn sm primary", type: "button", text: "Connect wallet" });
+    const b = el("button", { class: "btn sm primary", type: "button", text: tr("Connect wallet") });
     b.onclick = openWalletMenu;
     area.replaceChildren(b);
   }
@@ -289,8 +317,8 @@ function openWalletMenu(ev) {
   ev.stopPropagation();
   $("walletMenu")?.remove();
   const choices = W.choices();
-  const go = (c) => W.connect(c).catch((e) => toast("error", `Wallet connection failed: ${e.message || e}`));
-  if (!choices.length) { toast("error", "No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload."); return; }
+  const go = (c) => W.connect(c).catch((e) => toast("error", tr("Wallet connection failed: ") + (e.message || e)));
+  if (!choices.length) { toast("error", tr("No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload.")); return; }
   if (choices.length === 1) { go(choices[0]); return; }
   const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
   for (const c of choices) {

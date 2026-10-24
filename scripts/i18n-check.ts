@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 /** The public pages (dashboard.html is the operator's local dashboard, English only). */
-export const PAGES = ["landing", "factory", "tokens", "nft", "wallet", "leaderboard", "analytics", "curve", "faucet"]
+export const PAGES = ["landing", "factory", "tokens", "nft", "wallet", "leaderboard", "analytics", "curve", "faucet", "v4"]
   .map((p) => path.join(ROOT, "src", `${p}.html`));
 export const SHARED = ["theme.js", "wallet.js", "countdown.js"].map((f) => path.join(ROOT, "src", "web", f));
 

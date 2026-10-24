@@ -309,7 +309,7 @@ function listView() {
 const MAX_LP_PLUS_BURN = 55; // 10% goes to the creator; holders keep at least 35%
 /** Graduation targets a new curve can pick (whole XNT); each curve shows its own afterwards. */
 const targetsOf = () => listData?.params?.targetsXnt ?? ["500", "1000", "3000", "5000", "10000"];
-const targetList = () => { const t = targetsOf().map((v) => fmt(v, 0)); return tr("{low} to {high}", { low: t[0], high: t.at(-1) }); };
+const targetList = () => { const t = targetsOf().map((v) => fmt(v, 0)); return `${t[0]}–${t.at(-1)}`; }; // a range, the same in every language (a "{low} to {high}" key would match any text with "to")
 /**
  * create_curve's setup (src/curve.ts curveSetup): the curve's start price and its end price,
  * which is the XDEX pool's opening price (the target against the pool's tokens after tax).

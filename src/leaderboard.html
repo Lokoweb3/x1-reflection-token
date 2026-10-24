@@ -224,7 +224,7 @@ function render() {
       tile(tr("Price now"), data.price ? `${sig(data.price)} ${U}` : "–", U !== "XNT" && data.price && data.quoteXnt ? tr("≈ {price} XNT", { price: sig(data.price * data.quoteXnt) }) : null),
       tile(tr("Average holder cost"), s.avgCost ? `${sig(s.avgCost)} ${U}` : "–", vsPrice !== null ? tr("price is {sign}{vsPrice}% vs this", { sign: vsPrice >= 0 ? "+" : "", vsPrice: vsPrice.toFixed(1) }) : tr("no pool buys tracked yet")),
       tile(tr("Holders' total cost"), `${sig(data.rows.reduce((t, r) => t + (r.balance > 0 ? r.spent : 0), 0))} ${U}`, tr("{spent} {U} spent on all buys", { spent: sig(data.rows.reduce((t, r) => t + r.spent, 0)), U })),
-      tile(tr("Holders in profit"), s.inProfit + s.inLoss ? tr("{inProfit} of {total}", { inProfit: s.inProfit, total: s.inProfit + s.inLoss }) : "–", s.inLoss ? tr("{inLoss} in loss", { inLoss: s.inLoss }) : ""),
+      tile(tr("Holders in profit"), s.inProfit + s.inLoss ? `${s.inProfit} / ${s.inProfit + s.inLoss}` : "–", s.inLoss ? tr("{inLoss} in loss", { inLoss: s.inLoss }) : ""),
       tile(tr("Unrealized P/L"), `${s.unrealized >= 0 ? "+" : ""}${sig(s.unrealized)} ${U}`, tr("holders' open positions")),
       tile(tr("Realized P/L"), `${s.realized >= 0 ? "+" : ""}${sig(s.realized)} ${U}`, tr("{trades} trades by {traders} wallets", { trades: s.trades, traders: s.traders })),
       tile(tr("Paid to holders"), `${sig(s.rewardsPaid ?? 0)} XNT`, tr("payouts and Distribute now rewards to these wallets"))),
