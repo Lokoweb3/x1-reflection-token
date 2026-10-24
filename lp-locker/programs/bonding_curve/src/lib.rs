@@ -14,6 +14,13 @@
 //! * `deliver` mints each buyer's tokens to their wallet; after the last one the mint
 //!   authority is revoked and what is left in `auth` goes to the creator.
 //!
+//! * Early buys (the first SNIPE_WINDOW_SECS): a wallet's position may hold at most
+//!   SNIPE_MAX_BPS of the supply, all buyers together at most EARLY_TOTAL_BPS, and a
+//!   transaction may carry only one buy, sent directly (not through another program).
+//! * `refund`: a curve stuck in Complete for REFUND_AFTER_SECS (XDEX pool creation keeps
+//!   failing) opens to refunds; each position gets its pro-rata share of `raised_xnt` and
+//!   its deposit back, and the last one returns the rest to the creator. No tokens exist.
+//!
 //! Lamport accounting: `auth` holds GRADUATION_DEPOSIT + raised_xnt + every open
 //! position's deposit (plus anything donated). Every rounding favours the curve.
 use anchor_lang::prelude::*;
@@ -80,7 +87,19 @@ pub const SNIPE_WINDOW_SECS: i64 = 120;
 /// Local testing only.
 #[cfg(feature = "short-windows")]
 pub const SNIPE_WINDOW_SECS: i64 = 5;
+/// Most one wallet's position may hold during the early window (1% of the supply).
 pub const SNIPE_MAX_BPS: u64 = 100;
+/// Most all buyers together may take during the early window: 10% of the supply (an eighth
+/// of what the curve sells), room for ten wallets at the per-wallet limit. Past it, buys wait
+/// for the window to end, so no early group can corner the curve before others can buy.
+pub const EARLY_TOTAL_BPS: u64 = 1000;
+/// How long a curve may sit in Complete (XDEX pool creation failing) before anyone can open
+/// it to refunds.
+#[cfg(not(feature = "short-windows"))]
+pub const REFUND_AFTER_SECS: i64 = 7 * 24 * 3600;
+/// Local testing only.
+#[cfg(feature = "short-windows")]
+pub const REFUND_AFTER_SECS: i64 = 10;
 pub const DECIMALS: u8 = 9;
 pub const MIN_SUPPLY_WHOLE: u64 = 1_000;
 pub const MAX_SUPPLY_WHOLE: u64 = 10_000_000_000;
@@ -92,6 +111,8 @@ pub const STATUS_COMPLETE: u8 = 1;
 pub const STATUS_POOL_CREATED: u8 = 2;
 pub const STATUS_GRADUATED: u8 = 3;
 pub const STATUS_FINISHED: u8 = 4;
+/// Complete for REFUND_AFTER_SECS without a pool: positions are refunded pro rata, no tokens.
+pub const STATUS_REFUNDING: u8 = 5;
 
 pub const NFT_NAME: &str = "99 + Tax LP Lock";
 pub const NFT_SYMBOL: &str = "LPLOCK";
@@ -113,6 +134,7 @@ pub mod bonding_curve {
         let supply = supply_whole.checked_mul(10u64.pow(DECIMALS as u32)).ok_or(CurveError::BadSupply)?;
         let target = target_lamports(target_whole)?;
         let fee = check_curve_mint(&ctx.accounts.mint.to_account_info(), &ctx.accounts.auth.key(), &ctx.accounts.creator.key())?;
+        check_amm_config(&ctx.accounts.amm_config.to_account_info())?;
         let s = math::setup(supply, target, |a| fee.calculate_fee(a))?;
 
         system_program::transfer(
@@ -174,8 +196,8 @@ pub mod bonding_curve {
         require!(q.out >= min_tokens_out, CurveError::Slippage);
         let now = Clock::get()?.unix_timestamp;
         if now < curve.created_at.saturating_add(SNIPE_WINDOW_SECS) {
-            let cap = (curve.supply as u128 * SNIPE_MAX_BPS as u128 / 10_000) as u64;
-            require!(q.out <= cap, CurveError::TooBigEarly);
+            early_limits(curve.supply, ctx.accounts.position.balance, curve.tokens_sold, q.out)?;
+            one_early_buy(&ctx.accounts.instructions.to_account_info())?;
         }
 
         // First buy: open the position and take a deposit for the buyer's token account.
@@ -216,6 +238,8 @@ pub mod bonding_curve {
         if q.complete {
             require!(c.tokens_sold == c.curve_tokens, CurveError::MathOverflow);
             c.status = STATUS_COMPLETE;
+            // Completion time, for refund (`delivered` is unused until graduate_pool resets it).
+            c.delivered = u64::try_from(now).unwrap_or(1).max(1);
         }
         let p = &mut ctx.accounts.position;
         p.balance = p.balance.checked_add(q.out).ok_or(CurveError::MathOverflow)?;
@@ -396,6 +420,7 @@ pub mod bonding_curve {
         let c = &mut ctx.accounts.curve;
         c.pool = pool;
         c.status = STATUS_POOL_CREATED;
+        c.delivered = 0; // held the completion time; deliver counts from 0
         check_reserve(&ctx.accounts.auth.to_account_info(), ctx.accounts.curve.positions)
     }
 
@@ -594,6 +619,43 @@ pub mod bonding_curve {
         }
         Ok(()) // `close = owner` closes the position
     }
+
+    /// A curve that has been Complete for REFUND_AFTER_SECS without its XDEX pool (pool
+    /// creation keeps failing) opens to refunds; anyone may then refund any position: its
+    /// owner gets its pro-rata share of the raised XNT plus its deposit, and the position
+    /// closes. The last refund returns the rest of `auth` (the graduation deposit) to the
+    /// creator. No tokens are ever minted for a refunded curve.
+    pub fn refund(ctx: Context<Refund>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        {
+            let c = &mut ctx.accounts.curve;
+            if c.status == STATUS_COMPLETE {
+                require!(now >= completed_at(c).saturating_add(REFUND_AFTER_SECS), CurveError::RefundNotOpen);
+                c.status = STATUS_REFUNDING;
+            }
+            require!(c.status == STATUS_REFUNDING, CurveError::WrongStatus);
+        }
+        let a = &ctx.accounts;
+        let mint = a.curve.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint.as_ref(), &[a.curve.auth_bump]];
+        let auth = a.auth.to_account_info();
+        let sys = a.system_program.to_account_info();
+        let balance = a.position.balance;
+        let share = refund_share(a.curve.raised_xnt, a.curve.tokens_sold, balance)?;
+        let pay = share.checked_add(a.position.deposit).ok_or(CurveError::MathOverflow)?;
+        pay_from_auth(&sys, &auth, &a.owner.to_account_info(), pay, auth_seeds)?;
+        emit!(Refunded { curve: a.curve.key(), owner: a.owner.key(), tokens: balance, xnt: share });
+
+        let c = &mut ctx.accounts.curve;
+        c.raised_xnt = c.raised_xnt.checked_sub(share).ok_or(CurveError::MathOverflow)?;
+        c.tokens_sold = c.tokens_sold.checked_sub(balance).ok_or(CurveError::MathOverflow)?;
+        c.positions = c.positions.checked_sub(1).ok_or(CurveError::MathOverflow)?;
+        if c.positions == 0 {
+            let rest = auth.lamports();
+            pay_from_auth(&sys, &auth, &ctx.accounts.creator.to_account_info(), rest, auth_seeds)?;
+        }
+        Ok(()) // `close = owner` closes the position
+    }
 }
 
 // ---------- Helpers ----------
@@ -611,10 +673,27 @@ pub fn pool_amounts(curve: &Curve) -> (u64, u64) {
     (curve.pool_tokens_gross, curve.target_xnt)
 }
 
+/// Tax vault programs whose auth PDA (["auth", mint]) may withdraw a curve token's tax: the
+/// regular one, and on testnet the holder-passes trial.
+#[cfg(feature = "testnet")]
+pub const VAULT_PROGRAMS: [Pubkey; 2] = [
+    pubkey!("D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW"),
+    pubkey!("Aqt57qzgBy9cJLiygL6V8fHK7Sov7DwXeQFAm8aphxc8"),
+];
+#[cfg(not(feature = "testnet"))]
+pub const VAULT_PROGRAMS: [Pubkey; 1] = [pubkey!("D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW")];
+
+/// Whether `withdraw` is a tax vault program's auth PDA for `mint`.
+pub fn is_vault_auth(withdraw: &Pubkey, mint: &Pubkey) -> bool {
+    VAULT_PROGRAMS.iter().any(|p| Pubkey::find_program_address(&[b"auth", mint.as_ref()], p).0 == *withdraw)
+}
+
 /// The mint must be a fresh 9-decimal Token-2022 tax token that only this curve's `auth`
 /// can mint: supply 0, no freeze authority, only TransferFeeConfig / MetadataPointer /
-/// TokenMetadata, an immutable fee of 100..=1000 bps, and token metadata whose update
-/// authority is the creator (so nobody else can open a curve on someone's new mint).
+/// TokenMetadata, an immutable fee of 100..=1000 bps with no cap (maximum_fee = u64::MAX),
+/// a tax that only a tax vault program can withdraw (`is_vault_auth`: no creator's wallet
+/// can take it), and token metadata whose update authority is the creator (so nobody else
+/// can open a curve on someone's new mint).
 fn check_curve_mint(mint: &AccountInfo, auth: &Pubkey, creator: &Pubkey) -> Result<TransferFee> {
     require_keys_eq!(*mint.owner, token_2022::ID, CurveError::BadMint);
     let data = mint.try_borrow_data()?;
@@ -640,10 +719,75 @@ fn check_curve_mint(mint: &AccountInfo, auth: &Pubkey, creator: &Pubkey) -> Resu
     );
     let bps = u16::from(fee.transfer_fee_basis_points);
     require!((MIN_TAX_BPS..=MAX_TAX_BPS).contains(&bps), CurveError::BadTax);
+    require!(u64::from(fee.maximum_fee) == u64::MAX, CurveError::BadTax);
+    let withdraw: Option<Pubkey> = cfg.withdraw_withheld_authority.into();
+    require!(withdraw.is_some_and(|w| is_vault_auth(&w, mint.key)), CurveError::BadWithdrawAuthority);
     let md = state.get_variable_len_extension::<TokenMetadata>().map_err(|_| error!(CurveError::BadMint))?;
     let update_authority: Option<Pubkey> = md.update_authority.into();
     require!(update_authority == Some(*creator), CurveError::BadMint);
     Ok(fee)
+}
+
+/// sha256("account:AmmConfig")[..8].
+const XDEX_CONFIG_DISC: [u8; 8] = [0xda, 0xf4, 0x21, 0x68, 0xcb, 0xcb, 0x2b, 0x6f];
+
+/// The XDEX fee tier graduation uses must exist and accept new pools (`disable_create_pool`,
+/// the byte after its bump, is 0): otherwise a curve would fill and never graduate.
+fn check_amm_config(cfg: &AccountInfo) -> Result<()> {
+    require_keys_eq!(*cfg.owner, XDEX_PROGRAM_ID, CurveError::XdexClosed);
+    let d = cfg.try_borrow_data()?;
+    require!(d.len() == 236 && d[..8] == XDEX_CONFIG_DISC, CurveError::XdexClosed);
+    require!(d[9] == 0, CurveError::XdexClosed);
+    Ok(())
+}
+
+/// During the early window: this buy must be the transaction's only buy of this program,
+/// sent as its own instruction (not through another program, which could buy many times
+/// from fresh wallets in one go).
+fn one_early_buy(ix_sysvar: &AccountInfo) -> Result<()> {
+    use anchor_lang::solana_program::sysvar::instructions::{load_current_index_checked, load_instruction_at_checked};
+    let me = load_current_index_checked(ix_sysvar)? as usize;
+    let buy_disc = <instruction::Buy as anchor_lang::Discriminator>::DISCRIMINATOR;
+    let current = load_instruction_at_checked(me, ix_sysvar)?;
+    require!(current.program_id == crate::ID && current.data.starts_with(buy_disc), CurveError::OneBuyPerTransaction);
+    let mut i = 0usize;
+    while let Ok(ix) = load_instruction_at_checked(i, ix_sysvar) {
+        if i != me && ix.program_id == crate::ID && ix.data.starts_with(buy_disc) {
+            return err!(CurveError::OneBuyPerTransaction);
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// Early-window limits on a buy of `out` tokens: the buyer's position (`held` before it) and
+/// the curve's tokens sold (`sold` before it) after the buy.
+pub fn early_limits(supply: u64, held: u64, sold: u64, out: u64) -> Result<()> {
+    let per_wallet = (supply as u128 * SNIPE_MAX_BPS as u128 / 10_000) as u64;
+    let total = (supply as u128 * EARLY_TOTAL_BPS as u128 / 10_000) as u64;
+    require!(held.checked_add(out).ok_or(CurveError::MathOverflow)? <= per_wallet, CurveError::TooBigEarly);
+    require!(sold.checked_add(out).ok_or(CurveError::MathOverflow)? <= total, CurveError::EarlyWindowFull);
+    Ok(())
+}
+
+/// When a Complete curve completed: kept in `delivered` until graduate_pool (0 on curves
+/// completed before this was recorded: their creation time stands in).
+pub fn completed_at(c: &Curve) -> i64 {
+    if c.delivered > 0 { c.delivered as i64 } else { c.created_at }
+}
+
+/// A position's refund: its share of what the curve still holds for the open positions
+/// (`raised` over `sold` tokens), rounded down. Applying them one by one pays everyone
+/// the same rate, and the last one takes what is left.
+pub fn refund_share(raised: u64, sold: u64, balance: u64) -> Result<u64> {
+    if balance == 0 || sold == 0 {
+        return Ok(0);
+    }
+    require!(balance <= sold, CurveError::MathOverflow);
+    if balance == sold {
+        return Ok(raised);
+    }
+    Ok((raised as u128 * balance as u128 / sold as u128) as u64)
 }
 
 /// Rent of a Token-2022 associated token account for a transfer-fee mint.
@@ -931,6 +1075,9 @@ pub struct CreateCurve<'info> {
     #[account(mut, seeds = [b"auth", mint.key().as_ref()], bump)]
     pub auth: SystemAccount<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the XDEX fee tier graduation will use (check_amm_config).
+    #[account(address = XDEX_AMM_CONFIG @ CurveError::WrongAccount)]
+    pub amm_config: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -950,6 +1097,9 @@ pub struct Buy<'info> {
     #[account(mut, address = FEE_RECEIVER @ CurveError::WrongAccount)]
     pub fee_receiver: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the instructions sysvar (one_early_buy reads the transaction's instructions).
+    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID @ CurveError::WrongAccount)]
+    pub instructions: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1106,6 +1256,29 @@ pub struct Deliver<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct Refund<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, seeds = [b"curve", curve.mint.as_ref()], bump = curve.bump)]
+    pub curve: Box<Account<'info, Curve>>,
+    #[account(mut, seeds = [b"auth", curve.mint.as_ref()], bump = curve.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    #[account(
+        mut, close = owner,
+        seeds = [b"pos", curve.key().as_ref(), position.owner.as_ref()], bump = position.bump,
+        constraint = position.curve == curve.key() @ CurveError::WrongAccount,
+    )]
+    pub position: Box<Account<'info, Position>>,
+    /// CHECK: the position's owner (gets the refund).
+    #[account(mut, address = position.owner @ CurveError::WrongAccount)]
+    pub owner: UncheckedAccount<'info>,
+    /// CHECK: the curve's creator (gets what is left after the last refund).
+    #[account(mut, address = curve.creator @ CurveError::WrongAccount)]
+    pub creator: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
 // ---------- Events ----------
 
 #[event]
@@ -1151,6 +1324,14 @@ pub struct Delivered {
     pub tokens: u64,
 }
 
+#[event]
+pub struct Refunded {
+    pub curve: Pubkey,
+    pub owner: Pubkey,
+    pub tokens: u64,
+    pub xnt: u64,
+}
+
 #[error_code]
 pub enum CurveError {
     #[msg("Mint must be a fresh 9-decimal Token-2022 mint: supply 0, mint authority = curve auth, no freeze authority, only transfer-fee and metadata extensions, metadata update authority = creator")]
@@ -1167,7 +1348,7 @@ pub enum CurveError {
     ZeroAmount,
     #[msg("Price moved beyond the slippage limit")]
     Slippage,
-    #[msg("Buy too large during the anti-snipe window")]
+    #[msg("Early-buy limit: in the first 2 minutes one wallet can hold at most 1% of the supply")]
     TooBigEarly,
     #[msg("Position balance too low")]
     InsufficientBalance,
@@ -1179,16 +1360,27 @@ pub enum CurveError {
     MathOverflow,
     #[msg("Curve auth would not cover the open positions' deposits; top it up and retry")]
     InsufficientReserve,
-    #[msg("Graduation target must be 500, 1,000, 3,000, 5,000 or 10,000 XNT")]
+    #[msg("Graduation target must be 500, 1,000, 3,000, 5,000 or 10,000 XNT (the testnet build also takes 10 and 20)")]
     BadTarget,
+    #[msg("Early-buy limit: in the first 2 minutes all buyers together can take at most 10% of the supply")]
+    EarlyWindowFull,
+    #[msg("In the first 2 minutes a transaction can carry only one buy, sent directly to the curve")]
+    OneBuyPerTransaction,
+    #[msg("The token's tax must be withdrawable only by a tax vault program's auth PDA")]
+    BadWithdrawAuthority,
+    #[msg("The XDEX fee tier for graduation doesn't exist or doesn't accept new pools")]
+    XdexClosed,
+    #[msg("Refunds open only after the curve has waited 7 days for its pool")]
+    RefundNotOpen,
 }
 
 #[cfg(test)]
 mod tests {
     use super::math::{buy, ceil_div, sell, setup, Setup};
     use super::{
-        pool_amounts, target_lamports, Curve, CurveError, FEE_BPS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE, SNIPE_MAX_BPS,
-        STATUS_COMPLETE, STATUS_TRADING, TARGETS_XNT_WHOLE,
+        check_amm_config, check_curve_mint, completed_at, early_limits, is_vault_auth, one_early_buy, pool_amounts, refund_share,
+        target_lamports, Curve, CurveError, EARLY_TOTAL_BPS, FEE_BPS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE, SNIPE_MAX_BPS,
+        STATUS_COMPLETE, STATUS_TRADING, TARGETS_XNT_WHOLE, VAULT_PROGRAMS, XDEX_CONFIG_DISC, XDEX_PROGRAM_ID,
     };
     use anchor_lang::prelude::*;
     use anchor_lang::{AccountDeserialize, AccountSerialize};
@@ -1241,6 +1433,11 @@ mod tests {
         // Appended last: every earlier error keeps its code.
         assert_eq!(u32::from(CurveError::InsufficientReserve), 6012);
         assert_eq!(u32::from(CurveError::BadTarget), 6013);
+        assert_eq!(u32::from(CurveError::EarlyWindowFull), 6014);
+        assert_eq!(u32::from(CurveError::OneBuyPerTransaction), 6015);
+        assert_eq!(u32::from(CurveError::BadWithdrawAuthority), 6016);
+        assert_eq!(u32::from(CurveError::XdexClosed), 6017);
+        assert_eq!(u32::from(CurveError::RefundNotOpen), 6018);
     }
 
     #[test]
@@ -1396,5 +1593,156 @@ mod tests {
         assert_eq!(pool_amounts(&c), (s.pg, OLD_TARGET));
         let (lhs, rhs) = (c.virtual_xnt as u128 * c.pool_tokens_net as u128, OLD_TARGET as u128 * c.virtual_tokens as u128);
         assert!(lhs.abs_diff(rhs) * 1_000_000_000 < rhs, "old curve ends at its pool's opening price");
+    }
+
+    /// M-4: the early limit counts the wallet's whole position (not each call), and all
+    /// buyers together stop at EARLY_TOTAL_BPS.
+    #[test]
+    fn early_limits_hold_across_calls_and_overall() {
+        let supply = 1_000_000_000 * XNT;
+        let per = supply / 100; // 1%
+        // 25 buys of 0.96% each from one wallet (the review's attack): the second already fails.
+        let step = per * 96 / 100;
+        assert!(early_limits(supply, 0, 0, step).is_ok());
+        assert_eq!(code(early_limits(supply, step, step, step).unwrap_err()), u32::from(CurveError::TooBigEarly));
+        // Up to exactly 1% in several buys is fine.
+        assert!(early_limits(supply, per / 2, per / 2, per / 2).is_ok());
+        assert_eq!(code(early_limits(supply, per / 2, per / 2, per / 2 + 1).unwrap_err()), u32::from(CurveError::TooBigEarly));
+        // Ten wallets at 1% reach the 10% total; the eleventh is refused.
+        let total = (supply as u128 * EARLY_TOTAL_BPS as u128 / 10_000) as u64;
+        assert_eq!(total, 10 * per);
+        assert!(early_limits(supply, 0, 9 * per, per).is_ok());
+        assert_eq!(code(early_limits(supply, 0, 10 * per, 1).unwrap_err()), u32::from(CurveError::EarlyWindowFull));
+        assert_eq!(SNIPE_MAX_BPS, 100);
+    }
+
+    fn info<'a>(key: &'a Pubkey, owner: &'a Pubkey, lamports: &'a mut u64, data: &'a mut [u8]) -> AccountInfo<'a> {
+        AccountInfo::new(key, false, false, lamports, data, owner, false, 0)
+    }
+
+    /// M-4: one buy per transaction during the window, and not through another program.
+    #[test]
+    fn one_buy_per_transaction() {
+        use anchor_lang::solana_program::instruction::Instruction;
+        use anchor_lang::solana_program::sysvar::instructions::{construct_instructions_data, store_current_index_checked, BorrowedAccountMeta, BorrowedInstruction};
+        let buy = <super::instruction::Buy as anchor_lang::Discriminator>::DISCRIMINATOR.to_vec();
+        let other = Pubkey::new_unique();
+        let run = |ixs: &[Instruction], current: u16| -> Result<()> {
+            let borrowed: Vec<BorrowedInstruction> = ixs.iter().map(|ix| BorrowedInstruction {
+                program_id: &ix.program_id,
+                accounts: ix.accounts.iter().map(|a| BorrowedAccountMeta { pubkey: &a.pubkey, is_signer: a.is_signer, is_writable: a.is_writable }).collect(),
+                data: &ix.data,
+            }).collect();
+            let mut data = construct_instructions_data(&borrowed);
+            store_current_index_checked(&mut data, current).unwrap();
+            let key = anchor_lang::solana_program::sysvar::instructions::ID;
+            let owner = anchor_lang::solana_program::sysvar::ID;
+            let mut lamports = 0u64;
+            one_early_buy(&info(&key, &owner, &mut lamports, &mut data))
+        };
+        let ix = |program: Pubkey, data: Vec<u8>| Instruction { program_id: program, accounts: vec![], data };
+        let budget = ix(other, vec![2, 0, 0, 0, 0]);
+        // A buy with compute-budget instructions around it: fine.
+        assert!(run(&[budget.clone(), ix(super::ID, buy.clone())], 1).is_ok());
+        // Two buys (any wallets, any curves) in one transaction: refused, whichever runs.
+        let two = [ix(super::ID, buy.clone()), ix(super::ID, buy.clone())];
+        assert_eq!(code(run(&two, 0).unwrap_err()), u32::from(CurveError::OneBuyPerTransaction));
+        assert_eq!(code(run(&two, 1).unwrap_err()), u32::from(CurveError::OneBuyPerTransaction));
+        // Through another program (a CPI): the top-level instruction isn't this program's buy.
+        assert_eq!(code(run(&[ix(other, buy.clone())], 0).unwrap_err()), u32::from(CurveError::OneBuyPerTransaction));
+        // A sell next to the buy is fine.
+        let sell = <super::instruction::Sell as anchor_lang::Discriminator>::DISCRIMINATOR.to_vec();
+        assert!(run(&[ix(super::ID, sell), ix(super::ID, buy)], 1).is_ok());
+    }
+
+    /// A 9-decimal Token-2022 mint with a transfer fee (and nothing else), as raw account data.
+    fn fee_mint(auth: &Pubkey, withdraw: Option<Pubkey>, bps: u16, max_fee: u64) -> Vec<u8> {
+        use anchor_spl::token_2022::spl_token_2022::extension::{transfer_fee::TransferFeeConfig, BaseStateWithExtensionsMut, ExtensionType, StateWithExtensionsMut};
+        use anchor_spl::token_2022::spl_token_2022::state::Mint;
+        use anchor_lang::solana_program::program_option::COption;
+        let len = ExtensionType::try_calculate_account_len::<Mint>(&[ExtensionType::TransferFeeConfig]).unwrap();
+        let mut data = vec![0u8; len];
+        let mut st = StateWithExtensionsMut::<Mint>::unpack_uninitialized(&mut data).unwrap();
+        let cfg = st.init_extension::<TransferFeeConfig>(true).unwrap();
+        cfg.transfer_fee_config_authority = None.try_into().unwrap();
+        cfg.withdraw_withheld_authority = withdraw.try_into().unwrap();
+        for f in [&mut cfg.older_transfer_fee, &mut cfg.newer_transfer_fee] {
+            f.transfer_fee_basis_points = bps.into();
+            f.maximum_fee = max_fee.into();
+        }
+        st.base = Mint { mint_authority: COption::Some(*auth), supply: 0, decimals: 9, is_initialized: true, freeze_authority: COption::None };
+        st.pack_base();
+        st.init_account_type().unwrap();
+        data
+    }
+
+    /// M-5: the tax must be uncapped and withdrawable only by a tax vault's auth PDA.
+    #[test]
+    fn curve_mint_tax_goes_to_a_vault() {
+        let (mint, auth, creator) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
+        let t22 = anchor_spl::token_2022::ID;
+        let vault_auth = Pubkey::find_program_address(&[b"auth", mint.as_ref()], &VAULT_PROGRAMS[0]).0;
+        let check = |data: &mut Vec<u8>| {
+            let mut lamports = 1u64;
+            check_curve_mint(&info(&mint, &t22, &mut lamports, data), &auth, &creator).map(|_| ())
+        };
+        // The creator's own wallet as the tax's withdraw authority: refused.
+        assert_eq!(code(check(&mut fee_mint(&auth, Some(creator), 500, u64::MAX)).unwrap_err()), u32::from(CurveError::BadWithdrawAuthority));
+        assert_eq!(code(check(&mut fee_mint(&auth, None, 500, u64::MAX)).unwrap_err()), u32::from(CurveError::BadWithdrawAuthority));
+        // A capped fee: refused.
+        assert_eq!(code(check(&mut fee_mint(&auth, Some(vault_auth), 500, 1_000)).unwrap_err()), u32::from(CurveError::BadTax));
+        // Right authority and no cap: the tax checks pass (this bare mint then fails on its
+        // missing metadata, the check after them).
+        assert_eq!(code(check(&mut fee_mint(&auth, Some(vault_auth), 500, u64::MAX)).unwrap_err()), u32::from(CurveError::BadMint));
+        assert!(is_vault_auth(&vault_auth, &mint));
+        assert!(!is_vault_auth(&creator, &mint));
+        let passes = Pubkey::find_program_address(&[b"auth", mint.as_ref()], &pubkey!("Aqt57qzgBy9cJLiygL6V8fHK7Sov7DwXeQFAm8aphxc8")).0;
+        // The holder-passes trial's vaults only on testnet.
+        assert_eq!(is_vault_auth(&passes, &mint), cfg!(feature = "testnet"));
+    }
+
+    /// M-6: create_curve checks the XDEX fee tier graduation will use.
+    #[test]
+    fn amm_config_must_accept_pools() {
+        let key = Pubkey::new_unique();
+        let mut d = vec![0u8; 236];
+        d[..8].copy_from_slice(&XDEX_CONFIG_DISC);
+        let mut lamports = 1u64;
+        assert!(check_amm_config(&info(&key, &XDEX_PROGRAM_ID, &mut lamports, &mut d.clone())).is_ok());
+        let mut closed = d.clone();
+        closed[9] = 1; // disable_create_pool
+        assert_eq!(code(check_amm_config(&info(&key, &XDEX_PROGRAM_ID, &mut lamports, &mut closed)).unwrap_err()), u32::from(CurveError::XdexClosed));
+        let other = Pubkey::new_unique();
+        assert_eq!(code(check_amm_config(&info(&key, &other, &mut lamports, &mut d.clone())).unwrap_err()), u32::from(CurveError::XdexClosed));
+        assert_eq!(code(check_amm_config(&info(&key, &XDEX_PROGRAM_ID, &mut lamports, &mut d[..200].to_vec())).unwrap_err()), u32::from(CurveError::XdexClosed));
+    }
+
+    /// M-6: refunds pay every position the same rate, and the last one takes what's left.
+    #[test]
+    fn refunds_are_pro_rata_and_exact() {
+        let (mut raised, mut sold) = (19_999_999_997u64, 800_000_000 * XNT);
+        let balances = [sold / 3, sold / 7, 12_345_678, sold - sold / 3 - sold / 7 - 12_345_678];
+        let rate = raised as f64 / sold as f64;
+        let mut paid = 0u64;
+        for (i, b) in balances.iter().enumerate() {
+            let share = refund_share(raised, sold, *b).unwrap();
+            // At most the exact rate; the last also takes the rounding dust (a lamport per earlier refund).
+            assert!(share as f64 <= *b as f64 * rate + balances.len() as f64, "position {i} overpaid");
+            raised -= share; sold -= b; paid += share;
+        }
+        assert_eq!((raised, sold), (0, 0));
+        assert_eq!(paid, 19_999_999_997);
+        assert_eq!(refund_share(5, 10, 0).unwrap(), 0);
+        assert!(refund_share(5, 10, 11).is_err());
+        // Completion time: kept in `delivered`; a curve completed before it was recorded uses its creation time.
+        let mut c = Curve {
+            mint: Pubkey::new_unique(), creator: Pubkey::new_unique(), supply: 0, curve_tokens: 0, pool_tokens_gross: 0,
+            pool_tokens_net: 0, target_xnt: 0, virtual_xnt: 0, virtual_tokens: 0, tokens_sold: 0, raised_xnt: 0,
+            created_at: 1_700_000_000, status: STATUS_COMPLETE, positions: 0, delivered: 0, pool: Pubkey::default(),
+            lock_nft: Pubkey::default(), tax_bps: 500, bump: 0, auth_bump: 0,
+        };
+        assert_eq!(completed_at(&c), 1_700_000_000);
+        c.delivered = 1_800_000_000;
+        assert_eq!(completed_at(&c), 1_800_000_000);
     }
 }

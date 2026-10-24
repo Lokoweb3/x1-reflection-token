@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY } from "@solana/web3.js";
 import {
-  CURVE_DISC, CURVE_LEN, DEFAULT_TARGET_XNT, EVENT, FEE_RECEIVER, IX, TARGETS_XNT, applyBuy, applySell, authPda, buyIx, createCurveIx, curvePda, curveSetup,
-  decodeCurve, deliverIx, graduateLockIx, graduatePoolIx, k0Of, parseEvents, parseTarget, poolOpenPrice, positionPda, priceOf, quoteBuy, quoteSell, sellIx,
-  transferFee, type Curve, type CurveState,
+  CURVE_DISC, CURVE_LEN, CurveStatus, DEFAULT_TARGET_XNT, EVENT, FEE_RECEIVER, IX, REFUND_AFTER_SECS, TARGETS_XNT, applyBuy, applySell, authPda, buyIx,
+  completedAt, createCurveIx, curvePda, curveSetup, decodeCurve, deliverIx, graduateLockIx, graduatePoolIx, hasPool, isGraduated, k0Of, parseEvents,
+  parseTarget, poolOpenPrice, positionPda, priceOf, quoteBuy, quoteSell, refundIx, refundOpensAt, refundShare, sellIx, transferFee, xdexIds,
+  type Curve, type CurveState,
 } from "../src/curve.js";
 
 const sha8 = (s: string) => crypto.createHash("sha256").update(s).digest().subarray(0, 8);
@@ -115,6 +116,50 @@ test("anti-sniping cap in the first 120 s", () => {
   assert.equal(big.maxEarly, 10_000_000n * XNT);
 });
 
+test("early-buy limits count the whole position and all buyers together", () => {
+  const c = fresh(1_000_000_000n, 500, 1_000);
+  const per = 10_000_000n * XNT; // 1% of the supply
+  const q = quoteBuy(c, XNT / 2n, 1_050);
+  assert.equal(q.error, undefined);
+  // The same buy is refused once the wallet's position would pass 1%.
+  assert.equal(quoteBuy(c, XNT / 2n, 1_050, per - q.out + 1n).error, "too-big-early");
+  assert.equal(quoteBuy(c, XNT / 2n, 1_050, per - q.out).error, undefined);
+  // All buyers together: 10% of the supply.
+  assert.equal(q.maxEarlyTotal, 10n * per);
+  // Other wallets' buys up to just under 10%: the next one that would pass it is refused.
+  let full = c;
+  for (;;) {
+    const next = quoteBuy(full, XNT / 2n, 1_050);
+    if (next.error) { assert.equal(next.error, "early-full"); break; }
+    full = applyBuy(full, next);
+  }
+  assert.ok(full.tokensSold <= 10n * per && full.tokensSold > 9n * per);
+  assert.equal(quoteBuy(full, XNT / 2n, 1_200).error, undefined, "no limits after the window");
+});
+
+test("refunds and statuses", () => {
+  // Pro rata, rounded down; the last position takes the rest.
+  let raised = 999_999_999n, sold = 800n * XNT;
+  let paid = 0n;
+  for (const b of [sold / 3n, sold / 5n, sold - sold / 3n - sold / 5n]) {
+    const r = refundShare(raised, sold, b);
+    paid += r; raised -= r; sold -= b;
+  }
+  assert.equal(paid, 999_999_999n);
+  assert.equal(refundShare(5n, 10n, 0n), 0n);
+  // Refunds open REFUND_AFTER_SECS after completion (kept in `delivered`; older curves: creation time).
+  const base = { createdAt: 1_000, delivered: 5_000n };
+  assert.equal(completedAt({ ...base, status: CurveStatus.Complete }), 5_000);
+  assert.equal(refundOpensAt({ ...base, status: CurveStatus.Complete }), 5_000 + REFUND_AFTER_SECS);
+  assert.equal(refundOpensAt({ ...base, status: CurveStatus.Complete, delivered: 0n }), 1_000 + REFUND_AFTER_SECS);
+  assert.equal(refundOpensAt({ ...base, status: CurveStatus.Trading }), null);
+  assert.equal(refundOpensAt({ ...base, status: CurveStatus.Graduated }), null);
+  // Refunding (5) is past Finished in number but has no pool and never graduated.
+  assert.ok(!hasPool(CurveStatus.Refunding) && !isGraduated(CurveStatus.Refunding));
+  assert.ok(hasPool(CurveStatus.PoolCreated) && hasPool(CurveStatus.Finished) && !hasPool(CurveStatus.Complete));
+  assert.ok(isGraduated(CurveStatus.Graduated) && isGraduated(CurveStatus.Finished) && !isGraduated(CurveStatus.PoolCreated));
+});
+
 test("instruction data and account order", () => {
   const program = Keypair.generate().publicKey, mint = Keypair.generate().publicKey, user = Keypair.generate().publicKey;
   assert.deepEqual(IX.buy, sha8("global:buy"));
@@ -124,21 +169,31 @@ test("instruction data and account order", () => {
   assert.deepEqual(IX.deliver, sha8("global:deliver"));
   assert.deepEqual(CURVE_DISC, sha8("account:Curve"));
 
-  const cc = createCurveIx(program, user, mint, 1_000_000_000n, 3_000n);
+  const cc = createCurveIx(program, "testnet", user, mint, 1_000_000_000n, 3_000n);
   assert.equal(cc.data.length, 24); // create_curve(supply_whole: u64, target_whole: u64)
   assert.equal(cc.data.readBigUInt64LE(8), 1_000_000_000n);
   assert.equal(cc.data.readBigUInt64LE(16), 3_000n);
   assert.deepEqual(cc.keys.map((k) => k.pubkey.toBase58()).slice(0, 4),
     [user, mint, curvePda(program, mint), authPda(program, mint)].map((k) => k.toBase58()));
   assert.ok(cc.keys[0].isSigner && cc.keys[0].isWritable && !cc.keys[1].isSigner);
+  // The XDEX fee tier graduation will use, checked at creation.
+  assert.equal(cc.keys.length, 6);
+  assert.ok(cc.keys[5].pubkey.equals(xdexIds("testnet").ammConfig) && !cc.keys[5].isWritable);
 
   const b = buyIx(program, user, mint, 123n, 456n);
   assert.deepEqual(b.data.subarray(0, 8), sha8("global:buy"));
   assert.equal(b.data.readBigUInt64LE(8), 123n);
   assert.equal(b.data.readBigUInt64LE(16), 456n);
-  assert.equal(b.keys.length, 6);
+  assert.equal(b.keys.length, 7);
   assert.ok(b.keys[3].pubkey.equals(positionPda(program, curvePda(program, mint), user)));
   assert.ok(b.keys[4].pubkey.equals(FEE_RECEIVER));
+  assert.ok(b.keys[6].pubkey.equals(SYSVAR_INSTRUCTIONS_PUBKEY), "the instructions sysvar (one buy per transaction early on)");
+
+  const owner = Keypair.generate().publicKey;
+  const rf = refundIx(program, user, mint, owner, user);
+  assert.deepEqual(rf.data, sha8("global:refund"));
+  assert.equal(rf.keys.length, 7);
+  assert.ok(rf.keys[3].pubkey.equals(positionPda(program, curvePda(program, mint), owner)) && rf.keys[4].pubkey.equals(owner));
 
   const s = sellIx(program, user, mint, 7n, 8n);
   assert.deepEqual(s.data.subarray(0, 8), sha8("global:sell"));

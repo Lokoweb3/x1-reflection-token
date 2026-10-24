@@ -7,7 +7,7 @@
  * Nothing here signs or sends.
  */
 import crypto from "node:crypto";
-import { PublicKey, SYSVAR_RENT_PUBKEY, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY, SYSVAR_RENT_PUBKEY, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID, NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
@@ -31,7 +31,12 @@ export const targetsFor = (network: "mainnet" | "testnet"): readonly bigint[] =>
 export const GRADUATION_DEPOSIT = 300_000_000n;
 export const GRADUATE_REWARD = 10_000_000n;
 export const SNIPE_WINDOW_SECS = 120;
+/** Early window: most one wallet's position may hold (1% of the supply)... */
 export const SNIPE_MAX_BPS = 100n;
+/** ...and most all buyers together may take (10%); one buy per transaction, sent directly. */
+export const EARLY_TOTAL_BPS = 1000n;
+/** A curve Complete this long without its XDEX pool opens to refunds (REFUND_AFTER_SECS). */
+export const REFUND_AFTER_SECS = 7 * 24 * 3600;
 export const DECIMALS = 9;
 export const SUPPLY_MIN = 1_000n;
 export const SUPPLY_MAX = 10_000_000_000n;
@@ -39,8 +44,25 @@ const BPS = 10_000n;
 const U64_MAX = 2n ** 64n - 1n;
 const ONE = 10n ** BigInt(DECIMALS);
 
-export const CurveStatus = { Trading: 0, Complete: 1, PoolCreated: 2, Graduated: 3, Finished: 4 } as const;
-export const STATUS_NAMES = ["trading", "complete", "pool-created", "graduated", "finished"] as const;
+export const CurveStatus = { Trading: 0, Complete: 1, PoolCreated: 2, Graduated: 3, Finished: 4, Refunding: 5 } as const;
+export const STATUS_NAMES = ["trading", "complete", "pool-created", "graduated", "finished", "refunding"] as const;
+/** Status tests (Refunding, 5, is past Finished in number but never graduated: don't compare with >=). */
+export const hasPool = (status: number) => status >= CurveStatus.PoolCreated && status <= CurveStatus.Finished;
+export const isGraduated = (status: number) => status === CurveStatus.Graduated || status === CurveStatus.Finished;
+/** When a Complete curve completed (kept in `delivered` until graduation; older curves: their creation time). */
+export const completedAt = (c: Pick<Curve, "status" | "delivered" | "createdAt">) =>
+  c.status === CurveStatus.Complete ? (c.delivered > 0n ? Number(c.delivered) : c.createdAt) : null;
+/** When anyone may start refunding a Complete curve (unix seconds), or null. */
+export const refundOpensAt = (c: Pick<Curve, "status" | "delivered" | "createdAt">) => {
+  const at = completedAt(c);
+  return at === null ? null : at + REFUND_AFTER_SECS;
+};
+/** A position's refund (the program's refund_share): its share of the raised XNT, rounded down; the last takes the rest. */
+export function refundShare(raised: bigint, sold: bigint, balance: bigint) {
+  if (balance === 0n || sold === 0n) return 0n;
+  if (balance >= sold) return raised;
+  return (raised * balance) / sold;
+}
 export type StatusName = (typeof STATUS_NAMES)[number];
 
 export const xdexIds = (network: "mainnet" | "testnet") => ({
@@ -57,6 +79,7 @@ export const IX = {
   graduatePool: disc("global:graduate_pool"),
   graduateLock: disc("global:graduate_lock"),
   deliver: disc("global:deliver"),
+  refund: disc("global:refund"),
 };
 export const CURVE_DISC = disc("account:Curve");
 export const POSITION_DISC = disc("account:Position");
@@ -65,6 +88,7 @@ export const EVENT = {
   Trade: disc("event:Trade"),
   Graduated: disc("event:Graduated"),
   Delivered: disc("event:Delivered"),
+  Refunded: disc("event:Refunded"),
 };
 
 // ---------- PDAs ----------
@@ -186,12 +210,17 @@ export interface BuyQuote {
   out: bigint;     // tokens credited to the position
   complete: boolean;
   /** Set when the buy would fail on-chain (the program checks the same things). */
-  error?: "zero" | "too-big-early";
+  error?: "zero" | "too-big-early" | "early-full";
+  /** Early window: most one wallet may hold, and most all buyers together may take. */
   maxEarly: bigint;
+  maxEarlyTotal: bigint;
 }
 
-/** The program's buy maths. `now` (unix seconds) decides the anti-sniping cap. */
-export function quoteBuy(c: CurveState, xntIn: bigint, now: number): BuyQuote {
+/**
+ * The program's buy maths. `now` (unix seconds) decides the early-buy limits; `held` is what
+ * the buyer's position already holds (the per-wallet limit counts the whole position).
+ */
+export function quoteBuy(c: CurveState, xntIn: bigint, now: number, held = 0n): BuyQuote {
   const k0 = k0Of(c);
   const x = c.virtualXnt, y = c.virtualTokens;
   let fee = ceilDiv(xntIn * FEE_BPS, BPS);
@@ -206,9 +235,12 @@ export function quoteBuy(c: CurveState, xntIn: bigint, now: number): BuyQuote {
     complete = true;
   }
   const maxEarly = (c.supply * SNIPE_MAX_BPS) / BPS;
-  const q: BuyQuote = { xntIn, fee, net, out, complete, maxEarly };
+  const maxEarlyTotal = (c.supply * EARLY_TOTAL_BPS) / BPS;
+  const q: BuyQuote = { xntIn, fee, net, out, complete, maxEarly, maxEarlyTotal };
+  const early = now < c.createdAt + SNIPE_WINDOW_SECS;
   if (out <= 0n) q.error = "zero";
-  else if (now < c.createdAt + SNIPE_WINDOW_SECS && out > maxEarly) q.error = "too-big-early";
+  else if (early && held + out > maxEarly) q.error = "too-big-early";
+  else if (early && c.tokensSold + out > maxEarlyTotal) q.error = "early-full";
   return q;
 }
 
@@ -249,11 +281,11 @@ const u64s = (d: Buffer, ...vals: bigint[]) => {
   return b;
 };
 
-export function createCurveIx(programId: PublicKey, creator: PublicKey, mint: PublicKey, supplyWhole: bigint, targetWhole: bigint) {
+export function createCurveIx(programId: PublicKey, network: "mainnet" | "testnet", creator: PublicKey, mint: PublicKey, supplyWhole: bigint, targetWhole: bigint) {
   return new TransactionInstruction({
     programId, data: u64s(IX.createCurve, supplyWhole, targetWhole),
     keys: [m(creator, true, true), m(mint, false, true), m(curvePda(programId, mint), false, true), m(authPda(programId, mint), false, true),
-      m(SystemProgram.programId, false, false)],
+      m(SystemProgram.programId, false, false), m(xdexIds(network).ammConfig, false, false)],
   });
 }
 
@@ -262,7 +294,8 @@ export function buyIx(programId: PublicKey, buyer: PublicKey, mint: PublicKey, x
   return new TransactionInstruction({
     programId, data: u64s(IX.buy, xntIn, minTokensOut),
     keys: [m(buyer, true, true), m(curve, false, true), m(authPda(programId, mint), false, true),
-      m(positionPda(programId, curve, buyer), false, true), m(FEE_RECEIVER, false, true), m(SystemProgram.programId, false, false)],
+      m(positionPda(programId, curve, buyer), false, true), m(FEE_RECEIVER, false, true), m(SystemProgram.programId, false, false),
+      m(SYSVAR_INSTRUCTIONS_PUBKEY, false, false)],
   });
 }
 
@@ -330,13 +363,27 @@ export function deliverIx(programId: PublicKey, payer: PublicKey, mint: PublicKe
   });
 }
 
+/** Refund a position of a curve stuck without its pool (anyone may send it; the owner gets the XNT). */
+export function refundIx(programId: PublicKey, payer: PublicKey, mint: PublicKey, owner: PublicKey, creator: PublicKey) {
+  const curve = curvePda(programId, mint);
+  return new TransactionInstruction({
+    programId, data: Buffer.from(IX.refund),
+    keys: [
+      m(payer, true, true), m(curve, false, true), m(authPda(programId, mint), false, true),
+      m(positionPda(programId, curve, owner), false, true), m(owner, false, true), m(creator, false, true),
+      m(SystemProgram.programId, false, false),
+    ],
+  });
+}
+
 // ---------- events ----------
 export type CurveEvent =
   | { name: "CurveCreated"; curve: string; mint: string; creator: string; supply: bigint; x0: bigint; y0: bigint; createdAt: number }
   | { name: "Trade"; curve: string; trader: string; isBuy: boolean; xnt: bigint; fee: bigint; tokens: bigint; virtualXnt: bigint;
       virtualTokens: bigint; tokensSold: bigint; raisedXnt: bigint; ts: number }
   | { name: "Graduated"; curve: string; mint: string; pool: string; lockNft: string; raisedXnt: bigint }
-  | { name: "Delivered"; curve: string; owner: string; tokens: bigint };
+  | { name: "Delivered"; curve: string; owner: string; tokens: bigint }
+  | { name: "Refunded"; curve: string; owner: string; tokens: bigint; xnt: bigint };
 
 /** Decode one event's bytes (discriminator first); null for anything else. */
 export function decodeEvent(d: Buffer): CurveEvent | null {
@@ -358,6 +405,7 @@ export function decodeEvent(d: Buffer): CurveEvent | null {
     }
     if (tag.equals(EVENT.Graduated)) return { name: "Graduated", curve: key(), mint: key(), pool: key(), lockNft: key(), raisedXnt: u64() };
     if (tag.equals(EVENT.Delivered)) return { name: "Delivered", curve: key(), owner: key(), tokens: u64() };
+    if (tag.equals(EVENT.Refunded)) return { name: "Refunded", curve: key(), owner: key(), tokens: u64(), xnt: u64() };
   } catch { /* truncated: not ours */ }
   return null;
 }
