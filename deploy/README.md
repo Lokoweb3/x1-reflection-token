@@ -53,11 +53,16 @@ Vercel serves `https://<project>.vercel.app` and forwards every request to your 
 the app, distributors and keys stay on the server (Vercel can't run them).
 
 1. On the server: `VERCEL_HOST=<project>.vercel.app bash deploy/setup.sh` (instead of
-   `DOMAIN=`). Caddy then serves plain HTTP on port 80, only under a random secret path
-   saved in `/root/.reflect-vercel-secret`; everything else gets a 404. Keep port 80 open
-   in the firewall (DigitalOcean: Networking → Firewalls, or the droplet's own ufw).
+   `DOMAIN=`). Caddy then serves HTTPS as the server's own name, `ORIGIN_HOST` (default
+   `<IP with dashes>.sslip.io`, a public DNS name that resolves to the IP; set
+   `ORIGIN_HOST=origin.example.com` to use your own domain's `A` record instead), only under
+   a random secret path saved in `/root/.reflect-vercel-secret`; everything else gets a 404.
+   Port 80 only answers certificate challenges. Keep 80 and 443 open in the firewall
+   (DigitalOcean: Networking → Firewalls, or the droplet's own ufw).
 2. On your machine: `npx vercel login`, then
-   `BACKEND=http://<server IP> SECRET=<that secret> PROJECT=<project> bash deploy/vercel-deploy.sh`.
+   `BACKEND=https://<ORIGIN_HOST> SECRET=<that secret> PROJECT=<project> bash deploy/vercel-deploy.sh`.
+   The hop from Vercel to the server is HTTPS too: over plain HTTP anyone on the path could
+   rewrite pages or the transactions a wallet signs (the script refuses an `http://` backend).
    The generated config (with the secret) stays in `.vercel-site/`, which git ignores.
 3. In the server's `config.json`: `factory.publicUrl` = `https://<project>.vercel.app`,
    `factory.hosts` = `["<project>.vercel.app"]`, then `systemctl restart reflect-factory`.
@@ -151,7 +156,7 @@ taken-over server could hand them a draining transaction. Keep it locked down:
 - **Firewall:** only 22, 80 and 443 open (`setup.sh` does this). The app itself listens
   on 127.0.0.1 only.
 - **Vercel mode:** the secret path in `/root/.reflect-vercel-secret` is what keeps the
-  server from being called directly. Never commit the generated `vercel.json`; if the
+  server from being called directly; it only travels over HTTPS. Never commit the generated `vercel.json`; if the
   secret leaks, make a new one and re-run `deploy/vercel-deploy.sh`.
 - **Faucet captcha:** create a free Cloudflare Turnstile widget (dash.cloudflare.com →
   Turnstile, add your domain) and put its keys in `config.json` as
