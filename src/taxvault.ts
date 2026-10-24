@@ -164,6 +164,8 @@ export const ERRORS = [
   "NotPassMode", "PassModeOn", "NotTopLevel", "PassBookFull", "RoundOpen", "RoundNotOpen", "RoundExpired", "BadBatch",
   "RoundTooSoon", "PotTooSmall", "RoundIncomplete", "PassNotEmpty", "BadIndex", "PendingList", "BadPassConfig",
   "HoldingTooSmall", "NothingToIndex", "PassTablesFull",
+  // Holder passes: only on a vault that never had a list; taking a full book's slot (register_pass_evict).
+  "HadList", "PassBookNotFull", "EvictTooSmall",
 ] as const;
 export const errorName = (code: number) => ERRORS[code - 6000] ?? null;
 /** The program's error name in a simulation/transaction error ({"Custom":6012} etc.), or null. */

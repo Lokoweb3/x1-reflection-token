@@ -470,8 +470,11 @@ test("program errors are named from simulation messages", () => {
   assert.equal(errorOf(`{"Custom":6036}`), "RoundTooSoon");
   assert.equal(errorOf(`{"Custom":6043}`), "HoldingTooSmall");
   assert.equal(errorOf(`{"Custom":6045}`), "PassTablesFull");
-  assert.equal(errorOf(`{"Custom":6046}`), null);
-  assert.equal(ERRORS.length, 46);
+  assert.equal(errorOf(`{"Custom":6046}`), "HadList");
+  assert.equal(errorOf("custom program error: 0x179f"), "PassBookNotFull"); // 6047
+  assert.equal(errorOf(`{"Custom":6048}`), "EvictTooSmall");
+  assert.equal(errorOf(`{"Custom":6049}`), null);
+  assert.equal(ERRORS.length, 49);
   assert.equal(errorOf("something else"), null);
 });
 

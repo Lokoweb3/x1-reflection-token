@@ -14,7 +14,8 @@ import { decodePool } from "../xdex.js";
 import { unsignedTx } from "../web/wallet-tx.js";
 import {
   MAX_BATCH_SLOTS, MAX_PASSES, PAY_BATCH_LUT, SNAPSHOT_BATCH_LUT, allocPassBookIx, passTablesFor, allocSteps, closeRoundIx, decodePassBook, initPassesIx, passBookPda, passModeOn, passPot, payBatches, payPassesIx,
-  holderTokenAccount, POT_CAP_PCT_OF_TAX, passUnits, readPassTables, registerMinimum, registerPassIx, removablePasses, removalPlan, sponsorHoldersIx, snapshotBatchIx, snapshotBatches, type PassBook,
+  evictionCandidate, evictMinimum, holderTokenAccount, POT_CAP_PCT_OF_TAX, passUnits, readPassTables, registerMinimum, registerPassEvictIx, registerPassIx, removablePasses, removalPlan,
+  sponsorHoldersIx, snapshotBatchIx, snapshotBatches, type PassBook,
 } from "../passes.js";
 
 /** The launchpad's pass rules (earning from a millionth of the supply) and the floors the "turn on" form accepts. */
@@ -84,8 +85,9 @@ export function passesApi(conn: Connection, cfg: Config, program: PublicKey, opt
       counted: fromBaseUnits(e.weight, a.decimals), owedXnt: fromBaseUnits(e.owed, 9), paidXnt: fromBaseUnits(e.paid, 9),
       dueXnt: fromBaseUnits(e.owed - e.paid, 9), removable: removable.has(e.wallet.toBase58()),
     })) : [];
-    // Most a several-batch round can pay right now: the cap on the last round's counted
-    // balances at the pool's price (the program uses the live balances at close).
+    // Most a round can pay right now (every round is capped, however many batches): the cap
+    // on the last round's counted balances at the pool's price (the program uses the live
+    // balances at close).
     let roundCapXnt: string | null = null;
     if (a.book) {
       try {
@@ -151,7 +153,17 @@ export function passesApi(conn: Connection, cfg: Config, program: PublicKey, opt
       const need = registerMinimum(a.book.minHolding);
       const held = await conn.getTokenAccountBalance(holderTokenAccount(wallet, mint), "confirmed").then((r) => BigInt(r.value.amount)).catch(() => 0n);
       if (held < need) throw new Error(`A pass needs at least ${fromBaseUnits(need, a.decimals)} tokens in this wallet (twice the ${fromBaseUnits(a.book.minHolding, a.decimals)} that earns); it holds ${fromBaseUnits(held, a.decimals)}.`);
-      return { tx: await unsignedTx(conn, wallet, [registerPassIx(program, wallet, mint)], [], opts) };
+      if (a.book.count < MAX_PASSES) return { tx: await unsignedTx(conn, wallet, [registerPassIx(program, wallet, mint)], [], opts) };
+      // A full book: take the slot of the smallest pass owed nothing, with twice its balance.
+      const slot = await evictionCandidate(conn, mint, a.book);
+      if (!slot) throw new Error(`All ${MAX_PASSES} passes are taken and each is owed XNT right now; try again after the next payout.`);
+      const needed = evictMinimum(a.book.minHolding, slot.balance);
+      if (held < needed) {
+        throw new Error(`All ${MAX_PASSES} passes are taken. To take the slot of the smallest one (${short(slot.entry.wallet)}, holding ${fromBaseUnits(slot.balance, a.decimals)}), this wallet needs ${fromBaseUnits(needed, a.decimals)} tokens; it holds ${fromBaseUnits(held, a.decimals)}.`);
+      }
+      const tables = !!(await readPassTables(conn, program, mint));
+      return { tx: await unsignedTx(conn, wallet, [registerPassEvictIx(program, wallet, mint, slot.entry, tables)], [], opts),
+        evicts: slot.entry.wallet.toBase58() };
     }
 
     const caller = new PublicKey(String(body.wallet));
