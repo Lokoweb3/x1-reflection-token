@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Deploy the Vercel front door for the 99 + Tax site. Run on YOUR machine (not the
 # server), after `npx vercel login`:
-#   BACKEND=http://203.0.113.10 SECRET=<from the server> [PROJECT=99tax] bash deploy/vercel-deploy.sh
+#   BACKEND=https://203-0-113-10.sslip.io SECRET=<from the server> [PROJECT=99tax] bash deploy/vercel-deploy.sh
 # Vercel serves https://<project>.vercel.app and forwards every request to
 # $BACKEND/$SECRET/... on your server (see deploy/Caddyfile.vercel.template).
 # The generated config holds the secret, so it lives in .vercel-site/ (gitignored).
 set -euo pipefail
-: "${BACKEND:?Set BACKEND, e.g. BACKEND=http://203.0.113.10}"
+: "${BACKEND:?Set BACKEND, e.g. BACKEND=https://203-0-113-10.sslip.io}"
+# The hop from Vercel to the server carries every page and unsigned transaction: plain HTTP
+# would let anyone on the path rewrite them before a wallet signs.
+[[ $BACKEND == https://* || ${ALLOW_HTTP:-} == 1 ]] || { echo "BACKEND must be https:// (the server's ORIGIN_HOST, see deploy/README.md)"; exit 1; }
 : "${SECRET:?Set SECRET (cat /root/.reflect-vercel-secret on the server)}"
 PROJECT=${PROJECT:-99tax}
 cd "$(dirname "$0")/.."

@@ -5,7 +5,8 @@
 # Then copy your secrets over (see deploy/README.md) and start the services.
 set -euo pipefail
 # Either DOMAIN (this server serves HTTPS itself) or VERCEL_HOST (Vercel serves HTTPS and
-# forwards to this server over a secret path; see deploy/README.md).
+# forwards to this server over HTTPS and a secret path; see deploy/README.md). In Vercel mode
+# ORIGIN_HOST is this server's own name for that hop (default: <its IP>.sslip.io).
 if [[ -z "${DOMAIN:-}" && -z "${VERCEL_HOST:-}" ]]; then
   echo "Set DOMAIN=launch.example.com, or VERCEL_HOST=yourname.vercel.app"; exit 1
 fi
@@ -42,10 +43,13 @@ if [[ -n "${DOMAIN:-}" ]]; then
   echo "== HTTPS (Caddy) for $DOMAIN"
   sed "s/__DOMAIN__/$DOMAIN/" "$APP/deploy/Caddyfile.template" > /etc/caddy/Caddyfile
 else
-  echo "== Caddy backend for Vercel ($VERCEL_HOST)"
+  ORIGIN_HOST=${ORIGIN_HOST:-$(curl -s https://api.ipify.org | tr . -).sslip.io}
+  echo "== Caddy backend for Vercel ($VERCEL_HOST), over HTTPS as $ORIGIN_HOST"
   SECRET_FILE=/root/.reflect-vercel-secret
   [[ -s $SECRET_FILE ]] || { head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32 > "$SECRET_FILE"; chmod 600 "$SECRET_FILE"; }
-  sed -e "s/__SECRET__/$(cat "$SECRET_FILE")/" -e "s/__PUBLIC_HOST__/$VERCEL_HOST/" "$APP/deploy/Caddyfile.vercel.template" > /etc/caddy/Caddyfile
+  echo "$ORIGIN_HOST" > /root/.reflect-origin-host
+  sed -e "s/__SECRET__/$(cat "$SECRET_FILE")/" -e "s/__PUBLIC_HOST__/$VERCEL_HOST/" -e "s/__ORIGIN_HOST__/$ORIGIN_HOST/" \
+    "$APP/deploy/Caddyfile.vercel.template" > /etc/caddy/Caddyfile
 fi
 systemctl reload caddy || systemctl restart caddy
 
@@ -85,7 +89,7 @@ DONE
 if [[ -z "${DOMAIN:-}" ]]; then
   cat <<VDONE
   6. Vercel front door: on your own machine run
-       BACKEND=http://<this server's IP> SECRET=$(cat /root/.reflect-vercel-secret) bash deploy/vercel-deploy.sh
+       BACKEND=https://$(cat /root/.reflect-origin-host) SECRET=<cat /root/.reflect-vercel-secret> bash deploy/vercel-deploy.sh
      (keep the secret private; it's what stops people bypassing Vercel).
 VDONE
 fi

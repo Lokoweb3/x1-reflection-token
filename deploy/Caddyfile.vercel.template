@@ -1,6 +1,8 @@
 # Backend for the Vercel front door (deploy/vercel-deploy.sh). Vercel serves HTTPS on
-# __PUBLIC_HOST__ and forwards every request to http://<this server>/__SECRET__/...
-# Anything without the secret prefix gets a 404, so the app isn't reachable directly.
+# __PUBLIC_HOST__ and forwards every request to https://__ORIGIN_HOST__/__SECRET__/...: TLS
+# all the way to this server, so nobody on the path can read or change pages or transactions.
+# Caddy gets and renews the certificate for __ORIGIN_HOST__ itself. Anything without the
+# secret prefix gets a 404, so the app isn't reachable directly.
 {
 	servers {
 		# Requests come from Vercel: trust its X-Forwarded-For so the app sees each
@@ -8,7 +10,12 @@
 		trusted_proxies static 0.0.0.0/0 ::/0
 	}
 }
+# Port 80 only answers certificate challenges and redirects; the site isn't served over plain HTTP.
 :80 {
+	respond 404
+	header -Server
+}
+__ORIGIN_HOST__ {
 	encode gzip
 	# Vercel forwards the home page as /__SECRET__ (no slash) and the rest as /__SECRET__/...
 	@site path /__SECRET__ /__SECRET__/*
