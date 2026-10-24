@@ -1229,6 +1229,7 @@ I18N.add("es", {
   "All {capacity} passes taken ↗": "Los {capacity} pases están ocupados ↗",
   "Holder passes not on yet: nobody earns until the creator turns them on": "Los holder passes aún no están activos: nadie gana hasta que el creador los active",
   "metadata updates": "actualizaciones de metadatos",
+  "This vault has already had a payout list, so holder passes can't be turned on for it: the list's fallback payouts would come out of the pass holders' share.": "Esta bóveda ya tuvo una lista de pagos, así que no se pueden activar los holder passes: los pagos de respaldo de la lista saldrían de la parte de los titulares de pases.",
   "The site can't save files to IPFS right now, so nothing was sent to your wallet. Please try again later.": "El sitio no puede guardar archivos en IPFS en este momento, así que no se envió nada a tu billetera. Inténtalo de nuevo más tarde.",
   "transactions": "transacciones",
   "Not Found": "No encontrado",

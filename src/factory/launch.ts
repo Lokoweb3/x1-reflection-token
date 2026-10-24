@@ -613,10 +613,23 @@ export async function buildPassesStep(conn: Connection, cfg: Config, r: LaunchRe
   if (!(await vaultStarted(conn, cfg, r))) throw new Error("Start the tax vault first.");
   const book = await conn.getAccountInfo(passBookPda(program, vaultPda(program, mint)), "confirmed");
   if (passBookOn(book, program)) throw new Error("Holder passes are already on for this token.");
+  await refuseListedVault(conn, program, mint);
   const creator = new PublicKey(r.creator);
   const grow = Array.from({ length: allocSteps(book?.data.length ?? 0) }, () => allocPassBookIx(program, creator, mint));
   return [...grow, initPassesIx(program, creator, mint, toBaseUnits(minHoldingFor(r.supply), DECIMALS), toBaseUnits(PASS_MIN_POT_XNT, 9), PASS_MIN_INTERVAL_SECS)];
 }
+
+/**
+ * Holder passes only go on a vault that never had a payout list (published or waiting): the
+ * program would let the list's pay_fallback draw on the passes' money (review C-1).
+ */
+export async function refuseListedVault(conn: Connection, program: PublicKey, mint: PublicKey) {
+  const addr = vaultPda(program, mint);
+  const info = await conn.getAccountInfo(addr, "confirmed");
+  const v = info ? decodeVault(addr, info.data) : null;
+  if (v && (v.listEpoch > 0n || v.pendingEpoch > 0n)) throw new Error(LISTED_VAULT);
+}
+export const LISTED_VAULT = "This vault has already had a payout list, so holder passes can't be turned on for it: the list's fallback payouts would come out of the pass holders' share.";
 
 /** A vault launch's vault must exist with this site's publisher, the creator as guardian and the recorded split. */
 async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
