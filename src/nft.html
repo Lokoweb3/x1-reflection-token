@@ -249,8 +249,8 @@ async function show(mint, quiet = false) {
     const rows = [
       [tr("Token"), el("span", {}, `${d.tokenName} (${d.symbol}) `, addr(d.tokenMint))],
       [tr("LP locked"), tr("{lockedLp} LP · {lpSharePct}% of the pool", { lockedLp: d.lockedLp, lpSharePct: d.lpSharePct.toFixed(2) })],
-      [tr("Lock"), d.term === "FOREVER" ? tr("Forever, can never be withdrawn") : d.term.replace(/^UNTIL/, tr("Until"))],
-      [tr("Locked at"), d.lockedAt],
+      [tr("Lock"), d.term === "FOREVER" ? tr("Forever, can never be withdrawn") : `${tr("Until")} ${localTime(d.term.replace(/^UNTIL /, ""))}`],
+      [tr("Locked at"), localTime(d.lockedAt)],
       [tr("Tax"), d.split ? tr("{taxPct}%: {holders}% holders · {liquidity}% liquidity · {burn}% burn · {creator}% creator", { taxPct: d.taxPct, holders: d.split.holders, liquidity: d.split.liquidity, burn: d.split.burn, creator: d.split.creator }) : `${d.taxPct}%`],
       [tr("Held by"), d.holder ? addr(d.holder) : tr("Nobody (burned)")],
       ["NFT", addr(d.nftMint)],
@@ -339,6 +339,11 @@ function relTime(sec) {
   return new Intl.RelativeTimeFormat(document.documentElement.lang || "en").format(d < 0 ? -n : n, u);
 }
 const when = (sec) => new Date(sec * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+/** The receipt's "2026-09-23 04:06:06 UTC" in this browser's time, like every other time on the page (the receipt image keeps UTC). */
+function localTime(utc) {
+  const t = Date.parse(String(utc).replace(" ", "T").replace(/ UTC$/, "Z"));
+  return Number.isFinite(t) ? when(t / 1000) : utc;
+}
 let vaultLog = null; // what the last "Run the vault now" did: { mint, lines: [[text, cls]] }
 /**
  * The vault's status (v3: who publishes, when the creator may appoint someone else, when

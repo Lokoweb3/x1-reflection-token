@@ -54,6 +54,8 @@ export const MAX_SELLS_PER_PASS = 3;
 export const MAX_PAYS_PER_TX = 6;
 /** Pay transactions per token per pass, so one big list can't hold up the others. */
 export const MAX_PAY_TXS_PER_PASS = 20;
+/** Rent the crank spends on new wallets' paid records, per token per day (about 34 new wallets). */
+export const RECORD_RENT_PER_DAY = 50_000_000n;
 /** Seconds of margin around on-chain times (the chain clock can lag ours). */
 export const ACTIVATION_MARGIN_SECS = 15;
 /** fund_creator calls per token per pass (each capped at half the reward pool's fee, one per slot). */
@@ -253,9 +255,11 @@ export interface Due { wallet: PublicKey; cumulative: bigint; owed: bigint; reco
 /**
  * Wallets `wallets` (a list's totals) owes: cumulative − paid, or in fallback
  * fallbackEntitled − paid. `minPayout` skips small amounts; a wallet with no account must be
- * owed at least the rent-exempt minimum (the program refuses less). Largest first.
+ * owed at least the rent-exempt minimum (the program refuses less), and with `firstPayoutMin`
+ * a wallet paid for the first time (no paid record yet, whose rent the payer covers) must be
+ * owed at least that. Largest first.
  */
-export async function dueFrom(conn: Connection, program: PublicKey, v: Vault, wallets: Record<string, string>, opts: { fallback: boolean; minPayout: bigint; listTotal: bigint }) {
+export async function dueFrom(conn: Connection, program: PublicKey, v: Vault, wallets: Record<string, string>, opts: { fallback: boolean; minPayout: bigint; listTotal: bigint; firstPayoutMin?: bigint }) {
   const entries = Object.entries(wallets).map(([w, c]) => ({ wallet: new PublicKey(w), cumulative: BigInt(c) }));
   const due: Due[] = [];
   for (let i = 0; i < entries.length; i += 100) {
@@ -271,7 +275,8 @@ export async function dueFrom(conn: Connection, program: PublicKey, v: Vault, wa
       const target = opts.fallback ? fallbackEntitled(e.cumulative, v.holdersFunded, opts.listTotal) : e.cumulative;
       const owed = target - paid;
       // An XNT payout to a wallet with no account must cover its rent; a token payout opens the wallet's token account.
-      if (owed > 0n && owed >= opts.minPayout && (paysInToken(v) || accounts[j] || owed >= RENT_EXEMPT_EMPTY)) due.push({ ...e, owed, recordExists: exists });
+      if (owed > 0n && owed >= opts.minPayout && (paysInToken(v) || accounts[j] || owed >= RENT_EXEMPT_EMPTY)
+          && (exists || owed >= (opts.firstPayoutMin ?? 0n))) due.push({ ...e, owed, recordExists: exists });
     });
   }
   return due.sort((a, b) => (b.owed > a.owed ? 1 : b.owed < a.owed ? -1 : 0));
@@ -489,6 +494,20 @@ export function vaultCrank(env: CrankEnv) {
     }
   }
 
+  // Rent spent on new wallets' paid records today, per token (resets at UTC midnight, and on restart).
+  const rentSpent = new Map<string, { day: string; spent: bigint }>();
+  const today = () => new Date().toISOString().slice(0, 10);
+  const rentBudgetLeft = (mint: PublicKey) => {
+    const r = rentSpent.get(mint.toBase58());
+    const spent = r && r.day === today() ? r.spent : 0n;
+    return spent >= RECORD_RENT_PER_DAY ? 0n : RECORD_RENT_PER_DAY - spent;
+  };
+  const spendRent = (mint: PublicKey, lamports: bigint) => {
+    if (!lamports) return;
+    const r = rentSpent.get(mint.toBase58());
+    rentSpent.set(mint.toBase58(), { day: today(), spent: (r && r.day === today() ? r.spent : 0n) + lamports });
+  };
+
   /**
    * Pay what `list` owes (pay), or in fallback its scaled-up shares (pay_fallback), a few
    * wallets per transaction; a failed batch is retried one by one. `list` must be the list
@@ -498,11 +517,22 @@ export function vaultCrank(env: CrankEnv) {
     const eff = effectiveList(v, nowSecs());
     if (!eff || eff.root.toString("hex") !== list.root) throw new Error("the list to pay isn't the one on-chain");
     const minPayout = await xntInPayout(conn, xdex, v, t.rules.minPayout);
-    let due = opts.due ?? await dueFrom(conn, program, v, list.wallets, { fallback: mode === "fallback", minPayout, listTotal: eff.total });
+    // A first payment creates the wallet's paid record, whose rent this crank pays: only when the
+    // wallet gets at least that much on top of the minimum (dust holders otherwise cost more in
+    // rent than they're paid), and within a daily rent budget per token.
+    const recordRent = BigInt(await conn.getMinimumBalanceForRentExemption(PAID_RECORD_LEN));
+    const firstPayoutMin = await xntInPayout(conn, xdex, v, t.rules.minPayout + recordRent);
+    let due = opts.due ?? await dueFrom(conn, program, v, list.wallets, { fallback: mode === "fallback", minPayout, listTotal: eff.total, firstPayoutMin });
+    let switching = false;
     if (!due.length && eff.pending && !opts.due) {
       // The program switches to a due pending list inside `pay`. If nobody is owed minPayout
       // yet, pay the largest amount owed anyway so the new list takes over and the next can follow.
       due = (await dueFrom(conn, program, v, list.wallets, { fallback: mode === "fallback", minPayout: 0n, listTotal: eff.total })).slice(0, 1);
+      switching = true;
+    }
+    if (!switching) {
+      let budget = rentBudgetLeft(t.mint);
+      due = due.filter((d) => d.recordExists || (budget >= recordRent && (budget -= recordRent, true)));
     }
     if (!due.length) return 0;
     const { proofs } = buildVaultTree(v.address, list.wallets);
@@ -521,6 +551,7 @@ export function vaultCrank(env: CrankEnv) {
       try {
         await send(t, v, `${what} ${batch.length} wallet(s) ${xnt(batch.reduce((a, b) => a + b.owed, 0n))}`, batch.map(ixOf), Math.min(1_400_000, 60_000 + 90_000 * batch.length));
         paid += batch.length;
+        spendRent(t.mint, recordRent * BigInt(batch.filter((b) => !b.recordExists).length));
       } catch (e) {
         if (batch.length === 1) { console.error(`${tag} ${t.symbol}: ${what} ${batch[0].wallet.toBase58()} failed: ${msg(e)}`); continue; }
         // One bad payment shouldn't hold up the rest: retry them one by one.
@@ -528,6 +559,7 @@ export function vaultCrank(env: CrankEnv) {
           try {
             await send(t, v, `${what} ${b.wallet.toBase58().slice(0, 4)}… ${xnt(b.owed)}`, [ixOf(b)], 200_000);
             paid++;
+            if (!b.recordExists) spendRent(t.mint, recordRent);
           } catch (err) {
             console.error(`${tag} ${t.symbol}: ${what} ${b.wallet.toBase58()} failed: ${msg(err)}`);
           }

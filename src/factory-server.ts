@@ -30,7 +30,7 @@ import {
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
 import { readRewardVault, rewardSummary } from "./locker.js";
-import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, buildReceiptIpfs, nftArt, receiptHash, receiptImage } from "./locker-tx.js";
+import { DUST_LAMPORTS, buildClaimReward, buildCollect, buildReceipt, buildReceiptIpfs, nftArt, receiptAttributes, receiptHash, receiptImage, receiptStillCurrent } from "./locker-tx.js";
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
 import { isqrt, listLocks, lockPda, lockedLp, nftHolder, pendingFeeLp } from "./locker.js";
 import { cpmmOut, snapshot, spotValue } from "./xdex.js";
@@ -264,7 +264,7 @@ function limit(name: string, key: string, max: number, windowMs: number, message
 const LIMITS = {
   // name: [per address, site-wide (0: none), window ms]. Plain reads get no site-wide cap
   // (that would let one client lock everyone out); they're served from caches.
-  get: [120, 0, 60_000], post: [30, 0, 60_000], send: [20, 300, 60_000],
+  get: [120, 0, 60_000], post: [30, 0, 60_000], send: [20, 300, 60_000], crank: [6, 60, 60_000],
   launch: [10, 60, 3_600_000], upload: [20, 200, 3_600_000], faucet: [5, 200, 3_600_000],
 } as const;
 function rateLimit(kind: keyof typeof LIMITS, ip: string, what = "requests") {
@@ -529,7 +529,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     readinessCache.delete(t.mint);
     return { started: true };
   }
-  if (url.startsWith("/api/vault/")) return vaults ? vaultPost(url, body) : null;
+  if (url.startsWith("/api/vault/")) return vaults ? vaultPost(url, body, ip) : null;
   if (url.startsWith("/api/v4/")) return v4 ? v4.post(url, body) : null;
   if (url.startsWith("/api/curve/")) return curves ? curvePost(url, body, ip) : null;
   if (url === "/api/send") {
@@ -553,31 +553,55 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
  *   crank-result  what those transactions did (read from the chain) and the reward received
  *   appoint-tx    v3: the guardian (creator) appoints a new publisher once allowed
  */
-async function vaultPost(url: string, body: Record<string, unknown>) {
+/**
+ * "Run the vault now" plans, per token and caller, for 10 s: each plan costs about 15 RPC
+ * calls on the queue the crank uses too, so repeated clicks reuse it (its blockhash is still
+ * good), and new plans have their own limit, site-wide as well.
+ */
+const crankPlans = new Map<string, { at: number; data: Promise<unknown> }>();
+async function vaultPost(url: string, body: Record<string, unknown>, ip: string) {
   const m = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})\/(crank-tx|crank-result|appoint-tx)$/.exec(url);
   if (!m) return null;
   const [, mint, action] = m;
   const v = vaultsFor(mint)!;
   if (action === "crank-tx") {
     const caller = new PublicKey(String(body.caller));
-    const plan = await v.crankPlan(mint, caller);
-    if (!plan.steps.length) throw new Error(`Nothing to run right now: no tax to collect or sell, and nobody is owed a payout.${plan.notes.length ? ` ${plan.notes.join(" ")}` : ""}`);
-    // Only the first is simulated here: later ones count on the earlier ones landing (the sale sells what collect adds).
-    const txs = [];
-    for (const [i, s] of plan.steps.entries()) {
-      txs.push({ kind: s.kind, label: s.label, tx: await unsignedTx(conn, caller, s.ixs, [], { ...opts, units: s.units, simulate: i === 0 }) });
-    }
-    // The fee X1 quotes for exactly these transactions (it bills the compute units each one requests).
-    const fees = await Promise.all(txs.map((t) => conn.getFeeForMessage(Transaction.from(Buffer.from(t.tx, "base64")).compileMessage(), "confirmed")
-      .then((r) => BigInt(r.value ?? 0)).catch(() => 0n)));
-    const fee = fees.reduce((a, b) => a + b, 0n);
-    await requireXnt(caller, Number(fee + plan.recordsRent) / 1e9 + 0.002, "Running the vault", "network fees and the payment records' rent");
-    return { txs, crankRewardLamports: plan.rewardLamports.toString(), recordsRentLamports: plan.recordsRent.toString(), networkFeeLamports: fee.toString(), notes: plan.notes };
+    const key = `${mint} ${caller.toBase58()}`, hit = crankPlans.get(key);
+    if (hit && Date.now() - hit.at < 10_000) return hit.data;
+    rateLimit("crank", ip, "vault runs");
+    const data = crankTx(v, mint, caller);
+    crankPlans.set(key, { at: Date.now(), data });
+    data.catch(() => crankPlans.delete(key));
+    for (const [k, p] of crankPlans) if (Date.now() - p.at > 10_000) crankPlans.delete(k);
+    return data;
   }
   if (action === "crank-result") {
+    // A run just landed: the next click needs a fresh plan.
+    for (const k of crankPlans.keys()) if (k.startsWith(`${mint} `)) crankPlans.delete(k);
     const sigs = Array.isArray(body.signatures) ? body.signatures.map(String) : [];
     return v.crankResult(mint, sigs);
   }
+  return appointTx(v, mint, body);
+}
+
+async function crankTx(v: NonNullable<ReturnType<typeof vaultsFor>>, mint: string, caller: PublicKey) {
+  const plan = await v.crankPlan(mint, caller);
+  if (!plan.steps.length) throw new Error(`Nothing to run right now: no tax to collect or sell, and nobody is owed a payout.${plan.notes.length ? ` ${plan.notes.join(" ")}` : ""}`);
+  // Only the first is simulated here: later ones count on the earlier ones landing (the sale sells what collect adds).
+  const txs = [];
+  for (const [i, s] of plan.steps.entries()) {
+    txs.push({ kind: s.kind, label: s.label, tx: await unsignedTx(conn, caller, s.ixs, [], { ...opts, units: s.units, simulate: i === 0 }) });
+  }
+  // The fee X1 quotes for exactly these transactions (it bills the compute units each one requests).
+  const fees = await Promise.all(txs.map((t) => conn.getFeeForMessage(Transaction.from(Buffer.from(t.tx, "base64")).compileMessage(), "confirmed")
+    .then((r) => BigInt(r.value ?? 0)).catch(() => 0n)));
+  const fee = fees.reduce((a, b) => a + b, 0n);
+  await requireXnt(caller, Number(fee + plan.recordsRent) / 1e9 + 0.002, "Running the vault", "network fees and the payment records' rent");
+  return { txs, crankRewardLamports: plan.rewardLamports.toString(), recordsRentLamports: plan.recordsRent.toString(), networkFeeLamports: fee.toString(), notes: plan.notes };
+}
+
+/** v3: the guardian (creator) appoints a new publisher once allowed. */
+async function appointTx(v: NonNullable<ReturnType<typeof vaultsFor>>, mint: string, body: Record<string, unknown>) {
   const guardian = new PublicKey(String(body.guardian));
   let newPublisher: PublicKey;
   try { newPublisher = new PublicKey(String(body.newPublisher ?? "").trim()); } catch { throw new Error("The new publisher must be a wallet address."); }
@@ -638,7 +662,7 @@ async function nftView(mintStr: string) {
     freshReceipt: fresh, receiptPng: ipfsEnabled(cfg),
     // False once the design or the numbers (e.g. pool share) have moved on since it was
     // printed, or (with uploads on) while it's still the old inline-SVG receipt wallets can't show.
-    upToDate: !!art && (art.ipfs ? art.hash === receiptHash(d) : !ipfsEnabled(cfg) && art.image === receiptImage(receiptUri(d))),
+    upToDate: !!art && (art.ipfs ? art.hash === receiptHash(d) || receiptStillCurrent(art.attributes, receiptAttributes(d)) : !ipfsEnabled(cfg) && art.image === receiptImage(receiptUri(d))),
     holder: holder?.owner.toBase58() ?? null, authority: meta?.updateAuthority?.toBase58() ?? null,
     lock: lockPda(new PublicKey(cfg.locker!.programId), nft).toBase58(),
   };

@@ -275,7 +275,8 @@ function renderList() {
   let list = listData.curves.filter((c) => !q || [c.name, c.symbol, c.mint].some((s) => String(s).toLowerCase().includes(q)));
   if (filter === "soon") list = list.filter((c) => c.status === "trading").sort((a, b) => b.progress - a.progress);
   else if (filter === "new") list = list.filter((c) => c.status === "trading").sort((a, b) => b.createdAt - a.createdAt);
-  else if (filter === "graduated") list = list.filter((c) => c.statusCode >= 1);
+  // Filled and graduating or graduated (1–4); a refunding curve (5) never graduated, so only under "All".
+  else if (filter === "graduated") list = list.filter((c) => c.statusCode >= 1 && c.statusCode <= 4);
   const host = $("list");
   if (list.length) host.replaceChildren(el("div", { class: "grid" }, ...list.map(curveCard)));
   else if (!listData.curves.length) host.replaceChildren(siteEmpty(tr("No curve tokens yet on this network."), { href: "#create", text: tr("Create the first one →") }));

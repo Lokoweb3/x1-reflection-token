@@ -157,6 +157,36 @@ export async function buildReceipt(conn: Connection, cfg: Config, authority: Pub
 /** Fingerprint of the receipt a lock should show now (design + numbers); kept in the IPFS metadata. */
 export const receiptHash = (d: NonNullable<Awaited<ReturnType<typeof receiptData>>>) => crypto.createHash("sha256").update(receiptSvg(d)).digest("hex");
 
+export interface ReceiptAttribute { trait_type: string; value: string }
+/** A printed receipt's attributes (what buildReceiptIpfs pins next to the image). */
+export function receiptAttributes(d: NonNullable<Awaited<ReturnType<typeof receiptData>>>): ReceiptAttribute[] {
+  const lock = d.term === "FOREVER" ? "Forever" : d.term.replace(/^UNTIL /, "Until ");
+  return [
+    { trait_type: "Token", value: d.symbol }, { trait_type: "Tax", value: `${d.taxPct}%` },
+    ...(d.split ? [{ trait_type: "Split (holders/LP/burn/creator)", value: `${d.split.holders}/${d.split.liquidity}/${d.split.burn}/${d.split.creator}` }] : []),
+    { trait_type: "LP locked", value: d.lockedLp }, { trait_type: "Pool share", value: `${d.lpSharePct.toFixed(2)}%` },
+    { trait_type: "Lock", value: lock }, { trait_type: "Locked at", value: d.lockedAt },
+  ];
+}
+/**
+ * Whether a printed receipt still tells the truth: its fixed facts (token, tax, split, lock,
+ * lock time) unchanged, and the two numbers that drift with every vault deposit and fee
+ * collection (pool share, LP locked) still close: within 1 percentage point and 5%. An exact
+ * match isn't needed, or a receipt goes out of date minutes after launch.
+ */
+export function receiptStillCurrent(printed: ReceiptAttribute[] | undefined, now: ReceiptAttribute[]): boolean {
+  if (!printed?.length) return false;
+  const val = (list: ReceiptAttribute[], k: string) => list.find((a) => a.trait_type === k)?.value;
+  const num = (v: string | undefined) => (v === undefined ? NaN : Number(v.replace(/[,%\s]/g, "")));
+  for (const a of now) {
+    const was = val(printed, a.trait_type);
+    if (a.trait_type === "Pool share") { if (!(Math.abs(num(was) - num(a.value)) <= 1)) return false; }
+    else if (a.trait_type === "LP locked") { const p = num(was), c = num(a.value); if (!(p > 0 && Math.abs(c - p) / p <= 0.05)) return false; }
+    else if (was !== a.value) return false;
+  }
+  return true;
+}
+
 /**
  * Print the receipt the way wallets and explorers read NFTs: the receipt as a PNG (drawn
  * from the receipt SVG in the creator's browser) and a standard metadata JSON (name,
@@ -180,12 +210,7 @@ export async function buildReceiptIpfs(conn: Connection, cfg: Config, authority:
     name: current.name, symbol: current.symbol,
     description: `${d.symbol} liquidity locked ${lock.toLowerCase()} in the 99 + Tax LP locker: ${d.lockedLp} LP (${d.lpSharePct.toFixed(2)}% of the pool), locked ${d.lockedAt}. Live details: ${pageUrl}`,
     image, external_url: pageUrl,
-    attributes: [
-      { trait_type: "Token", value: d.symbol }, { trait_type: "Tax", value: `${d.taxPct}%` },
-      ...(d.split ? [{ trait_type: "Split (holders/LP/burn/creator)", value: `${d.split.holders}/${d.split.liquidity}/${d.split.burn}/${d.split.creator}` }] : []),
-      { trait_type: "LP locked", value: d.lockedLp }, { trait_type: "Pool share", value: `${d.lpSharePct.toFixed(2)}%` },
-      { trait_type: "Lock", value: lock }, { trait_type: "Locked at", value: d.lockedAt },
-    ],
+    attributes: receiptAttributes(d),
     properties: { category: "image", files: [{ uri: image, type: "image/png" }], receipt_sha256: receiptHash(d) },
   };
   const cid = await pinJson(cfg, JSON.stringify(json), "metadata.json", `99tax receipt metadata ${d.symbol} ${nftMint.toBase58()}`);
@@ -199,13 +224,13 @@ export async function buildReceiptIpfs(conn: Connection, cfg: Config, authority:
 }
 
 /** IPFS metadata already read (content-addressed, so it never changes). */
-const artCache = new Map<string, { image: string; hash: string | null } | null>();
+const artCache = new Map<string, { image: string; hash: string | null; attributes?: ReceiptAttribute[] } | null>();
 /**
  * What an NFT's metadata shows: an on-chain receipt (data: URI) or a pinned metadata JSON
  * (read only from this site's gateway, so on-chain links can't make the server fetch
  * anything else). `ipfs` tells the two apart; `hash` is the pinned receipt's fingerprint.
  */
-export async function nftArt(cfg: Config, uri: string): Promise<{ image: string; ipfs: boolean; hash: string | null } | null> {
+export async function nftArt(cfg: Config, uri: string): Promise<{ image: string; ipfs: boolean; hash: string | null; attributes?: ReceiptAttribute[] } | null> {
   const onChain = receiptImage(uri);
   if (onChain) return { image: onChain, ipfs: false, hash: null };
   const base = gatewayBase(cfg);
@@ -213,11 +238,13 @@ export async function nftArt(cfg: Config, uri: string): Promise<{ image: string;
   if (!artCache.has(uri)) {
     try {
       const r = await fetch(uri, { signal: AbortSignal.timeout(10_000) });
-      const j = r.ok ? await r.json() as { image?: unknown; properties?: { receipt_sha256?: unknown } } : null;
+      const j = r.ok ? await r.json() as { image?: unknown; properties?: { receipt_sha256?: unknown }; attributes?: unknown } : null;
       const image = typeof j?.image === "string" && j.image.startsWith(base) ? j.image : null;
       const hash = typeof j?.properties?.receipt_sha256 === "string" ? j.properties.receipt_sha256 : null;
+      const attributes = Array.isArray(j?.attributes)
+        ? j.attributes.filter((a): a is ReceiptAttribute => typeof a?.trait_type === "string" && typeof a?.value === "string") : undefined;
       if (!r.ok) return null; // a gateway hiccup: try again next time
-      artCache.set(uri, image ? { image, hash } : null);
+      artCache.set(uri, image ? { image, hash, attributes } : null);
     } catch { return null; }
   }
   const a = artCache.get(uri);
