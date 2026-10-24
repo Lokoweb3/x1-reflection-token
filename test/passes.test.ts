@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
-import { PASSES_PROGRAM_ID, heldBy, passBookPda, passPda, passTablesPda, removalPlan, type PassBook } from "../src/passes.js";
+import crypto from "node:crypto";
+import {
+  PASSES_PROGRAM_ID, evictMinimum, heldBy, holderTokenAccount, passBookPda, passPda, passTablesPda, registerPassEvictIx, removalPlan, type PassBook,
+} from "../src/passes.js";
+import { ERRORS } from "../src/taxvault.js";
 import { vaultPda } from "../src/taxvault.js";
 
 const mint = Keypair.generate().publicKey, caller = Keypair.generate().publicKey;
@@ -44,4 +48,31 @@ test("held balance counts only the wallet's own Token-2022 account of the mint",
   assert.equal(heldBy(null, mint, w), 0n, "no account");
   assert.equal(heldBy({ owner: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), data }, mint, w), 0n, "classic token program");
   assert.equal(heldBy({ owner: TOKEN_2022_PROGRAM_ID, data }, mint, wallets[1]), 0n, "someone else's account");
+});
+
+test("register_pass_evict: accounts in the program's order, rent back to the evicted wallet", () => {
+  const newcomer = Keypair.generate().publicKey, evicted = book.entries[3];
+  const ix = registerPassEvictIx(PASSES_PROGRAM_ID, newcomer, mint, evicted, true);
+  assert.ok(ix.data.equals(crypto.createHash("sha256").update("global:register_pass_evict").digest().subarray(0, 8)));
+  const keys = ix.keys.map((k) => [k.pubkey.toBase58(), k.isSigner, k.isWritable]);
+  // wallet, vault, book, new pass, its token account, evicted pass, evicted wallet, its token account, system program, tables.
+  assert.deepEqual(keys, [
+    [newcomer.toBase58(), true, true],
+    [vault.toBase58(), false, false],
+    [passBookPda(PASSES_PROGRAM_ID, vault).toBase58(), false, true],
+    [passPda(PASSES_PROGRAM_ID, vault, newcomer).toBase58(), false, true],
+    [holderTokenAccount(newcomer, mint).toBase58(), false, false],
+    [passPda(PASSES_PROGRAM_ID, vault, evicted.wallet).toBase58(), false, true],
+    [evicted.wallet.toBase58(), false, true],
+    [evicted.tokenAccount.toBase58(), false, false],
+    ["11111111111111111111111111111111", false, false],
+    [passTablesPda(PASSES_PROGRAM_ID, vault).toBase58(), false, true],
+  ]);
+  // No tables record: the optional account is the program's own ID.
+  assert.equal(registerPassEvictIx(PASSES_PROGRAM_ID, newcomer, mint, evicted, false).keys[9].pubkey.toBase58(), PASSES_PROGRAM_ID.toBase58());
+  // Twice the evicted balance, and never under the registering minimum (twice min_holding).
+  assert.equal(evictMinimum(100n, 5_000n), 10_000n);
+  assert.equal(evictMinimum(100n, 0n), 200n);
+  // The new program errors follow the ones the clients already name.
+  assert.deepEqual([ERRORS.indexOf("HadList"), ERRORS.indexOf("PassBookNotFull"), ERRORS.indexOf("EvictTooSmall")].map((i) => 6000 + i), [6046, 6047, 6048]);
 });

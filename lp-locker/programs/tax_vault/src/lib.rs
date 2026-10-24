@@ -1077,17 +1077,19 @@ pub mod tax_vault {
         Ok(())
     }
 
-    /// The guardian turns on holder passes for an XNT vault with no pending list. From then on
-    /// the holders' share is split on-chain over registered wallets' live balances
-    /// (`snapshot_batch` + `close_round`) and paid with `pay_passes`; `publish_list` is
-    /// refused. Whatever lists already allocated stays counted as allocated.
+    /// The guardian turns on holder passes for an XNT vault that has never had a rewards list
+    /// (none published, none pending): a list's `pay` and `pay_fallback` count vault-wide
+    /// totals, so a vault with one could be made to pay its list wallets out of the passes'
+    /// share. From then on the holders' share is split on-chain over registered wallets' live
+    /// balances (`snapshot_batch` + `close_round`) and paid with `pay_passes`; `publish_list`
+    /// is refused.
     pub fn init_passes(ctx: Context<InitPasses>, min_holding: u64, min_pot: u64, min_interval: i64) -> Result<()> {
         let vault_key = ctx.accounts.vault.key();
         let v = &mut ctx.accounts.vault;
         require_keys_eq!(ctx.accounts.guardian.key(), v.guardian, VaultError::NotGuardian);
         require!(v.payout_pool == Pubkey::default(), VaultError::PaysInToken);
         require!(v.reserved[PASS_MODE_BYTE] == 0, VaultError::PassModeOn);
-        require!(v.pending_epoch == 0, VaultError::PendingList);
+        math::check_never_listed(v.list_epoch, v.pending_epoch)?;
         require!(min_interval >= 0, VaultError::BadPassConfig);
         v.reserved[PASS_MODE_BYTE] = 1;
         let mut b = ctx.accounts.book.load_init()?;
@@ -1171,11 +1173,11 @@ pub mod tax_vault {
     }
 
     /// Split the waiting pot over the round's balances once every registered wallet has
-    /// been read. A round read in one batch pays the whole pot (nothing can move during a
-    /// single instruction). A round read over several batches pays at most
-    /// POT_CAP_PCT_OF_TAX of the transfer tax rate on the eligible tokens' value at the
-    /// pool's price, so moving tokens between batches to be counted twice always costs more
-    /// in tax than it can earn; the rest waits for the next round.
+    /// been read. Every round pays at most POT_CAP_PCT_OF_TAX of the transfer tax rate on the
+    /// eligible tokens' value at the pool's price, however many batches it was read in; the
+    /// rest waits for the next round. So buying in to be counted (even in the same
+    /// transaction as a one-batch round) or moving tokens between batches to be counted
+    /// twice always costs more in tax than it can earn.
     pub fn close_round(ctx: Context<CloseRound>) -> Result<()> {
         let clock = Clock::get()?;
         let a = &ctx.accounts;
@@ -1191,13 +1193,9 @@ pub mod tax_vault {
         let reserve_xnt = pool.reserve(1 - side, &a.wxnt_vault.to_account_info())?;
         let pot = v.holders_funded.checked_sub(b.allocated).ok_or(VaultError::Insolvent)?;
         let total = b.round_weight;
-        let alloc = if b.round_batches == 1 {
-            pot
-        } else {
-            let fee = epoch_fee(&a.mint.to_account_info(), clock.epoch)?;
-            let tax_on_all = fee.calculate_fee(total).ok_or(VaultError::MathOverflow)?;
-            math::pass_pot(pot, total, reserve_xnt, reserve_token, math::pass_cap_bps(tax_on_all, total))?
-        };
+        let fee = epoch_fee(&a.mint.to_account_info(), clock.epoch)?;
+        let tax_on_all = fee.calculate_fee(total).ok_or(VaultError::MathOverflow)?;
+        let alloc = math::round_alloc(pot, total, reserve_xnt, reserve_token, tax_on_all)?;
         // Whoever closes the round earns a share of it, so anyone has a reason to run rounds.
         let reward = if total > 0 { math::round_reward(alloc) } else { 0 };
         let alloc = alloc - reward;
@@ -1389,6 +1387,44 @@ pub mod tax_vault {
         }
         Ok(())
     }
+
+    /// A wallet takes the slot of an existing pass when the book is full (top-level only, like
+    /// `register_pass`), so a full book can't be held for good by small holders: the evicted
+    /// pass must be owed nothing and the new wallet must hold at least EVICT_MULT times its
+    /// live balance (and the registering minimum). The new pass takes the evicted one's index;
+    /// the evicted pass account's rent goes back to its wallet. Not while a round is being
+    /// read. With the book's lookup-table record, `indexed` drops to the replaced index so the
+    /// new pass's addresses are indexed from there.
+    pub fn register_pass_evict(ctx: Context<RegisterPassEvict>) -> Result<()> {
+        require!(get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT, VaultError::NotTopLevel);
+        require!(ctx.accounts.vault.reserved[PASS_MODE_BYTE] == 1, VaultError::NotPassMode);
+        let wallet = ctx.accounts.wallet.key();
+        let mint = ctx.accounts.vault.mint;
+        let token_account = ata(&wallet, &mint, &token_2022::ID);
+        require_keys_eq!(ctx.accounts.token_account.key(), token_account, VaultError::WrongAccount);
+        let now_slot = Clock::get()?.slot;
+        let mut b = ctx.accounts.book.load_mut()?;
+        let i = ctx.accounts.evicted.index as usize;
+        require!(i < b.count as usize, VaultError::BadIndex);
+        let old = b.entries[i];
+        require_keys_eq!(old.wallet, ctx.accounts.evicted.wallet, VaultError::WrongAccount);
+        require_keys_eq!(ctx.accounts.evicted_token_account.key(), old.token_account, VaultError::WrongAccount);
+        let old_bal = holder_balance(&ctx.accounts.evicted_token_account.to_account_info(), &mint, &old.wallet)?;
+        let new_bal = holder_balance(&ctx.accounts.token_account.to_account_info(), &mint, &wallet)?;
+        math::check_evict(b.count as usize, round_live(&b, now_slot), old.owed, old.paid, b.min_holding, old_bal, new_bal)?;
+        b.round_open = 0;
+        b.entries[i] = PassEntry { wallet, token_account, weight: 0, owed: 0, paid: 0 };
+        drop(b);
+        let p = &mut ctx.accounts.pass;
+        p.wallet = wallet;
+        p.index = i as u32;
+        p.bump = ctx.bumps.pass;
+        if let Some(t) = ctx.accounts.tables.as_mut() {
+            t.indexed = t.indexed.min(i as u32);
+        }
+        emit!(PassEvicted { vault: ctx.accounts.vault.key(), wallet, evicted: old.wallet, index: i as u32 });
+        Ok(())
+    }
 }
 
 // ---------- holder passes: state and helpers ----------
@@ -1403,13 +1439,16 @@ pub const PASS_BOOK_LEN: usize = 8 + std::mem::size_of::<PassBook>();
 /// wallet to send five batches one after another). The window's length doesn't change the
 /// pot cap's argument: every move between batches pays the transfer tax.
 pub const MAX_BATCH_SLOTS: u64 = 150;
-/// A round read over several batches pays out at most this percentage of the transfer tax
-/// rate on the eligible tokens' value (80%: 4% on a 5% tax). Moving tokens between batches
-/// to be counted twice then costs the tax for a smaller gain. The rate is the one the
-/// whole eligible amount would pay, so a token's maximum fee can only lower the cap.
+/// A round pays out at most this percentage of the transfer tax rate on the eligible tokens'
+/// value (80%: 4% on a 5% tax), however many batches it was read in. Buying in to be
+/// counted, or moving tokens between batches to be counted twice, then costs the tax for a
+/// smaller gain. The rate is the one the whole eligible amount would pay, so a token's
+/// maximum fee can only lower the cap.
 pub const POT_CAP_PCT_OF_TAX: u64 = 80;
 /// Registering needs this many times the reward minimum (`min_holding`) in the wallet.
 pub const REGISTER_HOLDING_MULT: u64 = 2;
+/// Taking a pass's slot in a full book needs this many times that pass's live balance.
+pub const EVICT_MULT: u64 = 2;
 /// Closing a round pays its caller this share of the round (1%), at most ROUND_REWARD_CAP.
 pub const ROUND_REWARD_BPS: u64 = 100;
 pub const ROUND_REWARD_CAP: u64 = CRANK_REWARD_CAP;
@@ -1606,6 +1645,36 @@ pub struct RemovePass<'info> {
     pub tables: Option<Box<Account<'info, PassTables>>>,
 }
 
+/// Accounts of `register_pass_evict`, in order: the new wallet (signer, pays the new pass's
+/// rent), vault, book, the new pass (created), the new wallet's associated Token-2022
+/// account, the evicted pass (closed), its wallet (gets that rent back), its token account
+/// (as recorded in the book), the system program, then optionally the book's lookup-table
+/// record.
+#[derive(Accounts)]
+pub struct RegisterPassEvict<'info> {
+    #[account(mut)]
+    pub wallet: Signer<'info>,
+    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
+    pub book: AccountLoader<'info, PassBook>,
+    #[account(init, payer = wallet, space = 8 + Pass::INIT_SPACE, seeds = [b"pass", vault.key().as_ref(), wallet.key().as_ref()], bump)]
+    pub pass: Account<'info, Pass>,
+    /// CHECK: the new wallet's associated Token-2022 account (checked in the instruction).
+    pub token_account: UncheckedAccount<'info>,
+    #[account(mut, close = evicted_wallet, seeds = [b"pass", vault.key().as_ref(), evicted.wallet.as_ref()], bump = evicted.bump)]
+    pub evicted: Account<'info, Pass>,
+    /// CHECK: the evicted pass's wallet; gets the pass account's rent back.
+    #[account(mut, address = evicted.wallet)]
+    pub evicted_wallet: UncheckedAccount<'info>,
+    /// CHECK: the evicted wallet's tax-token account (checked against the book in the instruction).
+    pub evicted_token_account: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    /// The book's lookup-table record, once index_passes has made it.
+    #[account(mut, seeds = [b"pass_tables", vault.key().as_ref()], bump = tables.bump)]
+    pub tables: Option<Box<Account<'info, PassTables>>>,
+}
+
 #[derive(Accounts)]
 pub struct IndexPasses<'info> {
     #[account(mut)]
@@ -1649,6 +1718,14 @@ pub struct PassTables {
 pub struct PassRegistered {
     pub vault: Pubkey,
     pub wallet: Pubkey,
+    pub index: u32,
+}
+
+#[event]
+pub struct PassEvicted {
+    pub vault: Pubkey,
+    pub wallet: Pubkey,
+    pub evicted: Pubkey,
     pub index: u32,
 }
 
@@ -2536,6 +2613,37 @@ pub mod math {
         min_holding.saturating_mul(REGISTER_HOLDING_MULT).max(1)
     }
 
+    /// What a round pays out (before its caller's reward): the waiting pot, capped at
+    /// POT_CAP_PCT_OF_TAX of the tax rate (`tax_on_weight` on `weight`) on the eligible
+    /// tokens' value at the pool's price. Every round, one batch or several.
+    pub fn round_alloc(pot: u64, weight: u64, reserve_xnt: u64, reserve_token: u64, tax_on_weight: u64) -> Result<u64> {
+        pass_pot(pot, weight, reserve_xnt, reserve_token, pass_cap_bps(tax_on_weight, weight))
+    }
+
+    /// Holder passes go only on a vault that never had a rewards list: none active or past
+    /// (`list_epoch`), none pending.
+    pub fn check_never_listed(list_epoch: u64, pending_epoch: u64) -> Result<()> {
+        require!(pending_epoch == 0, VaultError::PendingList);
+        require!(list_epoch == 0, VaultError::HadList);
+        Ok(())
+    }
+
+    /// The balance a wallet needs to take a pass's slot: EVICT_MULT times that pass's live
+    /// balance, and at least the registering minimum.
+    pub fn evict_minimum(min_holding: u64, evicted_balance: u64) -> u64 {
+        register_minimum(min_holding).max(evicted_balance.saturating_mul(EVICT_MULT))
+    }
+
+    /// `register_pass_evict`'s rules: the book is full (otherwise `register_pass`), no round
+    /// is being read, the evicted pass is owed nothing, and the new wallet holds enough.
+    pub fn check_evict(count: usize, round_live: bool, owed: u64, paid: u64, min_holding: u64, evicted_balance: u64, new_balance: u64) -> Result<()> {
+        require!(count == MAX_PASSES, VaultError::PassBookNotFull);
+        require!(!round_live, VaultError::RoundOpen);
+        require!(owed == paid, VaultError::PassNotEmpty);
+        require!(new_balance >= evict_minimum(min_holding, evicted_balance), VaultError::EvictTooSmall);
+        Ok(())
+    }
+
     /// One pass's share of a round: floor(alloc * weight / total); the shares never add up
     /// to more than `alloc`.
     pub fn pass_share(alloc: u64, weight: u64, total: u64) -> Result<u64> {
@@ -3224,6 +3332,12 @@ pub enum VaultError {
     NothingToIndex,
     #[msg("The book's lookup tables are full")]
     PassTablesFull,
+    #[msg("This vault has had a rewards list, so it can't take holder passes")]
+    HadList,
+    #[msg("The pass book isn't full: register a pass instead")]
+    PassBookNotFull,
+    #[msg("Taking a pass's slot needs twice its balance (and the registering minimum)")]
+    EvictTooSmall,
 }
 
 #[cfg(test)]
@@ -3839,7 +3953,7 @@ mod tests {
         assert_eq!(pass_pot(5, 0, reserve_xnt, reserve_token, cap_bps).unwrap(), 0, "nothing eligible, nothing paid");
         assert!(pass_pot(5, 1, 1, 0, cap_bps).is_err());
         assert_eq!(pass_cap_bps(weight / 1_000, weight), 8, "a maximum fee that binds lowers the cap");
-        assert_eq!(pass_cap_bps(0, weight), 0, "no tax, no multi-batch payout");
+        assert_eq!(pass_cap_bps(0, weight), 0, "no tax, no round payout");
         assert_eq!(pass_cap_bps(5, 0), 0);
     }
 
@@ -3885,5 +3999,67 @@ mod tests {
         assert!(PASS_BOOK_LEN > 2 * MAX_PERMITTED_DATA_INCREASE && PASS_BOOK_LEN <= 3 * MAX_PERMITTED_DATA_INCREASE, "{PASS_BOOK_LEN}");
         // The entries come last, so a 100-pass book grown to 256 keeps its passes in place.
         assert_eq!(std::mem::offset_of!(PassBook, entries) + 8, PASS_BOOK_LEN - MAX_PASSES * 88);
+    }
+
+    fn err(e: VaultError) -> anchor_lang::error::Error {
+        e.into()
+    }
+
+    #[test]
+    fn passes_only_on_a_vault_that_never_had_a_list() {
+        assert!(check_never_listed(0, 0).is_ok());
+        assert_eq!(check_never_listed(722, 0).unwrap_err(), err(VaultError::HadList), "an active list (TEST's case)");
+        assert_eq!(check_never_listed(1, 0).unwrap_err(), err(VaultError::HadList), "any list ever published");
+        assert_eq!(check_never_listed(0, 1).unwrap_err(), err(VaultError::PendingList));
+        assert_eq!(check_never_listed(3, 4).unwrap_err(), err(VaultError::PendingList));
+        // The new codes come after the ones the site's clients already name (6028-6045).
+        assert_eq!(err(VaultError::PassTablesFull).to_string().contains("6045"), true);
+        for (e, code) in [(VaultError::HadList, 6046u32), (VaultError::PassBookNotFull, 6047), (VaultError::EvictTooSmall, 6048)] {
+            assert_eq!(u32::from(e), code);
+        }
+    }
+
+    #[test]
+    fn a_one_batch_round_is_capped_too() {
+        // Review M-1's model: 20 XNT of eligible tokens and a 5 XNT pot at a 5% tax. Before,
+        // a round read in one batch (buy, snapshot, close and sell in one transaction) paid
+        // all 5 XNT; now every round pays at most 4% of the eligible value: 0.8 XNT, less
+        // than the 1 XNT of tax the buy alone costs.
+        let one = 1_000_000_000u64;
+        let (reserve_xnt, reserve_token) = (100 * one, 100 * one); // 1 token = 1 XNT
+        let weight = 20 * one;
+        let alloc = round_alloc(5 * one, weight, reserve_xnt, reserve_token, weight / 20).unwrap();
+        assert_eq!(alloc, 800_000_000);
+        assert!(alloc < weight / 20, "less than the tax on buying in");
+        // A small pot is still paid whole.
+        assert_eq!(round_alloc(one / 2, weight, reserve_xnt, reserve_token, weight / 20).unwrap(), one / 2);
+        // Nobody eligible or no tax: nothing is paid out.
+        assert_eq!(round_alloc(5 * one, 0, reserve_xnt, reserve_token, 0).unwrap(), 0);
+        assert_eq!(round_alloc(5 * one, weight, reserve_xnt, reserve_token, 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn eviction_takes_a_slot_only_from_a_much_smaller_paid_up_pass() {
+        let min = 1_000u64;
+        // Happy path: a full book, no round, the pass owed nothing, twice its balance.
+        assert!(check_evict(MAX_PASSES, false, 7, 7, min, 5_000, 10_000).is_ok());
+        assert_eq!(evict_minimum(min, 5_000), 10_000);
+        // A pass that sold to zero (or under the minimum) goes for the registering minimum.
+        assert_eq!(evict_minimum(min, 0), 2_000);
+        assert_eq!(evict_minimum(min, 900), 2_000);
+        assert!(check_evict(MAX_PASSES, false, 0, 0, min, 0, 2_000).is_ok());
+        assert_eq!(evict_minimum(min, u64::MAX), u64::MAX);
+        // Refused: the book isn't full (register_pass instead).
+        assert_eq!(check_evict(MAX_PASSES - 1, false, 0, 0, min, 0, 1_000_000).unwrap_err(), err(VaultError::PassBookNotFull));
+        assert_eq!(check_evict(0, false, 0, 0, min, 0, 1_000_000).unwrap_err(), err(VaultError::PassBookNotFull));
+        // Refused: under twice the evicted pass's balance.
+        assert_eq!(check_evict(MAX_PASSES, false, 0, 0, min, 5_000, 9_999).unwrap_err(), err(VaultError::EvictTooSmall));
+        assert_eq!(check_evict(MAX_PASSES, false, 0, 0, min, 0, 1_999).unwrap_err(), err(VaultError::EvictTooSmall));
+        // Refused: the evicted pass is still owed XNT.
+        assert_eq!(check_evict(MAX_PASSES, false, 8, 7, min, 0, 1_000_000).unwrap_err(), err(VaultError::PassNotEmpty));
+        // Refused: a round is being read.
+        assert_eq!(check_evict(MAX_PASSES, true, 0, 0, min, 0, 1_000_000).unwrap_err(), err(VaultError::RoundOpen));
+        // A wallet that already has a pass can't evict: its pass PDA ["pass", vault, wallet]
+        // already exists, so the `init` of RegisterPassEvict::pass fails before the instruction runs.
     }
 }

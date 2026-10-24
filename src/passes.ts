@@ -1,15 +1,16 @@
 /**
  * Holder passes (vault "v4", X1 testnet trial): the holders' share is split on-chain over
  * registered wallets' live balances instead of a Merkle list. Client side of the tax_vault
- * instructions init_passes, register_pass, snapshot_batch, close_round, pay_passes and
- * remove_pass (lp-locker/programs/tax_vault, feature passes-testnet).
+ * instructions init_passes, register_pass, register_pass_evict, snapshot_batch, close_round,
+ * pay_passes and remove_pass (lp-locker/programs/tax_vault, feature passes-testnet).
  *
- * Registering needs REGISTER_HOLDING_MULT times the reward minimum in the wallet. A round:
+ * Passes only go on a vault that never had a rewards list. Registering needs
+ * REGISTER_HOLDING_MULT times the reward minimum in the wallet; in a full book a wallet may
+ * take the slot of a pass owed nothing by holding EVICT_MULT times its balance. A round:
  * snapshot_batch(0) opens it and reads the first wallets' balances, later batches continue
  * in book order, all within MAX_BATCH_SLOTS; close_round splits the waiting pot once every
- * pass is read (all of it for a round read in one batch, otherwise capped at
- * POT_CAP_PCT_OF_TAX of the tax rate on the eligible tokens' value); pay_passes sends each
- * pass's wallet what it is owed. The crank keeps an address lookup table of the book's
+ * pass is read (capped, however many batches, at POT_CAP_PCT_OF_TAX of the tax rate on the
+ * eligible tokens' value); pay_passes sends each pass's wallet what it is owed. The crank keeps an address lookup table of the book's
  * accounts (passLookupAddresses) so its rounds take fewer, larger transactions.
  */
 import crypto from "node:crypto";
@@ -49,7 +50,7 @@ export const passUnits = {
 };
 /** Registering needs this many times the book's min_holding (the program's REGISTER_HOLDING_MULT). */
 export const REGISTER_HOLDING_MULT = 2n;
-/** A multi-batch round pays at most this % of the tax rate on the eligible value (POT_CAP_PCT_OF_TAX). */
+/** A round (one batch or several) pays at most this % of the tax rate on the eligible value (POT_CAP_PCT_OF_TAX). */
 export const POT_CAP_PCT_OF_TAX = 80;
 /** The balance a wallet needs to register (never zero). */
 export const registerMinimum = (minHolding: bigint) => (minHolding * REGISTER_HOLDING_MULT > 0n ? minHolding * REGISTER_HOLDING_MULT : 1n);
@@ -129,6 +130,53 @@ export function registerPassIx(program: PublicKey, wallet: PublicKey, mint: Publ
     keys: [m(wallet, true, true), m(vault, false, false), m(passBookPda(program, vault), false, true),
       m(passPda(program, vault, wallet), false, true), m(holderTokenAccount(wallet, mint), false, false), m(SystemProgram.programId, false, false)],
   });
+}
+
+/**
+ * register_pass_evict: `wallet` takes the slot of `evicted` (an entry of a full book, owed
+ * nothing) by holding EVICT_MULT times its live balance and at least the registering
+ * minimum. The evicted pass account's rent goes back to its wallet. `tables`: whether the
+ * book's lookup-table record exists (an omitted optional account is the program's own ID).
+ * Accounts: wallet, vault, book, the new pass, the wallet's token account, the evicted pass,
+ * its wallet, its token account, the system program, the tables record.
+ */
+export function registerPassEvictIx(program: PublicKey, wallet: PublicKey, mint: PublicKey, evicted: Pick<PassEntry, "wallet" | "tokenAccount">, tables: boolean) {
+  const vault = vaultPda(program, mint);
+  return new TransactionInstruction({
+    programId: program, data: disc("register_pass_evict"),
+    keys: [m(wallet, true, true), m(vault, false, false), m(passBookPda(program, vault), false, true),
+      m(passPda(program, vault, wallet), false, true), m(holderTokenAccount(wallet, mint), false, false),
+      m(passPda(program, vault, evicted.wallet), false, true), m(evicted.wallet, false, true), m(evicted.tokenAccount, false, false),
+      m(SystemProgram.programId, false, false),
+      tables ? m(passTablesPda(program, vault), false, true) : m(program, false, false)],
+  });
+}
+
+/** Taking a slot in a full book needs this many times the evicted pass's balance (the program's EVICT_MULT). */
+export const EVICT_MULT = 2n;
+/** The balance needed to take the slot of a pass holding `evictedBalance` (the program's evict_minimum). */
+export const evictMinimum = (minHolding: bigint, evictedBalance: bigint) => {
+  const reg = registerMinimum(minHolding), twice = evictedBalance * EVICT_MULT;
+  return twice > reg ? twice : reg;
+};
+
+/**
+ * The pass a newcomer would take the slot of in a full book: among passes owed nothing, the
+ * one whose wallet holds the least now (balances read as the program reads them), with that
+ * balance. Null when every pass is owed something.
+ */
+export async function evictionCandidate(conn: Connection, mint: PublicKey, book: PassBook): Promise<{ entry: PassEntry; balance: bigint } | null> {
+  let best: { entry: PassEntry; balance: bigint } | null = null;
+  const candidates = book.entries.filter((e) => e.owed === e.paid);
+  for (let i = 0; i < candidates.length; i += 100) {
+    const part = candidates.slice(i, i + 100);
+    const infos = await conn.getMultipleAccountsInfo(part.map((e) => e.tokenAccount), "confirmed");
+    part.forEach((e, j) => {
+      const balance = heldBy(infos[j], mint, e.wallet);
+      if (!best || balance < best.balance) best = { entry: e, balance };
+    });
+  }
+  return best;
 }
 
 export function snapshotBatchIx(program: PublicKey, caller: PublicKey, mint: PublicKey, start: number, tokenAccounts: PublicKey[]) {

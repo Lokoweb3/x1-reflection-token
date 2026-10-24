@@ -128,7 +128,10 @@ function friendly(m) {
   if (/PotTooSmall/.test(m)) return "not enough XNT is waiting for a round yet.";
   if (/RoundExpired/.test(m)) return "the round's time window ran out before it closed. Nothing is lost; run it again.";
   if (/HoldingTooSmall/.test(m)) return "this wallet holds too few tokens to register.";
-  if (/PassBookFull/.test(m)) return "all 256 passes are taken. A slot frees up when a pass holder sells below the minimum and their pass is removed.";
+  if (/PassBookFull/.test(m)) return "all 256 passes are taken. A slot frees up when a pass holder sells below the minimum and their pass is removed, or you can take the smallest pass's slot by holding twice its balance.";
+  if (/EvictTooSmall/.test(m)) return "taking a pass's slot needs twice that pass's balance; its holder bought more since this was prepared. Try again.";
+  if (/PassBookNotFull/.test(m)) return "a pass just freed up, so there's no need to take someone's slot. Try registering again.";
+  if (/HadList/.test(m)) return "this vault has had a payout list, so holder passes can't be turned on for it.";
   if (/PassNotEmpty/.test(m)) return "that wallet bought back above the minimum (or is owed XNT), so its pass stays.";
   return m;
 }
@@ -185,15 +188,15 @@ async function tokenCard(t) {
     stat("Passes", `${b.count} / ${b.capacity}`), stat("Waiting for holders", `${fmt(b.potXnt)} XNT`),
     stat("Paid to holders", `${fmt(t.paidXnt)} XNT`), stat("Rounds", b.rounds)));
   const left = b.capacity - b.count;
-  card.append(el("p", { class: "earn" }, el("b", { text: left > 0 ? `Register to earn: ${left} of ${b.capacity} passes left.` : `All ${b.capacity} passes are taken.` }),
-    ` Holding ${t.symbol} alone earns nothing here: only wallets with a pass are paid. Registering needs ${fmt(b.registerMin)} tokens; a pass earns while its wallet holds ${fmt(b.minHolding)}+. Sell below that and anyone can remove the pass (its rent goes back to you), freeing the slot.`));
+  card.append(el("p", { class: "earn" }, el("b", { text: left > 0 ? `Register to earn: ${left} of ${b.capacity} passes left.` : `All ${b.capacity} passes are taken: hold twice the smallest pass's balance to take its slot.` }),
+    ` Holding ${t.symbol} alone earns nothing here: only wallets with a pass are paid. Registering needs ${fmt(b.registerMin)} tokens; a pass earns while its wallet holds ${fmt(b.minHolding)}+. Sell below that and anyone can remove the pass (its rent goes back to you), freeing the slot. When the book is full, a wallet holding twice a pass's balance can take that pass's slot (its rent goes back to its holder).`));
   card.append(el("p", { class: "muted", text: `Rounds run once ${fmt(b.minPotXnt)} XNT is waiting and ${b.minIntervalSecs}s have passed. Whoever closes a round keeps 1% of it (at most 0.05 XNT); the rest goes to the passes by balance. Last round: ${ago(b.lastRoundAt)}.${b.roundLive ? ` A round is being read now (${b.roundRead} of ${b.count}).` : ""}` }));
 
   let d = null;
   try { d = await api(`/api/v4/${t.mint}${me ? `?wallet=${me}` : ""}`); } catch (e) { card.append(el("p", { class: "error", text: e.message })); }
   const actions = el("div", { class: "row" });
   if (me && d && !d.mine) {
-    const reg = el("button", { class: "btn primary", type: "button", text: "Register my pass" });
+    const reg = el("button", { class: "btn primary", type: "button", text: left > 0 ? "Register my pass" : "Take the smallest pass's slot" });
     reg.onclick = () => run("Register pass", `/api/v4/${t.mint}/register-tx`, {});
     actions.append(reg);
   }
@@ -229,7 +232,7 @@ async function tokenCard(t) {
   const give = el("button", { class: "btn", type: "button", text: "Sponsor holders" });
   give.onclick = () => run("Sponsor holders", `/api/v4/${t.mint}/sponsor-tx`, { amountXnt: amount.value });
   give.disabled = !me;
-  const capNote = d?.roundCapXnt ? ` A round read in several batches pays at most ~${fmt(d.roundCapXnt, 4)} XNT right now (${fmt((d.taxBps * 0.8) / 100, 2)}% of the counted tokens' value), so a bigger pot is paid out over several rounds.` : "";
+  const capNote = d?.roundCapXnt ? ` A round pays at most ~${fmt(d.roundCapXnt, 4)} XNT right now (${fmt((d.taxBps * 0.8) / 100, 2)}% of the counted tokens' value), so a bigger pot is paid out over several rounds.` : "";
   card.append(el("h3", { text: "Sponsor holders" }),
     el("p", { class: "muted", text: `Add XNT to the holders' share from your wallet. It can't be taken back; the next rounds split it by balance.${capNote}` }),
     el("div", { class: "row" }, el("label", {}, "XNT", amount), give));
