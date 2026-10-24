@@ -64,3 +64,14 @@ test("tr() fills templates, and finished text is matched with its values untouch
   assert.equal(es.tr("Invalid taxBps: must be a whole number from 100 to 1,000"), "taxBps no válido: debe ser un número entero de 100 a 1,000");
   assert.equal(es.tr("Invalid name"), "name no válido");
 });
+
+test("no template key is so loose it would match ordinary sentences", () => {
+  // A key like "{low} to {high}" matched any untranslated text containing " to " ("How to try it"
+  // became "How a try it", and the launch page's disclaimer was garbled the same way).
+  const loose = Object.keys(es.entries).filter((k) => /^\{~?\w+\}\s*\S{1,4}\s*\{~?\w+\}$/.test(k.trim()));
+  assert.deepEqual(loose, [], "template keys that are only placeholders around a short word");
+  for (const s of ["How to try it", "Price of the token in XNT", "Send it to the pool and wait"]) {
+    const out = es.lookup(s);
+    assert.ok(out === undefined || !/\b(a|de)\b the\b|How a try/.test(out), `${s} -> ${out}`);
+  }
+});

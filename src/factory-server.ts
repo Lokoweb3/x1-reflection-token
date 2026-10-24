@@ -51,6 +51,7 @@ import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
 import { limitKey } from "./factory/limits.js";
+import { explainError, type ProgramKind } from "./program-errors.js";
 import { buildPassesStep, buildVaultStep, isVaultLaunch, minHoldingFor, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
@@ -235,6 +236,13 @@ async function requirePairTokens(wallet: PublicKey, pair: Pair, amount: string, 
     throw new Error(`${what} needs ${amount} ${pair.symbol} in this wallet; it has ${fromBaseUnits(have, m.decimals)}. Get ${pair.symbol} first (it trades on XDEX), or use less for the pool.`);
   }
 }
+
+/** This site's programs, so a failed transaction's error code is read against the program that raised it. */
+const programKinds = new Map<string, ProgramKind>([
+  ...[cfg.factory?.taxVault?.programId, cfg.factory?.taxVault?.passesProgramId].filter((x): x is string => !!x).map((id) => [id, "vault"] as const),
+  ...(cfg.factory?.curve?.programId ? [[cfg.factory.curve.programId, "curve"] as const] : []),
+  ...(cfg.locker?.programId ? [[cfg.locker.programId, "locker"] as const] : []),
+]);
 
 /** Metadata updates waiting for their on-chain transaction (applied by /api/launch/metadata/confirm). */
 const pendingMeta = new Map<string, { uri: string; next: Record<string, unknown>; at: number }>();
@@ -1633,7 +1641,7 @@ const server = http.createServer(async (req, res) => {
       console.error(`${new Date().toISOString()} ${url.pathname}: ${error}`);
       error = "The site can't save files to IPFS right now, so nothing was sent to your wallet. Please try again later.";
     }
-    send(res, e instanceof RateLimited ? 429 : 400, { error });
+    send(res, e instanceof RateLimited ? 429 : 400, { error: explainError(error, programKinds) });
   }
 });
 
