@@ -25,8 +25,19 @@ this file first and say so.
   graduation and delivery read the target from the account.
 - Fee: **1% of the XNT** on every curve buy and sell, to `FEE_RECEIVER`.
 - The creator may not buy on their own curve (`buyer != creator`).
-- Anti-sniping: for the first 120 s after creation, one buy may take at most 1% of the
-  supply.
+- Early-buy limit: for the first 120 s after creation, one wallet's position may hold at
+  most 1% of the supply (counted across all its buys), all buyers together may take at
+  most 10% (`EARLY_TOTAL_BPS`), and a transaction may carry only one buy, sent directly to
+  the program (instructions sysvar; not through another program). It slows sniping; it
+  can't stop someone using many wallets across transactions.
+- The token's tax must go to a tax vault: its `withdraw_withheld_authority` is the auth PDA
+  (`["auth", mint]`) of a program in `VAULT_PROGRAMS` (D9jt; on testnet also the passes
+  trial Aqt57), and its `maximum_fee` is u64::MAX (no cap). No creator's wallet can take it.
+- `create_curve` checks the XDEX fee tier graduation will use exists and accepts new pools.
+- Refund: a curve left Complete for `REFUND_AFTER_SECS` (7 days) because its XDEX pool
+  can't be created opens to `refund` (anyone may send it, per position): the owner gets
+  their pro-rata share of `raised_xnt` plus the position's deposit, and after the last one
+  the rest of `auth` goes to the creator. No tokens are minted.
 - Graduation is permissionless (two steps); the caller of the second step gets 0.01 XNT.
 - After graduation, anyone can `deliver` a buyer's tokens (the site's crank does all of
   them). When the last position is delivered, the mint authority is set to None.
@@ -48,7 +59,10 @@ this file first and say so.
 | `GRADUATION_DEPOSIT` | `300_000_000` lamports, paid by the creator in `create_curve`; covers XDEX's pool fee, rents and the reward; the rest is refunded to the creator when the curve finishes |
 | `GRADUATE_REWARD` | `10_000_000` lamports |
 | `SNIPE_WINDOW_SECS` | `120` (feature `short-windows`: `5`, for local tests only) |
-| `SNIPE_MAX_BPS` | `100` (of total supply, per buy) |
+| `SNIPE_MAX_BPS` | `100` (of total supply, per wallet's position, during the early window) |
+| `EARLY_TOTAL_BPS` | `1000` (of total supply, all buyers together, during the early window) |
+| `REFUND_AFTER_SECS` | `604800` (7 days in Complete before refunds open; feature `short-windows`: `10`) |
+| `STATUS_REFUNDING` | `5` (after Finished in number, but never graduated) |
 | `DECIMALS` | `9` |
 | supply (whole tokens) | `1_000` ..= `10_000_000_000` (u64 base units must not overflow) |
 
@@ -131,7 +145,11 @@ if tokens_sold + out >= T:            // last buy: fill exactly to T
     xnt_in  = ceil(net * 10000 / (10000 - FEE_BPS)); fee = xnt_in - net
     status  = Complete
 require out > 0, out >= min_tokens_out
-if now < created_at + SNIPE_WINDOW_SECS: require out <= S * SNIPE_MAX_BPS / 10000
+if now < created_at + SNIPE_WINDOW_SECS:
+    require position.balance + out <= S * SNIPE_MAX_BPS / 10000     // TooBigEarly
+    require tokens_sold + out <= S * EARLY_TOTAL_BPS / 10000        // EarlyWindowFull
+    require this is the transaction's only buy, a top-level ix      // OneBuyPerTransaction
+if complete: delivered = now   // completion time, until graduate_pool resets it to 0
 x += net; y -= out; tokens_sold += out; raised_xnt += net; position.balance += out
 transfer: buyer -> auth: net (+ deposit on first buy); buyer -> FEE_RECEIVER: fee
 ```

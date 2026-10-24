@@ -177,7 +177,7 @@ function logoFor(c, big) {
   if (c.image && /^https:\/\//.test(c.image)) box.append(el("img", { src: c.image, alt: "", loading: "lazy" })); else box.textContent = (c.symbol || "?").slice(0, 3);
   return box;
 }
-const STATUS_TEXT = { trading: tr("On the curve"), complete: tr("Graduating"), "pool-created": tr("Graduating"), graduated: tr("Delivering"), finished: tr("Graduated") };
+const STATUS_TEXT = { trading: tr("On the curve"), complete: tr("Graduating"), "pool-created": tr("Graduating"), graduated: tr("Delivering"), finished: tr("Graduated"), refunding: tr("Refunding") };
 
 async function api(url, body) {
   const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
@@ -210,7 +210,8 @@ function big(state) {
   o.createdAt = state.createdAt; o.k0 = o.x0 * o.y0;
   return o;
 }
-function quoteBuy(c, xntIn, now, feeBps, snipe) {
+/** The program's buy maths; `held` is the buyer's position (the early limit counts all of it). */
+function quoteBuy(c, xntIn, now, feeBps, snipe, held = 0n) {
   const x = c.virtualXnt, y = c.virtualTokens;
   let fee = ceilDiv(xntIn * feeBps, BPS), net = xntIn - fee;
   let out = y - ceilDiv(c.k0, x + net), complete = false;
@@ -221,8 +222,10 @@ function quoteBuy(c, xntIn, now, feeBps, snipe) {
     fee = xntIn - net; complete = true;
   }
   const maxEarly = (c.supply * BigInt(snipe.maxBps)) / BPS;
+  const maxEarlyTotal = (c.supply * BigInt(snipe.totalBps)) / BPS;
   const early = now < c.createdAt + snipe.secs;
-  return { xntIn, fee, net, out, complete, tooBigEarly: early && out > maxEarly, zero: out <= 0n, maxEarly, early };
+  const tooBigEarly = early && held + out > maxEarly;
+  return { xntIn, fee, net, out, complete, tooBigEarly, earlyFull: early && !tooBigEarly && c.tokensSold + out > maxEarlyTotal, zero: out <= 0n, maxEarly, maxEarlyTotal, early };
 }
 function quoteSell(c, tokensIn, feeBps) {
   const x1 = ceilDiv(c.k0, c.virtualTokens + tokensIn);
@@ -248,7 +251,8 @@ function progressBlock(c) {
   const pct = Math.min(100, (Number(BigInt(c.raisedXnt) * 10000n / BigInt(c.targetXnt)) / 100) || 0);
   const bar = el("div", { class: "prog", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": pct.toFixed(1), "aria-label": tr("Progress to graduation") },
     el("div", { style: `width:${pct}%` }));
-  const label = c.statusCode >= 3 ? tr("{raisedXnt} XNT raised: graduated to XDEX", { raisedXnt: fmt(units(c.raisedXnt), 2) })
+  const label = c.statusCode === 5 ? tr("Refunding: the pool couldn't be created")
+    : c.statusCode >= 3 ? tr("{raisedXnt} XNT raised: graduated to XDEX", { raisedXnt: fmt(units(c.raisedXnt), 2) })
     : c.statusCode >= 1 ? tr("{raisedXnt} XNT raised: graduating", { raisedXnt: fmt(units(c.raisedXnt), 2) })
     : `${fmt(units(c.raisedXnt), 2)} / ${fmt(units(c.targetXnt), 0)} XNT to graduation`;
   return el("div", {}, bar, el("div", { class: "prog-label" },
@@ -505,10 +509,14 @@ function banner(v) {
   const links = (...a) => el("div", { class: "muted", style: "margin-top:4px;display:flex;gap:14px;flex-wrap:wrap" }, ...a.filter(Boolean));
   if (v.statusCode === 0) {
     const left = v.createdAt + v.params.snipeWindowSecs - chainNow();
-    return left > 0 ? el("div", { class: "banner" }, el("b", { text: tr("Just launched") }), tr("For the next {left} min, one buy can take at most {snipeMaxBps}% of the supply.", { left: Math.ceil(left / 60), snipeMaxBps: v.params.snipeMaxBps / 100 })) : null;
+    return left > 0 ? el("div", { class: "banner" }, el("b", { text: tr("Just launched") }), tr("Early-buy limit for the next {left} min: one wallet can hold at most {snipeMaxBps}% of the supply, all buyers together {earlyTotalBps}%, one buy per transaction. It slows sniping; it can't stop someone using many wallets.", { left: Math.ceil(left / 60), snipeMaxBps: v.params.snipeMaxBps / 100, earlyTotalBps: (v.params.earlyTotalBps ?? 1000) / 100 })) : null;
+  }
+  if (v.statusCode === 5) {
+    return el("div", { class: "banner" }, el("b", { text: tr("Refunding") }), tr("The curve filled but its XDEX pool couldn't be created, so it's refunding: every buyer gets their share of the XNT raised back, and no tokens are made. Refunds are sent automatically; you can also claim yours below."));
   }
   if (v.statusCode === 1 || v.statusCode === 2) {
-    return el("div", { class: "banner" }, el("b", { text: tr("Graduating…") }), tr("The curve is full. Its XDEX pool and the forever LP lock are being created; buyers' tokens are delivered right after."), links(pool));
+    const opens = v.statusCode === 1 && v.refundOpensAt ? tr(" If the pool still can't be created by {date}, anyone can start refunds.", { date: new Date(v.refundOpensAt * 1000).toLocaleString() }) : "";
+    return el("div", { class: "banner" }, el("b", { text: tr("Graduating…") }), tr("The curve is full. Its XDEX pool and the forever LP lock are being created; buyers' tokens are delivered right after.") + opens, links(pool));
   }
   if (v.statusCode === 3) {
     return el("div", { class: "banner live" }, el("b", { text: tr("Delivering tokens…") }), tr("The pool is live and its liquidity locked forever. Buyers' tokens are being sent to their wallets ({positions} left).", { positions: v.state.positions }), links(pool, nft));
@@ -613,7 +621,7 @@ function tradeBox(v) {
   const trading = v.statusCode === 0;
   const c = big(v.state);
   const feeBps = BigInt(v.params.feeBps);
-  const snipe = { secs: v.params.snipeWindowSecs, maxBps: v.params.snipeMaxBps };
+  const snipe = { secs: v.params.snipeWindowSecs, maxBps: v.params.snipeMaxBps, totalBps: v.params.earlyTotalBps ?? 1000 };
   const me = W.state.address;
   const isCreator = me && me === v.creator;
   const balance = v.wallet && v.wallet.address === me ? BigInt(v.wallet.balance) : 0n;
@@ -636,14 +644,15 @@ function tradeBox(v) {
     let why = null, ready = false;
     const units9 = toUnits(amount.value);
     quote.replaceChildren();
-    if (!trading) why = v.statusCode >= 3 ? tr("The curve has graduated; trade on XDEX.") : tr("The curve is full; it's graduating.");
+    if (!trading) why = v.statusCode === 5 ? tr("This curve is refunding; see below.") : v.statusCode >= 3 ? tr("The curve has graduated; trade on XDEX.") : tr("The curve is full; it's graduating.");
     else if (isCreator && !v.params?.creatorCanBuy) why = tr("The creator can't buy on their own curve.");
     else if (units9 === null || units9 <= 0n) why = tab === "buy" ? tr("Enter how much XNT to spend.") : tr("Enter how many tokens to sell.");
     else if (tab === "buy") {
-      const q = quoteBuy(c, units9, chainNow(), feeBps, snipe);
+      const q = quoteBuy(c, units9, chainNow(), feeBps, snipe, balance);
       const min = (q.out * (10000n - BigInt(slip.value))) / 10000n;
       if (q.zero) why = tr("That amount is too small to buy any tokens.");
-      else if (q.tooBigEarly) why = tr("For the first {secs} minutes one buy can take at most {maxBps}% of the supply ({maxEarly} {symbol}). Try a smaller amount.", { secs: snipe.secs / 60, maxBps: snipe.maxBps / 100, maxEarly: compact(units(q.maxEarly)), symbol: v.symbol });
+      else if (q.tooBigEarly) why = tr("Early-buy limit: for the first {secs} minutes one wallet can hold at most {maxBps}% of the supply ({maxEarly} {symbol}), counting what it already bought. Try a smaller amount.", { secs: snipe.secs / 60, maxBps: snipe.maxBps / 100, maxEarly: compact(units(q.maxEarly)), symbol: v.symbol });
+      else if (q.earlyFull) why = tr("Early-buy limit: for the first {secs} minutes all buyers together can take at most {totalBps}% of the supply, and that's reached. Try again when the window ends.", { secs: snipe.secs / 60, totalBps: snipe.totalBps / 100 });
       else {
         ready = true;
         put(quote, el("div", {}, tr("You get ≈ "), el("b", { text: `${fmt(units(q.out), 2)} ${v.symbol}` })),
@@ -685,15 +694,26 @@ function tradeBox(v) {
     await loadDetail();
   };
   update();
+  // A full curve whose pool couldn't be created: refund (open once the curve is refunding, or after the wait).
+  const refundOpen = v.statusCode === 5 || (v.statusCode === 1 && v.refundOpensAt && chainNow() >= v.refundOpensAt);
+  const refund = refundOpen && me && v.wallet?.hasPosition ? el("button", { type: "button", class: "btn go", text: v.wallet.refundXnt ? tr("Refund my {xnt} XNT", { xnt: fmt(units(v.wallet.refundXnt), 6) }) : tr("Refund") }) : null;
+  if (refund) refund.onclick = async () => {
+    tradeBusy = true; refund.disabled = true;
+    try { await signAndSend(tr("Refund"), () => api("/api/curve/refund", { wallet: me, mint: v.mint }), v.mint); }
+    catch (e) { toast("error", tr("{action} failed: {message}", { action: tr("Refund"), message: e.message || e })); }
+    tradeBusy = false;
+    await loadDetail();
+  };
   const inputRow = el("div", { class: "inrow" }, amount, maxBtn);
   return el("section", { class: "card trade" },
     el("h2", { text: tr("Trade on the curve") }), tabs,
     el("label", {}, tab === "buy" ? tr("XNT to spend") : tr("{symbol} to sell", { symbol: v.symbol }), inputRow),
     el("label", {}, tr("Slippage"), slip),
-    quote, go,
+    quote, go, refund,
     el("div", { class: "bal" }, el("span", { class: "muted", text: tr("Your curve balance") }),
       el("b", { text: me ? `${fmt(units(balance), 2)} ${v.symbol}` : "–" })),
-    el("p", { class: "muted", style: "margin:8px 0 0", text: tr("Balances stay on the curve until it graduates; then the tokens are sent to your wallet automatically. No tax on the curve.") }));
+    el("p", { class: "muted", style: "margin:8px 0 0", text: tr("Balances stay on the curve until it graduates; then the tokens are sent to your wallet automatically. No tax on the curve.") }),
+    el("p", { class: "muted", style: "margin:8px 0 0", text: tr("No deadline: the curve stays open until it fills, and until then the curve holds your tokens. You can sell them back here at any time (1% fee, at the curve's price, which falls as others sell). If it fills but its XDEX pool can't be created within {days} days, anyone can start refunds: every buyer gets their share of the XNT raised back.", { days: Math.round((v.params.refundAfterSecs ?? 604800) / 86400) }) }));
 }
 const tradeInputs = {};
 

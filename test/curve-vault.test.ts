@@ -116,14 +116,10 @@ test("with the Tax Vault set up, a curve token's tax is withdrawable only by the
   assert.ok(!authPda(CURVE, mint).equals(vaultAuthPda(TAX_VAULT, mint)));
 });
 
-test("without the Tax Vault, a curve token keeps its own distributor wallet", async () => {
-  const { ixs, record } = await buildCurveStep(fakeConn(), config(false), params, "http://127.0.0.1:1", CURVE);
-  const fee = withdrawAuthorityOf(ixs);
-  assert.ok(fee.withdrawWithheldAuthority?.equals(new PublicKey(record.distributor)));
-  const key = JSON.parse(fs.readFileSync(launchFile(record.mint, "distributor.json"), "utf8"));
-  assert.ok(Keypair.fromSecretKey(Uint8Array.from(key)).publicKey.equals(new PublicKey(record.distributor)));
-  assert.equal(record.taxVault, undefined);
-  assert.equal(vaultManaged(record), false);
+test("without the Tax Vault, curve launches are refused (the curve program only takes vault-taxed tokens)", async () => {
+  // The program requires the tax's withdraw authority to be a tax vault's auth PDA, so a
+  // distributor-wallet curve token would fail on-chain after the launch fee: refused first.
+  await assert.rejects(buildCurveStep(fakeConn(), config(false), params, "http://127.0.0.1:1", CURVE), /Curve launches need the Tax Vault/);
 });
 
 test("after graduation the creator starts the vault with the curve's pool and lock NFT; not before", async () => {

@@ -17,9 +17,10 @@ import { ExtensionType, TOKEN_2022_PROGRAM_ID, getAccountLen, getTokenMetadata }
 import { Config, loadKeypair, toBaseUnits } from "../config.js";
 import { sendAndConfirm, sign, simulate, withPriority } from "../tx.js";
 import {
-  CURVE_BPS, CURVE_DISC, CurveStatus, DECIMALS, FEE_BPS, GRADUATE_REWARD, GRADUATION_DEPOSIT, POSITION_DISC, POSITION_LEN, SNIPE_MAX_BPS, SNIPE_WINDOW_SECS,
-  DEFAULT_TARGET_XNT, STATUS_NAMES, SUPPLY_MAX, SUPPLY_MIN, targetsFor, buyIx, curvePda, decodeCurve, decodePosition, deliverIx, graduateLockIx, graduatePoolIx,
-  marketCapOf, parseEvents, positionPda, priceOf, progressOf, quoteBuy, quoteSell, sellIx, x0Of, y0Of, type Curve, type Position,
+  CURVE_BPS, CURVE_DISC, CurveStatus, DECIMALS, EARLY_TOTAL_BPS, FEE_BPS, GRADUATE_REWARD, GRADUATION_DEPOSIT, POSITION_DISC, POSITION_LEN, REFUND_AFTER_SECS,
+  SNIPE_MAX_BPS, SNIPE_WINDOW_SECS, DEFAULT_TARGET_XNT, STATUS_NAMES, SUPPLY_MAX, SUPPLY_MIN, targetsFor, buyIx, curvePda, decodeCurve, decodePosition,
+  deliverIx, graduateLockIx, graduatePoolIx, hasPool, isGraduated, marketCapOf, parseEvents, positionPda, priceOf, progressOf, quoteBuy, quoteSell,
+  refundIx, refundOpensAt, refundShare, sellIx, x0Of, y0Of, type Curve, type Position,
 } from "../curve.js";
 import { readLaunch, registerLaunch } from "./launch.js";
 
@@ -84,8 +85,10 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
       progress: progressOf(c), tokensSold: s(c.tokensSold), curveTokens: s(c.curveTokens),
       raisedXnt: s(c.raisedXnt), targetXnt: s(c.targetXnt), priceXnt: priceOf(c), marketCapXnt: s(marketCapOf(c)),
       supply: s(c.supply), taxBps: c.taxBps, createdAt: c.createdAt, positions: c.positions,
-      pool: c.status >= CurveStatus.PoolCreated ? c.pool.toBase58() : null,
-      lockNft: c.status >= CurveStatus.Graduated ? c.lockNft.toBase58() : null,
+      pool: hasPool(c.status) ? c.pool.toBase58() : null,
+      lockNft: isGraduated(c.status) ? c.lockNft.toBase58() : null,
+      // A full curve still waiting for its pool: when anyone may start refunds (unix seconds).
+      refundOpensAt: refundOpensAt(c),
     };
   }
 
@@ -107,6 +110,7 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
   const params = () => ({ creatorCanBuy,
     programId: program.toBase58(), targetsXnt: targetsFor(cfg.network).map(s), defaultTargetXnt: s(DEFAULT_TARGET_XNT), feeBps: Number(FEE_BPS), curveBps: Number(CURVE_BPS),
     depositXnt: s(GRADUATION_DEPOSIT), rewardXnt: s(GRADUATE_REWARD), snipeWindowSecs: SNIPE_WINDOW_SECS, snipeMaxBps: Number(SNIPE_MAX_BPS),
+    earlyTotalBps: Number(EARLY_TOTAL_BPS), refundAfterSecs: REFUND_AFTER_SECS,
     supplyMin: s(SUPPLY_MIN), supplyMax: s(SUPPLY_MAX), decimals: DECIMALS, now: nowSecs(),
   });
 
@@ -198,6 +202,13 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
       const [info, lamports] = await Promise.all([conn.getAccountInfo(addr, "confirmed"), conn.getBalance(owner, "confirmed")]);
       const p = info ? decodePosition(addr, info.data) : null;
       out.wallet = { address: owner.toBase58(), balance: p ? s(p.balance) : "0", hasPosition: !!p, xnt: String(lamports) };
+      // A refunding (or refundable) curve: what this position would get back.
+      if (p) {
+        const c = await readCurve(mint);
+        if (c.status === CurveStatus.Refunding || c.status === CurveStatus.Complete) {
+          (out.wallet as Record<string, unknown>).refundXnt = s(refundShare(c.raisedXnt, c.tokensSold, p.balance) + p.deposit);
+        }
+      }
     }
     return out;
   }
@@ -217,10 +228,16 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     const c = await readCurve(mint);
     if (c.status !== CurveStatus.Trading) throw new Error("This curve is finished; it's graduating to its XDEX pool.");
     if (!creatorCanBuy && c.creator.equals(buyer)) throw new Error("The creator can't buy on their own curve.");
-    const q = quoteBuy(c, xntIn, nowSecs());
+    const posAddr = positionPda(program, c.address, buyer);
+    const posInfo = await conn.getAccountInfo(posAddr, "confirmed");
+    const held = posInfo ? decodePosition(posAddr, posInfo.data).balance : 0n;
+    const q = quoteBuy(c, xntIn, nowSecs(), held);
     if (q.error === "zero") throw new Error("That amount is too small to buy any tokens.");
     if (q.error === "too-big-early") {
-      throw new Error(`For the first ${SNIPE_WINDOW_SECS / 60} minutes one buy can take at most 1% of the supply. Try a smaller amount.`);
+      throw new Error(`Early-buy limit: for the first ${SNIPE_WINDOW_SECS / 60} minutes one wallet can hold at most 1% of the supply (counting what it already bought). Try a smaller amount.`);
+    }
+    if (q.error === "early-full") {
+      throw new Error(`Early-buy limit: for the first ${SNIPE_WINDOW_SECS / 60} minutes all buyers together can take at most 10% of the supply, and that's reached. Try again when the window ends.`);
     }
     const minOut = (q.out * (10_000n - slip)) / 10_000n;
     const ix = buyIx(program, buyer, mint, xntIn, minOut);
@@ -231,6 +248,7 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     const mint = new PublicKey(String(body.mint));
     const slip = slippage(body.slippageBps);
     const c = await readCurve(mint);
+    if (c.status === CurveStatus.Refunding) throw new Error("This curve is refunding: use Refund to get your XNT back.");
     if (c.status !== CurveStatus.Trading) throw new Error("Selling back to the curve stops once it's complete; your tokens arrive at graduation.");
     const addr = positionPda(program, c.address, seller);
     const info = await conn.getAccountInfo(addr, "confirmed");
@@ -244,6 +262,27 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     const minOut = (q.out * (10_000n - slip)) / 10_000n;
     return { ixs: [sellIx(program, seller, mint, tokensIn, minOut)], payer: seller,
       quote: { tokensIn: s(tokensIn), gross: s(q.gross), fee: s(q.fee), xntOut: s(q.out), minXntOut: s(minOut) } };
+  }
+
+  /** A refund of the viewer's own position (a curve stuck without its pool: see refundOpensAt). */
+  async function buildRefund(body: Record<string, unknown>) {
+    const owner = new PublicKey(String(body.wallet));
+    const mint = new PublicKey(String(body.mint));
+    const c = await readCurve(mint);
+    const opens = refundOpensAt(c);
+    if (c.status !== CurveStatus.Refunding && (opens === null || nowSecs() < opens)) {
+      throw new Error(opens === null ? "Refunds are only for a full curve that couldn't create its pool." : `Refunds open ${new Date(opens * 1000).toUTCString()} if the pool still isn't created.`);
+    }
+    const addr = positionPda(program, c.address, owner);
+    if (!(await conn.getAccountInfo(addr, "confirmed"))) throw new Error("This wallet has no balance on this curve.");
+    return { ixs: [refundIx(program, owner, mint, owner, c.creator)], payer: owner };
+  }
+
+  async function refundAll(c: Curve) {
+    for (const p of await positionsOf(c.address)) {
+      await send(`refund ${p.owner.toBase58().slice(0, 4)}… on ${c.mint.toBase58().slice(0, 4)}…`, [refundIx(program, crank!.publicKey, c.mint, p.owner, c.creator)], 200_000)
+        .catch((e) => console.error(`[curve crank] refund to ${p.owner.toBase58()} failed: ${e instanceof Error ? e.message : e}`));
+    }
   }
 
   /** Forget cached views after a trade so the page shows it on the next load. */
@@ -305,7 +344,19 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
         const mint = c.mint.toBase58();
         try {
           if (crank && c.status === CurveStatus.Complete) {
-            await send(`graduate_pool ${mint}`, [graduatePoolIx(program, cfg.network, crank.publicKey, c.mint)], 1_000_000);
+            try {
+              await send(`graduate_pool ${mint}`, [graduatePoolIx(program, cfg.network, crank.publicKey, c.mint)], 1_000_000);
+            } catch (e) {
+              // Pool creation still failing after REFUND_AFTER_SECS: refund everyone instead.
+              const opens = refundOpensAt(c);
+              if (opens === null || nowSecs() < opens) throw e;
+              console.error(`[curve crank] ${mint}: graduation still failing (${e instanceof Error ? e.message : e}); refunding`);
+              await refundAll(c);
+            }
+            c = await readCurve(c.mint);
+          }
+          if (crank && c.status === CurveStatus.Refunding && c.positions > 0) {
+            await refundAll(c);
             c = await readCurve(c.mint);
           }
           if (crank && c.status === CurveStatus.PoolCreated) {
@@ -319,7 +370,7 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
           // Start paying holders once the token trades on XDEX (the lock NFT keys the creator's reward).
           // A vault token waits for its creator to start the vault; the vault crank serves it from then on.
           const r = readLaunch(mint);
-          if (r && !r.registeredAt && c.status >= CurveStatus.Graduated) {
+          if (r && !r.registeredAt && isGraduated(c.status)) {
             await registerLaunch(conn, cfg, r);
             console.log(r.taxVault
               ? `[curve crank] registered ${r.symbol} (${mint}) as a Tax Vault token; the creator starts its vault`
@@ -337,5 +388,5 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     }
   }
 
-  return { program, list, view, buildBuy, buildSell, invalidate, crankOnce, crankOn: () => !!crank };
+  return { program, list, view, buildBuy, buildSell, buildRefund, invalidate, crankOnce, crankOn: () => !!crank };
 }

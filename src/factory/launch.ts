@@ -49,7 +49,7 @@ import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
-  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, authPda, createCurveIx, curvePda, curveSetup, decodeCurve, parseTarget,
+  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, authPda, createCurveIx, curvePda, curveSetup, decodeCurve, hasPool, isGraduated, parseTarget,
 } from "../curve.js";
 
 const U64_MAX = 2n ** 64n - 1n;
@@ -472,10 +472,12 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
   // their signature and the lock NFT). Otherwise the token gets a distributor wallet.
   const vault = vaultLaunches(cfg);
   if (passesProgram && !vault) throw new Error("Holder passes need a Tax Vault launch.");
+  // The curve program only takes a token whose tax a tax vault program withdraws (no wallet can).
+  if (!vault) throw new Error("Curve launches need the Tax Vault, which isn't set up on this site right now.");
   const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? passesProgram ?? vaultProgramOf(cfg) : null);
   const mint = mintKp.publicKey;
   const target = parseTarget(p.poolXnt, cfg.network); // validateCurveParams put the target there
-  ixs.push(createCurveIx(curveProgram, new PublicKey(p.creator), mint, BigInt(p.supply), target));
+  ixs.push(createCurveIx(curveProgram, cfg.network, new PublicKey(p.creator), mint, BigInt(p.supply), target));
   const setup = curveSetup(BigInt(p.supply), p.taxBps, target);
   const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint).pool;
   const record: LaunchRecord = {
@@ -539,8 +541,8 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
   if (r.kind === "curve") {
     // The curve program does the pool and the lock itself at graduation.
     const c = await readCurveOf(conn, cfg, r);
-    const graduated = !!c && c.status >= CurveStatus.Graduated;
-    const out = { token: !!c, pool: !!c && c.status >= CurveStatus.PoolCreated, lock: graduated,
+    const graduated = !!c && isGraduated(c.status);
+    const out = { token: !!c, pool: !!c && hasPool(c.status), lock: graduated,
       lockNft: graduated ? c!.lockNft.toBase58() : null, registered: !!r.registeredAt, curveStatus: c?.status ?? null };
     // A vault curve token: the creator starts the vault once it has graduated (and turns passes on, for a holder-passes one).
     if (!r.taxVault) return out;
@@ -587,7 +589,7 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   const publisher = loadKeypair(tv.publisherKeypair).publicKey;
   const creator = new PublicKey(r.creator);
   const c = r.kind === "curve" ? await readCurveOf(conn, cfg, r) : null;
-  if (r.kind === "curve" && (!c || c.status < CurveStatus.Graduated)) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
+  if (r.kind === "curve" && (!c || !isGraduated(c.status))) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
   const pool = c ? c.pool : new PublicKey(r.pool);
   const base = { payer: creator, mint, pool, creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator };
   if (r.payoutMint) {
@@ -736,7 +738,7 @@ async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
   const program = new PublicKey(id);
   const mintKey = new PublicKey(r.mint);
   const c = await readCurveOf(conn, cfg, r);
-  if (!c || c.status < CurveStatus.Graduated) throw new Error("This curve hasn't graduated yet.");
+  if (!c || !isGraduated(c.status)) throw new Error("This curve hasn't graduated yet.");
   const auth = authPda(program, mintKey);
   const locks = await listLocks(conn, LOCKER_PROGRAM_ID, c.pool);
   const lock = locks.find((l) => l.nftMint.equals(c.lockNft) && l.locker.equals(auth));

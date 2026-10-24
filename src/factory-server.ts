@@ -599,6 +599,10 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
     c.invalidate();
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
+  if (url === "/api/curve/refund") {
+    const { ixs, payer } = await c.buildRefund(body);
+    return { tx: await unsignedTx(conn, payer, ixs, [], { ...opts, units: 100_000 }) };
+  }
   if (url === "/api/curve/buy" || url === "/api/curve/sell") {
     const { ixs, payer, quote } = await (url === "/api/curve/buy" ? c.buildBuy(body) : c.buildSell(body));
     return { tx: await unsignedTx(conn, payer, ixs, [], { ...opts, units: 200_000 }), quote };
