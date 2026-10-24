@@ -56,6 +56,7 @@ import {
 } from "../vault-crank.js";
 import { TRUSTLESS_GATEWAY, fetchFromGateways, gatewayBase, gatewayUrl, ipfsEnabled, pinJson } from "./ipfs.js";
 import { createVaultCosts } from "./vault-costs.js";
+import { MAX_PASSES, decodePassBook, passBookPda } from "../passes.js";
 import {
   SQUADS_PROGRAM_IDS, closeIx, executeIx, memberOf, proposalVotes, proposeIxs, quorumJson, readProposal, readQuorum, rejectIx, squadsVaultPda,
   type ProposalStatus as SquadsProposalStatus, type Quorum,
@@ -342,6 +343,12 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
    * other tokens. `exists` false: the creator (`creator`) hasn't started the vault yet (a
    * graduated curve token); the pages offer them "Start the tax vault".
    */
+  async function passesBadge(mint: string, on: boolean) {
+    if (!on) return { on, count: null, capacity: MAX_PASSES };
+    const info = await conn.getAccountInfo(passBookPda(program, addrOf(mint)), "confirmed").catch(() => null);
+    return { on, count: info ? decodePassBook(passBookPda(program, addrOf(mint)), info.data).count : null, capacity: MAX_PASSES };
+  }
+
   async function badge(mint: string) {
     if (!isVaultMint(mint)) return null;
     const v = await cachedVault(mint).catch(() => null);
@@ -365,8 +372,9 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       // Holders are paid in this token instead of XNT (null: XNT).
       payout: v ? await payoutInfo(v).catch(() => null) : null,
       xntHolders: v && paysInToken(v) ? v.xntHolders.toString() : null,
-      // A holder-passes token (testnet trial): whether its creator has turned the passes on yet.
-      holderPasses: r?.vaultProgram ? { on: !!v && (await passesStarted(conn, cfg, r).catch(() => false)) } : null,
+      // A holder-passes token (testnet trial): whether its creator has turned the passes on yet,
+      // and how many of the book's passes are taken (only registered wallets earn).
+      holderPasses: r?.vaultProgram ? await passesBadge(mint, !!v && (await passesStarted(conn, cfg, r).catch(() => false))) : null,
       ...(v3Status(v, q) ?? {}),
       activity: v ? activity(mint) : [],
       // The site's crank: its last pass and whether its fee wallet is running low (panel warning).

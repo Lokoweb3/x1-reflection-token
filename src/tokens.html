@@ -123,6 +123,7 @@ const price = (p) => p == null ? "–" : p === 0 ? "0" : p < 0.0001 ? p.toPrecis
 const fmtSig = (v) => v === 0 ? "0" : v < 1 ? v.toFixed(Math.min(12, 2 - Math.floor(Math.log10(v)))).replace(/0+$/, "").replace(/\.$/, "") : v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 });
 const SPLIT = [["holders", tr("Holders"), "var(--holders)"], ["liquidity", tr("Liquidity"), "var(--liquidity)"], ["burn", tr("Burn"), "var(--burn)"], ["creator", tr("Creator"), "var(--creator)"]];
 let tokens = [], explorer = "";
+const PASSES_TIP = tr("Only the Tax Vault program can withdraw this token's tax. Holders are paid by the program itself, but only wallets that registered a pass (up to 256) earn: holding the token alone earns nothing. Whoever runs a round keeps 1% of it, at most 0.05 XNT.");
 const VAULT_TIP = tr("Only the Tax Vault program can withdraw this token's tax. It burns, adds liquidity and funds the creator on-chain, and pays holders from a public rewards list that can only share out the holders' part. No team wallet holds the tax.");
 
 function card(t) {
@@ -137,9 +138,14 @@ function card(t) {
           t.quote && t.quote !== "XNT" ? tr(" · paired with {quote}", { quote: t.quote }) : ""))),
     t.description ? el("div", { class: "sub", text: t.description.slice(0, 140) }) : null,
     // Tax Vault tokens: the program holds the tax; link its public rewards list.
-    t.vault ? el("div", { class: "vault-row" }, el("span", { class: "vault-badge", title: VAULT_TIP, tabindex: "0", text: tr("✓ Tax enforced by program") }),
+    t.vault ? el("div", { class: "vault-row" }, el("span", { class: "vault-badge", title: t.vault.holderPasses ? PASSES_TIP : VAULT_TIP, tabindex: "0", text: tr("✓ Tax enforced by program") }),
+      // Holder passes (testnet trial): only registered wallets earn, and the book has 256 slots.
+      t.vault.holderPasses?.on ? el("a", { href: "/v4", text: t.vault.holderPasses.count == null ? tr("Register a pass to earn ↗")
+          : t.vault.holderPasses.count < t.vault.holderPasses.capacity ? tr("Register to earn: {left} of {capacity} passes left ↗", { left: t.vault.holderPasses.capacity - t.vault.holderPasses.count, capacity: t.vault.holderPasses.capacity })
+          : tr("All {capacity} passes taken ↗", { capacity: t.vault.holderPasses.capacity }) })
+      : t.vault.holderPasses && t.vault.exists ? el("span", { class: "sub", text: tr("Holder passes not on yet: nobody earns until the creator turns them on") })
       // A graduated curve token whose creator hasn't started the vault yet: nothing to list or run.
-      t.vault.exists ? el("a", { href: t.vault.listUrl, target: "_blank", rel: "noopener", text: tr("Rewards list ↗") })
+      : t.vault.exists ? el("a", { href: t.vault.listUrl, target: "_blank", rel: "noopener", text: tr("Rewards list ↗") })
         : el("span", { class: "sub", text: tr("Waiting for the creator to start the tax vault — the tax waits safely until then") }),
       t.vault.nextListAt ? el("span", { class: "sub", text: tr("Next list pays at {date}", { date: new Date(t.vault.nextListAt * 1000).toLocaleString() }) }) : null,
       t.vault.fallbackActive ? el("span", { class: "sub", title: tr("No rewards list was published for 30 days: anyone can pay holders from the last one."), text: tr("Fallback active: paying from the last list") }) : null) : null,

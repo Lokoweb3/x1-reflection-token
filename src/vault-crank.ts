@@ -41,10 +41,12 @@ import {
   type Vault, type VaultEvent, type VaultPoolAccounts,
 } from "./taxvault.js";
 import {
-  MAX_PASSES, PAY_BATCH_LUT, SNAPSHOT_BATCH_LUT, allocPassBookIx, allocSteps, closeRoundIx, decodePassBook, indexPlan, passBookPda, passModeOn, passTablesFor, passPot, payBatches, payPassesIx,
-  snapshotBatchIx, snapshotBatches, type PassBook,
+  MAX_BATCH_SLOTS, MAX_PASSES, PAY_BATCH_LUT, SNAPSHOT_BATCH_LUT, allocPassBookIx, allocSteps, closeRoundIx, decodePassBook, indexPlan, passBookPda, passModeOn, passTablesFor, passPot, payBatches, payPassesIx,
+  readPassTables, removablePasses, removalPlan, snapshotBatchIx, snapshotBatches, type PassBook,
 } from "./passes.js";
 
+/** Holder passes the crank removes per token per pass (wallets that sold below the minimum). */
+export const REMOVALS_PER_PASS = 10;
 /** Most harvest accounts one collect carries (also capped by transaction size). */
 export const MAX_HARVEST_PER_TX = 20;
 /** Sales per token per pass; each is capped at 3% price impact on-chain. */
@@ -649,6 +651,29 @@ export function vaultCrank(env: CrankEnv) {
       await send(t, v, `pay_passes (${batch.length} wallets)`, [payPassesIx(program, signer.publicKey, t.mint, batch)], 1_000_000, tables);
       notes.push(`passes: paid ${batch.length} wallets`);
     }
+    await removeEmptyPasses(t, v, notes);
+  }
+
+  /**
+   * Free the slots of wallets that sold below the book's minimum and are owed nothing
+   * (remove_pass, which anyone may send): otherwise every seller keeps a slot for good and
+   * the 256-pass book fills up. Each pass account's rent goes back to its wallet; the crank
+   * pays only the fee. At most REMOVALS_PER_PASS a pass, one transaction each.
+   */
+  async function removeEmptyPasses(t: CrankToken, v: Vault, notes: string[]) {
+    const book = await readPassBook(v);
+    if (!book?.count) return;
+    const slot = await conn.getSlot("confirmed");
+    if (book.roundOpen && BigInt(slot) <= book.roundStartSlot + BigInt(MAX_BATCH_SLOTS)) return; // a round is being read
+    const gone = await removablePasses(conn, t.mint, book);
+    if (!gone.size) return;
+    const tables = !!(await readPassTables(conn, program, t.mint));
+    let n = 0;
+    for (const r of removalPlan(program, signer.publicKey, t.mint, book, gone, tables, REMOVALS_PER_PASS)) {
+      await send(t, v, `remove_pass ${r.wallet.toBase58()}`, [r.ix], 60_000);
+      n++;
+    }
+    notes.push(`passes: removed ${n} pass${n === 1 ? "" : "es"} under the minimum${gone.size > n ? ` (${gone.size - n} more next pass)` : ""}`);
   }
 
   return { readVault, send, upgrade, poolOf, taxWaiting, collect, sell, liquidity, creator, creatorQuote, holders, pay, nextList, publish, fits, readPassBook, passRound };
