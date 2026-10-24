@@ -516,7 +516,7 @@ async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new E
       [tr("XDEX pool creation"), tr("Charged by XDEX, not by us"), info.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "–"],
       // A Tax Vault token has no distributor wallet to fund.
       ...(info.taxVault?.launches ? [] : [[tr("Distributor gas"), tr("Pays for your token's first payouts, then refills itself from the tax"), `${info.gasXnt} XNT`]]),
-      [tr("Rent and network fees"), tr("Standard X1 account rent"), tr("≈ 0.03 XNT")],
+      [tr("Rent and network fees"), tr("Standard X1 account rent"), tr("≈ 0.08 XNT")],
     ];
     $("costTable").replaceChildren(...rows.map(([a, n, b]) => el("tr", {}, el("td", {}, a, el("span", { class: "note", text: n })), el("td", { text: b }))));
     loadTokens(info);

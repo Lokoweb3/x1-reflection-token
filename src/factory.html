@@ -282,12 +282,10 @@ form .row[hidden], .hint[hidden] { display: none; }
                 <option value="100000000">100 million (100,000,000)</option>
                 <option value="1000000000" selected>1 billion (1,000,000,000)</option>
                 <option value="10000000000">10 billion (10,000,000,000)</option>
-                <option value="100000000000">100 billion (100,000,000,000)</option>
-                <option value="1000000000000">1 trillion (1,000,000,000,000)</option>
                 <option value="custom">Custom…</option>
               </select>
               <input name="supplyCustom" id="supplyCustom" inputmode="numeric" placeholder="e.g. 420000000" aria-label="Custom total supply" hidden>
-              <span class="hint">Whole tokens, 1,000 to 1,000,000,000,000.</span></label>
+              <span class="hint">Whole tokens, 1,000 to 10,000,000,000.</span></label>
             <label>Tax on every transfer (%) <input name="tax" type="number" min="1" max="10" step="0.5" value="5" required></label>
           </div>
           <div class="row">
@@ -344,7 +342,7 @@ form .row[hidden], .hint[hidden] { display: none; }
         <div id="faucetBox" class="faucet" hidden></div>
         <p class="muted" style="margin:0 0 8px">Prices and splits shown are estimates. Crypto is volatile and nothing is guaranteed. See the disclaimer below.</p>
         <button class="btn primary big" id="launchBtn" type="submit" disabled>Connect a wallet to launch</button>
-        <p class="muted">Your wallet asks you to approve 3 transactions: create the token, create the pool, lock the LP.</p>
+        <p class="muted">Your wallet asks you to approve each step in turn: create the token, create the pool, lock the LP and print its receipt NFT, then start the tax vault (and holder passes) when the launch has one. The confirmation before it starts lists every step.</p>
       </form>
     </div>
 
@@ -504,11 +502,16 @@ function pairOf(symbol) {
   const q = (info?.quoteTokens ?? []).find((t) => t.symbol === symbol);
   return q ? { symbol: q.symbol, priceXnt: q.priceXnt } : { symbol: "XNT", priceXnt: 1 };
 }
+/** A pool amount the server accepts: a plain positive number, up to 9 decimals. */
+const validAmount = (a) => /^\d+(\.\d{1,9})?$/.test(String(a ?? "").trim()) && Number(a) > 0;
 /** "0.0118 JACK (≈ 10 XNT)", or just "10 XNT". */
 function pairAmount(amount, pair) {
+  if (!validAmount(amount)) return "–";
   const a = `${fmt(amount || 0, 9)} ${pair.symbol}`;
   return pair.symbol === "XNT" ? a : `${a}${pair.priceXnt ? tr(" (≈ {amount} XNT)", { amount: fmt(Number(amount || 0) * pair.priceXnt, 4) }) : ""}`;
 }
+/** Said under the split when clampSplit lowered the other field, so the change isn't missed. */
+let clampNote = "";
 function renderForm() {
   const p = readForm();
   const creatorPct = (info?.creatorBps ?? 1000) / 100;
@@ -518,10 +521,14 @@ function renderForm() {
   const hs = document.getElementById("holdersShare");
   hs.textContent = isFinite(holdersPct) ? `${fmt(Math.max(0, holdersPct), 2)}%` : "–";
   hs.classList.toggle("bad", over);
-  document.getElementById("taxSplit").textContent = over
+  const taxBad = !(p.taxBps >= 100 && p.taxBps <= 1000);
+  document.getElementById("taxSplit").textContent = taxBad
+    ? tr("The tax must be from 1% to 10%.")
+    : over
     ? tr("Liquidity + burn can't be more than {MAX_LP_PLUS_BURN}% of the tax; {creatorPct}% goes to you and holders always keep at least 35%.", { MAX_LP_PLUS_BURN, creatorPct })
     : tr("Every transfer pays {tax}%: about {tax2}% goes to holders in XNT, {lp}% is added to the pool's liquidity (LP burned)", { tax: fmt(tax, 2), tax2: fmt(tax - lp - burn - creator, 2), lp: fmt(lp, 2) }) +
-      (burn > 0 ? tr(", {burn}% of the tokens are burned", { burn: fmt(burn, 2) }) : "") + tr(", and {creator}% is your creator reward.", { creator: fmt(creator, 2) });
+      (burn > 0 ? tr(", {burn}% of the tokens are burned", { burn: fmt(burn, 2) }) : "") + tr(", and {creator}% is your creator reward.", { creator: fmt(creator, 2) })
+      + (clampNote ? " " + clampNote : "");
   const pair = pairOf(p.quote);
   const price = Number(p.poolXnt) / Number(p.poolTokens || 0);
   const sig = (n) => n.toLocaleString(undefined, { maximumSignificantDigits: 3 });
@@ -541,7 +548,9 @@ function renderForm() {
     [tr("XDEX pool creation fee"), info?.poolCreateFeeXnt != null ? `${info.poolCreateFeeXnt} XNT` : "…"],
     // A Tax Vault launch (XNT pair) has no distributor wallet: the vault crank pays its own fees.
     ...(info?.taxVault?.launches && pair.symbol === "XNT" ? [] : [[tr("Distributor gas (funds its payouts)"), info ? `${info.gasXnt} XNT` : "…"]]),
-    [tr("Account rent and network fees"), tr("≈ 0.03 XNT")],
+    // Measured on testnet: about 0.08 XNT of account rent for the token, pool, lock, receipt NFT
+    // and vault; the 256-pass book adds about 0.16 XNT more (it holds ~22.6 KB).
+    [tr("Account rent and network fees"), info?.taxVault?.launches && pair.symbol === "XNT" && p.passes ? tr("≈ 0.24 XNT (0.16 of it for the holder-pass book)") : tr("≈ 0.08 XNT")],
   ];
   costs.replaceChildren(...rows.map(([a, b]) => el("tr", {}, el("td", { text: a }), el("td", { text: b }))));
 }
@@ -555,7 +564,12 @@ function clampSplit(changed) {
   const other = changed === lp ? burn : lp;
   const mine = val(changed);
   if (String(mine) !== changed.value && changed.value !== "") changed.value = mine;
-  if (mine + val(other) > MAX_LP_PLUS_BURN) other.value = MAX_LP_PLUS_BURN - mine;
+  if (mine + val(other) > MAX_LP_PLUS_BURN) {
+    other.value = MAX_LP_PLUS_BURN - mine;
+    clampNote = other === burn
+      ? tr("(The burn was lowered to {value}% so liquidity + burn stay within {MAX_LP_PLUS_BURN}%.)", { value: other.value, MAX_LP_PLUS_BURN })
+      : tr("(Liquidity was lowered to {value}% so liquidity + burn stay within {MAX_LP_PLUS_BURN}%.)", { value: other.value, MAX_LP_PLUS_BURN });
+  } else if (mine + val(other) < MAX_LP_PLUS_BURN) clampNote = "";
 }
 form.addEventListener("input", (ev) => { clampSplit(ev.target); renderForm(); });
 // "Custom…" shows a box for any other supply in the allowed range.
@@ -695,6 +709,8 @@ form.addEventListener("submit", async (ev) => {
   const lock = p.lockDays === null ? tr("locked FOREVER") : tr("locked for {lockDays} days", { lockDays: p.lockDays });
   if (p.autoLpBps + p.burnBps > MAX_LP_PLUS_BURN * 100) { toast("error", tr("Liquidity + burn can't be more than {MAX_LP_PLUS_BURN}% of the tax.", { MAX_LP_PLUS_BURN })); return; }
   const pair = pairOf(p.quote);
+  if (!validAmount(p.poolXnt)) { toast("error", tr("Enter how much {symbol} goes into the pool: a positive number, up to 9 decimals.", { symbol: pair.symbol })); return; }
+  if (!/^\d+$/.test(p.supply) || BigInt(p.supply) < 1000n || BigInt(p.supply) > 10_000_000_000n) { toast("error", tr("The supply must be a whole number from 1,000 to 10,000,000,000.")); return; }
   const ok = confirm(tr("Launch {name} ({symbol})?\n\n• Supply {supply} (fixed)\n• Tax {taxBps}% on every transfer (can never change){extra}\n• Pool: {poolTokens} tokens + {poolXnt}, LP {lock}{extra2}\n• Launch fee {feeAmount} {feeSymbol}\n• Your creator reward: {creatorBps}% of the tax, paid in {rewardSymbol}, vests 7 days, claimed with your LP NFT\n\nThe whole supply goes into the pool; you start with no tokens.\n\n{extra3}", { name: p.name, symbol: p.symbol, supply: Number(p.supply).toLocaleString(), taxBps: p.taxBps / 100, extra: p.burnBps ? tr(", {burnBps}% of it burned", { burnBps: p.burnBps / 100 }) : "", poolTokens: Number(p.poolTokens).toLocaleString(), poolXnt: pairAmount(p.poolXnt, pair), lock, extra2: pair.symbol !== "XNT" ? tr("\n• XDEX's pool fee and the distributor's gas are paid in XNT; holders are paid in XNT") : "", feeAmount: info.feeAmount, feeSymbol: info.feeSymbol, creatorBps: (info.creatorBps ?? 1000) / 100, rewardSymbol: info.taxVault?.launches && pair.symbol === "XNT" ? info.taxVault.rewardSymbol : info.creatorRewardSymbol ?? "USDC", extra3: info.taxVault?.launches && pair.symbol === "XNT" && p.passes ? tr("The tax is held by the Tax Vault program, not a wallet, and holders with a pass are paid by the program itself.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault and a 6th to turn on holder passes.") : info.taxVault?.launches && pair.symbol === "XNT" ? tr("The tax is held by the Tax Vault program, not a wallet.\n\nYour wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain), then a 5th to start the tax vault.") : tr("Your wallet will ask you to approve 3 transactions, then a 4th to print your LP-lock receipt NFT (on-chain).") }));
   if (!ok) return;
   running = true; renderWallet();

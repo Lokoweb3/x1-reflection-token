@@ -267,6 +267,7 @@ function rateLimit(kind: keyof typeof LIMITS, ip: string, what = "requests") {
 setInterval(() => {
   const now = Date.now();
   for (const [id, hits] of buckets) if (!hits.some((t) => now - t < 3_600_000)) buckets.delete(id);
+  for (const [k, p] of pendingMeta) if (now - p.at > 3_600_000) pendingMeta.delete(k);
 }, 600_000).unref();
 
 function readJson(req: http.IncomingMessage, max = 64_000): Promise<Record<string, unknown>> {
@@ -355,10 +356,10 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     if (s.pool) throw new Error("The pool already exists.");
     const pair = pairOf(cfg, r);
     if (!pair.xntPool) {
-      await requireXnt(new PublicKey(r.creator), Number(r.poolXnt) + ((await poolCreateFee()) ?? 0.1) + 0.03, `Creating the pool with ${r.poolXnt} XNT`);
+      await requireXnt(new PublicKey(r.creator), Number(r.poolXnt) + ((await poolCreateFee()) ?? 0.1) + 0.05, `Creating the pool with ${r.poolXnt} XNT`);
     } else {
       await requirePairTokens(new PublicKey(r.creator), pair, r.poolXnt, `Creating the pool with ${r.poolXnt} ${pair.symbol}`);
-      await requireXnt(new PublicKey(r.creator), ((await poolCreateFee()) ?? 0.1) + 0.03, `Creating the ${pair.symbol} pool`, `XDEX's pool fee and network fees`);
+      await requireXnt(new PublicKey(r.creator), ((await poolCreateFee()) ?? 0.1) + 0.05, `Creating the ${pair.symbol} pool`, `XDEX's pool fee and network fees`);
     }
     const { ixs } = await buildPoolStep(conn, cfg, r);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], opts) };
@@ -462,19 +463,26 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   // Update a launched token's logo / description / links. The launch record only changes
   // once the creator-signed transaction is on-chain (see /api/launch/metadata/confirm).
   if (url === "/api/launch/metadata") {
+    // Anyone can ask for a creator's (public) address, and each request pins a file: limited
+    // like logo uploads, so it can't use up the Pinata plan.
+    rateLimit("upload", ip, "metadata updates");
     const r = ownLaunch(body);
     const { ixs, uri, next } = await buildMetadataUpdate(conn, cfg, r, body, publicUrl);
-    pendingMeta.set(r.mint, { uri, next, at: Date.now() });
+    // Keyed by the new link too, so a stranger's request can't replace the creator's pending one.
+    pendingMeta.set(`${r.mint} ${uri}`, { uri, next, at: Date.now() });
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], opts), uri };
   }
   if (url === "/api/launch/metadata/confirm") {
     const r = readLaunch(String(body.mint));
-    const p = r && pendingMeta.get(r.mint);
-    if (!r || !p) throw new Error("No metadata update waiting for this token.");
+    if (!r) throw new Error("No metadata update waiting for this token.");
     const md = await getTokenMetadata(conn, new PublicKey(r.mint), "confirmed", TOKEN_2022_PROGRAM_ID);
-    if (md?.uri !== p.uri) throw new Error("The token's on-chain link doesn't show the update yet.");
+    const key = `${r.mint} ${md?.uri ?? ""}`, p = pendingMeta.get(key);
+    if (!p) {
+      if ([...pendingMeta.keys()].some((k) => k.startsWith(`${r.mint} `))) throw new Error("The token's on-chain link doesn't show the update yet.");
+      throw new Error("No metadata update waiting for this token.");
+    }
     applyMetadataUpdate(r, p.next);
-    pendingMeta.delete(r.mint);
+    for (const k of [...pendingMeta.keys()]) if (k.startsWith(`${r.mint} `)) pendingMeta.delete(k);
     tokenListCache = null;
     return { updated: true };
   }
@@ -1480,7 +1488,12 @@ const send = (res: http.ServerResponse, code: number, body: unknown, type = "app
 function clientIp(req: http.IncomingMessage) {
   const peer = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
   const fwd = req.headers["x-forwarded-for"];
-  if ((peer === "127.0.0.1" || peer === "::1") && typeof fwd === "string" && fwd) return fwd.split(",")[0].trim();
+  if ((peer === "127.0.0.1" || peer === "::1") && typeof fwd === "string" && fwd) {
+    const ip = fwd.split(",")[0].trim();
+    // Only a request from this machine itself skips the rate limits: a forwarded "127.0.0.1"
+    // was written by the client (Caddy in Vercel mode trusts the header from anyone).
+    return ip === "127.0.0.1" || ip === "::1" ? `forwarded ${ip}` : ip;
+  }
   return peer;
 }
 
@@ -1598,7 +1611,13 @@ const server = http.createServer(async (req, res) => {
     if (!out) { res.writeHead(404).end("Not found"); return; }
     send(res, 200, out);
   } catch (e) {
-    send(res, e instanceof RateLimited ? 429 : 400, { error: e instanceof Error ? e.message : String(e) });
+    let error = e instanceof Error ? e.message : String(e);
+    // Pinata's reason (a key, a plan limit) is for the operator's log, not the visitor.
+    if (/^IPFS upload (was refused|failed)/.test(error)) {
+      console.error(`${new Date().toISOString()} ${url.pathname}: ${error}`);
+      error = "The site can't save files to IPFS right now, so nothing was sent to your wallet. Please try again later.";
+    }
+    send(res, e instanceof RateLimited ? 429 : 400, { error });
   }
 });
 
