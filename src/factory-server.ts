@@ -50,6 +50,7 @@ import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
+import { limitKey } from "./factory/limits.js";
 import { buildPassesStep, buildVaultStep, isVaultLaunch, minHoldingFor, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
@@ -261,7 +262,7 @@ const LIMITS = {
 function rateLimit(kind: keyof typeof LIMITS, ip: string, what = "requests") {
   if (ip === "127.0.0.1" || ip === "::1") return; // this machine, not through the proxy (local use)
   const [perIp, total, windowMs] = LIMITS[kind];
-  limit(kind, ip, perIp, windowMs, `Too many ${what} from this address; try again later.`);
+  limit(kind, limitKey(ip), perIp, windowMs, `Too many ${what} from this address; try again later.`);
   if (total) limit(kind, "*", total, windowMs, `The site is getting too many ${what} right now; try again in a few minutes.`);
 }
 setInterval(() => {
@@ -315,7 +316,6 @@ function receiptIxs(authority: PublicKey, nftMint: PublicKey, png: unknown, ip: 
 async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/launch/token") {
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
-    rateLimit("launch", ip, "launches started");
     const p = validateParams(body, quoteTokens.map((q) => q.symbol));
     if (f!.lockForeverOnly && p.lockDays !== null) throw new Error("Launches on this site lock their liquidity forever.");
     // Check the wallet can afford the whole launch before step 1 charges the fee: otherwise
@@ -345,6 +345,9 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
       if (!passVaults) throw new Error("Holder passes aren't offered on this site.");
       if (p.payoutMint) throw new Error("Holder passes pay in XNT; leave the payout token empty.");
     }
+    // Counted only now, for a request that checks out (a wallet that can pay for the launch):
+    // junk can't use up the site-wide allowance and block real launches.
+    rateLimit("launch", ip, "launches started");
     const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl, passes ? passVaults!.program : null);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
@@ -521,9 +524,10 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url.startsWith("/api/vault/")) return vaults ? vaultPost(url, body) : null;
   if (url.startsWith("/api/v4/")) return v4 ? v4.post(url, body) : null;
   if (url.startsWith("/api/curve/")) return curves ? curvePost(url, body, ip) : null;
-  if (url === "/api/send") rateLimit("send", ip, "transactions");
   if (url === "/api/send") {
-    const signature = await sendSigned(conn, String(body.tx));
+    // Counted once the transaction is fully signed and only calls this site's programs, so
+    // junk ("AA==") can't use up the site-wide allowance every wallet action relays through.
+    const signature = await sendSigned(conn, String(body.tx), () => rateLimit("send", ip, "transactions"));
     // A curve trade: show it on the next page load instead of after the cache expires.
     if (curves && typeof body.curveMint === "string") { try { curves.invalidate(new PublicKey(body.curveMint).toBase58()); } catch { /* ignore */ } }
     // A creator just started a tax vault: the pages show it at once.
@@ -578,7 +582,6 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
   const c = curves!;
   if (url === "/api/curve/create") {
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
-    rateLimit("launch", ip, "launches started");
     const p = validateCurveParams(body, cfg.network);
     // A payout token: checked now (pool, freeze authority, extensions); the creator's vault uses it after graduation.
     if (p.payoutMint) {
@@ -591,6 +594,7 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
       if (!passVaults) throw new Error("Holder passes aren't offered on this site.");
       if (p.payoutMint) throw new Error("Holder passes pay in XNT; leave the payout token empty.");
     }
+    rateLimit("launch", ip, "launches started"); // after the checks, as for launches
     const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program, passes ? passVaults!.program : null);
     c.invalidate();
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
