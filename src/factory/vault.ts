@@ -927,6 +927,15 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       status.set(r.mint, { at: new Date().toISOString(), ok, notes });
       return;
     }
+    // A holder-passes launch whose creator hasn't turned the passes on yet never gets a list: a
+    // vault with a list must not take passes later (the list's pay_fallback would be paid from
+    // the passes' money). The holders' share waits in the vault for the first round.
+    if (r.vaultProgram) {
+      notes.push("holder passes not on yet: no rewards list; the holders' share waits for the first round");
+      viewCache.delete(r.mint);
+      status.set(r.mint, { at: new Date().toISOString(), ok, notes });
+      return;
+    }
     await step("rewards list", async () => {
       const now = await readVault(t.mint);
       if (!now) return;

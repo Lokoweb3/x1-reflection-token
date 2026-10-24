@@ -8,7 +8,7 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
 import { fromBaseUnits, loadKeypair, toBaseUnits, type Config } from "../config.js";
-import { PASS_MIN_INTERVAL_SECS, PASS_MIN_POT_XNT, registeredLaunches } from "./launch.js";
+import { LISTED_VAULT, PASS_MIN_INTERVAL_SECS, PASS_MIN_POT_XNT, registeredLaunches } from "./launch.js";
 import { decodeVault, poolAccountsFrom, vaultPda } from "../taxvault.js";
 import { decodePool } from "../xdex.js";
 import { unsignedTx } from "../web/wallet-tx.js";
@@ -117,6 +117,7 @@ export function passesApi(conn: Connection, cfg: Config, program: PublicKey, opt
       const guardian = new PublicKey(String(body.wallet));
       if (!a.v.guardian.equals(guardian)) throw new Error(`Only the token's creator (${short(a.v.guardian)}) can turn on holder passes.`);
       if (a.book) throw new Error("Holder passes are already on for this token.");
+      if (a.v.listEpoch > 0n || a.v.pendingEpoch > 0n) throw new Error(LISTED_VAULT);
       const minHolding = body.minHolding === undefined || body.minHolding === "" ? a.supply / PASS_HOLDING_DIVISOR : toBaseUnits(String(body.minHolding), a.decimals);
       const minPot = toBaseUnits(String(body.minPotXnt ?? PASS_MIN_POT_XNT), 9);
       const secs = Math.floor(Number(body.minIntervalSecs ?? PASS_MIN_INTERVAL_SECS));
