@@ -50,7 +50,7 @@ import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
-import { buildPassesStep, buildVaultStep, isVaultLaunch, passesProgram } from "./factory/launch.js";
+import { buildPassesStep, buildVaultStep, isVaultLaunch, minHoldingFor, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
 
@@ -933,7 +933,13 @@ function tokenState(stateDir: string): any {
   const f = path.join(stateDir, "distributor-state.json");
   return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : {};
 }
-const tokenConfig = (t: ReturnType<typeof targets>[number]) => JSON.parse(fs.readFileSync(t.configPath, "utf8")) as Config;
+// A launch record copied in on its own (the holder-passes trial's WAY, PASST, CPASS) has no
+// distributor config: its vault program pays holders, so the site's settings stand in.
+function tokenConfig(t: ReturnType<typeof targets>[number]): Config {
+  if (fs.existsSync(t.configPath)) return JSON.parse(fs.readFileSync(t.configPath, "utf8")) as Config;
+  const r = readLaunch(t.mint);
+  return r ? { ...cfg, distribution: { ...cfg.distribution, minHoldingTokens: minHoldingFor(r.supply), excludeOwners: [] } } : cfg;
+}
 const claimsOn = (t: ReturnType<typeof targets>[number]) => tokenConfig(t).distribution.holderRewards === "claims";
 
 /**
@@ -1021,7 +1027,8 @@ function eventTotals(events: Record<string, any>[]) {
 let tokenListCache: { at: number; data: Promise<unknown> } | null = null;
 function tokenList() {
   if (tokenListCache && Date.now() - tokenListCache.at < 30_000) return tokenListCache.data;
-  const data = Promise.all(targets(cfg).map(async (t) => {
+  // One token that can't be read is left out and logged; it doesn't take the whole list down.
+  const data = Promise.all(targets(cfg).map(async (t) => (async () => {
     const info = targetInfo(t);
     const pair = pairForMint(t.mint);
     const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), new PublicKey(t.mint), pair.mint).catch(() => null);
@@ -1041,7 +1048,8 @@ function tokenList() {
       burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun,
       ...(vault ? { vault } : {}),
     };
-  }));
+  })().catch((e) => { console.error(`token list: ${t.symbol} (${t.mint}) left out: ${e instanceof Error ? e.message : e}`); return null; })))
+    .then((list) => list.filter((x) => x !== null));
   data.catch(() => { tokenListCache = null; });
   tokenListCache = { at: Date.now(), data };
   return data;
@@ -1175,7 +1183,7 @@ function tokenStats(mintStr: string) {
     const t = findTarget(cfg, mintStr);
     const mint = new PublicKey(t.mint);
     const info = targetInfo(t);
-    const dc = (JSON.parse(fs.readFileSync(t.configPath, "utf8")) as Config).distribution;
+    const dc = tokenConfig(t).distribution;
     const pair = pairForMint(t.mint);
     const [rows, mintInfo, snap, value] = await Promise.all([scanTokenAccounts(conn, mint), conn.getAccountInfo(mint, "confirmed"),
       snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(t.pool), mint, pair.mint).catch(() => null),
