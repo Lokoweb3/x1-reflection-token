@@ -1219,6 +1219,7 @@ I18N.add("es", {
   "launches started": "lanzamientos iniciados",
   "faucet claims": "reclamos del faucet",
   "logo uploads": "subidas de logo",
+  "vault runs": "ejecuciones de la bóveda",
   "Only the Tax Vault program can withdraw this token's tax. Holders are paid by the program itself, but only wallets that registered a pass (up to 256) earn: holding the token alone earns nothing. Whoever runs a round keeps 1% of it, at most 0.05 XNT.": "Solo el programa Tax Vault puede retirar el impuesto de este token. El propio programa paga a los holders, pero solo ganan las billeteras que registraron un pase (hasta 256): tener el token no basta. Quien ejecuta una ronda se queda con el 1%, como máximo 0.05 XNT.",
   "Register a pass to earn ↗": "Registra un pase para ganar ↗",
   "Register to earn: {left} of {capacity} passes left ↗": "Regístrate para ganar: quedan {left} de {capacity} pases ↗",
