@@ -44,7 +44,7 @@ import { Config, FACTORY_DIR, ROOT, fromBaseUnits, loadKeypair, toBaseUnits } fr
 import { decodeVault, initVaultIx, initVaultPayoutIx, paysInToken, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
 import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passes.js";
 import { payoutToken } from "./payout.js";
-import { buildCreatePool, decodePool, poolAddresses, XDEX_CREATE } from "../xdex.js";
+import { buildCreatePool, decodePool, poolAddresses, snapshot, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
@@ -656,7 +656,50 @@ export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRec
   // The creator starts the vault (its own step); registering only checks it, so it can be retried.
   if (r.taxVault) await checkVault(conn, cfg, r);
   if (r.registeredAt) return r;
+  await checkPoolAndLock(conn, cfg, r, getTransferFeeConfig(mint)!.newerTransferFee.transferFeeBasisPoints);
   return writeTokenConfig(cfg, r, s.lockNft!);
+}
+
+/** Floor square root of a bigint. */
+export function isqrt(n: bigint) {
+  if (n < 2n) return n;
+  let x = BigInt(Math.floor(Math.sqrt(Number(n))));
+  while (x * x > n) x--;
+  while ((x + 1n) * (x + 1n) <= n) x++;
+  return x;
+}
+
+/**
+ * Whether the pool and the lock are the launch the record describes, or why not. Reserves
+ * move with every trade, but their product only grows (trading fees, deposits): it starts at
+ * about (1 − tax) × supply × pool XNT, since the token's own tax is withheld on its way into
+ * the pool. So a pool built with a sliver of the supply, or with most of its liquidity taken
+ * out before the lock, falls far short, while trading after launch can't (a creator who kept
+ * tokens back could only match it by paying the XNT a buyer would). The locked LP must be
+ * about all of the LP the pool started with (√ of that product): a creator who kept LP could
+ * take liquidity out later. Margins: 2% on the product, 1% on the LP.
+ */
+export function poolLockProblem(p: { poolTokens: bigint; poolQuote: bigint; taxBps: number; reserveToken: bigint; reserveQuote: bigint; lockedLp: bigint }): string | null {
+  const start = p.poolTokens * p.poolQuote * BigInt(10_000 - p.taxBps) / 10_000n;
+  if (p.reserveToken * p.reserveQuote * 100n < start * 98n) return "The pool holds less than the launch put in (it was built with fewer tokens, or liquidity was taken out).";
+  if (p.lockedLp * 100n < isqrt(start) * 99n) return "Less LP is locked than the pool started with: the whole LP must be locked.";
+  return null;
+}
+
+async function checkPoolAndLock(conn: Connection, cfg: Config, r: LaunchRecord, taxBps: number) {
+  const pair = pairOf(cfg, r);
+  const quoteInfo = pair.xntPool ? await conn.getAccountInfo(pair.mint, "confirmed") : null;
+  const quoteDecimals = quoteInfo ? unpackMint(pair.mint, quoteInfo, quoteInfo.owner).decimals : 9;
+  const mint = new PublicKey(r.mint), creator = new PublicKey(r.creator);
+  const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(r.pool), mint, pair.mint);
+  const locks = (await listLocks(conn, new PublicKey(cfg.locker!.programId), new PublicKey(r.pool))).filter((l) => l.locker.equals(creator));
+  const problem = poolLockProblem({
+    poolTokens: toBaseUnits(r.poolTokens, DECIMALS), poolQuote: toBaseUnits(r.poolXnt, quoteDecimals), taxBps,
+    reserveToken: snap.reserveToken, reserveQuote: snap.reserveQuote,
+    // LP the lock took in: what it holds plus the fee LP already collected from it.
+    lockedLp: locks.reduce((t, l) => t + l.lockedLp + l.feeLpCollected, 0n),
+  });
+  if (problem) throw new Error(`This launch can't be listed: ${problem}`);
 }
 
 /** Who must be able to withdraw the tax: the vault's auth PDA for a vault token, else its distributor wallet. */

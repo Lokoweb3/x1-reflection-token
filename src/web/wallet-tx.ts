@@ -89,11 +89,15 @@ export async function networkFee(
   return BigInt(value ?? 0);
 }
 
-/** Broadcast a wallet-signed transaction and wait for confirmation. */
 /** Whether serialized transaction bytes are a versioned (v0) transaction: its message starts with the high bit set. */
 const isVersioned = (raw: Buffer) => raw.length > 1 + raw[0] * 64 && (raw[1 + raw[0] * 64] & 0x80) !== 0;
 
-export async function sendSigned(conn: Connection, b64: string) {
+/**
+ * Broadcast a wallet-signed transaction and wait for confirmation. `checked` runs once it is
+ * known to be fully signed and to call only this site's programs, before anything is sent
+ * (the server counts its rate limit there).
+ */
+export async function sendSigned(conn: Connection, b64: string, checked: () => void = () => undefined) {
   const raw = Buffer.from(b64, "base64");
   if (isVersioned(raw)) {
     const v0 = VersionedTransaction.deserialize(raw);
@@ -105,6 +109,7 @@ export async function sendSigned(conn: Connection, b64: string) {
     // Programs are always static keys (never from a lookup table).
     const other = msg.compiledInstructions.map((ix) => msg.staticAccountKeys[ix.programIdIndex]).find((p) => !p || !RELAY_PROGRAMS.has(p.toBase58()));
     if (other !== undefined) throw new Error(`This site only sends its own transactions (unexpected program ${other?.toBase58() ?? "from a lookup table"})`);
+    checked();
     const signature = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 5 });
     await confirmByPolling(conn, raw, signature, (await conn.getBlockHeight("confirmed")) + 150);
     return signature;
@@ -113,6 +118,7 @@ export async function sendSigned(conn: Connection, b64: string) {
   if (!tx.verifySignatures()) throw new Error("Transaction is not fully signed");
   const other = tx.instructions.find((ix) => !RELAY_PROGRAMS.has(ix.programId.toBase58()));
   if (other) throw new Error(`This site only sends its own transactions (unexpected program ${other.programId.toBase58()})`);
+  checked();
   const signature = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed", maxRetries: 5 });
   await confirmByPolling(conn, raw, signature, tx.lastValidBlockHeight ?? (await conn.getBlockHeight()) + 150);
   return signature;
