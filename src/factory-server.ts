@@ -920,7 +920,7 @@ async function getView(url: URL) {
   if (wv) return walletView(wv[1]);
   const ts = /^\/api\/token\/([1-9A-HJ-NP-Za-km-z]{32,44})\/stats$/.exec(url.pathname);
   if (ts) return tokenStats(ts[1]);
-  if (url.pathname === "/api/analytics") return analytics();
+  if (url.pathname === "/api/analytics") return analytics(url.searchParams.get("mint") ?? undefined);
   if (url.pathname === "/api/distribute/list") {
     // Tax Vault tokens run on the vault crank, not "Distribute now".
     const list = await Promise.all(targets(cfg).filter((t) => !vaultAuthFor(t.mint)).map((t) => cachedReadiness(t.mint)));
@@ -1098,11 +1098,16 @@ function tokenList() {
 /**
  * The Analytics page: platform totals, activity per day, per-token breakdown, recent events,
  * and trading: buy and sale volume in XNT from each token's trade index (the one the
- * leaderboard keeps), traders, and each token's holder yield.
+ * leaderboard keeps), traders, and each token's holder yield. With `mint`, the same shape for
+ * that one token alone (an unknown mint is refused). Each is cached on its own, 30 s.
  */
-let analyticsCache: { at: number; data: Promise<unknown> } | null = null;
-function analytics() {
-  if (analyticsCache && Date.now() - analyticsCache.at < 30_000) return analyticsCache.data;
+const analyticsCache = new Map<string, { at: number; data: Promise<unknown> }>();
+function analytics(mint?: string) {
+  const key = mint ?? "";
+  const hit = analyticsCache.get(key);
+  if (hit && Date.now() - hit.at < 30_000) return hit.data;
+  // Checked before caching, so a made-up mint can't fill the cache.
+  const list = mint ? [findTarget(cfg, mint)] : targets(cfg);
   const data = (async () => {
     const days = new Map<string, { holders: bigint; liquidity: bigint; creator: bigint }>();
     const volumeHours = new Map<string, number>();
@@ -1117,7 +1122,6 @@ function analytics() {
     const pool = poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58();
     const lamports = (n: number) => BigInt(Math.round(n * 1e9)).toString();
     // Each token's stats (for its yield) and pair price, fetched together rather than one token at a time.
-    const list = targets(cfg);
     const fetched = await Promise.all(list.map((t) => Promise.all([
       (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null),
       pairValue(pairForMint(t.mint)).catch(() => null),
@@ -1182,8 +1186,8 @@ function analytics() {
       recent: recent.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20),
     };
   })();
-  data.catch(() => { analyticsCache = null; });
-  analyticsCache = { at: Date.now(), data };
+  data.catch(() => { analyticsCache.delete(key); });
+  analyticsCache.set(key, { at: Date.now(), data });
   return data;
 }
 
