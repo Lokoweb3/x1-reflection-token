@@ -41,7 +41,7 @@ program hashes and how to reproduce them, tests, trust assumptions and what to l
 ## How it fits together
 
 Pools are **real XDEX pools**, created by XDEX's own program; this project adds a locker,
-a bonding curve (testnet) and an off-chain distributor around them.
+a bonding curve (testnet), the Tax Vault and (retired) an off-chain distributor around them.
 
 | Piece | What it does |
 |---|---|
@@ -72,133 +72,10 @@ cost, rewards earned, total return) · `/wallet/<address>` (My earnings) · `/an
 `/curve` (testnet) · `/faucet` (testnet) · `/v4` and `/v4/standalone` (holder passes, testnet). A Mainnet/Testnet toggle and a theme picker
 (Notebook by default) sit in every header.
 
-## The original single token (RFLT)
-
-The project started as one reflection token, **RFLT** (testnet), run from `config.json`
-with its own distributor. The sections below cover that single-token setup, then the
-launchpad that grew out of it. X1 runs on the Solana VM, so SafeMoon-style "balances grow
-by themselves" contracts don't carry over: balances live in separate token accounts, and
-a custom ledger would not work with wallets or XDEX. So payouts are real XNT transfers.
-
-> **RFLT is on the Tax Vault now** (testnet): `scripts/adopt-main-token.ts` gave it a
-> launch record like any launchpad token, its fee and mint authorities were revoked
-> (`npm run admin -- lock-fee`, `revoke-mint`), and `scripts/migrate-to-vault.ts` handed its
-> tax to the vault. The single-token setup below still describes how it started and how the
-> distributor path works.
-
-## Setup
-
-```bash
-npm install
-cp config.example.json config.json
-solana-keygen new -o distributor.keypair.json      # dedicated bot wallet (gitignored)
-```
-
-Edit `config.json`:
-
-- `keypairs.creator`: your deployer wallet. It becomes the mint, fee-config and metadata
-  authority, and receives the whole supply.
-- `keypairs.distributor`: the bot wallet. Use a **dedicated** wallet. Any XNT it holds
-  above `operatingReserveXnt` is treated as reflections and paid out.
-- `token.*`: name, symbol, `uri` (a metadata JSON with an image, e.g. on IPFS), supply,
-  decimals, `feeBps` (500 = 5%).
-- `network` / `rpcUrl` / `xdex.programId`: the example is set up for testnet. For mainnet
-  use `https://rpc.mainnet.x1.xyz` and `sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN`.
-  The config refuses a program ID that doesn't match the network.
-
-**Gas auto top-up:** the distributor pays its own transaction fees from its own XNT.
-Each cycle, sale proceeds first refill it up to `operatingReserveXnt` (0.05 XNT), and only
-the rest goes to holders. It needs **one** initial funding of about 0.05 XNT to pay for the
-first harvest and sale. After that it maintains itself. If its free XNT drops below
-`minGasXnt`, it pauses fee-costing work and payouts rather than failing partway, and tells
-you how much to send.
-
-## Launch runbook
-
-1. **Create the token:** `npm run create-token`. This writes `mint` into `config.json`
-   and backs up the mint keypair under `state/`. With `launchGrace: true`, the fee
-   starts at **0%** and switches to `feeBps` two epochs later (X1 epochs are about
-   22 hours). That gives you a window to add liquidity without losing 5% of it.
-2. **Create the XDEX pool:** create a TOKEN/XNT pool in the XDEX UI and add liquidity.
-   Put the pool address in `xdex.pool`.
-3. **Check:** `npm run admin -- status`
-4. **Lock it down:** `npm run admin -- revoke-mint` makes the supply permanently fixed.
-   Optionally, `npm run admin -- lock-fee` makes the fee permanently unchangeable.
-   Holders will look for both.
-5. **Run the distributor:**
-   To keep it running in the background (logs to `state/distributor.log`):
-   ```bash
-   npm run distributor:start -- 15               # a cycle every 15 minutes
-   npm run distributor:status                    # running? last log lines
-   npm run distributor:logs                      # follow the log
-   npm run distributor:stop
-   ```
-   It stops if WSL or the machine shuts down; start it again afterwards.
-
-   Or run it by hand:
-   ```bash
-   npm run distribute                            # dry run: prints what it would do
-   npm run distribute -- --execute               # one real cycle
-   npm run distribute -- --execute --loop 60     # every hour (or run the one-shot from cron/systemd)
-   ```
-
-Change the fee later with `npm run admin -- set-fee <bps>`. Token-2022 always delays
-fee changes by two epochs, so holders can't be surprised by a sudden fee increase.
-
-## One distribution cycle
-
-1. **Recover:** a withdraw, sale or auto-LP deposit from an interrupted run is checked
-   by signature, and its effect is applied from the confirmed transaction. Any payout
-   batch from an interrupted run is also checked by signature. It is
-   either marked paid, re-sent (only once its blockhash has expired, so the old
-   transaction can never land), or left alone until it resolves.
-2. **Harvest** the withheld fees from every token account into the mint. Anyone can do
-   this. Then **withdraw** them to the distributor's token account. `burnBps` of them
-   are set aside to burn, and `autoLpBps` for auto-LP: half kept as tokens, half to be
-   sold for the XNT side.
-   **Burn:** the tokens set aside to burn are burned right away (Token-2022 burn), so
-   the supply shrinks. They are never sold, so there's no swap fee and no sell
-   pressure for that share. `burnBps` is 0 (off) unless you set it; `autoLpBps +
-   burnBps` can't exceed 10000.
-   **Creator reward:** `creatorBps` of the collected tax (RFLT and every factory token:
-   10%) is sold with the holders' share. That XNT is deposited into an `lp_locker`
-   reward vault tied to a lock NFT (`creatorReward.nftMint`), as wrapped XNT, or swapped
-   to USDC first when `creatorReward.rewardMint` and `swapPool` are set (mainnet: the
-   XNT/USDC.X pool). Each deposit vests for 7 days; then whoever holds the NFT claims it
-   (dashboard **Claim rewards**, or the factory page's **Claim**). Selling the NFT sells
-   the reward stream. Quiet cycles skip collecting tax worth less than `minHarvestXnt`
-   (default 0.05 XNT): X1 charges roughly 0.01–0.015 XNT in network fees for one full
-   cycle, so collecting less would mostly feed fees. Sales under `minSellXnt` (0.002 XNT)
-   also wait.
-3. **Sell** the collected tokens for XNT through XDEX `swap_base_input`. The sale size is
-   capped by `maxPriceImpactBps` and optionally by `maxSellTokensPerCycle`. The quote
-   accounts for the 5% transfer fee on the way into the pool and the pool's trade fee.
-   The minimum output is protected by `slippageBps`. Every transaction is simulated
-   before it is sent.
-4. **Auto-LP:** the set-aside tokens and XNT are deposited into the XDEX pool in one
-   transaction, and the LP tokens received are **burned** in the same transaction, so that
-   liquidity can never be withdrawn by anyone. The LP amount is sized with `slippageBps`
-   of headroom. Before each sale, the auto-LP tokens are rebalanced: just enough is kept
-   that, after the sale, the kept tokens and the XNT are worth the same at the pool
-   price (transfer and trade fees included). Anything left over from a previous cycle is
-   paired this way instead of waiting. The deposit is skipped until at least `minCycleXnt`
-   is set aside. If it fails, holder payouts in that cycle still go ahead.
-5. **Refill gas, then allocate:** XNT that isn't owed to holders or set aside for auto-LP first tops the gas reserve
-   back up to `operatingReserveXnt`. Anything above that is split pro-rata over eligible
-   holders, rounded down.
-6. **Pay:** everyone whose accumulated share is at least `minPayoutXnt` receives native
-   XNT, in batches of `transfersPerTx`. Smaller shares carry over until they reach the
-   threshold.
-
-**Who is eligible:** wallets holding at least `minHoldingTokens` (balances summed
-across all their token accounts). **Excluded:** the distributor, the XDEX pool vaults,
-burn addresses, frozen accounts, anything in `excludeOwners` (e.g. your treasury or a
-CEX wallet), and off-curve owners (program-controlled PDAs, where XNT could get stuck)
-when `excludeOffCurveOwners` is true.
-
-The payout journal is `state/distributor-state.json`. Every signature is written to disk
-**before** its transaction is broadcast, so a crash or restart never pays anyone twice.
-**Keep the `state/` directory and back it up.** A lock file stops overlapping runs.
+The project began as one testnet token, **RFLT**, run by an off-chain distributor wallet;
+that path is retired (every live token is on the Tax Vault). Its setup, runbook, cycle,
+the NFT-based holder passes, "Distribute now" and the local dashboard are in
+[docs/DISTRIBUTOR.md](docs/DISTRIBUTOR.md).
 
 ## Locking LP in an NFT (lp_locker)
 
@@ -225,7 +102,7 @@ the NFT.
   locked liquidity at lock time (rounded up), then withdraws just the LP tokens worth
   more than that, and checks afterwards that the principal is still fully covered.
 
-**From the dashboard:** click **Connect wallet** (any Wallet Standard wallet, such as X1
+**From the local dashboard** ([docs/DISTRIBUTOR.md](docs/DISTRIBUTOR.md#dashboard)): click **Connect wallet** (any Wallet Standard wallet, such as X1
 Wallet or Backpack, or an older injected wallet), enter an amount and click **Lock
 forever** (or pick 7 days, 30 days, 90 days or 1 year). Locks your wallet's NFT holds get
 a **Collect** button, and timed locks get an **Unlock** button once they end. The server builds each
@@ -260,7 +137,10 @@ lock page) to IPFS, and the NFT's Token-2022 metadata `uri` points to the JSON's
 link: the form wallets and explorers read. Without uploads, the receipt goes on-chain as a
 small SVG inside a `data:` URI (nothing hosted, but many wallets can't show it; such a
 receipt shows "Update receipt" once uploads are on). The JSON keeps the receipt's
-fingerprint, so the site offers an update when the numbers change. Only the wallet that
+fingerprint, so the site offers an update when the numbers change. A receipt stays
+"current" while its fixed facts match and the drifting numbers stay close (pool share within
+1 point, LP locked within 5%). "Locked at" and "Until" show the visitor's local time (the
+receipt image keeps UTC). Only the wallet that
 locked (the NFT's update authority) can print it.
 
 - Dashboard: prompted right after Lock; otherwise a "Print receipt" button on the lock row.
@@ -323,19 +203,18 @@ is burned (0–50%; liquidity + burn at most 55%, because 10% is the creator's r
 holders keep at least 35%), the starting
 liquidity, and the lock (forever, 7, 30, 90 days or 1 year; mainnet offers **forever
 only**, via `factory.lockForeverOnly`). Before step 1 charges anything, the site checks
-the wallet can afford the whole launch. Their wallet approves three transactions (four with the Tax Vault):
+the wallet can afford the whole launch. Their wallet approves four transactions (five with holder passes):
 
 1. **Token:** Token-2022 mint with the tax and **no fee authority** (the tax can never
    change), the supply minted to the creator only to be put into the pool in step 2
    (100% of it; the creator keeps none), **mint authority revoked**, the launch fee
-   (`factory.feeUsdc` USDC to `factory.feeReceiver`; on testnet `factory.feeToken` can swap in another token such as XNM, and mainnet ignores it and always charges USDC.X) and the token distributor's gas.
+   (`factory.feeUsdc` USDC to `factory.feeReceiver`; on testnet `factory.feeToken` can swap in another token such as XNM, and mainnet ignores it and always charges USDC.X).
 2. **Pool:** a TOKEN/XNT pool on XDEX with the creator's tokens and XNT (or, if the
    creator picks another pair the site offers, e.g. JACK, a TOKEN/JACK pool with their
    JACK; XDEX's pool fee is still XNT).
 3. **Lock:** all of the creator's LP locked in an NFT, which collects the trading fees.
-4. **Start the tax vault** (when `factory.taxVault` is set, i.e. testnet): `init_vault`
-   hands the token's withdraw authority to the vault program, so no distributor key is
-   ever created for it.
+4. **Start the tax vault:** `init_vault` hands the token's withdraw authority to the vault
+   program, so no distributor key is ever created for it.
 5. **Turn on holder passes** (testnet, only with **Holder passes (testnet trial)** ticked):
    the vault is started under the holder-passes program instead, and one more approval
    allocates the pass book and sets its rules (`init_passes`). See
@@ -355,14 +234,24 @@ payouts and the creator reward. The site shows those tokens' prices in JACK with
 value, and their leaderboard costs in JACK. Only tokens without a transfer fee work as a
 pair. `scripts/mainnet-rehearsal-jack.ts` rehearses a JACK launch on a local validator.
 
-Then the launch is verified on-chain and registered. `factory:distribute` runs the same
-cycle as RFLT for every registered token, each with its **own distributor wallet**
-(the only key that can withdraw that token's tax), settings and state, under
-`factory/launches/<mint>/`. **That folder holds those wallets' keys: back it up and never
-commit it** (it is gitignored).
+Then the launch is verified on-chain and registered, and the site's vault crank runs it
+from there. (A site without the Tax Vault gives each token its own distributor wallet; see
+[docs/DISTRIBUTOR.md](docs/DISTRIBUTOR.md).)
 
 - Launch fee: USDC.X on mainnet (`B69ch…m9Tq`); on testnet, the USDC that has an XDEX
   testnet pool (`4dr9…2KsU`). Launchers need it in their wallet.
+- **Supply** is capped at 10 billion (as for curves): above about 18.4 billion the 9-decimal
+  amount wraps in u64 and the pool step could never be built.
+- **Costs** besides the fee and the pool's XNT: account rent ≈ 0.08 XNT (≈ 0.24 XNT with
+  holder passes, 0.16 of it the pass book), measured on testnet. The form shows "–" and
+  stops before the confirm box for an invalid pool amount, and says when burn or liquidity
+  was lowered to keep them within 55%.
+- **Registration checks the pool and the lock:** the pool's reserves must hold at least 98%
+  of (1 − tax) × supply × pool amount (trading only grows it, so a pool seeded with a sliver
+  of the supply or emptied before the lock falls short), and the creator's locks must hold
+  at least 99% of the pool's starting LP. A launch that fails isn't listed.
+- A launch record without its own `config.json` falls back to the site's settings, and a
+  token that still can't be read is left out of `/tokens` instead of breaking the list.
 - The tax starts with the first transfer, so seeding the pool pays it once. That
   tax is collected and goes back to holders and liquidity like any other.
 - Token metadata (`/meta/<mint>.json`) is served by the factory. To make the page public,
@@ -376,50 +265,14 @@ form gets an **Upload image** button: the logo goes straight through to IPFS (PN
 WebP or GIF, checked by its bytes, ≤ 500 KB, 20 uploads per IP per hour) and nothing is
 kept on the server. The token's metadata JSON (name, symbol, description, image) is
 pinned too, so the on-chain link points to IPFS (`factory.ipfsGateway`, default
-`https://gateway.pinata.cloud/ipfs/`) and keeps working even if the site goes away. Without a key,
+`https://gateway.pinata.cloud/ipfs/`) and keeps working even if the site goes away. If Pinata refuses (key or plan), the
+error goes to the server log and the visitor sees "can't save files to IPFS right now,
+nothing was sent to your wallet". `/api/launch/metadata` is rate-limited like logo uploads,
+and a pending metadata update is keyed by (mint, new link), so a stranger's request can't
+replace the creator's. Without a key,
 creators paste a logo link and the site serves the metadata as before. Tax Vault rewards
 lists are pinned the same way (v3). For rehearsals the upload API and the gateway can be
 pointed at a local stand-in (`factory.pinataApiUrl` / `PINATA_API_URL`, `IPFS_GATEWAY`).
-
-## Holder passes (pull-based holder rewards)
-
-> This is the older, NFT-based design in `lp_locker` (built, not deployed). The holder
-> passes running on testnet are the Tax Vault's own: see
-> [On-chain holder passes](#on-chain-holder-passes-v4-trial-testnet).
-
-Paying every holder a transfer each cycle costs gas per holder, and X1 fees are
-~0.001–0.004 XNT per transaction. With `distribution.holderRewards: "claims"` a token
-pays holders through **Holder Passes** instead:
-
-- A holder mints a 1-of-1 **Holder Pass** NFT for the token (My earnings → Mint pass;
-  one-time ~0.01 XNT of rent + fee). Only wallets holding a pass earn; a wallet counts
-  once however many passes it holds.
-- Each cycle the distributor adds every pass's share to its running total and posts
-  **one** Merkle root of all totals, funding the on-chain pool in the same transaction
-  (`set_root`). Gas per cycle stays flat whatever the number of holders.
-- Whoever holds a pass clicks **Claim** (`claim_pass`) and receives its total minus
-  what it already claimed. Rewards follow the pass: selling it sells the unclaimed part.
-  Unclaimed rewards never expire.
-- On-chain (lp_locker): `init_holder_pool` (only the token's tax-withdraw authority, i.e.
-  its distributor), `set_root` (epoch must increase, totals can only grow), `mint_pass`,
-  `claim_pass`. The pool can never pay out more than it was funded with.
-- The root is journaled in state before sending; the next cycle settles or re-sends it
-  from what the chain shows, so a crash can't double-fund or lose rewards.
-- Tests: `npm test` (tree + a fixed hash vector shared with the Rust tests),
-  `cargo test` in `lp-locker/programs/lp_locker`, and two local-validator end-to-end
-  scripts: `scripts/local-holder-pass-test.ts` (program, incl. rejected cheats) and
-  `scripts/local-claims-cycle-test.ts` (distributor publish, crash recovery, expiry).
-
-## Distribute now (anyone can trigger a payout)
-
-The site's **Keep payouts moving** section lists RFLT and every launched token with the
-tax waiting to be collected. Anyone can press **Distribute now** and approve one
-transaction: a small tip (`factory.tipXnt`, default 0.005 XNT) to that token's
-distributor wallet. The server checks the tip on-chain (confirmed, recent, sent to the
-right wallet, never used before), then runs that token's normal cycle immediately. The
-tip becomes the distributor's gas; nobody can change who gets paid. Guardrails: 10
-minutes between triggered runs per token, never overlapping a running cycle (the lock
-is held only during each cycle), and not while the waiting tax is dust.
 
 ## Bonding curve (testnet)
 
@@ -432,17 +285,28 @@ curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of 
 - **Tokens are created at graduation.** During the curve, balances live in the curve, so
   no tax applies; the tax is live from the first XDEX trade after graduation.
 - 80% of the supply sells on the curve, priced so its last price equals the pool's
-  opening price. 1% fee on curve trades. The creator can't buy their own curve. For the
-  first 2 minutes one buy can take at most 1% of the supply.
+  opening price. 1% fee on curve trades. The creator can't buy their own curve.
+- **Early-buy limits:** for the first 2 minutes a wallet's position may hold at most 1% of
+  the supply across all its buys, and all buyers together at most 10%; a transaction may
+  carry only one buy of the curve (also refused through another program).
+- **No deadline, but a refund:** tokens stay with the curve until it fills, and you can sell
+  back any time. A curve that is complete but hasn't graduated 7 days later can be refunded:
+  anyone sends each position its share of the XNT raised plus its deposit, and the last
+  refund sends what's left to the creator (status 5, Refunding; the crank does it).
+- `create_curve` checks the XDEX amm config (owner, size, pool creation enabled).
 - Graduation and delivery are permissionless; the site's crank (`factory.curve.crankKeypair`)
   does them automatically and earns the 0.01 XNT graduation reward.
-- **Tax custody:** on a site running the Tax Vault (testnet), a curve token's tax belongs
-  to the vault from the start (withdraw authority = the vault's `auth` PDA; no distributor
-  wallet, no distributor gas). At graduation the crank registers it as a vault token; the
+- **Tax custody:** a curve token's tax belongs to the Tax Vault from the start: the
+  program requires the withdraw authority to be a tax-vault `auth` PDA (no distributor
+  wallet, no distributor gas), so curve launches need the Tax Vault and the site refuses
+  others up front. At graduation the crank registers it as a vault token; the
   creator then signs one transaction, **Start the tax vault** (on the curve page, the lock
   NFT's page or "Your launches"), and the vault crank takes over. Until then the tax waits
-  in the token accounts, where nobody can move it. Without `factory.taxVault` a curve
-  token gets a distributor wallet as before.
+  in the token accounts, where nobody can move it.
+- **Holder passes on a curve** (testnet trial): the curve form has the same "Holder passes
+  (testnet trial)" checkbox. After graduation the creator's button starts the vault and turns
+  the passes on (two approvals) on the curve page, "Your launches" and the lock NFT page.
+- `/curve`'s "Graduated" filter shows graduated curves; refunding ones appear only under "All".
 - Spec: [docs/bonding-curve-spec.md](docs/bonding-curve-spec.md). Tests:
   `scripts/local-curve-test.ts` (program end to end), `scripts/curve-rehearsal.ts`
   (site + program + crank + distributor) and `scripts/curve-vault-rehearsal.ts` (site +
@@ -523,6 +387,18 @@ The publisher key also pays every vault transaction's network fee, so it needs X
 server logs `[vault crank] LOW BALANCE` hourly. If it runs dry the vaults just wait (the tax
 stays collected-in-place), and anyone can still press **Run the vault now** with their own wallet.
 
+- **Rent for first payments:** a wallet's first payment creates its paid record (~0.00145 XNT
+  of rent, paid by the crank). The crank sends it only once the wallet is owed at least the
+  minimum plus that rent, within a daily rent budget per token (`RECORD_RENT_PER_DAY`,
+  0.05 XNT), so it never pays more rent than it pays out.
+- **Run the vault now** (`/api/vault/<mint>/crank-tx`): plans are cached 10 s per token and
+  caller, new ones are limited (6 a minute per address, 60 a minute site-wide), and a run's
+  result clears the cache, so visitors can't starve the crank's RPC queue.
+- **Readable errors:** a failed transaction's error code is turned into words before it
+  reaches the visitor (`src/program-errors.ts`), read against the program that failed:
+  Anchor's own message first (XDEX too), else the vault, passes, curve and locker tables;
+  plus "not enough XNT" and "expired". The error's name stays in brackets. Spanish too.
+
 ## On-chain holder passes (v4 trial, testnet)
 
 The Tax Vault normally pays holders from a list the site computes off-chain and publishes
@@ -546,17 +422,29 @@ gets its vault under `Aqt57…`. Mainnet doesn't offer it.
   only, so a pool or other program address can't). It must hold at least **2× the
   minimum** to register; empty wallets can't take the book's slots. Its associated
   Token-2022 account is what each round reads. `remove_pass` (anyone) drops a fully paid
-  pass whose wallet fell under the minimum and returns its rent to the wallet.
+  pass whose wallet fell under the minimum and returns its rent to the wallet; the crank
+  removes up to 10 such passes per token on each pass, so sellers don't keep their slots.
+- **Full book:** `register_pass_evict` lets a wallet holding at least **2×** a pass's live
+  balance (and the registering minimum) take the slot of a pass owed nothing, outside a
+  round; the evicted pass's rent goes back to its wallet. `/v4` builds it when the book is
+  full and says what it takes.
 - **Rounds:** the vault's holder share (after burn, liquidity and creator reward) builds a
   pot. Once it reaches the minimum, anyone runs a round: `snapshot_batch` reads the
   registered balances (all within ~60 s), `close_round` sets the payout, and `pay_passes`
   sends each pass's share straight to its wallet, in proportion to its balance.
-- **Cap for multi-transaction rounds:** a round read in one transaction pays the whole pot.
-  A round read over several (256 passes needs several) pays at most **80% of the transfer
-  tax on the eligible tokens' value** at the pool price, so moving tokens between batches
-  to be counted twice always costs more in tax than it earns. The rest waits for the next
-  round. So small holdings earn little per round however large the pot is.
+- **Cap on every round:** a round pays at most **80% of the transfer tax on the eligible
+  tokens' value** at the pool price, whether it's read in one transaction or several (256
+  passes need several). Moving tokens between batches to be counted twice, or buying,
+  snapshotting and selling in one transaction, always costs more in tax than it earns. The
+  rest waits for the next round, so small holdings earn little per round however large the
+  pot is.
 - **Caller reward:** whoever runs the round earns 1% of it (at most 0.05 XNT).
+- **Passes or a list, never both:** `init_passes` refuses a vault that ever had a rewards
+  list (published or waiting), since a list's `pay_fallback` counts vault-wide totals; the
+  crank never builds a list for a pass-mode launch (the holders' share waits for the first
+  round), and the site refuses to turn passes on for a listed vault.
+- **Rules:** the minimum holding defaults to a millionth of the supply; the server refuses
+  one under a ten-millionth, a minimum pot under 0.01 XNT and an interval under 60 s.
 - **Extras:** `sponsor_holders` lets anyone add XNT to the holders' pot; `index_passes`
   keeps program-owned address lookup tables so a round's transactions fit.
 
@@ -567,12 +455,15 @@ gets its vault under `Aqt57…`. Mainnet doesn't offer it.
   `factory.taxVault.passes: true` and `factory.taxVault.passesProgramId`. Each launch
   record carries `vaultProgram`, so the server routes every token to the right program.
 - **`/v4`** lists the tokens with passes (book, pot, rounds, paid) and lets any wallet
-  register, run a round or pay with its own key. **`/v4/standalone`** is the same as one
+  register, run a round, pay or **Remove N empty passes** with its own key. The pass table
+  shows 20 at a time (Previous/Next, "Show my pass") with a Status column, warns a holder
+  whose pass no longer earns, shows "Register to earn: N of 256 passes left", fits a phone
+  and is in Spanish. `/tokens` links pass-mode tokens to `/v4` with the slots left. **`/v4/standalone`** is the same as one
   self-contained HTML file (`scripts/build-recovery.ts --program`), also pinned to IPFS,
-  that talks only to an X1 RPC. It has to be served over http(s); opened as a local file,
+  that talks only to an X1 RPC (served with the recovery page's CSP so it can reach it). It has to be served over http(s); opened as a local file,
   the RPC refuses it.
 - API: `/api/v4` (all tokens), `/api/v4/<mint>?wallet=<address>` (one token, one wallet),
-  `/api/launch/passes` (the launch step).
+  `/api/v4/<mint>/remove-tx` (remove empty passes), `/api/launch/passes` (the launch step).
 - Test helpers (testnet only): `scripts/v4-test-wallets.ts --mint <token> --funder
   <keypair.json> [--count 5]` makes wallets that buy the token and register passes (keys
   in the git-ignored `test-wallets/`); `scripts/v4-spread-tokens.ts` spreads tokens over them.
@@ -580,7 +471,8 @@ gets its vault under `Aqt57…`. Mainnet doesn't offer it.
 **Testnet so far:** WAY (`JAAz…9GFs`) has a full book of 256 passes and has paid about
 23.1 XNT over 22 rounds; PASST (`CViB…S85H`) was launched from the launch page with holder
 passes ticked and paid its first round to 256 passes on 23 Oct 2026, all cranked by the
-site. The program is **unaudited**, like the rest.
+site. CPASS (`AeJG…`) was the first bonding-curve launch with passes: bought to its 10 XNT
+target, graduated by the crank (LP locked forever), vault started and passes turned on. The program is **unaudited**, like the rest.
 
 ## If 99 + Tax goes offline
 
@@ -739,6 +631,12 @@ websocket; and the site's read-only views serve their last good answer while ref
 in the background (warmed every 5 minutes). A dedicated RPC endpoint is still
 recommended as usage grows: set `rpcUrl` (or `REFLECT_RPC_URL`).
 
+The site's own rate limits count only real requests: `/api/send` counts once the
+transaction is fully signed and calls only this site's programs, and launches and curve
+creation count once the request validates and the wallet can afford it, so junk can't use
+up the site-wide allowances. IPv6 addresses are limited by their /64, and a forwarded
+`127.0.0.1` no longer skips the limits (only requests made on the machine itself do).
+
 ## Running on a VPS
 
 See [deploy/README.md](deploy/README.md): one setup script, systemd services that
@@ -746,32 +644,18 @@ restart on crash and boot, HTTPS via Caddy (or a Vercel front door), a firewall,
 encrypted backups. The live setup runs both networks on one server: the testnet site and
 distributors from the app folder, and the mainnet site (`reflect-mainnet-factory`) from
 `mainnet/` with its own config, launches and keys; each Vercel project forwards to its site
-over a secret path. Both sites run the Tax Vault crank; the distributor services on both
+over a secret path, **over HTTPS all the way** (since 24 Oct 2026): the server answers the
+secret path only over HTTPS as its own name (`ORIGIN_HOST`, by default `<IP with
+dashes>.sslip.io`) with a certificate Caddy renews itself, and `vercel-deploy.sh` refuses an
+`http://` backend. The testnet services can't read the mainnet folder (systemd
+`InaccessiblePaths`), although every service runs as the same user. Both sites run the Tax Vault crank; the distributor services on both
 networks are disabled (their tokens moved to the vault).
-
-## Dashboard
-
-```bash
-npm run dashboard            # http://127.0.0.1:8123  (--port N to change)
-```
-
-A local, read-only page that refreshes every 30 seconds. It shows:
-
-- total XNT paid to holders, XNT owed but not yet paid, and XNT and tokens added to liquidity
-- fees collected and sold, fees waiting to be collected, pool depth and price
-- a chart of XNT allocated to holders vs. added to liquidity, per hour or per day
-- every holder's balance, share, amount owed and lifetime amount paid
-- an activity feed of every collection, sale, auto-LP deposit, allocation and payout, with explorer links
-- warnings for low gas, unconfirmed transactions and payouts in progress
-
-It reads `state/events.jsonl`, which the distributor appends to after each confirmed
-transaction, plus live chain data. It never signs anything. It only listens on
-localhost, because it lists every holder's payouts.
 
 ## Tests
 
 ```bash
-npm test          # 103 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths, list verification (publisher quorum), Spanish coverage, IPFS gateways, the served recovery page matching its pin
+npm test          # 157 tests: allocation, eligibility, CPMM/impact maths, pairs, trades, curve maths, curve tokens on the Tax Vault, holder-pass and tax-vault trees, vault layouts, CIDs, fallback maths, list verification (publisher quorum), Spanish coverage, IPFS gateways, the served recovery page matching its pin, program error texts in step with the Rust, crank rent rules, receipt freshness
+cargo test -p bonding_curve --manifest-path lp-locker/Cargo.toml
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
@@ -796,24 +680,13 @@ script's header for the validator command):
 | `scripts/mainnet-vault-rehearsal.ts` | The mainnet rollout on a local copy of mainnet: deploy, Test migrated, USDC.X creator reward, payouts, a visitor's run, a new launch paying the fee in USDC.X |
 | `scripts/build-recovery.ts --short-windows` | The recovery page, driven in a real browser with a test wallet: on testnet a stranger's wallet ran CUP's due steps (collect, sell, liquidity, creator reward) and earned the crank reward; on a local validator holding a copy of CUP's vault under the short-windows program, the guardian appointed a new publisher and a stranger paid holders with `pay_fallback` from the IPFS list |
 | `scripts/publisher-quorum-rehearsal.ts` | The publisher quorum: the site with a plain key, then a 2-of-3 Squads multisig set up by `scripts/setup-publisher-quorum.ts` and made the publisher; the site's proposals, a co-signer rejection and a new list, the co-signer's approval, execution and payouts; a malicious list and a publisher change proposed by the site's key alone rejected by the co-signer and never on-chain, the recovery clocks unmoved |
-| `scripts/local-holder-pass-test.ts`, `scripts/local-claims-cycle-test.ts` | Holder passes |
-
-### Product video and tutorial
-
-[docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md) has the narration of a ~2 min product video and
-a ~6 min tutorial. `scripts/video-tour.ts` records them from the live site (read-only, no
-wallet): each sentence is spoken by an ElevenLabs voice and shown as the caption while the
-screen does what it describes, then everything is joined into one MP4 with an `.srt`:
-
-```bash
-npm i --no-save playwright && npx playwright install chromium   # once
-npx tsx scripts/video-tour.ts --voice <ElevenLabs voice id>   # product cut, narrated → video/out/product/
-npx tsx scripts/video-tour.ts --cut tutorial --voice <id>     # tutorial; --vertical for Shorts/TikTok
-```
 
 Use the solana 3.x CLI and test validator for the program upgrade tests: the older 2.1
 test validator rejects `solana program extend`, which X1 testnet (solana-core 4.x)
 accepts.
+
+The product video and tutorial are recorded from the live site by `scripts/video-tour.ts`;
+the narration and how to run it are in [docs/VIDEO-SCRIPT.md](docs/VIDEO-SCRIPT.md).
 
 ## Verified vs. not yet verified
 
@@ -828,13 +701,7 @@ vault paid holders after the 10-minute window; the retired distributor wallet pa
 still owed and was swept. The whole rollout was rehearsed first on a local copy of mainnet
 (`scripts/mainnet-vault-rehearsal.ts`). The mainnet recovery page is pinned to IPFS and
 served at `/recovery`. Lock NFT receipts are printed as a PNG + metadata JSON on IPFS so
-wallets and explorers can show them. By 2 Oct 2026 "Test" had paid holders **46.57 XNT**
-over 108 payouts to 12 wallets (5.83 XNT of it by the vault), added 14.7 XNT of liquidity
-and burned 4.76% of its supply. On day two the publisher wallet, which pays the vault's
-network fees, ran out of XNT and payouts paused for ~14 hours: nothing was lost (the tax
-waited in holders' token accounts), and the first pass after a top-up collected the
-backlog and paid 5.43 XNT to 10 wallets. Since then the crank's priority fee is 10× lower
-(`priorityMicroLamports: 1000`) and the vault panels warn when that wallet runs low.
+wallets and explorers can show them.
 
 **Live on testnet:** the `tax_vault` program **v3** (upgraded in place from v1 and v2,
 each deployed build checked byte-for-byte against the rehearsed one). **Every testnet token
@@ -852,9 +719,8 @@ limit to what it uses (X1 bills requested units), which cut fees ~5–10×. The
 launch forms. The **recovery page** is pinned to IPFS and served at `/recovery`: from it a
 stranger's wallet ran CUP's due steps live and earned the crank reward (appointing and
 fallback were driven from it on a local copy of CUP's vault). A **GitHub Actions keeper**
-runs the crank on a schedule with its own wallet. Also live:
-RFLT and CUP's earlier distributor cycles, a creator's collect-fees and metadata updates
-with a real wallet, and the faucet.
+runs the crank on a schedule with its own wallet. Also live: a
+creator's collect-fees and metadata updates with a real wallet, and the faucet.
 
 **Reviewed:** an independent pre-audit review (Theo, 30 Sep 2026, commit `ce38a49`)
 reproduced the deployed build hashes and found no critical or high issues; two findings
@@ -871,8 +737,7 @@ distributor's journal, and program upgrades against the real lock accounts.
 still upgradeable by the team; the upgrade key moves to a Squads multisig next); new
 mainnet launches on the vault (reopening shortly); payout tokens (v4) on mainnet (live on testnet since 1 Oct 2026; mainnet stays on v3 until
 then); a second, independent IPFS pin of the rewards lists and the recovery page (today
-they're pinned on one Pinata account, readable through any gateway); a JACK-paired launch on mainnet itself; Holder Passes on a public
-network (testnet `lp_locker` is an older revision without them); the bonding curve on
+they're pinned on one Pinata account, readable through any gateway); a JACK-paired launch on mainnet itself;  the bonding curve on
 mainnet; trustless holder payouts (lists are published by one key; see
 [docs/REVIEW.md](docs/REVIEW.md#trust-assumptions)). The publisher quorum (Squads multisig +
 co-signer, [above](#publisher-quorum-and-running-a-co-signer)) is implemented and rehearsed
