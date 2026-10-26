@@ -1,17 +1,23 @@
-# Liquidity audit: C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz at slot 88648744
+# Liquidity audit: C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz at slot 88653698
 
-Run Oct 26, 2026, 1:45 AM ET with `npx tsx scripts/audit-liquidity.ts` against https://rpc.mainnet.x1.xyz. Shares are of each pool's LP supply now; amounts are what that share of the reserves would withdraw.
+Run Oct 26, 2026, 2:15 AM ET with `npx tsx scripts/audit-liquidity.ts` against https://rpc.mainnet.x1.xyz. Shares are of each pool's LP supply now; amounts are what that share of the reserves would withdraw.
 
-| Pool | Reserves | Locked forever | Timed lock | Free to withdraw |
+Each column is a share of the pool's lp_supply.
+
+| Pool | TEST in pool | Locked (burned or permanent lock) | Timed lock | Free to withdraw |
 |---|---|---|---|---|
 | TEST/GOOGL.X `RbAdto…` | 72,577,209 TEST | 0.00% | 0.00% | 100.00% |
 | TEST/wSOL.X `JCzN5P…` | 31,836,054 TEST | 0.00% | 0.00% | 100.00% |
-| TEST/XNT `6FszF7…` | 177,043,667 TEST | 19.07% | 0.00% | 80.93% |
+| TEST/XNT `6FszF7…` | 177,044,053 TEST | 19.07% | 0.00% | 80.93% |
 | TEST/SPY.X `Dh97wi…` | 7,431,382 TEST | 0.00% | 0.00% | 100.00% |
 | TEST/USDC.X `7drPqa…` | 149,462,713 TEST | 0.00% | 15.62% | 84.38% |
 | TEST/META.X `J4TX2Q…` | 6,319,901 TEST | 0.00% | 0.00% | 100.00% |
 | TEST/JACK `BkydiV…` | 35,270,147 TEST | 0.00% | 0.00% | 100.00% |
 | TEST/OWL ARMY `FsLiDt…` | 11,718,003 TEST | 0.00% | 0.00% | 100.00% |
+
+## Checks
+
+- ✅ TEST/XNT: a simulated withdrawal of 1000000000000 LP pays 5131438392 (XNT base units) = reserves × LP ÷ the pool's lp_supply (÷ the mint's supply would be 5586407349), so burned LP stays in the pool
 
 ## Holders
 
@@ -64,7 +70,8 @@ Run Oct 26, 2026, 1:45 AM ET with `npx tsx scripts/audit-liquidity.ts` against h
 
 ## What this does and doesn't show
 
-- Burned LP stays in the pool for good because XDEX divides withdrawals by the pool's own lp_supply, which a token burn doesn't lower (Raydium CP-Swap behaviour; the 100 LP gap in every untouched pool is CP-Swap's creation lock). If XDEX's program changed that rule, burned LP would instead enrich the remaining holders.
+- Burned LP stays in the pool because XDEX divides withdrawals by the pool's own lp_supply, which a token burn doesn't lower; the simulated withdrawal above shows the deployed program doing so. That holds under the current program only: XDEX is upgradeable, and a program that divided by the mint's supply would hand burned liquidity to the remaining LP holders.
+- 'Locked forever' for lp_locker likewise means under the current lp_locker program, which is upgradeable (see Programs).
 - A permanent lp_locker lock keeps its principal liquidity; the fee NFT's holder can withdraw the LP that fees added since locking.
 - An upgradeable program can change these rules; upgrade control is a separate check.
 - It trusts the RPC it reads; rerun with `--rpc` against another provider to cross-check.

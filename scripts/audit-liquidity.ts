@@ -7,7 +7,9 @@
  *
  * How the pieces fit: XDEX (a Raydium CP-Swap fork) pays a withdrawal its share of the pool's own `lp_supply`, which
  * a plain token burn doesn't reduce. So LP the tax vault burns (and the 100 LP XDEX keeps at creation) is counted by
- * the pool but held by nobody: that liquidity can never leave. Shares below are of the pool's `lp_supply`.
+ * the pool but held by nobody: under the current XDEX program that liquidity can't leave. The script checks this
+ * against the deployed program by simulating (never sending) a withdrawal by the pool's largest free LP holder.
+ * Shares below are of the pool's `lp_supply`.
  * lp_locker keeps a lock's principal (in sqrt(k) units) forever; its NFT holder can
  * withdraw the LP that trading fees added on top (`collect_fees`), and the holder of a timed lock gets everything
  * back once `unlock_at` passes. Programs that can be upgraded can change all of this: their upgrade authorities are
@@ -16,7 +18,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import bs58 from "bs58";
-import { PublicKey } from "@solana/web3.js";
+import crypto from "node:crypto";
+import { Connection, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 
 const argv = process.argv.slice(2);
 const arg = (name: string, def?: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : def; };
@@ -44,6 +48,24 @@ async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
 }
 const pda = (seeds: Buffer[], program: string) => PublicKey.findProgramAddressSync(seeds, new PublicKey(program))[0].toBase58();
 const pk = (s: string) => new PublicKey(s).toBuffer();
+const conn = new Connection(RPC, "confirmed");
+const checks: { ok: boolean; what: string }[] = [];
+
+/** Simulate (sigVerify off, nothing sent) `holder` withdrawing `lp` from the pool; returns what each side pays out. */
+async function simulateWithdraw(pool: any, programs: string[], holder: string, lpAccount: string, lp: bigint) {
+  const owner = new PublicKey(holder), m = (k: string | PublicKey, w: boolean, sg = false) => ({ pubkey: new PublicKey(k), isSigner: sg, isWritable: w });
+  const outs = pool.mints.map((x: string, i: number) => getAssociatedTokenAddressSync(new PublicKey(x), owner, true, new PublicKey(programs[i])));
+  const pre = await Promise.all(outs.map(async (o: PublicKey) => { const a = await conn.getAccountInfo(o); return a ? a.data.readBigUInt64LE(64) : 0n; }));
+  const data = Buffer.alloc(32); crypto.createHash("sha256").update("global:withdraw").digest().copy(data, 0, 0, 8); data.writeBigUInt64LE(lp, 8);
+  const ix = new TransactionInstruction({ programId: new PublicKey(XDEX), data, keys: [m(owner, true, true), m(xdexAuthority, false), m(pool.address, true), m(lpAccount, true),
+    m(outs[0], true), m(outs[1], true), m(pool.vaults[0], true), m(pool.vaults[1], true), m(TOKEN, false), m(TOKEN_2022, false), m(pool.mints[0], false), m(pool.mints[1], false),
+    m(pool.lpMint, true), m("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", false)] });
+  const msg = new TransactionMessage({ payerKey: owner, recentBlockhash: (await conn.getLatestBlockhash()).blockhash, instructions: [
+    ...outs.map((o: PublicKey, i: number) => createAssociatedTokenAccountIdempotentInstruction(owner, o, owner, new PublicKey(pool.mints[i]), new PublicKey(programs[i]))), ix] }).compileToV0Message();
+  const sim = await conn.simulateTransaction(new VersionedTransaction(msg), { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses: outs.map(String) } });
+  if (sim.value.err) throw new Error(`withdraw simulation failed: ${JSON.stringify(sim.value.err)}`);
+  return sim.value.accounts!.map((a, i) => Buffer.from(a!.data[0], "base64").readBigUInt64LE(64) - pre[i]);
+}
 const et = (unix: number) => new Date(unix * 1000).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" }) + " ET";
 async function symbol(mint: string) { // Token-2022 TokenMetadata extension (type 19), else a short address
   if (KNOWN[mint]) return KNOWN[mint];
@@ -140,13 +162,26 @@ for (const p of poolAccs) {
   const byKind = new Map<string, bigint>(); for (const h of holders) byKind.set(h.kind, (byKind.get(h.kind) ?? 0n) + h.amount);
   if (held !== mintSupply) throw new Error(`${pool.address}: token accounts hold ${held} LP but the mint says ${mintSupply}`);
   const burned = pool.lpSupply - mintSupply; // counted by the pool, held by nobody: 100 at creation plus every LP burn
-  if (burned > 0n) byKind.set("burned (the pool still counts it; nobody can withdraw it)", burned);
+  if (burned > 0n) byKind.set("burned (the pool still counts it; can't be withdrawn under the current XDEX program)", burned);
   const name = `TEST/${await symbol(other)}`;
+  // The deployed program's withdrawal rule: pays reserves × lp ÷ the pool's lp_supply, not ÷ the LP mint's supply?
+  let withdrawRule: any = null;
+  const free = holders.find((h) => h.kind.startsWith("wallet"));
+  if (pool.lpSupply - mintSupply > 100n && free) {
+    const programs = await Promise.all(pool.mints.map(async (x) => (await rpc("getAccountInfo", [x, { encoding: "base64", dataSlice: { offset: 0, length: 0 } }])).value.owner));
+    const lp = free.amount < 1_000_000_000_000n ? free.amount : 1_000_000_000_000n;
+    const got = await simulateWithdraw(pool, programs, free.owner, free.tokenAccount, lp);
+    const q = 1 - side; // the side without TEST's transfer fee
+    withdrawRule = { holder: free.owner, lp, paid: got[q], ifPoolSupply: (reserves[q] * lp) / pool.lpSupply, ifMintSupply: (reserves[q] * lp) / mintSupply };
+    const ok = withdrawRule.paid === withdrawRule.ifPoolSupply && withdrawRule.paid !== withdrawRule.ifMintSupply;
+    checks.push({ ok, what: `${name}: a simulated withdrawal of ${lp} LP pays ${withdrawRule.paid} (${await symbol(other)} base units) = reserves × LP ÷ the pool's lp_supply (÷ the mint's supply would be ${withdrawRule.ifMintSupply}), so burned LP stays in the pool` });
+    console.log(`  ${ok ? "PASS" : "FAIL"} ${checks.at(-1)!.what}`);
+  }
   console.log(`\n${name} ${pool.address}: ${num(ui(reserves[side], decT))} TEST + ${num(ui(reserves[1 - side], decO))} ${await symbol(other)}, LP supply ${mintSupply} (pool says ${pool.lpSupply}), mint authority ${mintAuthority === xdexAuthority ? "XDEX" : mintAuthority}`);
   for (const [k, amt] of [...byKind].sort((a, b) => (b[1] > a[1] ? 1 : -1))) { const s = share(amt); console.log(`  ${s.pct.toFixed(2).padStart(6)}%  ${k}  (${num(s.test)} TEST + ${num(s.other)} ${await symbol(other)})`); }
   for (const h of holders) if (h.lock) console.log(`          lock ${h.lock.slice(0, 6)}… ${share(h.amount).pct.toFixed(2)}%: ${h.locker8n4e ? `8N4E lock of ${h.lockOwner.slice(0, 6)}…` : `locked ${et(h.lockedAt)} by ${h.locker.slice(0, 6)}…`}, ${h.unlockAt ? `unlocks ${et(h.unlockAt)}` : "no unlock"}${h.nftOwner ? `, fee NFT held by ${h.nftOwner.slice(0, 6)}…` : ""}`);
   for (const h of holders.filter((h) => h.kind.startsWith("wallet") || h.kind.includes("expired"))) console.log(`          free: ${h.owner} ${share(h.amount).pct.toFixed(2)}%`);
-  report.push({ name, pool, reserves, other, mintSupply, mintAuthority, mintAuthorityIsXdex: mintAuthority === xdexAuthority, holders, byKind: Object.fromEntries(byKind),
+  report.push({ name, pool, reserves, other, withdrawRule, mintSupply, mintAuthority, mintAuthorityIsXdex: mintAuthority === xdexAuthority, holders, byKind: Object.fromEntries(byKind),
     foreverPct: share([...byKind].filter(([k]) => k.startsWith("locked forever") || k.startsWith("burned") || k === "burn address").reduce((s, [, a]) => s + a, 0n)).pct,
     timedPct: share([...byKind].filter(([k]) => k.startsWith("timed lock (")).reduce((s, [, a]) => s + a, 0n)).pct,
     freePct: share([...byKind].filter(([k]) => k.startsWith("wallet") || k.includes("expired")).reduce((s, [, a]) => s + a, 0n)).pct });
@@ -156,17 +191,20 @@ for (const p of poolAccs) {
 const dir = path.join(OUT, new Date().toISOString().slice(0, 10));
 fs.mkdirSync(dir, { recursive: true });
 const j = (x: unknown) => JSON.stringify(x, (_, v) => (typeof v === "bigint" ? v.toString() : v), 1);
-fs.writeFileSync(path.join(dir, "liquidity.json"), j({ slot, rpc: RPC, mint: MINT, programs, pools: report }));
+fs.writeFileSync(path.join(dir, "liquidity.json"), j({ slot, rpc: RPC, mint: MINT, programs, checks, pools: report }));
 const md = [
   `# Liquidity audit: ${MINT} at slot ${slot}`, "",
   `Run ${et(now)} with \`npx tsx scripts/audit-liquidity.ts\` against ${RPC}. Shares are of each pool's LP supply now; amounts are what that share of the reserves would withdraw.`, "",
-  "| Pool | Reserves | Locked forever | Timed lock | Free to withdraw |", "|---|---|---|---|---|",
+  "Each column is a share of the pool's lp_supply.", "",
+  "| Pool | TEST in pool | Locked (burned or permanent lock) | Timed lock | Free to withdraw |", "|---|---|---|---|---|",
   ...report.map((r) => `| ${r.name} \`${r.pool.address.slice(0, 6)}…\` | ${num(ui(r.reserves[r.pool.mints[0] === MINT ? 0 : 1], 9))} TEST | ${r.foreverPct.toFixed(2)}% | ${r.timedPct.toFixed(2)}% | ${r.freePct.toFixed(2)}% |`),
+  "", "## Checks", "", ...checks.map((c) => `- ${c.ok ? "✅" : "❌"} ${c.what}`),
   "", "## Holders", "",
   ...report.flatMap((r) => [`### ${r.name} \`${r.pool.address}\``, "", ...r.holders.map((h: any) => `- \`${h.owner}\` ${h.amount} LP: ${h.kind}${h.lock ? ` (lock \`${h.lock}\`, ${h.unlockAt ? `unlocks ${et(h.unlockAt)}` : "permanent"}, fee NFT holder \`${h.nftOwner}\`)` : ""}`), ""]),
   "## Programs", "", ...programs.map((p) => `- ${p.name} \`${p.id}\`: ${p.upgradeable ? `upgradeable by \`${p.authority}\`` : "immutable"}`),
   "", "## What this does and doesn't show", "",
-  "- Burned LP stays in the pool for good because XDEX divides withdrawals by the pool's own lp_supply, which a token burn doesn't lower (Raydium CP-Swap behaviour; the 100 LP gap in every untouched pool is CP-Swap's creation lock). If XDEX's program changed that rule, burned LP would instead enrich the remaining holders.",
+  "- Burned LP stays in the pool because XDEX divides withdrawals by the pool's own lp_supply, which a token burn doesn't lower; the simulated withdrawal above shows the deployed program doing so. That holds under the current program only: XDEX is upgradeable, and a program that divided by the mint's supply would hand burned liquidity to the remaining LP holders.",
+  "- 'Locked forever' for lp_locker likewise means under the current lp_locker program, which is upgradeable (see Programs).",
   "- A permanent lp_locker lock keeps its principal liquidity; the fee NFT's holder can withdraw the LP that fees added since locking.",
   "- An upgradeable program can change these rules; upgrade control is a separate check.",
   "- It trusts the RPC it reads; rerun with `--rpc` against another provider to cross-check.",
@@ -174,3 +212,4 @@ const md = [
 ].join("\n");
 fs.writeFileSync(path.join(dir, "README.md"), md);
 console.log(`\nevidence in ${path.relative(process.cwd(), dir)}/`);
+process.exit(checks.every((c) => c.ok) ? 0 : 1);

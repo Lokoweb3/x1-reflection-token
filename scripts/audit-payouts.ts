@@ -8,8 +8,8 @@
  *   - its entries give the on-chain root and add up to the on-chain total;
  *   - its stated pot and every entry recompute from its inputs and the previous list (spec "Deterministic allocation");
  *   - the publish_list transaction that set it is found, signed by the publisher, with the same root, epoch, total and CID;
- *   - the balances it used are each owner's TEST at its snapshot slot (rebuilt per token account from the last
- *     transaction at or before that slot), and no owner the rules make eligible is missing;
+ *   - the balances it used are each owner's TEST at its snapshot slot (today's balances minus every later change in the
+ *     mint's transaction history, so closed accounts count too), and no owner the rules make eligible is missing;
  * and that the PaidRecords add up to holders_paid and nobody was paid more than the active list gives them.
  *
  * It deliberately reimplements the leaf, tree, CID and allocation rules from the spec instead of importing src/, so
@@ -17,8 +17,7 @@
  * signatures, rebuilt balances, PaidRecords) and its results go to <out>/<date>-epoch-<n>/; it exits 1 if a check fails.
  *
  * Limits (also written into each report): it trusts the RPC it reads (pass --rpc to repeat against another);
- * token accounts closed since a snapshot aren't enumerated, except the ATAs of wallets a list names; an account's
- * owner is taken as it is now; and a program-owned (off-curve) holder is excluded by rule, which says nothing about
+ * owner changes aren't modelled; and a program-owned (off-curve) holder is excluded by rule, which says nothing about
  * who the tokens inside it belong to.
  */
 import crypto from "node:crypto";
@@ -33,7 +32,6 @@ const RPC = arg("rpc", "https://rpc.mainnet.x1.xyz")!;
 const MINT = arg("mint", "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz")!; // TEST
 const PROGRAM = new PublicKey("D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW");
 const TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hdZiqqDZ4bVUw8M9CtD9DVK9aY");
 const OUT = arg("out", path.join(import.meta.dirname, "..", "audits", "payouts"))!;
 const HISTORY = !argv.includes("--no-history");
 const BACK = Number(arg("back", "1"));
@@ -146,25 +144,34 @@ async function findPublications(epochs: Set<bigint>, oldestSlot: number) {
   return found;
 }
 
-// ---- balances at a slot, per token account ----
-const sigCache = new Map<string, any[]>();
-async function balanceAt(account: string, slot: number, now: bigint) {
-  let sigs = sigCache.get(account) ?? [];
-  if (!sigCache.has(account)) // newest first; read back until a signature at or before the slot (or the account's first)
-    for (let before: string | undefined; ;) {
-      const page: any[] = await rpc("getSignaturesForAddress", [account, { limit: 1000, before, commitment: "confirmed" }]);
-      sigs = sigs.concat(page);
-      if (page.length < 1000 || page.at(-1).slot <= slot) break;
-      before = page.at(-1).signature;
+// ---- balance history ----
+// TEST has a transfer fee, so Token-2022 refuses the plain Transfer (MintRequiredForTransfer): every instruction that
+// changes a TEST balance (TransferChecked, Burn, MintTo, the withheld-fee withdrawals) names the mint, so every such
+// transaction is in the mint's signature history, including those touching accounts closed since. A balance at the
+// end of slot S is then today's (read at a known context slot) minus every change after S; no ordering within a slot
+// is needed.
+type Change = { slot: number; account: string; owner: string; delta: bigint; signature: string };
+async function changesAfter(fromSlot: number, toSlot: number) {
+  const out: Change[] = [];
+  for (let before: string | undefined; ;) {
+    const page: any[] = await rpc("getSignaturesForAddress", [MINT, { limit: 1000, before, commitment: "confirmed" }]);
+    for (const sg of page) {
+      if (sg.err || sg.slot <= fromSlot || sg.slot > toSlot) continue; // a failed transaction changes no balance
+      const tx = await rpc("getTransaction", [sg.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: "confirmed" }]);
+      const keys: string[] = [...tx.transaction.message.accountKeys, ...(tx.meta.loadedAddresses?.writable ?? []), ...(tx.meta.loadedAddresses?.readonly ?? [])];
+      const rows = new Map<string, { owner: string; pre: bigint; post: bigint }>();
+      for (const [list, field] of [[tx.meta.preTokenBalances, "pre"], [tx.meta.postTokenBalances, "post"]] as const)
+        for (const t of list ?? []) {
+          if (t.mint !== MINT) continue;
+          const r = rows.get(keys[t.accountIndex]) ?? { owner: t.owner, pre: 0n, post: 0n };
+          r[field] = BigInt(t.uiTokenAmount.amount); rows.set(keys[t.accountIndex], r);
+        }
+      for (const [account, r] of rows) if (r.post !== r.pre) out.push({ slot: sg.slot, account, owner: r.owner, delta: r.post - r.pre, signature: sg.signature });
     }
-  sigCache.set(account, sigs);
-  const last = sigs.find((s) => s.slot <= slot);
-  if (!sigs.length || sigs[0].slot <= slot) return { amount: now, source: "unchanged since" };
-  if (!last) return { amount: 0n, source: "created after" };
-  const tx = await rpc("getTransaction", [last.signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: "confirmed" }]);
-  const keys: string[] = [...tx.transaction.message.accountKeys, ...(tx.meta.loadedAddresses?.writable ?? []), ...(tx.meta.loadedAddresses?.readonly ?? [])];
-  const post = tx.meta.postTokenBalances.find((b: any) => keys[b.accountIndex] === account && b.mint === MINT);
-  return { amount: post ? BigInt(post.uiTokenAmount.amount) : 0n, source: last.signature };
+    if (page.length < 1000 || page.at(-1).slot <= fromSlot) break;
+    before = page.at(-1).signature;
+  }
+  return out;
 }
 
 // ---- audit ----
@@ -176,9 +183,11 @@ const onchain = [
 ].filter(Boolean) as { state: string; epoch: bigint; root: string; total: bigint; cid: string | null }[];
 if (!onchain.length) throw new Error("no list published yet");
 
-const tokenAccounts: { pubkey: string; owner: string; amount: bigint }[] = (await rpc<any[]>("getProgramAccounts", [TOKEN_2022, {
-  encoding: "base64", commitment: "confirmed", filters: [{ memcmp: { offset: 0, bytes: MINT } }], dataSlice: { offset: 0, length: 72 },
-}])).map((a) => { const x = Buffer.from(a.account.data[0], "base64"); return { pubkey: a.pubkey, owner: bs58.encode(x.subarray(32, 64)), amount: x.readBigUInt64LE(64) }; });
+const scan = await rpc<any>("getProgramAccounts", [TOKEN_2022, {
+  encoding: "base64", commitment: "confirmed", withContext: true, filters: [{ memcmp: { offset: 0, bytes: MINT } }], dataSlice: { offset: 0, length: 72 },
+}]);
+const scanSlot: number = scan.context.slot;
+const tokenAccounts: { pubkey: string; owner: string; amount: bigint }[] = scan.value.map((a: any) => { const x = Buffer.from(a.account.data[0], "base64"); return { pubkey: a.pubkey, owner: bs58.encode(x.subarray(32, 64)), amount: x.readBigUInt64LE(64) }; });
 
 const audited: any[] = [];
 const lists = [];
@@ -189,6 +198,15 @@ for (let i = 0; i < BACK; i++) { // older lists: their root and CID come from th
   const f = await fetchList(p.cid);
   lists.unshift({ state: "previous", epoch: BigInt(p.epoch), root: p.root, total: BigInt(f.total), cid: p.cid, file: f });
 }
+const changes = HISTORY ? await changesAfter(Math.min(...lists.map((l) => Number(l.file.inputs.slot))), scanSlot) : [];
+for (const c of changes) if (!tokenAccounts.some((a) => a.pubkey === c.account)) tokenAccounts.push({ pubkey: c.account, owner: c.owner, amount: 0n }); // closed since
+if (HISTORY) console.log(`  ${new Set(changes.map((c) => c.signature)).size} transactions changed TEST balances since the oldest snapshot; ${tokenAccounts.filter((a) => !scan.value.some((x: any) => x.pubkey === a.pubkey)).length} of their accounts are closed now`);
+const ownerAt = (slot: number) => { // every owner's TEST at the end of `slot`
+  const m = new Map<string, bigint>();
+  for (const a of tokenAccounts) m.set(a.owner, (m.get(a.owner) ?? 0n) + a.amount);
+  for (const c of changes) if (c.slot > slot) m.set(c.owner, (m.get(c.owner) ?? 0n) - c.delta);
+  return m;
+};
 const publications = await findPublications(new Set(lists.map((l) => l.epoch)), Math.min(...lists.map((l) => Number(l.file.inputs?.slot ?? 0))));
 
 for (const l of lists) {
@@ -235,41 +253,28 @@ for (const l of lists) {
   check(!diffs.length, `list ${l.epoch}: every entry recomputes from the inputs${diffs.length ? ` (${diffs.length} differ)` : ""}`);
   check([...prev].every(([w, c]) => (got.get(w) ?? 0n) >= c), `list ${l.epoch}: nobody's total is below the previous list`);
 
-  // eligibility at the snapshot slot
+  // eligibility at the snapshot. The builder records getSlot() before scanning, so its read can land a few slots
+  // later: the balances must all match at the recorded slot or at one slot after it, before the list was published.
   const rules = f.rules, minH = BigInt(rules.minHolding), snap = Number(inp.slot);
   const stated = new Map(bal);
-  const accounts = [...tokenAccounts];
-  for (const w of stated.keys()) { // a named wallet whose account has since closed still gets its history read
-    if (accounts.some((a) => a.owner === w)) continue;
-    const ata = PublicKey.findProgramAddressSync([new PublicKey(w).toBuffer(), new PublicKey(TOKEN_2022).toBuffer(), new PublicKey(MINT).toBuffer()], ATA_PROGRAM)[0].toBase58();
-    accounts.push({ pubkey: ata, owner: w, amount: 0n });
-  }
-  const byOwner = new Map<string, { atSnapshot: bigint; now: bigint; accounts: any[] }>();
-  for (const a of accounts) {
-    const o = byOwner.get(a.owner) ?? { atSnapshot: 0n, now: 0n, accounts: [] };
-    o.now += a.amount; o.accounts.push(a); byOwner.set(a.owner, o);
-  }
-  const holders: any[] = [];
-  for (const [owner, o] of byOwner) {
-    const onCurve = PublicKey.isOnCurve(new PublicKey(owner).toBytes());
-    const excluded = rules.excludeOwners.includes(owner) ? "excludeOwners" : owner === authPda ? "vault auth PDA" : rules.excludeOffCurve && !onCurve ? "off-curve (program-owned)" : null;
-    let snapshot: bigint | null = null; const sources: any[] = [];
-    if (HISTORY && !excluded && (o.now >= minH / 10n || stated.has(owner))) { // tiny holders can't have been eligible unless they moved a lot; their history is read only if named
-      snapshot = 0n;
-      for (const a of o.accounts) { const b = await balanceAt(a.pubkey, snap, a.amount); snapshot += b.amount; sources.push({ account: a.pubkey, amount: b.amount.toString(), from: b.source }); }
-    }
-    holders.push({ owner, now: o.now, snapshot, excluded, sources, stated: stated.get(owner) ?? null });
-  }
+  const excludedWhy = (owner: string) => rules.excludeOwners.includes(owner) ? "excludeOwners" : owner === authPda ? "vault auth PDA"
+    : rules.excludeOffCurve && !PublicKey.isOnCurve(new PublicKey(owner).toBytes()) ? "off-curve (program-owned)" : null;
+  const nowBy = ownerAt(scanSlot);
+  let readSlot: number | null = null, at = new Map<string, bigint>();
   if (HISTORY) {
-    const wrong = holders.filter((h) => h.stated !== null && h.snapshot !== h.stated);
-    check(!wrong.length, `list ${l.epoch}: all ${stated.size} balances it used equal the owner's TEST at slot ${snap}${wrong.length ? ` (${wrong.map((h) => h.owner.slice(0, 4)).join(", ")} differ)` : ""}`);
-    const missing = holders.filter((h) => !h.excluded && h.stated === null && h.snapshot !== null && h.snapshot >= minH);
-    check(!missing.length, `list ${l.epoch}: no eligible owner (≥ ${fmt(minH)} TEST at the snapshot, not excluded) is missing${missing.length ? `: ${missing.map((h) => h.owner).join(", ")}` : ""}`);
+    const candidates = [snap, ...new Set(changes.filter((c) => c.slot > snap && c.slot < (pub?.slot ?? snap)).map((c) => c.slot).sort((x, y) => x - y))];
+    for (const c of candidates) { const m = ownerAt(c); if ([...stated].every(([w, b]) => (m.get(w) ?? 0n) === b)) { readSlot = c; at = m; break; } }
+    if (readSlot === null) at = ownerAt(snap);
+    const wrong = [...stated].filter(([w, b]) => (at.get(w) ?? 0n) !== b).map(([w]) => w);
+    check(readSlot !== null, `list ${l.epoch}: all ${stated.size} balances it used equal the owner's TEST at ${readSlot === snap ? `its snapshot slot ${snap}` : readSlot !== null ? `slot ${readSlot} (${readSlot - snap} after the recorded ${snap}, before publication)` : `slot ${snap} (${wrong.map((w) => w.slice(0, 4)).join(", ")} differ)`}`);
+    const missing = [...at].filter(([w, b]) => b >= minH && !stated.has(w) && !excludedWhy(w)).map(([w]) => w);
+    check(!missing.length, `list ${l.epoch}: no eligible owner (≥ ${fmt(minH)} TEST then, not excluded, including accounts closed since) is missing${missing.length ? `: ${missing.join(", ")}` : ""}`);
   }
+  const holders = [...new Set([...nowBy.keys(), ...at.keys()])].map((owner) => ({ owner, now: nowBy.get(owner) ?? 0n, snapshot: HISTORY ? at.get(owner) ?? 0n : null, excluded: excludedWhy(owner), stated: stated.get(owner) ?? null }));
   check(bal.every(([w, b]) => b >= minH && !holders.find((h) => h.owner === w)?.excluded && !rules.excludeOwners.includes(w)), `list ${l.epoch}: every balance used meets minHolding and no excluded owner earns`);
   const excludedHeld = holders.filter((h) => h.excluded && h.now >= minH).sort((a, b) => (b.now > a.now ? 1 : -1));
   for (const h of excludedHeld) console.log(`    excluded ${h.owner} ${fmt(h.now)} TEST now (${h.excluded})`);
-  audited.push({ list: l, file: f, pub, holders, excludedHeld, pot });
+  audited.push({ list: l, file: f, pub, holders, excludedHeld, pot, readSlot });
 }
 
 // ---- payments ----
@@ -295,7 +300,7 @@ for (const [cid, b] of files) fs.writeFileSync(path.join(dir, "lists", `${cid}.j
 const j = (x: unknown) => JSON.stringify(x, (_, v) => (typeof v === "bigint" ? v.toString() : v), 1);
 fs.writeFileSync(path.join(dir, "vault.json"), j({ slot: auditSlot, rpc: RPC, dataBase64: acc.value.data[0], decoded: vault }));
 fs.writeFileSync(path.join(dir, "publications.json"), j([...publications.values()]));
-fs.writeFileSync(path.join(dir, "balances.json"), j(audited.map((a) => ({ epoch: a.list.epoch, snapshotSlot: a.file.inputs.slot, holders: a.holders.filter((h: any) => h.snapshot !== null || h.stated !== null || h.excluded && h.now > 0n) }))));
+fs.writeFileSync(path.join(dir, "balances.json"), j({ scanSlot, changes, lists: audited.map((a) => ({ epoch: a.list.epoch, snapshotSlot: a.file.inputs.slot, matchedAtSlot: a.readSlot, holders: a.holders.filter((h: any) => h.now > 0n || h.snapshot || h.stated !== null) })) }));
 fs.writeFileSync(path.join(dir, "paid-records.json"), j(Object.fromEntries(paid)));
 fs.writeFileSync(path.join(dir, "checks.json"), j({ auditedAt: new Date().toISOString(), slot: auditSlot, rpc: RPC, passed: !failed.length, checks }));
 const md = [
@@ -309,8 +314,9 @@ const md = [
   ...(audited.at(-1)?.excludedHeld ?? []).map((h: any) => `- \`${h.owner}\`: ${fmt(h.now)} TEST (${h.excluded})`),
   "", "## What this does and doesn't show", "",
   "- The leaf, tree, CID and allocation rules are reimplemented from docs/tax-vault-spec.md, not imported from the site. The leaf sort was added to the spec after an audit found it only in the site's code.",
-  "- Snapshot balances are rebuilt per token account from the last transaction at or before the snapshot slot (or are the current balance when nothing touched the account since). This trusts the RPC's transaction history; rerun with `--rpc` against another provider to cross-check.",
-  "- Token accounts closed since the snapshot aren't enumerated, except the ATAs of wallets a list names. Owners are taken as they are now.",
+  "- Snapshot balances are today's balances (read at a known slot) minus every TEST balance change after the snapshot, taken from every transaction that names the mint. That history is complete because TEST's transfer fee makes Token-2022 refuse transfers that don't name the mint; it includes accounts closed since. It trusts the RPC's transaction history; rerun with `--rpc` against another provider to cross-check.",
+  "- The builder records its snapshot slot before it scans, so its balances can be from a few slots later; the check accepts one slot between the recorded slot and publication at which every balance matches, and says which.",
+  "- An account's owner is the one its transactions report; an owner change (SetAuthority) isn't modelled.",
   "- Program-owned (off-curve) holders are excluded by the token's rules. That is a rule, not evidence of who the tokens inside belong to: TEST held through a router, escrow or smart wallet earns nothing.",
   "- Correct arithmetic doesn't make the rules fair, and point-in-time snapshots can be gamed when a payout outweighs the round-trip tax and price impact at that size and pool depth.",
   "",
