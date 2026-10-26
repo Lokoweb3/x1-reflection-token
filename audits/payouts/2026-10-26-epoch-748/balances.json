@@ -1,0 +1,710 @@
+[
+ {
+  "epoch": "747",
+  "snapshotSlot": "88606344",
+  "holders": [
+   {
+    "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+    "now": "171645042412",
+    "snapshot": "171645042412",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "Gm6EZFo3N2o2KbTFzYEnWogicYGvfsbwaqy1xNdZhnjz",
+      "amount": "171645042412",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": null
+   },
+   {
+    "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+    "now": "492535871814127663",
+    "snapshot": null,
+    "excluded": "off-curve (program-owned)",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+    "now": "19308353974230898",
+    "snapshot": "19308353974230898",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "8gjm3NojY7TU96FF7ZAXPMJK79Aj7tHvJYFqMnkkRvLK",
+      "amount": "19308353974230898",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "19308353974230898"
+   },
+   {
+    "owner": "n2BnyVQwFJ3dqyWBTQSELwYFNyuLbZLimLLHjVGwaCE",
+    "now": "0",
+    "snapshot": "1887125791683880",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "9Dx7TcPGXFxuxQJbEczRU3wJ5seeqAU4p2rz1aEismXr",
+      "amount": "1887125791683880",
+      "from": "2BAbU2SyUHkcP9haeNsBUDYdDNevqH6kSkYArPKjrTQ1mVMKEkTiThXDnRm61HWfaSRUWKJbY5fsSquSMn3aF44k"
+     }
+    ],
+    "stated": "1887125791683880"
+   },
+   {
+    "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+    "now": "2731821881437877",
+    "snapshot": "2731821881437877",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "D43vEamgnVSghN2AQPVEckfiEvucbApeZqTXyhCad1r2",
+      "amount": "2731821881437877",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "2731821881437877"
+   },
+   {
+    "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+    "now": "69301316615",
+    "snapshot": null,
+    "excluded": "excludeOwners",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+    "now": "7439493206072673",
+    "snapshot": null,
+    "excluded": "off-curve (program-owned)",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+    "now": "9500000000000",
+    "snapshot": "9500000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "DcPkJXzhm2u5LvU5KsUm1nTqnnSKhRvxYZr2jZ6moB3m",
+      "amount": "9500000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "9500000000000"
+   },
+   {
+    "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+    "now": "1042404705595689",
+    "snapshot": "1042404705595689",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "cvsev7nyKsfxVuku8YJdYkqCfos4hRb1F5PELq6Ck2G",
+      "amount": "1042404705595689",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "1042404705595689"
+   },
+   {
+    "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+    "now": "10000000000000",
+    "snapshot": "10000000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "DJgDczVWGPsMYTCwXGt57BAXTDUjF4ttwCBqcZEySxxr",
+      "amount": "10000000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "10000000000000"
+   },
+   {
+    "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+    "now": "100000000000000",
+    "snapshot": "100000000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "Dv4ZhVxL6g3JnbW4kmahLN2DphZ2fc2s8aGwitv7hfJz",
+      "amount": "100000000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "100000000000000"
+   },
+   {
+    "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+    "now": "8529704375000000",
+    "snapshot": "8529704375000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "6zm3KMUFZYCQM1nV3NDAnoPDneBQUPRLexxwka3TvB5r",
+      "amount": "8529704375000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "8529704375000000"
+   },
+   {
+    "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+    "now": "215596373935670",
+    "snapshot": "215596373935670",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "3fTnYDwsCpHdEADQYFUUhB4edfFngifH3Pch2wqy5m7d",
+      "amount": "215596373935670",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "215596373935670"
+   },
+   {
+    "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+    "now": "66036049648922340",
+    "snapshot": "66036049648922340",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "7d8CbMb19g2GMxJjPtf6ZkuMYRQU8ZTPFQzkWVUJfvby",
+      "amount": "66036049648922340",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "66036049648922340"
+   },
+   {
+    "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+    "now": "2781163201543682",
+    "snapshot": "2781163201543682",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "4YaJWvcnZ8qSgQAeNEnNfAf1hdqkUJ4R2vVgndxTcP57",
+      "amount": "2781163201543682",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "2781163201543682"
+   },
+   {
+    "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+    "now": "7249999999999999",
+    "snapshot": "7249999999999999",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "Ewv6BsSXY2oCBDD2hhBCv8eRjDsFhnfUxdFVZsyhsaGv",
+      "amount": "7249999999999999",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "7249999999999999"
+   },
+   {
+    "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+    "now": "9696713726714",
+    "snapshot": null,
+    "excluded": "vault auth PDA",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+    "now": "99829397373118865",
+    "snapshot": "99829397373118865",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "DmhHsik7zBzKJ8FxoMoSbsU7iHfpP3wKnxUmxHcMw8sA",
+      "amount": "99829397373118865",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "99829397373118865"
+   },
+   {
+    "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+    "now": "17706309925170451",
+    "snapshot": "17706309925170451",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "AizHkAbKGneBXGN6rvS1mW1gYKh34A45brzPcgU3qkNa",
+      "amount": "17706309925170451",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "17706309925170451"
+   },
+   {
+    "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+    "now": "653666552096368",
+    "snapshot": null,
+    "excluded": "off-curve (program-owned)",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+    "now": "29175374649008212",
+    "snapshot": "29175374649008212",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "8W1vByYWY1KCdPLHcw5ZtoeMmmM5ejtNfEaLZ7LC2t5t",
+      "amount": "29175374649008212",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "29175374649008212"
+   },
+   {
+    "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+    "now": "47593261880226218",
+    "snapshot": "47593261880226218",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "9VLKfGj39w3jqMS6DauNSs9aNjcqy83cUziEVyanJ2SW",
+      "amount": "47593261880226218",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "47593261880226218"
+   },
+   {
+    "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+    "now": "100000000000000",
+    "snapshot": "100000000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "8DbzxraqvYTmq3NJ9k6aGkLwQh5KLG34G3Xuue1HWDRw",
+      "amount": "100000000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "100000000000000"
+   },
+   {
+    "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+    "now": "58336047960408218",
+    "snapshot": "58336047960408218",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "APwTmPYANd5Q6UWDdXGcNmb2w7rRpcLoBHUDovozab7x",
+      "amount": "58336047960408218",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "58336047960408218"
+   },
+   {
+    "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+    "now": "54238179118075854",
+    "snapshot": "54238179118075854",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "4oAQHoS9STjQTKhn8eW1qu9aV5VZSaaUKkNihCRTgw58",
+      "amount": "54238179118075854",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "54238179118075854"
+   },
+   {
+    "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+    "now": "733115027301413",
+    "snapshot": "733115027301413",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "2oKLdrYA8nJqS6rSXNsjMorXTQ3V62xFmM59WcceTCo1",
+      "amount": "733115027301413",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "733115027301413"
+   },
+   {
+    "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+    "now": "217433530594993",
+    "snapshot": "217433530594993",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "2JTcWDcZnqpkXP6195xUe2E8CiBfawaMbe1wuAc2CRbJ",
+      "amount": "217433530594993",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "217433530594993"
+   }
+  ]
+ },
+ {
+  "epoch": "748",
+  "snapshotSlot": "88618779",
+  "holders": [
+   {
+    "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+    "now": "171645042412",
+    "snapshot": "171645042412",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "Gm6EZFo3N2o2KbTFzYEnWogicYGvfsbwaqy1xNdZhnjz",
+      "amount": "171645042412",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": null
+   },
+   {
+    "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+    "now": "492535871814127663",
+    "snapshot": null,
+    "excluded": "off-curve (program-owned)",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+    "now": "19308353974230898",
+    "snapshot": "19308353974230898",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "8gjm3NojY7TU96FF7ZAXPMJK79Aj7tHvJYFqMnkkRvLK",
+      "amount": "19308353974230898",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "19308353974230898"
+   },
+   {
+    "owner": "n2BnyVQwFJ3dqyWBTQSELwYFNyuLbZLimLLHjVGwaCE",
+    "now": "0",
+    "snapshot": "1887125791683880",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "9Dx7TcPGXFxuxQJbEczRU3wJ5seeqAU4p2rz1aEismXr",
+      "amount": "1887125791683880",
+      "from": "2BAbU2SyUHkcP9haeNsBUDYdDNevqH6kSkYArPKjrTQ1mVMKEkTiThXDnRm61HWfaSRUWKJbY5fsSquSMn3aF44k"
+     }
+    ],
+    "stated": "1887125791683880"
+   },
+   {
+    "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+    "now": "2731821881437877",
+    "snapshot": "2731821881437877",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "D43vEamgnVSghN2AQPVEckfiEvucbApeZqTXyhCad1r2",
+      "amount": "2731821881437877",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "2731821881437877"
+   },
+   {
+    "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+    "now": "69301316615",
+    "snapshot": null,
+    "excluded": "excludeOwners",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+    "now": "7439493206072673",
+    "snapshot": null,
+    "excluded": "off-curve (program-owned)",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+    "now": "9500000000000",
+    "snapshot": "9500000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "DcPkJXzhm2u5LvU5KsUm1nTqnnSKhRvxYZr2jZ6moB3m",
+      "amount": "9500000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "9500000000000"
+   },
+   {
+    "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+    "now": "1042404705595689",
+    "snapshot": "1042404705595689",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "cvsev7nyKsfxVuku8YJdYkqCfos4hRb1F5PELq6Ck2G",
+      "amount": "1042404705595689",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "1042404705595689"
+   },
+   {
+    "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+    "now": "10000000000000",
+    "snapshot": "10000000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "DJgDczVWGPsMYTCwXGt57BAXTDUjF4ttwCBqcZEySxxr",
+      "amount": "10000000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "10000000000000"
+   },
+   {
+    "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+    "now": "100000000000000",
+    "snapshot": "100000000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "Dv4ZhVxL6g3JnbW4kmahLN2DphZ2fc2s8aGwitv7hfJz",
+      "amount": "100000000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "100000000000000"
+   },
+   {
+    "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+    "now": "8529704375000000",
+    "snapshot": "8529704375000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "6zm3KMUFZYCQM1nV3NDAnoPDneBQUPRLexxwka3TvB5r",
+      "amount": "8529704375000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "8529704375000000"
+   },
+   {
+    "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+    "now": "215596373935670",
+    "snapshot": "215596373935670",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "3fTnYDwsCpHdEADQYFUUhB4edfFngifH3Pch2wqy5m7d",
+      "amount": "215596373935670",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "215596373935670"
+   },
+   {
+    "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+    "now": "66036049648922340",
+    "snapshot": "66036049648922340",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "7d8CbMb19g2GMxJjPtf6ZkuMYRQU8ZTPFQzkWVUJfvby",
+      "amount": "66036049648922340",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "66036049648922340"
+   },
+   {
+    "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+    "now": "2781163201543682",
+    "snapshot": "2781163201543682",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "4YaJWvcnZ8qSgQAeNEnNfAf1hdqkUJ4R2vVgndxTcP57",
+      "amount": "2781163201543682",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "2781163201543682"
+   },
+   {
+    "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+    "now": "7249999999999999",
+    "snapshot": "7249999999999999",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "Ewv6BsSXY2oCBDD2hhBCv8eRjDsFhnfUxdFVZsyhsaGv",
+      "amount": "7249999999999999",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "7249999999999999"
+   },
+   {
+    "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+    "now": "9696713726714",
+    "snapshot": null,
+    "excluded": "vault auth PDA",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+    "now": "99829397373118865",
+    "snapshot": "99829397373118865",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "DmhHsik7zBzKJ8FxoMoSbsU7iHfpP3wKnxUmxHcMw8sA",
+      "amount": "99829397373118865",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "99829397373118865"
+   },
+   {
+    "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+    "now": "17706309925170451",
+    "snapshot": "17706309925170451",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "AizHkAbKGneBXGN6rvS1mW1gYKh34A45brzPcgU3qkNa",
+      "amount": "17706309925170451",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "17706309925170451"
+   },
+   {
+    "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+    "now": "653666552096368",
+    "snapshot": null,
+    "excluded": "off-curve (program-owned)",
+    "sources": [],
+    "stated": null
+   },
+   {
+    "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+    "now": "29175374649008212",
+    "snapshot": "29175374649008212",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "8W1vByYWY1KCdPLHcw5ZtoeMmmM5ejtNfEaLZ7LC2t5t",
+      "amount": "29175374649008212",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "29175374649008212"
+   },
+   {
+    "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+    "now": "47593261880226218",
+    "snapshot": "47593261880226218",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "9VLKfGj39w3jqMS6DauNSs9aNjcqy83cUziEVyanJ2SW",
+      "amount": "47593261880226218",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "47593261880226218"
+   },
+   {
+    "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+    "now": "100000000000000",
+    "snapshot": "100000000000000",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "8DbzxraqvYTmq3NJ9k6aGkLwQh5KLG34G3Xuue1HWDRw",
+      "amount": "100000000000000",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "100000000000000"
+   },
+   {
+    "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+    "now": "58336047960408218",
+    "snapshot": "58336047960408218",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "APwTmPYANd5Q6UWDdXGcNmb2w7rRpcLoBHUDovozab7x",
+      "amount": "58336047960408218",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "58336047960408218"
+   },
+   {
+    "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+    "now": "54238179118075854",
+    "snapshot": "54238179118075854",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "4oAQHoS9STjQTKhn8eW1qu9aV5VZSaaUKkNihCRTgw58",
+      "amount": "54238179118075854",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "54238179118075854"
+   },
+   {
+    "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+    "now": "733115027301413",
+    "snapshot": "733115027301413",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "2oKLdrYA8nJqS6rSXNsjMorXTQ3V62xFmM59WcceTCo1",
+      "amount": "733115027301413",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "733115027301413"
+   },
+   {
+    "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+    "now": "217433530594993",
+    "snapshot": "217433530594993",
+    "excluded": null,
+    "sources": [
+     {
+      "account": "2JTcWDcZnqpkXP6195xUe2E8CiBfawaMbe1wuAc2CRbJ",
+      "amount": "217433530594993",
+      "from": "unchanged since"
+     }
+    ],
+    "stated": "217433530594993"
+   }
+  ]
+ }
+]
