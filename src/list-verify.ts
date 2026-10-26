@@ -18,7 +18,7 @@
  */
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { BURN_OWNERS, eligibleBalances, scanTokenAccounts } from "./holders.js";
+import { BURN_OWNERS, eligibleBalances, scanTokenAccountsAt } from "./holders.js";
 import {
   CID_CODEC, CID_LEN, IX, buildVaultTree, cidFromBytes, decodeVault, effectiveList, vaultAuthPda, type Vault,
 } from "./taxvault.js";
@@ -324,7 +324,7 @@ export async function checkProposal(conn: Connection, a: { squadsProgram: Public
   const xdex = pool.owner;
   let rules = defaultRules(0n);
   try { rules = rulesFromJson((JSON.parse(out.file.toString("utf8")) as ListFileJson).rules, rules); } catch { /* verifyList reports it */ }
-  const [paid, slotNow, rows] = await Promise.all([readPaidRecords(conn, a.taxProgram, v.address), conn.getSlot("confirmed"), scanTokenAccounts(conn, v.mint)]);
+  const [paid, { slot: slotNow, rows }] = await Promise.all([readPaidRecords(conn, a.taxProgram, v.address), scanTokenAccountsAt(conn, v.mint)]);
   const balancesNow = eligibleBalances(rows, eligibilityFor(rules, vaultAuthPda(a.taxProgram, v.mint), xdex, publisherExclusion(publisher)));
   out.result = verifyList({ taxProgram: a.taxProgram, vault: v, publisher, xdex, ix: out.args, file: out.file, prevList, paid, balancesNow, slotNow, now, opts: a.opts });
   return out;

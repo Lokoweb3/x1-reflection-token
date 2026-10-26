@@ -15,20 +15,32 @@ export interface TokenAccountRow {
 
 /** Every Token-2022 account for the mint, with balance and withheld transfer fees. */
 export async function scanTokenAccounts(conn: Connection, mint: PublicKey): Promise<TokenAccountRow[]> {
+  return (await scanTokenAccountsAt(conn, mint)).rows;
+}
+
+/**
+ * The same scan with the slot the RPC read it at (its context slot), so a list's snapshot
+ * slot is the slot the balances are from, not a getSlot() taken before the read.
+ */
+export async function scanTokenAccountsAt(conn: Connection, mint: PublicKey): Promise<{ slot: number; rows: TokenAccountRow[] }> {
   const raw = await conn.getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
     commitment: "confirmed",
+    withContext: true,
     filters: [{ memcmp: { offset: 0, bytes: mint.toBase58() } }],
   });
-  return raw.map(({ pubkey, account }) => {
-    const acc = unpackAccount(pubkey, account, TOKEN_2022_PROGRAM_ID);
-    return {
-      address: pubkey,
-      owner: acc.owner.toBase58(),
-      amount: acc.amount,
-      withheld: getTransferFeeAmount(acc)?.withheldAmount ?? 0n,
-      frozen: acc.isFrozen || (acc as { state?: AccountState }).state === AccountState.Frozen,
-    };
-  });
+  return {
+    slot: raw.context.slot,
+    rows: raw.value.map(({ pubkey, account }) => {
+      const acc = unpackAccount(pubkey, account, TOKEN_2022_PROGRAM_ID);
+      return {
+        address: pubkey,
+        owner: acc.owner.toBase58(),
+        amount: acc.amount,
+        withheld: getTransferFeeAmount(acc)?.withheldAmount ?? 0n,
+        frozen: acc.isFrozen || (acc as { state?: AccountState }).state === AccountState.Frozen,
+      };
+    }),
+  };
 }
 
 export interface EligibilityRules {
