@@ -1,0 +1,456 @@
+{
+ "slot": 88648744,
+ "rpc": "https://rpc.mainnet.x1.xyz",
+ "mint": "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz",
+ "programs": [
+  {
+   "name": "XDEX",
+   "id": "sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN",
+   "upgradeable": true,
+   "authority": "cveZ26DWAWDQb3jUubHmdEM3GxvYt6gqfxdxD2ASNNY"
+  },
+  {
+   "name": "lp_locker",
+   "id": "5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C",
+   "upgradeable": true,
+   "authority": "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy"
+  },
+  {
+   "name": "tax_vault",
+   "id": "D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW",
+   "upgradeable": true,
+   "authority": "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy"
+  }
+ ],
+ "pools": [
+  {
+   "name": "TEST/GOOGL.X",
+   "pool": {
+    "address": "RbAdtoqyPqKMzNvyPPW68MsEFBGa4P56KmapSCVhSv5",
+    "vaults": [
+     "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+     "4wMBX7iQ9iHx8oTdS2RRcZM9c9TeXX9iK2AnPDKJFrdC"
+    ],
+    "lpMint": "D4TE9zDYaqJzeavcrXgiyANX3t9qcQC3r74qemvWsLPd",
+    "mints": [
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz",
+     "E3v5m81RLR3ZAjNuCeMjbniCmwBUd1j2iWsvtpXiBVe5"
+    ],
+    "lpSupply": "3088725588040",
+    "lpDecimals": 9,
+    "fees": [
+     "15869596806911",
+     "64547"
+    ]
+   },
+   "reserves": [
+    "72577209222333821",
+    "131770880"
+   ],
+   "other": "E3v5m81RLR3ZAjNuCeMjbniCmwBUd1j2iWsvtpXiBVe5",
+   "mintSupply": "3088725587940",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "EPCcsofokx8UTswmpnSumB6eEv5Mo1TiLcr9yvgo3cKi",
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "amount": "2640985688417",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "AGWeD2kccqonwn4GdqsHVfTyoS1ZvpNu1FNdL9R3moXq",
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "amount": "347706879305",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "36zdWK6k6vpnNgVxSbY6dp7g3Q1hxeZ7QhVWRQd66hxA",
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "amount": "100033020218",
+     "kind": "wallet (free to withdraw)"
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "3088725587940",
+    "burned (the pool still counts it; nobody can withdraw it)": "100"
+   },
+   "foreverPct": 0,
+   "timedPct": 0,
+   "freePct": 99.9999
+  },
+  {
+   "name": "TEST/wSOL.X",
+   "pool": {
+    "address": "JCzN5PgCgqVCkPc1PLvKVTw1Kr6M792xMMvBzbbVbMw5",
+    "vaults": [
+     "9YA9Ro8BCXGRxGhA7vVSqfEZcUyftVD1SejzCJUYiU9k",
+     "EZR8G1qFJQ5zXxTargj1pSjJEL74utXT1QTJENSRSisL"
+    ],
+    "lpMint": "J1VEf3ZrDuxb2P6qJSoP76NH5wdm6hWJNA21pdqAvw6U",
+    "mints": [
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz",
+     "JDqX4vau2P5zJmLpuNitvR6vMURr9kYjex6oZQXz3Ja8"
+    ],
+    "lpSupply": "7573212001437",
+    "lpDecimals": 9,
+    "fees": [
+     "12147710316844",
+     "970649"
+    ]
+   },
+   "reserves": [
+    "31836053991909195",
+    "1806808061"
+   ],
+   "other": "JDqX4vau2P5zJmLpuNitvR6vMURr9kYjex6oZQXz3Ja8",
+   "mintSupply": "7573212001337",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "GMVh1VxY94tpr6aYUgtZ7jhzp2dnK2W5uCm8q4bznMBT",
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "amount": "6838397362144",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "6Tt7BvKhsUKsTkrnQfA5k3z3YxXUnYeYvHVfUqBLZ8Ew",
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "amount": "734814639193",
+     "kind": "wallet (free to withdraw)"
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "7573212001337",
+    "burned (the pool still counts it; nobody can withdraw it)": "100"
+   },
+   "foreverPct": 0,
+   "timedPct": 0,
+   "freePct": 99.9999
+  },
+  {
+   "name": "TEST/XNT",
+   "pool": {
+    "address": "6FszF7uwrujG8vdmxUCyLLAoQMRCUNgoWuebhuzZ6sVn",
+    "vaults": [
+     "LpPoNAKE11tMpdq98gKpMpUKu5Ur8iLNTgDsy71evBK",
+     "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz"
+    ],
+    "lpMint": "ExH45uLbit6wFUZHKH26sBS9sTL2DSGHL6vPchJoQ3sq",
+    "mints": [
+     "So11111111111111111111111111111111111111112",
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz"
+    ],
+    "lpSupply": "892092349780161",
+    "lpDecimals": 9,
+    "fees": [
+     "7243066510",
+     "577420372489459"
+    ]
+   },
+   "reserves": [
+    "4577726867135",
+    "177043667381340052"
+   ],
+   "other": "So11111111111111111111111111111111111111112",
+   "mintSupply": "819438441838227",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "6donwsJriA895ZaKcAnjGSVwQaiG2r3LusLPJBkPE2BQ",
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "amount": "405102697355502",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "Bfn3v6grRFohmfpHvgbtqReRkQe4Qny4YeWFRSHEZR5m",
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "amount": "316867801034736",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "CJuwvR9XGnFjhYLCRroU11EBMk85okumiWdH4J2UY7iH",
+     "owner": "fzTp5jCHmXaVKiAUwNzX2U9YR5ydiiwyL7zJYFmhTXf",
+     "amount": "97467943447989",
+     "kind": "locked forever (lp_locker)",
+     "lock": "fzTp5jCHmXaVKiAUwNzX2U9YR5ydiiwyL7zJYFmhTXf",
+     "nftMint": "BsR6qa86A1yaN6RXD8vQrLVXDrtdu4ek1eq82Aadjdqf",
+     "pool": "6FszF7uwrujG8vdmxUCyLLAoQMRCUNgoWuebhuzZ6sVn",
+     "lpMint": "ExH45uLbit6wFUZHKH26sBS9sTL2DSGHL6vPchJoQ3sq",
+     "locker": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "lockedLp": "97467943447989",
+     "feeLpCollected": "0",
+     "lockedAt": 1790565757,
+     "unlockAt": null,
+     "nftOwner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n"
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "721970498390238",
+    "locked forever (lp_locker)": "97467943447989",
+    "burned (the pool still counts it; nobody can withdraw it)": "72653907941934"
+   },
+   "foreverPct": 19.0699,
+   "timedPct": 0,
+   "freePct": 80.93
+  },
+  {
+   "name": "TEST/SPY.X",
+   "pool": {
+    "address": "Dh97wiRrASnFRpXbsdEBLACvncVxk5xct7KnVTCUTVBV",
+    "vaults": [
+     "B82jzTU89pVjfBndPhUBDAn5T2ZrP82QiecVF9tipK1p",
+     "14P8NXYMios7suAshrXmaBnT4Q3Qn5rVd5p1DhsjoCwy"
+    ],
+    "lpMint": "84wL7aEgVkBQB4UbaKTXyrcjZv4WMfnjHezJ3awsWqB1",
+    "mints": [
+     "5Z7K1BaM36ubfNHkXbiDm5GW3KGzVSt3DFxD2b7p4VtJ",
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz"
+    ],
+    "lpSupply": "214454669367",
+    "lpDecimals": 9,
+    "fees": [
+     "2634",
+     "2507036488540"
+    ]
+   },
+   "reserves": [
+    "6200007",
+    "7431381774243511"
+   ],
+   "other": "5Z7K1BaM36ubfNHkXbiDm5GW3KGzVSt3DFxD2b7p4VtJ",
+   "mintSupply": "214454669267",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "2e2PYUiCDretuuGc9RJWaKCNHcP3i7skrYUrL6vdxL7N",
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "amount": "214454669267",
+     "kind": "wallet (free to withdraw)"
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "214454669267",
+    "burned (the pool still counts it; nobody can withdraw it)": "100"
+   },
+   "foreverPct": 0,
+   "timedPct": 0,
+   "freePct": 99.9999
+  },
+  {
+   "name": "TEST/USDC.X",
+   "pool": {
+    "address": "7drPqaqcXcyYmdo62xucGqZzALuPCbGBCXCT41nWMmQD",
+    "vaults": [
+     "E52PrH4XT4fTdPZMPXwtwigdQv9C2yQF8stm2EReUbHL",
+     "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp"
+    ],
+    "lpMint": "AA4BXDW6sYaKVawrQRnwH6rGWG61E4oUfzxrdLCfWZTn",
+    "mints": [
+     "B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq",
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz"
+    ],
+    "lpSupply": "11937535467181",
+    "lpDecimals": 9,
+    "fees": [
+     "756636",
+     "171398077006860"
+    ]
+   },
+   "reserves": [
+    "961717736",
+    "149462713210814580"
+   ],
+   "other": "B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq",
+   "mintSupply": "11937535467081",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "9nJ5frLB5CcXUbTaeTwXuydA1vXPsoGgFNiEtvXKF9k6",
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "amount": "8722943296874",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "4VcqgB21wGxrtkfFMYsoSVGYEzcntrC7c7mbPwdAFQfQ",
+     "owner": "2KgF1UdGTsAXBA5KWRDwZfraW6r98y2xwWAXdZgm5Syr",
+     "amount": "1865166968846",
+     "kind": "timed lock (8N4E locker)",
+     "lock": "2KgF1UdGTsAXBA5KWRDwZfraW6r98y2xwWAXdZgm5Syr",
+     "locker8n4e": true,
+     "lockOwner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "lockedLp": "1865166968846",
+     "unlockAt": 1822678998
+    },
+    {
+     "tokenAccount": "a8zTahsvnh4VjNR424Ro9AAPcfn3cMsSDXN3CZdRHTN",
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "amount": "994599225508",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "FNKwSN63aLaQDsB6eHUUYexeV9Kaf453WMzZ8mqeSeuC",
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "amount": "254825975853",
+     "kind": "wallet (free to withdraw)"
+    },
+    {
+     "tokenAccount": "A2UkfTqvG9JMfadzpfj5VL7H3USmLg7gheqffcbjdDk9",
+     "owner": "BZ57aG6v6L3uWcA9WXBAEtrfUFaN77tX4Raw5U5nBAVW",
+     "amount": "100000000000",
+     "kind": "timed lock, expired: withdrawable",
+     "lock": "BZ57aG6v6L3uWcA9WXBAEtrfUFaN77tX4Raw5U5nBAVW",
+     "locker8n4e": true,
+     "lockOwner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "lockedLp": "100000000000",
+     "unlockAt": 1791746392
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "9972368498235",
+    "timed lock (8N4E locker)": "1865166968846",
+    "timed lock, expired: withdrawable": "100000000000",
+    "burned (the pool still counts it; nobody can withdraw it)": "100"
+   },
+   "foreverPct": 0,
+   "timedPct": 15.6243,
+   "freePct": 84.3756
+  },
+  {
+   "name": "TEST/META.X",
+   "pool": {
+    "address": "J4TX2QbwRCThxkH5cNY8vnNQ7k7aBQMg5BDZ8DghhJ2E",
+    "vaults": [
+     "4MDZfqFfTEAS8fw27z12RCTjyHZbHSsPdeMMUnhYdL9u",
+     "rTz2DKHTmdMtyAFLBnPBm5X7C5r8CNyinA7Y68gNYcT"
+    ],
+    "lpMint": "3heJqoDm5RbRduwQepyYNqz9Dz8hG1Sta7XFxKRmfdEV",
+    "mints": [
+     "36fxZScbKNXxAfJoiqk76egFGm5b7wWFutjJfXTU5nhT",
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz"
+    ],
+    "lpSupply": "192137372991",
+    "lpDecimals": 9,
+    "fees": [
+     "3544",
+     "2493644306714"
+    ]
+   },
+   "reserves": [
+    "5856772",
+    "6319901024138773"
+   ],
+   "other": "36fxZScbKNXxAfJoiqk76egFGm5b7wWFutjJfXTU5nhT",
+   "mintSupply": "192137372891",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "AmYjMqD9BJDBGe6v7HsMNWiztMvrZTHWv92FAfQ8ogkR",
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "amount": "192137372891",
+     "kind": "wallet (free to withdraw)"
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "192137372891",
+    "burned (the pool still counts it; nobody can withdraw it)": "100"
+   },
+   "foreverPct": 0,
+   "timedPct": 0,
+   "freePct": 99.9999
+  },
+  {
+   "name": "TEST/JACK",
+   "pool": {
+    "address": "BkydiVjKjbuV8CJKeokn7N6LCTu3fVJfMR6wzTGQtjci",
+    "vaults": [
+     "848nnJHEC94ByVQWQs1T56BhHL5v7qWMb3ZaYL641vs",
+     "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR"
+    ],
+    "lpMint": "FEKxWJZ8XduVm2rHQoEWGZ8fQgqM86fAPY5h5Nq7ybpm",
+    "mints": [
+     "54uAdhRHZmbGnD1tATH7F7Qp5us7xsXJQTf6MpMEdFbg",
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz"
+    ],
+    "lpSupply": "3878140835938",
+    "lpDecimals": 9,
+    "fees": [
+     "749571",
+     "73342294235236"
+    ]
+   },
+   "reserves": [
+    "428580612",
+    "35270146770441264"
+   ],
+   "other": "54uAdhRHZmbGnD1tATH7F7Qp5us7xsXJQTf6MpMEdFbg",
+   "mintSupply": "3878140835838",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "7quxEJVmP7d66NiVS2Tp1Doi46ZiuucYgp5scz999Zi",
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "amount": "3878140835838",
+     "kind": "wallet (free to withdraw)"
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "3878140835838",
+    "burned (the pool still counts it; nobody can withdraw it)": "100"
+   },
+   "foreverPct": 0,
+   "timedPct": 0,
+   "freePct": 99.9999
+  },
+  {
+   "name": "TEST/OWL ARMY",
+   "pool": {
+    "address": "FsLiDtArJLoRhQ2d5HA1oMQsY95mwBvSARRBTsAoZzNv",
+    "vaults": [
+     "HqKcufXtgqe1nozsNsAH4ZRHuEJkN6thRzPNhBvJEHWM",
+     "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA"
+    ],
+    "lpMint": "HbpayRufABEdLyJEaw4gn1B1vzLBAQYNNHrNFwwWtdgJ",
+    "mints": [
+     "AGMSQQKiC7gKvYsH5AruxqKogjR4A38UsFK4QzBtp6M2",
+     "C9P839X3i1ijPyCvHEg3HpbEVjBLHJdxGXjez3yVn3Rz"
+    ],
+    "lpSupply": "20486692632589927",
+    "lpDecimals": 9,
+    "fees": [
+     "20208880799639",
+     "9511309360119"
+    ]
+   },
+   "reserves": [
+    "35933529434712678",
+    "11718003196377153"
+   ],
+   "other": "AGMSQQKiC7gKvYsH5AruxqKogjR4A38UsFK4QzBtp6M2",
+   "mintSupply": "20486692632589827",
+   "mintAuthority": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "mintAuthorityIsXdex": true,
+   "holders": [
+    {
+     "tokenAccount": "JCAh6cKYxefPzF4AcasqDHQtoM1XeynK77Fvtz3S2XgD",
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "amount": "20486692632589827",
+     "kind": "wallet (free to withdraw)"
+    }
+   ],
+   "byKind": {
+    "wallet (free to withdraw)": "20486692632589827",
+    "burned (the pool still counts it; nobody can withdraw it)": "100"
+   },
+   "foreverPct": 0,
+   "timedPct": 0,
+   "freePct": 99.9999
+  }
+ ]
+}
