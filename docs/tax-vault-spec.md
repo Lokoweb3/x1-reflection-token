@@ -118,7 +118,11 @@ rent-paying). Also `holders_paid ≤ list_total ≤ holders_funded`, and auth_to
 Leaf = `sha256("99tax-vault" || vault || wallet || cumulative_u64_le)`; nodes are
 `sha256(min(a,b) || max(a,b))` (sorted pairs, same as the Holder Pass tree in lp_locker).
 Each wallet's `cumulative` is its running total of XNT allocated since the vault started.
-An odd node at the end of a level is carried up unchanged.
+**Leaves are sorted by their hash (ascending, bytewise) before pairing**; then each level
+pairs neighbours left to right, and an odd node at the end of a level is carried up
+unchanged. The program only checks proofs, so a tree built in another order still pays
+correctly, but its root differs from the one published: anyone rebuilding a list's root
+from its entries must sort the leaves first (`merkleTree` in `src/holder-pass.ts`).
 
 Test vector (checked by the Rust unit test and scripts/local-vault-test.ts):
 vault = 32 bytes of `0x01`, wallet A = 32 bytes of `0x02` with cumulative `1_000_000_000`,
@@ -126,6 +130,12 @@ wallet B = 32 bytes of `0x03` with cumulative `5`.
 - leaf A = `f1df94e69dc2ad0365865c9eaeb81deac6bfbc98a2e5abe33decf1128b63e821`
 - leaf B = `b5435ce16439596a11ef089ff9711a91493463e941f8a646a52fa2c3834ce969`
 - root(A, B) = `1992f5473e12ba77f8b909f1cb3272b5492544fc3e37ea7a5d7c3776290bda6a`
+
+With a third wallet C = 32 bytes of `0x04`, cumulative `7` (the sort matters from three
+leaves on):
+- leaf C = `ef7755084b19b6a373b6cd6591f847e3721836ea37d786cfb1c16f94c3af1194`
+- sorted leaves B, C, A → root(A, B, C) = `fa5686efd55343f28edd1e8892315bb847074dcde2a080abeabef401131282de`
+  (pairing in entry order A, B, C would give `f7c3ae25…`, which is not the published root)
 
 ## Instructions (Anchor discriminator = sha256("global:<name>")[..8])
 

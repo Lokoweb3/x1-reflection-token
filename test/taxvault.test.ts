@@ -414,6 +414,14 @@ test("leaf and root match the tax_vault program (fixed vector from its Rust test
   assert.ok(verifyVaultProof(proofs[b.toBase58()], root, vault, b, 5n));
 });
 
+test("a three-leaf list sorts its leaves by hash before pairing (spec vector)", () => {
+  const vault = new PublicKey(Buffer.alloc(32, 1));
+  const [a, b, c] = [2, 3, 4].map((x) => new PublicKey(Buffer.alloc(32, x)));
+  assert.equal(vaultLeaf(vault, c, 7n).toString("hex"), "ef7755084b19b6a373b6cd6591f847e3721836ea37d786cfb1c16f94c3af1194");
+  const { root } = buildVaultTree(vault, { [a.toBase58()]: 1_000_000_000n, [b.toBase58()]: 5n, [c.toBase58()]: 7n });
+  assert.equal(root.toString("hex"), "fa5686efd55343f28edd1e8892315bb847074dcde2a080abeabef401131282de");
+});
+
 test("sale impact cap is min(3%, half the tax) and the program id is the deployed one", () => {
   assert.equal(sellImpactBps(500), 250);
   assert.equal(sellImpactBps(1000), 300);

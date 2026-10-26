@@ -1,0 +1,243 @@
+{
+ "rpc": "https://rpc.mainnet.x1.xyz",
+ "auditedAt": "2026-10-26T06:29:55.976Z",
+ "checks": [
+  {
+   "ok": true,
+   "what": "tax_vault: latest deployment corroborated: the newest deploy/upgrade found (slot 82790170) is programdata's last-deployed slot"
+  },
+  {
+   "ok": true,
+   "what": "tax_vault: deployed bytes are tax_vault.so (sha256 25e9881f2cc77f0b…, 590376 bytes)"
+  },
+  {
+   "ok": true,
+   "what": "lp_locker: latest deployment corroborated: the newest deploy/upgrade found (slot 82022808) is programdata's last-deployed slot"
+  },
+  {
+   "ok": true,
+   "what": "lp_locker: deployed bytes are lp_locker.so (sha256 f25f916e5bc82687…, 554776 bytes)"
+  },
+  {
+   "ok": true,
+   "what": "XDEX: latest deployment corroborated: the newest deploy/upgrade found (slot 21171632) is programdata's last-deployed slot"
+  },
+  {
+   "ok": true,
+   "what": "8N4E locker: latest deployment corroborated: the newest deploy/upgrade found (slot 83503000) is programdata's last-deployed slot"
+  }
+ ],
+ "programs": [
+  {
+   "name": "tax_vault",
+   "id": "D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW",
+   "upgradeable": true,
+   "programdata": "8TwYZi2zFMs1hg5xTHAYyaTyMCp4xR6wUqoCLq5jmFzt",
+   "authority": "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy",
+   "kind": "plain key: one private key signs upgrades; no on-chain multisig or timelock",
+   "squads": null,
+   "notes": [],
+   "lastDeploySlot": 82790170,
+   "accountCodeBytes": 590376,
+   "accountCodeSha256": "25e9881f2cc77f0b07f218d64f4abc57b4fa9ad6ed3dc3f18304cc38332ad6f4",
+   "localSha256": "25e9881f2cc77f0b07f218d64f4abc57b4fa9ad6ed3dc3f18304cc38332ad6f4",
+   "history": [
+    {
+     "signature": "3QfDcFWHF5CYUozTPeeSYZNxzXBsqaqiJtJeedWzk5CeKADZ2itx6ZWUd8BhP3NJUskZkPT1uHBpiDebFSRzqavG",
+     "slot": 82790170,
+     "blockTime": 1790839576,
+     "failed": false,
+     "instructions": [
+      "DeployWithMaxDataLen"
+     ],
+     "signers": [
+      "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy",
+      "D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW"
+     ],
+     "outerPrograms": [
+      "11111111111111111111111111111111",
+      "BPFLoaderUpgradeab1e11111111111111111111111"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lp_locker",
+   "id": "5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C",
+   "upgradeable": true,
+   "programdata": "QiAvHzMTW2MitAYdFW2pkbhvcaRHLbbv1hjJ89TxECQ",
+   "authority": "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy",
+   "kind": "plain key: one private key signs upgrades; no on-chain multisig or timelock",
+   "squads": null,
+   "notes": [],
+   "lastDeploySlot": 82022808,
+   "accountCodeBytes": 554776,
+   "accountCodeSha256": "f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b",
+   "localSha256": "f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b",
+   "history": [
+    {
+     "signature": "4x8mLvNT3F1JV5FvFTt97r2z1tNFMuyh8RDHYk71wLYYZJ52TAaNHcatvv1fhjiY9tsPcTBhx2Rx3ZarnMXAqcX7",
+     "slot": 82022808,
+     "blockTime": 1790557572,
+     "failed": false,
+     "instructions": [
+      "DeployWithMaxDataLen"
+     ],
+     "signers": [
+      "53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy",
+      "5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C"
+     ],
+     "outerPrograms": [
+      "11111111111111111111111111111111",
+      "BPFLoaderUpgradeab1e11111111111111111111111"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "XDEX",
+   "id": "sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN",
+   "upgradeable": true,
+   "programdata": "DKWxE6DXkDFy7ExYGYbKboES6xh7oLQ7WBY74L9wCjBg",
+   "authority": "cveZ26DWAWDQb3jUubHmdEM3GxvYt6gqfxdxD2ASNNY",
+   "kind": "plain key: one private key signs upgrades; no on-chain multisig or timelock",
+   "squads": null,
+   "notes": [],
+   "lastDeploySlot": 21171632,
+   "accountCodeBytes": 526600,
+   "accountCodeSha256": "f39c656dbb85ebf8c0d8259d2f8c89732132ebda2ef5cbf0a5ddbb34097fbe82",
+   "localSha256": null,
+   "history": [
+    {
+     "signature": "2R6B6EQA44LAAMeWGSrKDJxsCJGK7k1ZZm4MEq5BUgV7aTdczMqcL2jA3xqrQNSocDje7ixo4b6GoRAMLCnU9gdE",
+     "slot": 21171632,
+     "blockTime": 1767774891,
+     "failed": false,
+     "instructions": [
+      "Upgrade"
+     ],
+     "signers": [
+      "cveZ26DWAWDQb3jUubHmdEM3GxvYt6gqfxdxD2ASNNY"
+     ],
+     "outerPrograms": [
+      "BPFLoaderUpgradeab1e11111111111111111111111"
+     ]
+    },
+    {
+     "signature": "2vHjV4vnWxtoaVsTnURq1hrMBKybzz3SXwKTEkyN8J4qjNoTburHHaWGc5KsbB7qLkE1oN3LPkTASpzBsjYRfBUx",
+     "slot": 21166774,
+     "blockTime": 1767773073,
+     "failed": false,
+     "instructions": [
+      "Upgrade"
+     ],
+     "signers": [
+      "cveZ26DWAWDQb3jUubHmdEM3GxvYt6gqfxdxD2ASNNY"
+     ],
+     "outerPrograms": [
+      "BPFLoaderUpgradeab1e11111111111111111111111"
+     ]
+    },
+    {
+     "signature": "3MmcmM5iPmbLKJM9hQjL1ozGMET2vZxRJZUVFRpyr6DoHvDo5rikto93SR6HpRoA9Fg1tm6B5JrtrBeg4ThCuGmg",
+     "slot": 21166751,
+     "blockTime": 1767773064,
+     "failed": false,
+     "instructions": [
+      "ExtendProgram"
+     ],
+     "signers": [
+      "cveZ26DWAWDQb3jUubHmdEM3GxvYt6gqfxdxD2ASNNY"
+     ],
+     "outerPrograms": [
+      "BPFLoaderUpgradeab1e11111111111111111111111"
+     ]
+    },
+    {
+     "signature": "4G7u4bkMHgb7E6r4tfhekPVGGJZ3wzjB1ji3VHdQ3RNa7qMQcFxX3J6kDuXXq7CKXBh4GjN1i3rDDBehhA4nDmY6",
+     "slot": 12588452,
+     "blockTime": 1764569676,
+     "failed": false,
+     "instructions": [
+      "DeployWithMaxDataLen"
+     ],
+     "signers": [
+      "cveZ26DWAWDQb3jUubHmdEM3GxvYt6gqfxdxD2ASNNY",
+      "sEsYH97wqmfnkzHedjNcw3zyJdPvUmsa9AixhS4b4fN"
+     ],
+     "outerPrograms": [
+      "11111111111111111111111111111111",
+      "BPFLoaderUpgradeab1e11111111111111111111111"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "8N4E locker",
+   "id": "8N4E3ZHBiYRMia8Hs27J6f3b9QM8wiTYcMXukSq96Ejf",
+   "upgradeable": true,
+   "programdata": "EFbWCHckBayzN2VCp8P8iXa3Pfx8EJySxT54vMDQJ3M1",
+   "authority": "9ssu2qKWm3HXijnBYm951ZuyDdhnZnzynoc5bkiP3Ryc",
+   "kind": "plain key: one private key signs upgrades; no on-chain multisig or timelock",
+   "squads": null,
+   "notes": [],
+   "lastDeploySlot": 83503000,
+   "accountCodeBytes": 410544,
+   "accountCodeSha256": "c42c95d200043eb7befcea18033ad2ef3db5904e6195c0d60abec881f31d1e66",
+   "localSha256": null,
+   "history": [
+    {
+     "signature": "58sXcyyywevVq7j7rLcnCTMzfoyh4twxffuTeKTZ2eAS1QDLFWLRKTHEg6127VCMp2PgUNiHtBcTQzvPAXbvYpcM",
+     "slot": 83503000,
+     "blockTime": 1791101625,
+     "failed": false,
+     "instructions": [
+      "DeployWithMaxDataLen"
+     ],
+     "signers": [
+      "9ssu2qKWm3HXijnBYm951ZuyDdhnZnzynoc5bkiP3Ryc",
+      "8N4E3ZHBiYRMia8Hs27J6f3b9QM8wiTYcMXukSq96Ejf"
+     ],
+     "outerPrograms": [
+      "11111111111111111111111111111111",
+      "BPFLoaderUpgradeab1e11111111111111111111111"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Token-2022 (TEST)",
+   "id": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "upgradeable": true,
+   "programdata": "DoU57AYuPFu2QU514RktNPG22QhApEjnKxnBcu4BHDTY",
+   "authority": "2sXr5THr5ZAwSfuJAc1KogPKZ2uKkhfNUAtEvNw5Q6Z7",
+   "kind": "program-derived address (only its program can sign; not a recognised multisig)",
+   "squads": null,
+   "notes": [
+    "no deploy or upgrade transaction exists (programdata says slot 0): it was installed by the runtime (genesis or a feature activation), so its history can't be checked here"
+   ],
+   "lastDeploySlot": 0,
+   "accountCodeBytes": 683544,
+   "accountCodeSha256": "d32c6364ed5d2a0ad68a8f4b04baff9b24d2b7e60df1bcdd1894071d07d69de6",
+   "localSha256": null,
+   "history": []
+  },
+  {
+   "name": "SPL Token (LP mints)",
+   "id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+   "upgradeable": false,
+   "programdata": "3gvYRKWyXRR9xKWe1ZjPhLY5ZJRN7KDB4rFZFGoJfFk2",
+   "authority": null,
+   "kind": "none: can no longer be upgraded",
+   "squads": null,
+   "notes": [
+    "no deploy or upgrade transaction exists (programdata says slot 85798112): it was installed by the runtime (genesis or a feature activation), so its history can't be checked here"
+   ],
+   "lastDeploySlot": 85798112,
+   "accountCodeBytes": 108600,
+   "accountCodeSha256": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697",
+   "localSha256": null,
+   "history": []
+  }
+ ]
+}
