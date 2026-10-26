@@ -11,8 +11,10 @@
  *   - an off-curve address (a PDA): only its program can sign for it; a Squads v4 vault is reported with its
  *     multisig's members, threshold and time lock.
  *   - none: the program can no longer be upgraded.
- * The history is checked for completeness against programdata's own "last deployed" slot, which must equal the
- * newest deploy or upgrade found. `--compare` hashes a local build the same way (trailing zero padding removed).
+ * The newest deploy or upgrade found is checked against programdata's own "last deployed" slot: that corroborates
+ * the latest deployment only. Earlier upgrades or authority changes are as complete as the RPC's signature index.
+ * `--compare <name>=<build.so>` checks a local build against the chain the way docs/REVIEW.md does: the deployed
+ * bytes start with the build, byte for byte, and anything after it (an account bigger than the build) is zeros.
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -47,7 +49,6 @@ async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
   }
 }
 const et = (unix: number) => new Date(unix * 1000).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" }) + " ET";
-const trimZeros = (b: Buffer) => { let e = b.length; while (e > 0 && b[e - 1] === 0) e--; return b.subarray(0, e); };
 const sha = (b: Buffer) => crypto.createHash("sha256").update(b).digest("hex");
 
 /** A Squads v4 multisig whose vault 0..3 is `authority`, found through the multisig named in its upgrade transactions. */
@@ -85,7 +86,7 @@ for (const [name, id] of PROGRAMS) {
   const pd = Buffer.from((await rpc("getAccountInfo", [programdata, { encoding: "base64" }])).value.data[0], "base64");
   const lastDeploySlot = Number(pd.readBigUInt64LE(4));
   const authority = pd[12] ? bs58.encode(pd.subarray(13, 45)) : null;
-  const code = trimZeros(pd.subarray(45));
+  const code = pd.subarray(45); // the deployed ELF, zero-padded to the account's size
 
   // every transaction touching programdata: the loader's management instructions, with signers and outer programs
   const history: any[] = [];
@@ -107,7 +108,7 @@ for (const [name, id] of PROGRAMS) {
   }
   const deploys = history.filter((h) => !h.failed && h.instructions.some((x: string) => x === "DeployWithMaxDataLen" || x === "Upgrade"));
   const notes: string[] = [];
-  if (deploys.length) check(deploys[0].slot === lastDeploySlot, `${name}: newest deploy/upgrade found (slot ${deploys[0].slot}) is programdata's last-deployed slot ${lastDeploySlot}, so none is missing`);
+  if (deploys.length) check(deploys[0].slot === lastDeploySlot, `${name}: latest deployment corroborated: the newest deploy/upgrade found (slot ${deploys[0].slot}) is programdata's last-deployed slot`);
   else notes.push(`no deploy or upgrade transaction exists (programdata says slot ${lastDeploySlot}): it was installed by the runtime (genesis or a feature activation), so its history can't be checked here`);
   for (const x of notes) console.log(`  NOTE ${name}: ${x}`);
 
@@ -120,9 +121,14 @@ for (const [name, id] of PROGRAMS) {
     squads = await squadsFor(authority, multisigCandidates);
     kind = squads ? `Squads v4 vault: ${squads.threshold} of ${squads.members.length}, time lock ${squads.timeLockSeconds}s` : "program-derived address (only its program can sign; not a recognised multisig)";
   }
-  const local = compare.has(name) ? sha(trimZeros(fs.readFileSync(compare.get(name)!))) : null;
-  if (local) check(local === sha(code), `${name}: deployed code matches ${compare.get(name)}`);
-  report.push({ name, id, upgradeable: !!authority, programdata, authority, kind, squads, notes, lastDeploySlot, codeBytes: code.length, codeSha256: sha(code), localSha256: local, history });
+  let local: string | null = null;
+  if (compare.has(name)) {
+    const b = fs.readFileSync(compare.get(name)!);
+    local = sha(b);
+    const same = b.length <= code.length && code.subarray(0, b.length).equals(b) && code.subarray(b.length).every((x) => x === 0);
+    check(same, `${name}: deployed bytes are ${path.basename(compare.get(name)!)} (sha256 ${local.slice(0, 16)}…, ${b.length} bytes)${code.length > b.length ? " plus zero padding" : ""}`);
+  }
+  report.push({ name, id, upgradeable: !!authority, programdata, authority, kind, squads, notes, lastDeploySlot, accountCodeBytes: code.length, accountCodeSha256: sha(code), localSha256: local, history });
   console.log(`${name.padEnd(22)} ${id}: ${authority ? `authority ${authority} — ${kind}` : kind}`);
   for (const h of history) console.log(`    ${h.blockTime ? et(h.blockTime) : "?"} slot ${h.slot} ${h.failed ? "FAILED " : ""}${h.instructions.join(", ")} signed by ${h.signers.join(", ")}`);
   console.log(`    code ${code.length} bytes, sha256 ${sha(code)}`);
@@ -137,11 +143,11 @@ fs.writeFileSync(path.join(dir, "README.md"), [
   "| Program | Upgrade authority | Kind | Deploys/upgrades | Last deployed |", "|---|---|---|---|---|",
   ...report.map((r) => `| ${r.name} \`${r.id.slice(0, 6)}…\` | ${r.authority ? `\`${r.authority}\`` : "—"} | ${r.kind} | ${r.history ? r.history.filter((h: any) => h.instructions.some((x: string) => x === "DeployWithMaxDataLen" || x === "Upgrade")).length : "—"} | ${r.history?.[0]?.blockTime ? et(r.history[0].blockTime) : "—"} |`),
   "", "## Checks", "", ...checks.map((c) => `- ${c.ok ? "✅" : "❌"} ${c.what}`),
-  "", "## History", "", ...report.filter((r) => r.history).flatMap((r) => [`### ${r.name}`, "", ...r.history.map((h: any) => `- ${h.blockTime ? et(h.blockTime) : "?"}: ${h.instructions.join(", ")} by ${h.signers.map((s: string) => `\`${s}\``).join(", ")} ([tx](https://explorer.mainnet.x1.xyz/tx/${h.signature}))`), ...r.notes.map((x: string) => `- note: ${x}`), `- deployed code: ${r.codeBytes} bytes, sha256 \`${r.codeSha256}\``, ""]),
+  "", "## History", "", ...report.filter((r) => r.history).flatMap((r) => [`### ${r.name}`, "", ...r.history.map((h: any) => `- ${h.blockTime ? et(h.blockTime) : "?"}: ${h.instructions.join(", ")} by ${h.signers.map((s: string) => `\`${s}\``).join(", ")} ([tx](https://explorer.mainnet.x1.xyz/tx/${h.signature}))`), ...r.notes.map((x: string) => `- note: ${x}`), `- program account: ${r.accountCodeBytes} bytes, sha256 \`${r.accountCodeSha256}\`${r.localSha256 ? ` (reproduced: build sha256 \`${r.localSha256}\`)` : ""}`, ""]),
   "## What this does and doesn't show", "",
   "- A plain-key authority's signature can't be constrained on-chain: there is no multisig or timelock to verify. Who holds the key is an off-chain fact.",
-  "- The code hash identifies what is deployed; it ties to source only through a reproducible build of a known commit (`--compare`).",
-  "- It trusts the RPC it reads; the last-deployed slot check guards against a truncated history.",
+  "- The code hash identifies what is deployed; it ties to source only through a reproducible build of a known commit (`--compare`; see REPRODUCE.md when present). A build that doesn't match proves nothing about the source by itself: toolchain, flags, features and dependencies change the bytes.",
+  "- The last-deployed slot check corroborates the latest deployment only; earlier history is as complete as the RPC's signature index. It trusts the RPC it reads.",
   "",
 ].join("\n"));
 console.log(`\nevidence in ${path.relative(process.cwd(), dir)}/`);

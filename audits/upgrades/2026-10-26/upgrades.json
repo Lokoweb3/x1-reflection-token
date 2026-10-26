@@ -1,22 +1,30 @@
 {
  "rpc": "https://rpc.mainnet.x1.xyz",
- "auditedAt": "2026-10-26T06:21:12.698Z",
+ "auditedAt": "2026-10-26T06:29:55.976Z",
  "checks": [
   {
    "ok": true,
-   "what": "tax_vault: newest deploy/upgrade found (slot 82790170) is programdata's last-deployed slot 82790170, so none is missing"
+   "what": "tax_vault: latest deployment corroborated: the newest deploy/upgrade found (slot 82790170) is programdata's last-deployed slot"
   },
   {
    "ok": true,
-   "what": "lp_locker: newest deploy/upgrade found (slot 82022808) is programdata's last-deployed slot 82022808, so none is missing"
+   "what": "tax_vault: deployed bytes are tax_vault.so (sha256 25e9881f2cc77f0b…, 590376 bytes)"
   },
   {
    "ok": true,
-   "what": "XDEX: newest deploy/upgrade found (slot 21171632) is programdata's last-deployed slot 21171632, so none is missing"
+   "what": "lp_locker: latest deployment corroborated: the newest deploy/upgrade found (slot 82022808) is programdata's last-deployed slot"
   },
   {
    "ok": true,
-   "what": "8N4E locker: newest deploy/upgrade found (slot 83503000) is programdata's last-deployed slot 83503000, so none is missing"
+   "what": "lp_locker: deployed bytes are lp_locker.so (sha256 f25f916e5bc82687…, 554776 bytes)"
+  },
+  {
+   "ok": true,
+   "what": "XDEX: latest deployment corroborated: the newest deploy/upgrade found (slot 21171632) is programdata's last-deployed slot"
+  },
+  {
+   "ok": true,
+   "what": "8N4E locker: latest deployment corroborated: the newest deploy/upgrade found (slot 83503000) is programdata's last-deployed slot"
   }
  ],
  "programs": [
@@ -30,9 +38,9 @@
    "squads": null,
    "notes": [],
    "lastDeploySlot": 82790170,
-   "codeBytes": 590361,
-   "codeSha256": "076656a3ec87af390244260ac4e8b4c665f51753b5028fde3fdc2e3670082a43",
-   "localSha256": null,
+   "accountCodeBytes": 590376,
+   "accountCodeSha256": "25e9881f2cc77f0b07f218d64f4abc57b4fa9ad6ed3dc3f18304cc38332ad6f4",
+   "localSha256": "25e9881f2cc77f0b07f218d64f4abc57b4fa9ad6ed3dc3f18304cc38332ad6f4",
    "history": [
     {
      "signature": "3QfDcFWHF5CYUozTPeeSYZNxzXBsqaqiJtJeedWzk5CeKADZ2itx6ZWUd8BhP3NJUskZkPT1uHBpiDebFSRzqavG",
@@ -63,9 +71,9 @@
    "squads": null,
    "notes": [],
    "lastDeploySlot": 82022808,
-   "codeBytes": 554761,
-   "codeSha256": "0fa9bb8849069005b9090b00a62fa820d7612d7c6e9e5d36ca2cec113babdc3c",
-   "localSha256": null,
+   "accountCodeBytes": 554776,
+   "accountCodeSha256": "f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b",
+   "localSha256": "f25f916e5bc82687533b81b5eeefdc99b9834b7e5256d3af2380a57c5859074b",
    "history": [
     {
      "signature": "4x8mLvNT3F1JV5FvFTt97r2z1tNFMuyh8RDHYk71wLYYZJ52TAaNHcatvv1fhjiY9tsPcTBhx2Rx3ZarnMXAqcX7",
@@ -96,8 +104,8 @@
    "squads": null,
    "notes": [],
    "lastDeploySlot": 21171632,
-   "codeBytes": 520457,
-   "codeSha256": "8d9118e42b1f64f175f31b27d89c6b77e4ee26387b929ce468b0396ff56f813e",
+   "accountCodeBytes": 526600,
+   "accountCodeSha256": "f39c656dbb85ebf8c0d8259d2f8c89732132ebda2ef5cbf0a5ddbb34097fbe82",
    "localSha256": null,
    "history": [
     {
@@ -174,8 +182,8 @@
    "squads": null,
    "notes": [],
    "lastDeploySlot": 83503000,
-   "codeBytes": 410529,
-   "codeSha256": "236ade6f1c57cb3f34ed00df29680ce51e68abdf25e7476c9ece4f2d5f17eb28",
+   "accountCodeBytes": 410544,
+   "accountCodeSha256": "c42c95d200043eb7befcea18033ad2ef3db5904e6195c0d60abec881f31d1e66",
    "localSha256": null,
    "history": [
     {
@@ -209,8 +217,8 @@
     "no deploy or upgrade transaction exists (programdata says slot 0): it was installed by the runtime (genesis or a feature activation), so its history can't be checked here"
    ],
    "lastDeploySlot": 0,
-   "codeBytes": 683529,
-   "codeSha256": "154c5568ca08a7d8e7704370bf5e6508cb699d033eaeb02c77ad43a4ef25a0c4",
+   "accountCodeBytes": 683544,
+   "accountCodeSha256": "d32c6364ed5d2a0ad68a8f4b04baff9b24d2b7e60df1bcdd1894071d07d69de6",
    "localSha256": null,
    "history": []
   },
@@ -226,8 +234,8 @@
     "no deploy or upgrade transaction exists (programdata says slot 85798112): it was installed by the runtime (genesis or a feature activation), so its history can't be checked here"
    ],
    "lastDeploySlot": 85798112,
-   "codeBytes": 108585,
-   "codeSha256": "435df1e70f1ca6258eb01a4507701688c7f1a22656e3e4ef361db473bf478075",
+   "accountCodeBytes": 108600,
+   "accountCodeSha256": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697",
    "localSha256": null,
    "history": []
   }
