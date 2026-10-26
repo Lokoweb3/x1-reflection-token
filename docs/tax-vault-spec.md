@@ -642,7 +642,8 @@ The pinned list file (`listFileText`) keeps every field it had (`parseListFile` 
 
 ```
 inputs: {
-  slot,            // slot the balances were read at
+  slot,            // context slot of the balance scan (getProgramAccounts withContext); lists built before
+                   // this change recorded a getSlot() taken just before the scan, a lower bound
   holdersFunded,   // the vault's holders_funded the pot was taken from
   floor,           // max(list_total, pending_total, holders_paid) when built
   pot,             // XNT split pro-rata: holdersFunded - sum(start)

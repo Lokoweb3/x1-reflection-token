@@ -30,7 +30,7 @@ import bs58 from "bs58";
 import { AddressLookupTableAccount, Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
 import { DEFAULT_MIN_HARVEST_XNT, fromBaseUnits, toBaseUnits, xnt } from "./config.js";
-import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, type EligibilityRules } from "./holders.js";
+import { BURN_OWNERS, allocate, eligibleBalances, scanTokenAccounts, scanTokenAccountsAt, type EligibilityRules } from "./holders.js";
 import { outcome, sendAndConfirm, sign, signV0, simulate, withPriority } from "./tx.js";
 import { decodePool, maxLpFor, poolAuthority, quoteBuy, quoteSell, snapshot, spotValue } from "./xdex.js";
 import {
@@ -588,8 +588,7 @@ export function vaultCrank(env: CrankEnv) {
     for (const x of seen.values()) start += x;
     const pot = v.holdersFunded > start ? v.holdersFunded - start : 0n;
     if (pot < await xntInPayout(conn, xdex, v, t.rules.minCycle) && !force) return null;
-    const slot = await conn.getSlot("confirmed");
-    const rows = await scanTokenAccounts(conn, t.mint);
+    const { slot, rows } = await scanTokenAccountsAt(conn, t.mint); // slot: the balances' own context slot
     // A publisher that is a PDA (a multisig vault) never earns; a plain-key publisher is unchanged.
     const balances = eligibleBalances(rows, eligibilityFor(t.rules, vaultAuthPda(program, t.mint), xdex, publisherExclusion(v.publisher)));
     const floor = [v.listTotal, v.pendingTotal, v.holdersPaid].reduce((a, b) => (b > a ? b : a), 0n);
