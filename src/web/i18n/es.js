@@ -135,6 +135,7 @@ I18N.add("es", {
   "99¢ + tax": "99¢ + impuesto",
   "{fee} {feeSym} + tax": "{fee} {feeSym} + impuesto",
   "Launch a token →": "Lanzar un token →",
+  "Or let an AI agent launch it →": "O deja que un agente de IA lo lance →",
   "How does it work?": "¿Cómo funciona?",
   "No code. Your wallet signs everything. Tokens trade on XDEX, X1's DEX.": "Sin código. Tu billetera firma todo. Los tokens se operan en XDEX, el DEX de X1.",
   "Tax split calculator": "Calculadora del reparto del impuesto",
@@ -292,6 +293,7 @@ I18N.add("es", {
   "Connect a wallet, fill in the form, approve three transactions.": "Conecta una billetera, llena el formulario, aprueba tres transacciones.",
   "99 + Tax · tax tokens on X1 that pay holders in XNT ·": "99 + Tax · tokens con impuesto en X1 que pagan a los holders en XNT ·",
   "Open source on GitHub": "Código abierto en GitHub",
+  "For AI agents": "Para agentes de IA",
   "· Estimates only. Crypto is volatile and nothing is guaranteed. Not financial advice.": "· Solo estimaciones. Las criptomonedas son volátiles y nada está garantizado. No es asesoría financiera.",
 
   // ---------- launch (factory.html) ----------

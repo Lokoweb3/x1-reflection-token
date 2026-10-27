@@ -258,6 +258,42 @@ from there. (A site without the Tax Vault gives each token its own distributor w
   put it behind an HTTPS reverse proxy, set `factory.publicUrl` and list the host name in
   `factory.hosts`. It only listens on 127.0.0.1 by default.
 
+### For AI agents
+
+`/agents` explains how to let an AI agent launch a token: paste one line into the agent, install the skill
+in Claude Code, or run the launcher yourself. Each site serves the same files for its own network:
+
+| Path | What |
+|---|---|
+| `/skill.md` | the skill (the `SKILL.md` format) agents follow: collect the settings, run the check, show it, launch only after the person's explicit yes |
+| `/agents/launch.mjs` | the launcher, signing with a local keypair that never leaves the machine |
+| `/agents/reference.md` | the launch API step by step, with its real error responses |
+| `/agents/openapi.yaml` | the same API as OpenAPI 3.0, with both servers |
+| `/llms.txt` | a pointer to the above |
+
+Always pass the site, and keep it for the whole launch, including a resume:
+
+```bash
+curl -O https://99tax-testnet.vercel.app/agents/launch.mjs && npm i @solana/web3.js@1
+S=https://99tax-testnet.vercel.app   # or https://99tax.vercel.app (mainnet, real funds)
+node launch.mjs --site $S --keypair wallet.json --name "My Token" --symbol MYT --supply 1000000000 --tax 5 --pool 10 --lock forever         # check: sends nothing
+node launch.mjs --site $S --keypair wallet.json --name "My Token" --symbol MYT --supply 1000000000 --tax 5 --pool 10 --lock forever --live  # launch
+node launch.mjs --site $S --keypair wallet.json --resume <mint> --live   # finish a launch that stopped
+node launch.mjs --site $S --keypair wallet.json --status                 # this wallet's launches
+```
+
+The check prints the network, settings, whether the launch uses the Tax Vault, the paying wallet and the full
+cost, and stops if the wallet is short. Before anything is signed, the launcher stops unless the site's
+`/api/info` reports the network expected for that URL (`https://99tax.vercel.app` → mainnet,
+`https://99tax-testnet.vercel.app` → testnet; any other site needs `--network mainnet|testnet`), and a resumed
+mint must belong to that site and exist on that network's chain. The person's approval is a rule in the skill:
+the launcher can't tell who said yes.
+
+The files live in src/agents/; `{{SITE}}` and `{{NETWORK}}` are filled in with `factory.publicUrl`, used as it
+is (a local site points agents at itself), and the network. So a public site needs `factory.publicUrl` set to
+its public URL. After changing them, restart the site (`reflect-factory` on testnet, `reflect-mainnet-factory`
+on mainnet). Validate the OpenAPI file with `npx @redocly/cli lint src/agents/openapi.yaml`.
+
 ## Token logos and metadata on IPFS
 
 With a Pinata API key with Files: Write (`factory.pinataJwt` in config.json, or `PINATA_JWT`), the launch
@@ -720,7 +756,13 @@ launch forms. The **recovery page** is pinned to IPFS and served at `/recovery`:
 stranger's wallet ran CUP's due steps live and earned the crank reward (appointing and
 fallback were driven from it on a local copy of CUP's vault). A **GitHub Actions keeper**
 runs the crank on a schedule with its own wallet. Also live: a
-creator's collect-fees and metadata updates with a real wallet, and the faucet.
+creator's collect-fees and metadata updates with a real wallet, and the faucet. **Agent launches**
+(27 Oct 2026, ahead of deploying `/agents`): a launch with the launcher (`src/agents/launch.mjs`) against
+the live testnet site, vault-enabled, confirmed every step: token, pool, lock, start the tax vault,
+register (VCHK, `4M3hjqXw…9diG`). The person approved it from the check output; a fresh agent following
+the skill stopped for that approval and refused a forwarded one. Its first payout cycle ran on the
+live crank: after test trades, the list was built, pinned to Pinata and published, and 11 minutes
+later the holder was paid exactly its list amount (0.035682435 XNT).
 
 **Reviewed:** an independent pre-audit review (Theo, 30 Sep 2026, commit `ce38a49`)
 reproduced the deployed build hashes and found no critical or high issues; two findings
@@ -738,7 +780,7 @@ still upgradeable by the team; the upgrade key moves to a Squads multisig next);
 mainnet launches on the vault (reopening shortly); payout tokens (v4) on mainnet (live on testnet since 1 Oct 2026; mainnet stays on v3 until
 then); a second, independent IPFS pin of the rewards lists and the recovery page (today
 they're pinned on one Pinata account, readable through any gateway); a JACK-paired launch on mainnet itself;  the bonding curve on
-mainnet; trustless holder payouts (lists are published by one key; see
+mainnet; an agent launch on mainnet (launches are paused there); trustless holder payouts (lists are published by one key; see
 [docs/REVIEW.md](docs/REVIEW.md#trust-assumptions)). The publisher quorum (Squads multisig +
 co-signer, [above](#publisher-quorum-and-running-a-co-signer)) is implemented and rehearsed
 on a local validator only; no testnet vault uses it yet.

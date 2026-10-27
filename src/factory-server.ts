@@ -79,8 +79,19 @@ const WALLET_PAGE = path.join(ROOT, "src", "wallet.html");
 const FAUCET_PAGE = path.join(ROOT, "src", "faucet.html");
 const LEADERBOARD_PAGE = path.join(ROOT, "src", "leaderboard.html");
 const CURVE_PAGE = path.join(ROOT, "src", "curve.html");
+const AGENTS_PAGE = path.join(ROOT, "src", "agents.html");
+/** Instructions for AI agents (/agents): a skill file, the API reference and a launch script, with this site's URL filled in. */
+const AGENT_FILES: Record<string, [string, string]> = {
+  "/skill.md": ["SKILL.md", "text/markdown; charset=utf-8"],
+  "/agents/SKILL.md": ["SKILL.md", "text/markdown; charset=utf-8"],
+  "/agents/reference.md": ["reference.md", "text/markdown; charset=utf-8"],
+  "/agents/launch.mjs": ["launch.mjs", "text/javascript; charset=utf-8"],
+  "/agents/openapi.yaml": ["openapi.yaml", "application/yaml; charset=utf-8"],
+};
 const V4_PAGE = path.join(ROOT, "src", "v4.html");
 /** Serve a page; without a faucet (e.g. mainnet), leave its "Faucet" tab out, and the "Curve" tab without the curve program. */
+/** Fill this site's URL (factory.publicUrl, as it is: a local site stays local) and network into an agent file or page. */
+const forSite = (text: string) => text.replaceAll("{{SITE}}", publicUrl.replace(/\/$/, "")).replaceAll("{{NETWORK}}", cfg.network);
 function page(file: string) {
   let html = fs.readFileSync(file, "utf8");
   if (!faucetOn()) html = html.replace(/\s*<a href="\/faucet"[^>]*>Faucet<\/a>/g, "");
@@ -1602,6 +1613,13 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, page(LEADERBOARD_PAGE), "text/html; charset=utf-8"); return;
     }
     if (url.pathname === "/faucet") { send(res, 200, page(FAUCET_PAGE), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/agents") { send(res, 200, forSite(page(AGENTS_PAGE)), "text/html; charset=utf-8"); return; }
+    const agentFile = AGENT_FILES[url.pathname];
+    if (agentFile) { send(res, 200, forSite(fs.readFileSync(path.join(ROOT, "src", "agents", agentFile[0]), "utf8")), agentFile[1]); return; }
+    if (url.pathname === "/llms.txt") {
+      send(res, 200, forSite("# 99 + Tax\n\nTax-token launchpad on X1 ({{NETWORK}}). AI agents: launch a token with the skill at {{SITE}}/skill.md (API reference: {{SITE}}/agents/reference.md).\n"), "text/plain; charset=utf-8");
+      return;
+    }
     if (curves && (url.pathname === "/curve" || /^\/curve\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname))) {
       send(res, 200, page(CURVE_PAGE), "text/html; charset=utf-8"); return;
     }
