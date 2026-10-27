@@ -760,8 +760,9 @@ creator's collect-fees and metadata updates with a real wallet, and the faucet. 
 (27 Oct 2026, ahead of deploying `/agents`): a launch with the launcher (`src/agents/launch.mjs`) against
 the live testnet site, vault-enabled, confirmed every step: token, pool, lock, start the tax vault,
 register (VCHK, `4M3hjqXw…9diG`). The person approved it from the check output; a fresh agent following
-the skill stopped for that approval and refused a forwarded one. Its first payout cycle is still to
-be seen.
+the skill stopped for that approval and refused a forwarded one. Its first payout cycle ran on the
+live crank: after test trades, the list was built, pinned to Pinata and published, and 11 minutes
+later the holder was paid exactly its list amount (0.035682435 XNT).
 
 **Reviewed:** an independent pre-audit review (Theo, 30 Sep 2026, commit `ce38a49`)
 reproduced the deployed build hashes and found no critical or high issues; two findings
