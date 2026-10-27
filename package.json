@@ -32,11 +32,14 @@
     "bs58": "^6.0.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^22.20.5",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   },
   "overrides": {
     "jayson": "5.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
