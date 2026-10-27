@@ -14,7 +14,7 @@
  *     [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]]
  *     [--limit-buy <mint>@<price>[:<USDC.X budget>],...]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
- *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
+ *     [env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (open the token accounts and lookup table)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep [--execute]
  *       (sell the leftovers: every token the wallet holds besides XNT, through its deepest XNT pool)
@@ -88,11 +88,12 @@ function usage(problem?: string): never {
     + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>] [--sweep-after <minutes>]\n"
     + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--limit-buy <mint>@<price>[:<budget>],...] [--keep <mint,...>]\n"
     + "         [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]\n"
-    + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
+    + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] (Telegram: env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
   process.exit(problem ? 1 : 0);
 }
 if (has("help") || has("h")) usage();
+if (has("telegram-token") || has("telegram-chat")) usage("Telegram settings come from the environment only (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID): a token on the command line shows in ps and the journal");
 const num = (name: string, d: number) => { const x = flag(name); if (x === undefined) return d; const n = Number(x); if (!Number.isFinite(n) || n < 0) usage(`--${name} takes a number`); return n; };
 const lamports = (x: number) => BigInt(Math.round(x * 1e9));
 
@@ -118,10 +119,9 @@ const own = (flag("own") ?? "").split(",").filter(Boolean).map((w) => new Public
 const ownMinProfit = flag("own-min-profit") !== undefined ? lamports(num("own-min-profit", 0)) : undefined;
 const pairs = !has("no-pairs");
 const webhook = flag("webhook");
-if (!!flag("telegram-token") !== !!flag("telegram-chat")) usage("Telegram needs both --telegram-token and --telegram-chat");
 const envTg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
-const tgToken = flag("telegram-token") ?? (envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined);
-const tgChat = flag("telegram-chat") ?? (envTg ? process.env.TELEGRAM_CHAT_ID : undefined);
+const tgToken = envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined;
+const tgChat = envTg ? process.env.TELEGRAM_CHAT_ID : undefined;
 const instant = !has("no-instant");
 const verbose = has("verbose");
 const cleanEveryMs = num("clean-every", 6) * 3_600_000;

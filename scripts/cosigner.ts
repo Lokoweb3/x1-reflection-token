@@ -6,7 +6,7 @@
  *
  *   npx tsx scripts/cosigner.ts --rpc <url> --keypair <co-signer key file> --multisig <address>
  *     [--network testnet|mainnet | --squads-program <id>] [--program <tax_vault id>]
- *     [--ipfs-gateway <url>[,<url>...]] [--pinata-jwt <jwt> | env PINATA_JWT] [--pinata-api <url>]
+ *     [--ipfs-gateway <url>[,<url>...]] [env PINATA_JWT] [--pinata-api <url>]
  *     [--webhook <url>] [--loop <seconds> (default 20) | --once] [--dry-run]
  *     [--tolerance-bps 500] [--max-moved-bps 1000] [--large-share-bps 2500] [--max-snapshot-age-slots 9000]
  *     [--strict] [--allow-rule-change] [--allow-rebuild] [--wait-minutes 30] [--priority <microlamports>]
@@ -16,7 +16,7 @@
  *   --network     picks the Squads program (testnet DDL3Xp6i…, mainnet SQDS4ep6…; default
  *                 testnet); --squads-program overrides it
  *   --program     the tax_vault program the lists are for (default the testnet one)
- *   --pinata-jwt  also pin every approved list file to this Pinata account (a second copy)
+ *   PINATA_JWT    (env) also pin every approved list file to this Pinata account (a second copy)
  *   --webhook     POST {"text": ...} here for every rejection and every flagged approval
  *   --dry-run     check and report, never vote or execute
  *   --wait-minutes  a list file that can't be fetched is retried this long, then rejected
@@ -49,10 +49,11 @@ const has = (name: string) => argv.includes(`--${name}`);
 function usage(problem?: string): never {
   if (problem) console.error(`cosigner: ${problem}\n`);
   console.error("Usage: npx tsx scripts/cosigner.ts --rpc <url> --keypair <file> --multisig <address> [--network testnet|mainnet] [--program <tax_vault id>]\n"
-    + "         [--ipfs-gateway <url>[,...]] [--pinata-jwt <jwt>] [--webhook <url>] [--loop <seconds> | --once] [--dry-run] [--strict] (see the file's header)");
+    + "         [--ipfs-gateway <url>[,...]] [--webhook <url>] [--loop <seconds> | --once] [--dry-run] [--strict] (see the file's header)");
   process.exit(2);
 }
 if (has("help") || has("h")) usage();
+if (has("pinata-jwt")) usage("the Pinata key comes from the environment only (PINATA_JWT): a key on the command line shows in ps and the journal");
 const rpc = flag("rpc") ?? usage("--rpc is required");
 const me = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(path.resolve(flag("keypair") ?? usage("--keypair is required")), "utf8"))));
 const ms = new PublicKey(flag("multisig") ?? usage("--multisig is required"));
@@ -61,7 +62,7 @@ if (network !== "testnet" && network !== "mainnet") usage("--network is testnet 
 const squadsProgram = new PublicKey(flag("squads-program") ?? SQUADS_PROGRAM_IDS[network]);
 const taxProgram = new PublicKey(flag("program") ?? TAX_VAULT_PROGRAM_ID);
 const gateways = (flag("ipfs-gateway") ?? `${DEFAULT_GATEWAY},${TRUSTLESS_GATEWAY},https://ipfs.io/ipfs/`).split(",").filter(Boolean).map(normGateway);
-const pinataJwt = flag("pinata-jwt") ?? process.env.PINATA_JWT ?? "";
+const pinataJwt = process.env.PINATA_JWT ?? "";
 const pinataApi = flag("pinata-api") ?? process.env.PINATA_API_URL;
 const webhook = flag("webhook");
 const loopSecs = has("once") ? 0 : Number(flag("loop") ?? 20);

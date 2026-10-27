@@ -56,10 +56,16 @@ the app, distributors and keys stay on the server (Vercel can't run them).
    `DOMAIN=`). Caddy then serves HTTPS as the server's own name, `ORIGIN_HOST` (default
    `<IP with dashes>.sslip.io`, a public DNS name that resolves to the IP; set
    `ORIGIN_HOST=origin.example.com` to use your own domain's `A` record instead), only under
-   a random secret path saved in `/root/.reflect-vercel-secret`; everything else gets a 404.
+   a random secret path saved in `/root/.reflect-vercel-secret`, and only for requests carrying
+   the `X-Origin-Auth` header secret from `/etc/caddy/reflect-origin.env` (Caddy reads it from
+   its environment through `/etc/systemd/system/caddy.service.d/reflect-origin.conf`);
+   everything else gets a 404.
    Port 80 only answers certificate challenges. Keep 80 and 443 open in the firewall
    (DigitalOcean: Networking → Firewalls, or the droplet's own ufw).
-2. On your machine: `npx vercel login`, then
+2. On your machine: `npx vercel login`, add the header secret to the Vercel project
+   (`npx vercel env add REFLECT_ORIGIN_SECRET production`, the `REFLECT_ORIGIN_SECRET` value from
+   `/etc/caddy/reflect-origin.env`; Vercel adds it to every forwarded request, so it's never in
+   `vercel.json`), then
    `BACKEND=https://<ORIGIN_HOST> SECRET=<that secret> PROJECT=<project> bash deploy/vercel-deploy.sh`.
    The hop from Vercel to the server is HTTPS too: over plain HTTP anyone on the path could
    rewrite pages or the transactions a wallet signs (the script refuses an `http://` backend).
@@ -155,9 +161,24 @@ taken-over server could hand them a draining transaction. Keep it locked down:
   Test in a second terminal before closing the first.
 - **Firewall:** only 22, 80 and 443 open (`setup.sh` does this). The app itself listens
   on 127.0.0.1 only.
-- **Vercel mode:** the secret path in `/root/.reflect-vercel-secret` is what keeps the
-  server from being called directly; it only travels over HTTPS. Never commit the generated `vercel.json`; if the
-  secret leaks, make a new one and re-run `deploy/vercel-deploy.sh`.
+- **Vercel mode:** the secret path in `/root/.reflect-vercel-secret` and the `X-Origin-Auth`
+  header secret are what keep the server from being called directly; both only travel over
+  HTTPS. Vercel's outgoing addresses are a shared, changing pool it doesn't publish, so Caddy
+  can't trust "Vercel's IPs"; it passes on the visitor address Vercel sets (`X-Forwarded-For`)
+  only for requests that carry the header secret. Never commit the generated `vercel.json`; if
+  the path secret leaks, make a new one and re-run `deploy/vercel-deploy.sh`.
+- **Rotating the header secret** (yearly, when someone with access leaves, or if it leaks), with
+  no downtime, as root on the server:
+  1. `new=$(head -c 48 /dev/urandom | base64 | tr -dc A-Za-z0-9 | head -c 48)`, set
+     `REFLECT_ORIGIN_SECRET_NEXT=$new` in `/etc/caddy/reflect-origin.env`, `systemctl reload caddy`.
+     Caddy now accepts the old and the new value.
+  2. On your machine, for each Vercel project: `npx vercel env rm REFLECT_ORIGIN_SECRET production`,
+     `npx vercel env add REFLECT_ORIGIN_SECRET production` (the new value), and redeploy
+     (`deploy/vercel-deploy.sh`, with that project's `DIR`/`PROJECT`) so it takes effect.
+  3. Check the site loads, then set `REFLECT_ORIGIN_SECRET=$new` too and `systemctl reload caddy`:
+     the old value stops working.
+  Check: `curl -s -o /dev/null -w '%{http_code}' https://<ORIGIN_HOST>/<path secret>/` is 404
+  (no header), and the Vercel address still serves the site.
 - **Faucet captcha:** create a free Cloudflare Turnstile widget (dash.cloudflare.com →
   Turnstile, add your domain) and put its keys in `config.json` as
   `factory.turnstile: { "siteKey": "...", "secret": "..." }` (or `TURNSTILE_SECRET` in the
@@ -170,11 +191,24 @@ taken-over server could hand them a draining transaction. Keep it locked down:
 
 ## 5. Backups
 
-`deploy/backup.sh` runs daily at 03:15 UTC and writes an AES-256 encrypted archive of
-`config.json`, `distributor.keypair.json`, `state/` and `factory/` to
-`/var/backups/reflect` (keeps 30). **Copy `/root/.reflect-backup-pass` somewhere safe**
-(a password manager). Without it the backups can't be decrypted. Also copy the
-archives off the server (the script shows an `rclone` example).
+`deploy/backup.sh` runs daily at 03:15 UTC and writes an encrypted archive of
+`config.json`, every `*.keypair.json`, `state/`, `factory/` and `mainnet/` to
+`/var/backups/reflect` (keeps 30), then copies it off the server. It writes to a temp file,
+keeps only an archive that tar and gpg both finished, and checks it is encrypted as expected;
+tar's errors land in `/var/log/reflect-backup.log`. Settings live in `/etc/reflect-backup.env`
+(root-only):
+
+- **Encrypt to a public key** (recommended): the server can then write backups but not read
+  them. On your own machine: `gpg --quick-gen-key "reflect backups" rsa4096 encr never`, keep
+  the private key safe (`gpg --export-secret-keys --armor` into a password manager), and copy
+  `gpg --export --armor "reflect backups"` to the server. There, as root: `gpg --import <file>`,
+  then `BACKUP_RECIPIENT=<its fingerprint>` in `/etc/reflect-backup.env`. Restore on your
+  machine: `gpg -d reflect-<stamp>.tar.gz.gpg | tar -xzf -`.
+  Without `BACKUP_RECIPIENT` the script falls back to the passphrase in
+  `/root/.reflect-backup-pass` (and warns); then **copy that file somewhere safe**, as the
+  backups can't be decrypted without it.
+- **Off the server:** `BACKUP_REMOTE=<rclone remote>:<folder>` (after `rclone config` as root);
+  the run fails if the copy fails. Without it the script warns that the backup is only local.
 
 `factory/` holds every launched token's distributor key. If it is lost, those tokens
 stop paying out and their collected tax can't be withdrawn.

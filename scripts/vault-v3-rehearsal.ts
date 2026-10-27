@@ -205,9 +205,9 @@ async function untilChainTime(unix: number, what: string) {
   ok(`chain time past ${what}`);
 }
 /** scripts/crank.ts as another wallet would run it (no site, no config.json). Async: the IPFS stand-in runs in this process. */
-async function crankTs(args: string[]) {
+async function crankTs(args: string[], pinataJwt = "") {
   const child = spawn(process.execPath, [path.join("node_modules", "tsx", "dist", "cli.mjs"), "scripts/crank.ts", "--rpc", RPC, "--program", PROGRAM.toBase58(),
-    "--ipfs-gateway", `${IPFS}/ipfs/`, ...args], { env: { ...process.env, TAX_VAULT_SHORT_WINDOWS: "1", PINATA_JWT: "" }, stdio: ["ignore", "pipe", "pipe"] });
+    "--ipfs-gateway", `${IPFS}/ipfs/`, ...args], { env: { ...process.env, TAX_VAULT_SHORT_WINDOWS: "1", PINATA_JWT: pinataJwt }, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   child.stdout!.on("data", (d) => { out += d; }); child.stderr!.on("data", (d) => { out += d; });
   const timer = setTimeout(() => child.kill(), 300_000);
@@ -432,7 +432,7 @@ try {
 
     await trade(t1.mint, t1.rec.pool, 2);
     const pinsBefore = pins;
-    await crankTs(["--keypair", runnerFile, "--all", "--publisher", newPublisherFile, "--pinata-jwt", JWT, "--pinata-api", `${IPFS}/v3/files`]);
+    await crankTs(["--keypair", runnerFile, "--all", "--publisher", newPublisherFile, "--pinata-api", `${IPFS}/v3/files`], JWT);
     const v = await readVault(t1.mint);
     assert.ok(pins > pinsBefore, "the new list was pinned first");
     assert.ok(v.pendingEpoch > v1.listEpoch && v.lastPublishAt > v1.lastPublishAt, "a list published: the clocks restart, fallback over");

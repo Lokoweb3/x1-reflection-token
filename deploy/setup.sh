@@ -10,20 +10,46 @@ set -euo pipefail
 if [[ -z "${DOMAIN:-}" && -z "${VERCEL_HOST:-}" ]]; then
   echo "Set DOMAIN=launch.example.com, or VERCEL_HOST=yourname.vercel.app"; exit 1
 fi
+# Plain hostnames only: these go into sed expressions and the Caddyfile.
+HOST_RE='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+for v in DOMAIN VERCEL_HOST ORIGIN_HOST; do
+  [[ -z "${!v:-}" || "${!v}" =~ $HOST_RE ]] || { echo "$v=${!v} isn't a hostname like launch.example.com"; exit 1; }
+done
 APP=/opt/x1-reflection-token
 REPO=${REPO:-https://github.com/Lokoweb3/x1-reflection-token.git}
 
 echo "== packages"
 apt-get update -y
-apt-get install -y curl git ufw gpg debian-keyring debian-archive-keyring apt-transport-https ca-certificates
+apt-get install -y curl git ufw gpg rclone debian-keyring debian-archive-keyring apt-transport-https ca-certificates
+# Node and Caddy come from their vendors' apt repos. Each repo's signing key is checked
+# against a pinned fingerprint before apt trusts it (no piping a script into bash), and apt
+# then verifies every package against that key. NODE_VERSION / CADDY_VERSION (e.g. 22.11.0-1nodesource1,
+# 2.8.4) pin exact package versions; without them the newest in the pinned repo is installed.
+NODESOURCE_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4   # NSolid <nsolid-gpg@nodesource.com>
+CADDY_FPR=65760C51EDEA2017CEA2CA15155B6D79CA56EA34        # Caddy Web Server <contact@caddyserver.com>
+install_key() {   # <url> <expected fingerprint> <keyring file>
+  local tmp got n
+  tmp=$(mktemp)
+  curl -fsSL "$1" -o "$tmp"
+  n=$(gpg --show-keys --with-colons "$tmp" | grep -c '^pub:' || true)
+  got=$(gpg --show-keys --with-colons "$tmp" | awk -F: '$1=="fpr"{print $10; exit}')
+  if [[ $n != 1 || $got != "$2" ]]; then
+    echo "Signing key at $1 has fingerprint ${got:-none} ($n keys); expected $2. Refusing to trust it."; rm -f "$tmp"; exit 1
+  fi
+  gpg --dearmor < "$tmp" > "$3.tmp" && mv "$3.tmp" "$3"
+  rm -f "$tmp"
+}
 if ! command -v node >/dev/null || [[ $(node -v | cut -d. -f1 | tr -d v) -lt 22 ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  apt-get install -y nodejs
+  install_key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key "$NODESOURCE_FPR" /usr/share/keyrings/nodesource.gpg
+  echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+  # Prefer NodeSource's nodejs over Ubuntu's older one.
+  printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' > /etc/apt/preferences.d/nodesource
+  apt-get update -y && apt-get install -y "nodejs${NODE_VERSION:+=$NODE_VERSION}"
 fi
 if ! command -v caddy >/dev/null; then
-  curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -y && apt-get install -y caddy
+  install_key https://dl.cloudsmith.io/public/caddy/stable/gpg.key "$CADDY_FPR" /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update -y && apt-get install -y "caddy${CADDY_VERSION:+=$CADDY_VERSION}"
 fi
 
 echo "== app user and code"
@@ -43,13 +69,29 @@ if [[ -n "${DOMAIN:-}" ]]; then
   echo "== HTTPS (Caddy) for $DOMAIN"
   sed "s/__DOMAIN__/$DOMAIN/" "$APP/deploy/Caddyfile.template" > /etc/caddy/Caddyfile
 else
-  ORIGIN_HOST=${ORIGIN_HOST:-$(curl -s https://api.ipify.org | tr . -).sslip.io}
+  if [[ -z "${ORIGIN_HOST:-}" ]]; then
+    IP=$(curl -fsS --max-time 15 https://api.ipify.org || true)
+    [[ $IP =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "Couldn't get this server's IPv4 address from api.ipify.org (got '$IP'); set ORIGIN_HOST"; exit 1; }
+    ORIGIN_HOST=$(tr . - <<< "$IP").sslip.io
+  fi
   echo "== Caddy backend for Vercel ($VERCEL_HOST), over HTTPS as $ORIGIN_HOST"
   SECRET_FILE=/root/.reflect-vercel-secret
   [[ -s $SECRET_FILE ]] || { head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32 > "$SECRET_FILE"; chmod 600 "$SECRET_FILE"; }
   echo "$ORIGIN_HOST" > /root/.reflect-origin-host
-  sed -e "s/__SECRET__/$(cat "$SECRET_FILE")/" -e "s/__PUBLIC_HOST__/$VERCEL_HOST/" -e "s/__ORIGIN_HOST__/$ORIGIN_HOST/" \
+  SECRET=$(cat "$SECRET_FILE")
+  [[ $SECRET =~ ^[A-Za-z0-9]{16,}$ ]] || { echo "$SECRET_FILE should hold 16+ letters and digits"; exit 1; }
+  sed -e "s/__SECRET__/$SECRET/" -e "s/__PUBLIC_HOST__/$VERCEL_HOST/" -e "s/__ORIGIN_HOST__/$ORIGIN_HOST/" \
     "$APP/deploy/Caddyfile.vercel.template" > /etc/caddy/Caddyfile
+  # The X-Origin-Auth header secret Vercel adds (checked by the Caddyfile). It reaches Caddy
+  # through its environment, so it isn't in the Caddyfile; both values match outside a rotation.
+  ORIGIN_ENV=/etc/caddy/reflect-origin.env
+  if [[ ! -s $ORIGIN_ENV ]]; then
+    h=$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 48)
+    (umask 077; printf 'REFLECT_ORIGIN_SECRET=%s\nREFLECT_ORIGIN_SECRET_NEXT=%s\n' "$h" "$h" > "$ORIGIN_ENV")
+  fi
+  mkdir -p /etc/systemd/system/caddy.service.d
+  printf '[Service]\nEnvironmentFile=%s\n' "$ORIGIN_ENV" > /etc/systemd/system/caddy.service.d/reflect-origin.conf
+  systemctl daemon-reload
 fi
 systemctl reload caddy || systemctl restart caddy
 
@@ -73,6 +115,8 @@ else
 fi
 
 echo "== daily encrypted backup (03:15 UTC)"
+# The passphrase is the fallback until a public key is set up: see deploy/README.md "Backups"
+# (BACKUP_RECIPIENT and BACKUP_REMOTE in /etc/reflect-backup.env).
 [[ -s /root/.reflect-backup-pass ]] || { head -c 48 /dev/urandom | base64 > /root/.reflect-backup-pass; chmod 600 /root/.reflect-backup-pass; }
 echo "15 3 * * * root $APP/deploy/backup.sh >> /var/log/reflect-backup.log 2>&1" > /etc/cron.d/reflect-backup
 
@@ -89,7 +133,8 @@ DONE
 if [[ -z "${DOMAIN:-}" ]]; then
   cat <<VDONE
   6. Vercel front door: on your own machine run
+       npx vercel env add REFLECT_ORIGIN_SECRET production   # the REFLECT_ORIGIN_SECRET value in /etc/caddy/reflect-origin.env
        BACKEND=https://$(cat /root/.reflect-origin-host) SECRET=<cat /root/.reflect-vercel-secret> bash deploy/vercel-deploy.sh
-     (keep the secret private; it's what stops people bypassing Vercel).
+     (keep both secrets private; they're what stop people bypassing Vercel).
 VDONE
 fi

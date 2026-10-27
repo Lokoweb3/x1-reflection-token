@@ -16,6 +16,11 @@ ProtectHome=true
 ReadWritePaths=/opt/x1-reflection-token/state /opt/x1-reflection-token/factory
 # Testnet code runs as the same user as the mainnet services: hide their secrets from it.
 InaccessiblePaths=-/opt/x1-reflection-token/mainnet
+# No privileges, kernel or cgroup tweaks; network sockets only (IP and local).
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
