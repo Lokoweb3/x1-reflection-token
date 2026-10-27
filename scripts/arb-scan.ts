@@ -6,7 +6,7 @@
  *     [--slippage 0.1] [--loop <seconds> (default 300) | --once] [--skip <mint,...>] [--no-instant]
  *     [--max-subs 400] [--min-liquidity <XNT> (default 5)] [--hubs 3] [--hub-sides 12]
  *     [--own <wallet,...> [--own-min-profit <XNT>]] [--network mainnet|testnet] [--rpc <url>] [--verbose]
- *     [--webhook <url>] [--telegram-token <t> --telegram-chat <id>]
+ *     [--webhook <url>] [env TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID]
  *
  *   --skip           tokens another bot already watches: no triangle goes through them
  *   --min-liquidity  only watch triangles whose two XNT pools each hold at least this much XNT
@@ -32,6 +32,7 @@ function usage(problem?: string): never {
   process.exit(problem ? 1 : 0);
 }
 if (has("help") || has("h")) usage();
+if (has("telegram-token") || has("telegram-chat")) usage("Telegram settings come from the environment only (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID): a token on the command line shows in ps and the journal");
 const num = (name: string, d: number) => { const x = flag(name); if (x === undefined) return d; const n = Number(x); if (!Number.isFinite(n) || n < 0) usage(`--${name} takes a number`); return n; };
 const lamports = (x: number) => BigInt(Math.round(x * 1e9));
 const network = flag("network") ?? "mainnet";
@@ -45,8 +46,8 @@ const own = (flag("own") ?? "").split(",").filter(Boolean).map((w) => new Public
 const ownMinProfit = flag("own-min-profit") !== undefined ? lamports(num("own-min-profit", 0)) : undefined;
 const webhook = flag("webhook");
 const envTg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
-const tgToken = flag("telegram-token") ?? (envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined);
-const tgChat = flag("telegram-chat") ?? (envTg ? process.env.TELEGRAM_CHAT_ID : undefined);
+const tgToken = envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined;
+const tgChat = envTg ? process.env.TELEGRAM_CHAT_ID : undefined;
 
 // Log times in the owner's zone (US Eastern, EST/EDT; ARB_TZ overrides, e.g. ARB_TZ=UTC).
 const TZ = process.env.ARB_TZ ?? "America/New_York";

@@ -1,15 +1,14 @@
 # Backend for the Vercel front door (deploy/vercel-deploy.sh). Vercel serves HTTPS on
 # __PUBLIC_HOST__ and forwards every request to https://__ORIGIN_HOST__/__SECRET__/...: TLS
 # all the way to this server, so nobody on the path can read or change pages or transactions.
-# Caddy gets and renews the certificate for __ORIGIN_HOST__ itself. Anything without the
-# secret prefix gets a 404, so the app isn't reachable directly.
-{
-	servers {
-		# Requests come from Vercel: trust its X-Forwarded-For so the app sees each
-		# visitor's real IP (the faucet limits per IP). Only secret-path traffic gets through.
-		trusted_proxies static 0.0.0.0/0 ::/0
-	}
-}
+# Caddy gets and renews the certificate for __ORIGIN_HOST__ itself. A request needs both the
+# secret path prefix and the X-Origin-Auth header Vercel adds (its value comes from Caddy's
+# environment, /etc/caddy/reflect-origin.env, never from this file); anything else gets a 404,
+# so the app isn't reachable directly. Rotating the header secret: deploy/README.md.
+#
+# No global trusted_proxies: Vercel's egress addresses are a shared pool that changes and isn't
+# published, so an IP range can't tell Vercel from anyone else. Instead the visitor address
+# Vercel sets (X-Forwarded-For) is passed on only for requests that carry the header secret.
 # Port 80 only answers certificate challenges and redirects; the site isn't served over plain HTTP.
 :80 {
 	respond 404
@@ -18,11 +17,21 @@
 __ORIGIN_HOST__ {
 	encode gzip
 	# Vercel forwards the home page as /__SECRET__ (no slash) and the rest as /__SECRET__/...
-	@site path /__SECRET__ /__SECRET__/*
+	# Two accepted header values so the secret can be rotated without downtime; both are set
+	# (to the same value outside a rotation). The defaults only apply if the env file is missing.
+	@site {
+		path /__SECRET__ /__SECRET__/*
+		# Values for one field are OR-ed: either secret passes.
+		header X-Origin-Auth {$REFLECT_ORIGIN_SECRET:origin-secret-unset-see-deploy-README}
+		header X-Origin-Auth {$REFLECT_ORIGIN_SECRET_NEXT:origin-secret-unset-see-deploy-README}
+	}
 	handle @site {
 		uri strip_prefix /__SECRET__
 		reverse_proxy 127.0.0.1:8124 {
 			header_up Host __PUBLIC_HOST__
+			header_up -X-Origin-Auth
+			# The visitor's IP as Vercel saw it (the faucet limits per IP).
+			header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
 		}
 	}
 	handle {

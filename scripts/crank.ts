@@ -5,7 +5,7 @@
  *
  *   npx tsx scripts/crank.ts --rpc <url> --keypair <file> (--mint <mint>[,<mint>...] | --all)
  *     [--publisher <keypair file>] [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]]
- *     [--pinata-jwt <jwt> | env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet]
+ *     [env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet]
  *
  *   --keypair     the wallet that pays the fees (and the PaidRecord rents) and earns the crank
  *                 reward (1% of the holders' XNT from each sale, up to 0.05 XNT)
@@ -50,10 +50,11 @@ const has = (name: string) => argv.includes(`--${name}`);
 function usage(problem?: string): never {
   if (problem) console.error(`crank: ${problem}\n`);
   console.error("Usage: npx tsx scripts/crank.ts --rpc <url> --keypair <file> (--mint <mint>[,<mint>...] | --all) [--publisher <keypair>]\n"
-    + "         [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]] [--pinata-jwt <jwt>|env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet]");
+    + "         [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]] [env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet]");
   process.exit(2);
 }
 if (has("help") || has("h")) usage();
+if (has("pinata-jwt")) usage("the Pinata key comes from the environment only (PINATA_JWT): a key on the command line shows in ps and the journal");
 const rpc = flag("rpc") ?? usage("--rpc is required");
 const readKey = (file: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(path.resolve(file), "utf8"))));
 const signer = readKey(flag("keypair") ?? usage("--keypair is required"));
@@ -64,7 +65,7 @@ if (!has("all") && !mintArgs.length) usage("give --mint <mint> or --all");
 const loopSecs = flag("loop") ? Number(flag("loop")) : 0;
 if (!(loopSecs >= 0)) usage("--loop takes seconds");
 const gateways = (flag("ipfs-gateway") ?? `${DEFAULT_GATEWAY},${TRUSTLESS_GATEWAY},https://ipfs.io/ipfs/`).split(",").filter(Boolean).map(normGateway);
-const pinataJwt = flag("pinata-jwt") ?? process.env.PINATA_JWT ?? "";
+const pinataJwt = process.env.PINATA_JWT ?? "";
 const pinataApi = flag("pinata-api") ?? process.env.PINATA_API_URL;
 const networkArg = flag("network");
 if (networkArg && networkArg !== "testnet" && networkArg !== "mainnet") usage("--network is testnet or mainnet");
@@ -196,7 +197,7 @@ async function crankVault(mint: PublicKey) {
     const pc = vaultCrank({ ...env, signer: publisher });
     const next = await pc.nextList(t, v, v.listEpoch > 0n ? cur?.wallets ?? null : {}, notes, fallback);
     if (!next) { notes.push("no new list (not enough new XNT for holders yet)"); return; }
-    if (!pinataJwt) { notes.push("a new list is due but there's no Pinata key (--pinata-jwt or PINATA_JWT): not published"); return; }
+    if (!pinataJwt) { notes.push("a new list is due but there's no Pinata key (PINATA_JWT): not published"); return; }
     const text = listFileText({ mint: mint.toBase58(), vault: v.address.toBase58(), epoch: next.epoch.toString(), root: next.root.toString("hex"),
       total: next.total.toString(), wallets: next.wallets, rules: rulesJson(t.rules), inputs: next.inputs });
     // No pin, no publish: the list file must be on IPFS before its CID goes on-chain.
