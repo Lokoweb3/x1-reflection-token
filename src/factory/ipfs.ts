@@ -60,9 +60,61 @@ export async function pinFile(t: PinTarget, blob: Blob, filename: string, label:
   // Pinata's own reason (a revoked key, missing Files: Write, the plan's file or storage limit) is in the body.
   if (r.status === 401 || r.status === 403) throw new Error(`IPFS upload was refused (${r.status}: ${text.replace(/\s+/g, " ").slice(0, 160) || "no reason given"}): check the Pinata key is active, has Files: Write, and the plan isn't at its limit.`);
   if (!r.ok) throw new Error(`IPFS upload failed (${r.status}): ${text.slice(0, 160)}`);
-  const cid = (JSON.parse(text) as { data?: { cid?: string } }).data?.cid;
+  const data = (JSON.parse(text) as { data?: { cid?: string; id?: string; is_duplicate?: boolean | null } }).data;
+  const cid = data?.cid;
   if (!cid) throw new Error("IPFS upload returned no content ID");
+  // Remembered so a pin nothing ended up using can be removed (unpinOrphan); a file that was
+  // already pinned (the same bytes uploaded twice) may be in use elsewhere, so it never is.
+  if (data?.is_duplicate || pinIds.has(cid)) { sharedCids.add(cid); pinIds.delete(cid); }
+  else if (data?.id) pinIds.set(cid, data.id);
+  if (pinIds.size > 5_000) pinIds.delete(pinIds.keys().next().value!);
   return cid;
+}
+
+/** Pinata file ids of what this process pinned, by CID; and CIDs uploaded more than once. */
+const pinIds = new Map<string, string>();
+const sharedCids = new Set<string>();
+/** Pinata's files API (for removing a pin), unless the uploads go to a stand-in without one. */
+const filesUrl = (cfg: Config) => process.env.PINATA_FILES_URL || (uploadUrl(cfg) === PINATA_UPLOAD_URL ? "https://api.pinata.cloud/v3/files/public" : "");
+
+/**
+ * Remove a pin this process made that nothing ended up using (its transaction never landed).
+ * Only a CID uploaded once, by this process, is removed; returns whether it was.
+ */
+export async function unpinOrphan(cfg: Config, cid: string) {
+  const id = pinIds.get(cid);
+  if (!id || sharedCids.has(cid) || !filesUrl(cfg) || !ipfsEnabled(cfg)) return false;
+  const r = await fetch(`${filesUrl(cfg)}/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${jwt(cfg)}` }, signal: AbortSignal.timeout(30_000) });
+  if (!r.ok && r.status !== 404) throw new Error(`unpin ${cid} failed (${r.status}): ${(await r.text()).slice(0, 160)}`);
+  pinIds.delete(cid);
+  return true;
+}
+
+/** The CID in a link to this site's gateway, else null. */
+export function cidOfUrl(cfg: Config, url: string) {
+  const base = gatewayBase(cfg);
+  return url.startsWith(base) && /^[A-Za-z0-9]{46,64}$/.test(url.slice(base.length)) ? url.slice(base.length) : null;
+}
+
+/**
+ * A response body, read as it streams in and given up on past `maxBytes` (a gateway or a
+ * file it serves could otherwise make the server hold any amount in memory).
+ */
+export async function readCapped(r: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(r.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) { await r.body?.cancel().catch(() => undefined); throw new Error(`larger than ${maxBytes} bytes`); }
+  if (!r.body) return Buffer.alloc(0);
+  const reader = r.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) { await reader.cancel().catch(() => undefined); throw new Error(`larger than ${maxBytes} bytes`); }
+    parts.push(value);
+  }
+  return Buffer.concat(parts);
 }
 const upload = (cfg: Config, blob: Blob, filename: string, label: string) => pinFile({ jwt: jwt(cfg), uploadUrl: uploadUrl(cfg) }, blob, filename, label);
 
@@ -81,10 +133,8 @@ export async function fetchFromGateways(gateways: string[], cid: string, maxByte
   for (const g of gateways) {
     try {
       const r = await fetch(gatewayFor(g, cid), { signal: AbortSignal.timeout(30_000) });
-      if (!r.ok) { errors.push(`${g}: ${r.status}`); continue; }
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length > maxBytes) { errors.push(`${g}: larger than ${maxBytes} bytes`); continue; }
-      return buf;
+      if (!r.ok) { errors.push(`${g}: ${r.status}`); await r.body?.cancel().catch(() => undefined); continue; }
+      return await readCapped(r, maxBytes);
     } catch (e) {
       errors.push(`${g}: ${e instanceof Error ? e.message : e}`);
     }

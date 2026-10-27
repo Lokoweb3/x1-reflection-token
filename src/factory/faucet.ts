@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Connection, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction, getAssociatedTokenAddressSync, unpackMint } from "@solana/spl-token";
-import { Config, FACTORY_DIR, ROOT, loadKeypair, toBaseUnits } from "../config.js";
+import { Config, FACTORY_DIR, ROOT, cachedKeypair, keypairPublicKey, toBaseUnits } from "../config.js";
 import { run, withPriority } from "../tx.js";
 import { launchFee } from "./launch.js";
 
@@ -47,7 +47,7 @@ export async function checkCaptcha(cfg: Config, token: unknown, ip: string) {
 export async function faucetStatus(conn: Connection, cfg: Config, wallet?: string) {
   const s = settings(cfg);
   if (!s) return { enabled: false };
-  const faucet = loadKeypair(s.keypath).publicKey;
+  const faucet = keypairPublicKey(s.keypath);
   const mint = new PublicKey(s.token.mint);
   const ata = getAssociatedTokenAddressSync(mint, faucet, false, (await conn.getAccountInfo(mint))!.owner);
   const bal = await conn.getTokenAccountBalance(ata).then((r) => Number(r.value.uiAmount ?? 0)).catch(() => 0);
@@ -70,7 +70,7 @@ export async function faucetFundIxs(conn: Connection, cfg: Config, fromStr: stri
   const s = settings(cfg);
   if (!s) throw new Error("The faucet is off.");
   const from = new PublicKey(fromStr);
-  const faucet = loadKeypair(s.keypath).publicKey;
+  const faucet = keypairPublicKey(s.keypath);
   const ixs: TransactionInstruction[] = [];
   const t = Number(tokens || 0), x = Number(xnt || 0);
   if (!(t >= 0 && x >= 0) || (t === 0 && x === 0)) throw new Error(`Enter an amount of ${s.token.symbol} and/or XNT to send.`);
@@ -108,7 +108,7 @@ export function faucetClaim(conn: Connection, cfg: Config, walletStr: string, ip
     if (w) throw new Error(`Already claimed; try again in about ${w} hour${w === 1 ? "" : "s"}.`);
     if (log.count >= s.dailyCap) throw new Error("The faucet has reached today's limit; try again tomorrow (UTC).");
 
-    const faucet = loadKeypair(s.keypath);
+    const faucet = cachedKeypair(s.keypath);
     const mint = new PublicKey(s.token.mint);
     const mintInfo = (await conn.getAccountInfo(mint, "confirmed"))!;
     const program = mintInfo.owner;
