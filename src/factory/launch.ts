@@ -49,7 +49,7 @@ import { ipfsEnabled, pinMetadata } from "./ipfs.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
-  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, authPda, createCurveIx, curvePda, curveSetup, decodeCurve, hasPool, isGraduated, parseTarget,
+  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, authPda, createCurveIx, curvePda, curveSetup, decodeCurve, hasPool, isGraduated, lockNftOf, parseTarget,
 } from "../curve.js";
 
 const U64_MAX = 2n ** 64n - 1n;
@@ -208,7 +208,8 @@ export function vaultManaged(r: Pick<LaunchRecord, "mint" | "taxVault">) {
  * also earn holder rewards: their wallet is excluded from that token's payouts.
  */
 export const creatorExcluded = (r: Pick<LaunchParams, "poolTokens" | "supply"> & { kind?: string }) =>
-  // A curve's creator can't buy on it and gets no tokens, so there's no bag to exclude.
+  // A curve's creator gets no tokens from it (their own wallet can't buy on it; tokens they buy
+  // from other wallets are ordinary holdings), so there's no creator's bag to exclude.
   r.kind === "curve" ? false : BigInt(r.poolTokens) < BigInt(r.supply);
 
 /**
@@ -542,8 +543,10 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
     // The curve program does the pool and the lock itself at graduation.
     const c = await readCurveOf(conn, cfg, r);
     const graduated = !!c && isGraduated(c.status);
-    const out = { token: !!c, pool: !!c && hasPool(c.status), lock: graduated,
-      lockNft: graduated ? c!.lockNft.toBase58() : null, registered: !!r.registeredAt, curveStatus: c?.status ?? null };
+    // A curve whose LP was burned (graduate_burn, lp_locker failing) graduated without a lock NFT.
+    const nft = c ? lockNftOf(c) : null;
+    const out = { token: !!c, pool: !!c && hasPool(c.status), lock: !!nft,
+      lockNft: nft?.toBase58() ?? null, registered: !!r.registeredAt, curveStatus: c?.status ?? null };
     // A vault curve token: the creator starts the vault once it has graduated (and turns passes on, for a holder-passes one).
     if (!r.taxVault) return out;
     const vault = graduated && (await vaultStarted(conn, cfg, r));

@@ -10,7 +10,11 @@
 //! * `graduate_pool` mints the pool's share to `auth`, wraps the curve's `target_xnt` (chosen
 //!   at creation from `TARGETS_XNT_WHOLE`) and creates the XDEX pool with `auth` as creator. The virtual reserves are chosen so the pool opens at
 //!   the curve's final price. `graduate_lock` locks all the LP forever in `lp_locker`, gives
-//!   the lock NFT to the creator and pays the caller a small reward.
+//!   the lock NFT to the creator and pays the caller a small reward. Clients send both in
+//!   one transaction, so the pool never exists without its lock.
+//! * `graduate_burn`: a curve stuck in PoolCreated for LOCK_AFTER_SECS (lp_locker keeps
+//!   failing) burns all of auth's LP instead (the liquidity is still locked forever, with
+//!   no lock NFT) and moves on to Graduated, so buyers still get their tokens.
 //! * `deliver` mints each buyer's tokens to their wallet; after the last one the mint
 //!   authority is revoked and what is left in `auth` goes to the creator.
 //!
@@ -19,7 +23,10 @@
 //!   transaction may carry only one buy, sent directly (not through another program).
 //! * `refund`: a curve stuck in Complete for REFUND_AFTER_SECS (XDEX pool creation keeps
 //!   failing) opens to refunds; each position gets its pro-rata share of `raised_xnt` and
-//!   its deposit back, and the last one returns the rest to the creator. No tokens exist.
+//!   its deposit back, and the last one returns the rest to the creator and closes the
+//!   curve. No tokens exist.
+//! * `close_curve`: the creator closes a trading curve with nothing sold (refunding any
+//!   empty positions' deposits first, through `refund`).
 //!
 //! Lamport accounting: `auth` holds GRADUATION_DEPOSIT + raised_xnt + every open
 //! position's deposit (plus anything donated). Every rounding favours the curve.
@@ -100,6 +107,13 @@ pub const REFUND_AFTER_SECS: i64 = 7 * 24 * 3600;
 /// Local testing only.
 #[cfg(feature = "short-windows")]
 pub const REFUND_AFTER_SECS: i64 = 10;
+/// How long a curve may sit in PoolCreated (graduate_lock failing) before anyone can burn
+/// its LP instead (`graduate_burn`).
+#[cfg(not(feature = "short-windows"))]
+pub const LOCK_AFTER_SECS: i64 = 7 * 24 * 3600;
+/// Local testing only.
+#[cfg(feature = "short-windows")]
+pub const LOCK_AFTER_SECS: i64 = 10;
 pub const DECIMALS: u8 = 9;
 pub const MIN_SUPPLY_WHOLE: u64 = 1_000;
 pub const MAX_SUPPLY_WHOLE: u64 = 10_000_000_000;
@@ -186,7 +200,8 @@ pub mod bonding_curve {
     pub fn buy(ctx: Context<Buy>, xnt_in: u64, min_tokens_out: u64) -> Result<()> {
         let curve = &ctx.accounts.curve;
         require!(curve.status == STATUS_TRADING, CurveError::NotTrading);
-        // The creator can't buy their own curve on mainnet; the testnet build allows it for testing.
+        // The creator's wallet can't buy its own curve on mainnet (the testnet build allows it
+        // for testing). Other wallets of theirs can: the early limits are what hold every wallet.
         #[cfg(not(feature = "testnet"))]
         require_keys_neq!(ctx.accounts.buyer.key(), curve.creator, CurveError::CreatorCannotBuy);
         require!(xnt_in > 0, CurveError::ZeroAmount);
@@ -302,10 +317,14 @@ pub mod bonding_curve {
     }
 
     /// Complete -> PoolCreated: mint the pool's tokens to `auth`, wrap the curve's target_xnt
-    /// and create the XDEX pool with `auth` as its creator.
+    /// and create the XDEX pool with `auth` as its creator. Clients follow it with
+    /// graduate_lock in the same transaction.
     pub fn graduate_pool(ctx: Context<GraduatePool>) -> Result<()> {
         let a = &ctx.accounts;
         require!(a.curve.status == STATUS_COMPLETE, CurveError::WrongStatus);
+        // No pool without a locker that can take its LP (graduate_burn covers it failing later).
+        require!(a.locker_program.executable, CurveError::LockerUnavailable);
+        let now = Clock::get()?.unix_timestamp;
         let mint = a.curve.mint;
         let auth_seeds: &[&[u8]] = &[b"auth", mint.as_ref(), &[a.curve.auth_bump]];
         let (mint0, mint1) = sorted_mints(&mint);
@@ -420,7 +439,9 @@ pub mod bonding_curve {
         let c = &mut ctx.accounts.curve;
         c.pool = pool;
         c.status = STATUS_POOL_CREATED;
-        c.delivered = 0; // held the completion time; deliver counts from 0
+        // Held the completion time; now the pool's creation time, for graduate_burn. The
+        // step to Graduated resets it to 0 for deliver to count from.
+        c.delivered = u64::try_from(now).unwrap_or(1).max(1);
         check_reserve(&ctx.accounts.auth.to_account_info(), ctx.accounts.curve.positions)
     }
 
@@ -563,8 +584,67 @@ pub mod bonding_curve {
         let c = &mut ctx.accounts.curve;
         c.lock_nft = nft_key;
         c.status = STATUS_GRADUATED;
+        c.delivered = 0; // held the pool's creation time; deliver counts from 0
         emit!(Graduated { curve: c.key(), mint: c.mint, pool, lock_nft: nft_key, raised_xnt: c.raised_xnt });
         check_reserve(&ctx.accounts.auth.to_account_info(), ctx.accounts.curve.positions)
+    }
+
+    /// PoolCreated for LOCK_AFTER_SECS (graduate_lock keeps failing, e.g. lp_locker is gone)
+    /// -> Graduated: burn all of auth's LP, so the liquidity stays locked forever without a
+    /// lock NFT, pay the caller GRADUATE_REWARD and let deliveries start.
+    pub fn graduate_burn(ctx: Context<GraduateBurn>) -> Result<()> {
+        let a = &ctx.accounts;
+        require!(a.curve.status == STATUS_POOL_CREATED, CurveError::WrongStatus);
+        let now = Clock::get()?.unix_timestamp;
+        require!(now >= pool_created_at(&a.curve).saturating_add(LOCK_AFTER_SECS), CurveError::BurnNotOpen);
+        let mint = a.curve.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint.as_ref(), &[a.curve.auth_bump]];
+        let auth = a.auth.to_account_info();
+        let tok = a.token_program.to_account_info();
+
+        let lp_amount = token_amount(&a.auth_lp, &token::ID)?;
+        require!(lp_amount > 0, CurveError::ZeroAmount);
+        token::burn(
+            CpiContext::new_with_signer(
+                tok.clone(),
+                token::Burn { mint: a.lp_mint.to_account_info(), from: a.auth_lp.to_account_info(), authority: auth.clone() },
+                &[auth_seeds],
+            ),
+            lp_amount,
+        )?;
+        token::close_account(CpiContext::new_with_signer(
+            tok,
+            token::CloseAccount { account: a.auth_lp.to_account_info(), destination: auth.clone(), authority: auth.clone() },
+            &[auth_seeds],
+        ))?;
+        pay_from_auth(&a.system_program.to_account_info(), &auth, &a.caller.to_account_info(), GRADUATE_REWARD, auth_seeds)?;
+
+        let c = &mut ctx.accounts.curve;
+        c.status = STATUS_GRADUATED; // lock_nft stays default: there is no lock NFT
+        c.delivered = 0; // held the pool's creation time; deliver counts from 0
+        emit!(LpBurned { curve: c.key(), mint: c.mint, pool: c.pool, lp_amount, raised_xnt: c.raised_xnt });
+        check_reserve(&ctx.accounts.auth.to_account_info(), ctx.accounts.curve.positions)
+    }
+
+    /// The creator closes a trading curve that has nothing sold. With no positions left the
+    /// curve closes now and `auth`'s lamports (the graduation deposit) go back to the
+    /// creator; positions emptied by selling still hold deposits, so the curve moves to
+    /// Refunding instead and the last `refund` closes it.
+    pub fn close_curve(ctx: Context<CloseCurve>) -> Result<()> {
+        let c = &mut ctx.accounts.curve;
+        require!(c.status == STATUS_TRADING, CurveError::NotTrading);
+        require!(c.tokens_sold == 0, CurveError::CurveNotEmpty);
+        emit!(CurveClosed { curve: c.key(), mint: c.mint, creator: c.creator, positions: c.positions });
+        if c.positions > 0 {
+            c.status = STATUS_REFUNDING;
+            return Ok(());
+        }
+        let mint = c.mint;
+        let auth_seeds: &[&[u8]] = &[b"auth", mint.as_ref(), &[c.auth_bump]];
+        let auth = ctx.accounts.auth.to_account_info();
+        let rest = auth.lamports();
+        pay_from_auth(&ctx.accounts.system_program.to_account_info(), &auth, &ctx.accounts.creator.to_account_info(), rest, auth_seeds)?;
+        ctx.accounts.curve.close(ctx.accounts.creator.to_account_info())
     }
 
     /// Mint a position's tokens to its owner, refund the unused deposit and close the
@@ -624,7 +704,7 @@ pub mod bonding_curve {
     /// creation keeps failing) opens to refunds; anyone may then refund any position: its
     /// owner gets its pro-rata share of the raised XNT plus its deposit, and the position
     /// closes. The last refund returns the rest of `auth` (the graduation deposit) to the
-    /// creator. No tokens are ever minted for a refunded curve.
+    /// creator and closes the curve. No tokens are ever minted for a refunded curve.
     pub fn refund(ctx: Context<Refund>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         {
@@ -652,7 +732,10 @@ pub mod bonding_curve {
         c.positions = c.positions.checked_sub(1).ok_or(CurveError::MathOverflow)?;
         if c.positions == 0 {
             let rest = auth.lamports();
-            pay_from_auth(&sys, &auth, &ctx.accounts.creator.to_account_info(), rest, auth_seeds)?;
+            let creator = ctx.accounts.creator.to_account_info();
+            pay_from_auth(&sys, &auth, &creator, rest, auth_seeds)?;
+            // Nothing is left to settle: the curve's rent goes to the creator too.
+            ctx.accounts.curve.close(creator)?;
         }
         Ok(()) // `close = owner` closes the position
     }
@@ -774,6 +857,17 @@ pub fn early_limits(supply: u64, held: u64, sold: u64, out: u64) -> Result<()> {
 /// completed before this was recorded: their creation time stands in).
 pub fn completed_at(c: &Curve) -> i64 {
     if c.delivered > 0 { c.delivered as i64 } else { c.created_at }
+}
+
+/// When a PoolCreated curve's pool was created: kept in `delivered` until it graduates (0 on
+/// curves whose pool was created before this was recorded: their creation time stands in).
+pub fn pool_created_at(c: &Curve) -> i64 {
+    if c.delivered > 0 { c.delivered as i64 } else { c.created_at }
+}
+
+/// The XDEX LP mint of `pool`: PDA(["pool_lp_mint", pool], XDEX).
+pub fn lp_mint_of(pool: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"pool_lp_mint", pool.as_ref()], &XDEX_PROGRAM_ID).0
 }
 
 /// A position's refund: its share of what the curve still holds for the open positions
@@ -1028,10 +1122,12 @@ pub struct Curve {
     /// Net XNT in the curve (= virtual_xnt - x0).
     pub raised_xnt: u64,
     pub created_at: i64,
-    /// 0 Trading, 1 Complete, 2 PoolCreated, 3 Graduated, 4 Finished.
+    /// 0 Trading, 1 Complete, 2 PoolCreated, 3 Graduated, 4 Finished, 5 Refunding.
     pub status: u8,
     /// Open (undelivered) positions.
     pub positions: u32,
+    /// Tokens delivered. Before graduation it holds a time instead: Complete, when the
+    /// curve completed; PoolCreated, when its pool was created.
     pub delivered: u64,
     pub pool: Pubkey,
     pub lock_nft: Pubkey,
@@ -1176,6 +1272,9 @@ pub struct GraduatePool<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
+    /// CHECK: the lp_locker program graduate_lock will lock the LP in; must be executable.
+    #[account(address = LOCKER_PROGRAM_ID @ CurveError::WrongAccount)]
+    pub locker_program: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1222,6 +1321,35 @@ pub struct GraduateLock<'info> {
     pub token_program: Program<'info, Token>,
     pub token_2022_program: Program<'info, Token2022>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct GraduateBurn<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    #[account(mut, seeds = [b"curve", curve.mint.as_ref()], bump = curve.bump)]
+    pub curve: Box<Account<'info, Curve>>,
+    #[account(mut, seeds = [b"auth", curve.mint.as_ref()], bump = curve.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    /// CHECK: the curve pool's LP mint (lp_mint_of).
+    #[account(mut, address = lp_mint_of(&curve.pool) @ CurveError::WrongAccount)]
+    pub lp_mint: UncheckedAccount<'info>,
+    /// CHECK: ATA(auth, lp_mint, SPL Token).
+    #[account(mut, address = ata(&auth.key(), &lp_mint.key(), &token::ID) @ CurveError::WrongAccount)]
+    pub auth_lp: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CloseCurve<'info> {
+    #[account(mut, address = curve.creator @ CurveError::WrongAccount)]
+    pub creator: Signer<'info>,
+    #[account(mut, seeds = [b"curve", curve.mint.as_ref()], bump = curve.bump)]
+    pub curve: Box<Account<'info, Curve>>,
+    #[account(mut, seeds = [b"auth", curve.mint.as_ref()], bump = curve.auth_bump)]
+    pub auth: SystemAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1317,6 +1445,25 @@ pub struct Graduated {
     pub raised_xnt: u64,
 }
 
+/// graduate_burn: graduated with the LP burned instead of locked (no lock NFT).
+#[event]
+pub struct LpBurned {
+    pub curve: Pubkey,
+    pub mint: Pubkey,
+    pub pool: Pubkey,
+    pub lp_amount: u64,
+    pub raised_xnt: u64,
+}
+
+/// close_curve: closed now (positions 0) or Refunding until its empty positions are refunded.
+#[event]
+pub struct CurveClosed {
+    pub curve: Pubkey,
+    pub mint: Pubkey,
+    pub creator: Pubkey,
+    pub positions: u32,
+}
+
 #[event]
 pub struct Delivered {
     pub curve: Pubkey,
@@ -1342,7 +1489,7 @@ pub enum CurveError {
     BadTax,
     #[msg("The curve is not trading")]
     NotTrading,
-    #[msg("The creator cannot buy on their own curve")]
+    #[msg("The creator's wallet cannot buy on its own curve")]
     CreatorCannotBuy,
     #[msg("Amount must be greater than zero")]
     ZeroAmount,
@@ -1372,15 +1519,21 @@ pub enum CurveError {
     XdexClosed,
     #[msg("Refunds open only after the curve has waited 7 days for its pool")]
     RefundNotOpen,
+    #[msg("The LP locker program isn't deployed (not executable); the pool waits until it is")]
+    LockerUnavailable,
+    #[msg("The LP can be burned only after the pool has waited 7 days for its lock")]
+    BurnNotOpen,
+    #[msg("Only a curve with nothing sold can be closed")]
+    CurveNotEmpty,
 }
 
 #[cfg(test)]
 mod tests {
     use super::math::{buy, ceil_div, sell, setup, Setup};
     use super::{
-        check_amm_config, check_curve_mint, completed_at, early_limits, is_vault_auth, one_early_buy, pool_amounts, refund_share,
-        target_lamports, Curve, CurveError, EARLY_TOTAL_BPS, FEE_BPS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE, SNIPE_MAX_BPS,
-        STATUS_COMPLETE, STATUS_TRADING, TARGETS_XNT_WHOLE, VAULT_PROGRAMS, XDEX_CONFIG_DISC, XDEX_PROGRAM_ID,
+        check_amm_config, check_curve_mint, completed_at, early_limits, is_vault_auth, one_early_buy, pool_amounts, pool_created_at,
+        refund_share, target_lamports, Curve, CurveError, EARLY_TOTAL_BPS, FEE_BPS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE, SNIPE_MAX_BPS,
+        STATUS_COMPLETE, STATUS_POOL_CREATED, STATUS_TRADING, TARGETS_XNT_WHOLE, VAULT_PROGRAMS, XDEX_CONFIG_DISC, XDEX_PROGRAM_ID,
     };
     use anchor_lang::prelude::*;
     use anchor_lang::{AccountDeserialize, AccountSerialize};
@@ -1438,6 +1591,9 @@ mod tests {
         assert_eq!(u32::from(CurveError::BadWithdrawAuthority), 6016);
         assert_eq!(u32::from(CurveError::XdexClosed), 6017);
         assert_eq!(u32::from(CurveError::RefundNotOpen), 6018);
+        assert_eq!(u32::from(CurveError::LockerUnavailable), 6019);
+        assert_eq!(u32::from(CurveError::BurnNotOpen), 6020);
+        assert_eq!(u32::from(CurveError::CurveNotEmpty), 6021);
     }
 
     #[test]
@@ -1744,5 +1900,21 @@ mod tests {
         assert_eq!(completed_at(&c), 1_700_000_000);
         c.delivered = 1_800_000_000;
         assert_eq!(completed_at(&c), 1_800_000_000);
+    }
+
+    /// BC-M1: graduate_burn counts from the pool's creation time, kept in `delivered` while
+    /// PoolCreated; a curve whose pool was made before that was recorded uses its creation time.
+    #[test]
+    fn burn_clock_is_the_pool_creation_time() {
+        let mut c = Curve {
+            mint: Pubkey::new_unique(), creator: Pubkey::new_unique(), supply: 0, curve_tokens: 0, pool_tokens_gross: 0,
+            pool_tokens_net: 0, target_xnt: 0, virtual_xnt: 0, virtual_tokens: 0, tokens_sold: 0, raised_xnt: 0,
+            created_at: 1_700_000_000, status: STATUS_POOL_CREATED, positions: 3, delivered: 0, pool: Pubkey::new_unique(),
+            lock_nft: Pubkey::default(), tax_bps: 500, bump: 0, auth_bump: 0,
+        };
+        assert_eq!(pool_created_at(&c), 1_700_000_000);
+        c.delivered = 1_800_000_000;
+        assert_eq!(pool_created_at(&c), 1_800_000_000);
+        assert_eq!(super::LOCK_AFTER_SECS, if cfg!(feature = "short-windows") { 10 } else { 7 * 24 * 3600 });
     }
 }

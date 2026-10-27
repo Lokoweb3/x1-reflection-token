@@ -19,7 +19,7 @@ import { sendAndConfirm, sign, simulate, withPriority } from "../tx.js";
 import {
   CURVE_BPS, CURVE_DISC, CurveStatus, DECIMALS, EARLY_TOTAL_BPS, FEE_BPS, GRADUATE_REWARD, GRADUATION_DEPOSIT, POSITION_DISC, POSITION_LEN, REFUND_AFTER_SECS,
   SNIPE_MAX_BPS, SNIPE_WINDOW_SECS, DEFAULT_TARGET_XNT, STATUS_NAMES, SUPPLY_MAX, SUPPLY_MIN, targetsFor, buyIx, curvePda, decodeCurve, decodePosition,
-  deliverIx, graduateLockIx, graduatePoolIx, hasPool, isGraduated, marketCapOf, parseEvents, positionPda, priceOf, progressOf, quoteBuy, quoteSell,
+  burnOpensAt, deliverIx, graduateBurnIx, graduateIxs, graduateLockIx, hasPool, isGraduated, lockNftOf, marketCapOf, parseEvents, positionPda, priceOf, progressOf, quoteBuy, quoteSell,
   refundIx, refundOpensAt, refundShare, sellIx, x0Of, y0Of, type Curve, type Position,
 } from "../curve.js";
 import { readLaunch, registerLaunch } from "./launch.js";
@@ -54,11 +54,16 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     }
     return out;
   }
-  async function readCurve(mint: PublicKey) {
+  /** The curve, or null when there is none (never made, or closed: the last refund and close_curve close it). */
+  async function findCurve(mint: PublicKey) {
     const addr = curvePda(program, mint);
     const info = await conn.getAccountInfo(addr, "confirmed");
-    if (!info || !info.owner.equals(program)) throw new Error("That isn't a curve token on this site.");
-    return decodeCurve(addr, info.data);
+    return info && info.owner.equals(program) ? decodeCurve(addr, info.data) : null;
+  }
+  async function readCurve(mint: PublicKey) {
+    const c = await findCurve(mint);
+    if (!c) throw new Error("That isn't a curve token on this site.");
+    return c;
   }
 
   /** Name, symbol and logo: the launch record when this site made it, else the token's on-chain metadata. */
@@ -86,7 +91,7 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
       raisedXnt: s(c.raisedXnt), targetXnt: s(c.targetXnt), priceXnt: priceOf(c), marketCapXnt: s(marketCapOf(c)),
       supply: s(c.supply), taxBps: c.taxBps, createdAt: c.createdAt, positions: c.positions,
       pool: hasPool(c.status) ? c.pool.toBase58() : null,
-      lockNft: isGraduated(c.status) ? c.lockNft.toBase58() : null,
+      lockNft: lockNftOf(c)?.toBase58() ?? null,
       // A full curve still waiting for its pool: when anyone may start refunds (unix seconds).
       refundOpensAt: refundOpensAt(c),
     };
@@ -227,7 +232,7 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     const slip = slippage(body.slippageBps);
     const c = await readCurve(mint);
     if (c.status !== CurveStatus.Trading) throw new Error("This curve is finished; it's graduating to its XDEX pool.");
-    if (!creatorCanBuy && c.creator.equals(buyer)) throw new Error("The creator can't buy on their own curve.");
+    if (!creatorCanBuy && c.creator.equals(buyer)) throw new Error("The creator's wallet can't buy on its own curve.");
     const posAddr = positionPda(program, c.address, buyer);
     const posInfo = await conn.getAccountInfo(posAddr, "confirmed");
     const held = posInfo ? decodePosition(posAddr, posInfo.data).balance : 0n;
@@ -340,12 +345,14 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     if (cranking) return;
     cranking = true;
     try {
-      for (let c of await allCurves()) {
-        const mint = c.mint.toBase58();
+      for (const listed of await allCurves()) {
+        let c: Curve | null = listed;
+        const mint = listed.mint.toBase58();
         try {
           if (crank && c.status === CurveStatus.Complete) {
             try {
-              await send(`graduate_pool ${mint}`, [graduatePoolIx(program, cfg.network, crank.publicKey, c.mint)], 1_000_000);
+              // Pool and lock in one transaction, so a pool never waits without its lock.
+              await send(`graduate ${mint}`, graduateIxs(program, cfg.network, crank.publicKey, c.mint, c.creator), 1_000_000);
             } catch (e) {
               // Pool creation still failing after REFUND_AFTER_SECS: refund everyone instead.
               const opens = refundOpensAt(c);
@@ -353,14 +360,24 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
               console.error(`[curve crank] ${mint}: graduation still failing (${e instanceof Error ? e.message : e}); refunding`);
               await refundAll(c);
             }
-            c = await readCurve(c.mint);
+            c = await findCurve(listed.mint);
           }
-          if (crank && c.status === CurveStatus.Refunding && c.positions > 0) {
+          if (crank && c && c.status === CurveStatus.Refunding && c.positions > 0) {
             await refundAll(c);
-            c = await readCurve(c.mint);
+            c = await findCurve(listed.mint); // the last refund closes the curve
           }
+          if (!c) { invalidate(mint); continue; }
           if (crank && c.status === CurveStatus.PoolCreated) {
-            await send(`graduate_lock ${mint}`, [graduateLockIx(program, cfg.network, crank.publicKey, c.mint, c.creator)], 1_000_000);
+            // A pool created on its own (by an older client, or anyone): lock it; if the lock
+            // still fails after LOCK_AFTER_SECS, burn the LP so the buyers get their tokens.
+            try {
+              await send(`graduate_lock ${mint}`, [graduateLockIx(program, cfg.network, crank.publicKey, c.mint, c.creator)], 1_000_000);
+            } catch (e) {
+              const opens = burnOpensAt(c);
+              if (opens === null || nowSecs() < opens) throw e;
+              console.error(`[curve crank] ${mint}: lock still failing (${e instanceof Error ? e.message : e}); burning the LP instead`);
+              await send(`graduate_burn ${mint}`, [graduateBurnIx(program, cfg.network, crank.publicKey, c.mint)], 200_000);
+            }
             c = await readCurve(c.mint);
           }
           if (crank && c.status === CurveStatus.Graduated) {

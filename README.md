@@ -321,14 +321,25 @@ curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of 
 - **Tokens are created at graduation.** During the curve, balances live in the curve, so
   no tax applies; the tax is live from the first XDEX trade after graduation.
 - 80% of the supply sells on the curve, priced so its last price equals the pool's
-  opening price. 1% fee on curve trades. The creator can't buy their own curve.
+  opening price. 1% fee on curve trades. The creator's own wallet can't buy on the curve;
+  that doesn't stop a creator buying from other wallets, so the real guard is the early-buy
+  limit below: no single wallet can hold more than 1% of the supply in the first 2 minutes.
 - **Early-buy limits:** for the first 2 minutes a wallet's position may hold at most 1% of
   the supply across all its buys, and all buyers together at most 10%; a transaction may
   carry only one buy of the curve (also refused through another program).
 - **No deadline, but a refund:** tokens stay with the curve until it fills, and you can sell
   back any time. A curve that is complete but hasn't graduated 7 days later can be refunded:
   anyone sends each position its share of the XNT raised plus its deposit, and the last
-  refund sends what's left to the creator (status 5, Refunding; the crank does it).
+  refund sends what's left to the creator and closes the curve (status 5, Refunding; the
+  crank does it).
+- **Graduation is one transaction** (pool and lock together), and `graduate_pool` refuses to
+  run unless `lp_locker` is deployed. A pool that still sits without its lock 7 days later
+  (status 2, PoolCreated: lp_locker failing) can have its LP **burned** instead
+  (`graduate_burn`, anyone; the liquidity stays locked forever, with no lock NFT) so buyers
+  still get their tokens.
+- A creator can **close** a trading curve that has nothing sold (`close_curve`): the
+  graduation deposit and the curve's rent come back (any emptied positions get their
+  deposits back first, through refunds).
 - `create_curve` checks the XDEX amm config (owner, size, pool creation enabled).
 - Graduation and delivery are permissionless; the site's crank (`factory.curve.crankKeypair`)
   does them automatically and earns the 0.01 XNT graduation reward.
