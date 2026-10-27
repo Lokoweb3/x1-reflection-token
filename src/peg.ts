@@ -13,6 +13,8 @@ import path from "node:path";
 import { Connection, PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
+import { writeFileAtomic } from "./atomic-write.js";
+import { settleIntent, whenSigned, type Intent } from "./send-intent.js";
 
 export interface PegSpec {
   /** The bridged token on X1 (GOOGL.X) and the ticker it tracks. */
@@ -129,9 +131,34 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
   function used(): number {
     try { const s = JSON.parse(fs.readFileSync(file, "utf8")) as { day: string; used: number }; return s.day === nyDay() ? s.used : 0; } catch { return 0; }
   }
+  /** Count a trade that landed; the same write clears its journaled intent, so a restart can't count it twice. */
   function addUsed(n: number) {
     fs.mkdirSync(o.stateDir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ day: nyDay(), used: used() + n }) + "\n");
+    writeFileAtomic(file, JSON.stringify({ day: nyDay(), used: used() + n }) + "\n");
+  }
+  // A trade is journaled (with its signature, once signed) before it is sent, and settled by the next check if
+  // this one didn't see it through (a crash, or a confirmation that timed out): src/send-intent.ts.
+  type Pending = Intent & { at: string; day: string; side: "sell" | "buy"; amountIn: string; minOut: string; tokens: number; poolPrice: number; refPrice: number };
+  const pendingOf = (): Pending | undefined => { try { return JSON.parse(fs.readFileSync(file, "utf8")).pending; } catch { return undefined; } };
+  function setPending(p: Pending | undefined) {
+    fs.mkdirSync(o.stateDir, { recursive: true });
+    writeFileAtomic(file, JSON.stringify({ day: nyDay(), used: used(), ...(p ? { pending: p } : {}) }) + "\n");
+  }
+  function landed(p: Pending, signature: string) {
+    if (p.day === nyDay()) addUsed(p.tokens); else setPending(undefined); // an earlier day's trade no longer counts against today
+    fs.mkdirSync(o.stateDir, { recursive: true });
+    fs.appendFileSync(journal, JSON.stringify({ at: p.at, ticker: spec.ticker, pool: spec.pool.toBase58(), poolPrice: p.poolPrice, refPrice: p.refPrice,
+      side: p.side, amountIn: p.amountIn, minOut: p.minOut, tokens: p.tokens, signature }) + "\n");
+  }
+  /** Settle a trade an earlier check journaled; true while it is still in flight (no new trade until it settles). */
+  async function settle(): Promise<boolean> {
+    const p = pendingOf();
+    if (!p) return false;
+    const v = await settleIntent(o.conn, p);
+    if (v === "pending") { problem(`an earlier ${p.side} ${p.signature} is still in flight: waiting for it`); return true; }
+    if (v === "landed") { landed(p, p.signature!); await o.alert(`peg ${spec.ticker}: an earlier ${p.side} of ${p.tokens.toFixed(6)} landed after all: ${p.signature}`); }
+    else { setPending(undefined); o.log(`peg ${spec.ticker}: an earlier ${p.side} didn't land (${p.signature ?? "never sent"})`); }
+    return false;
   }
   async function balance(mint: PublicKey, program: PublicKey) {
     const ata = getAssociatedTokenAddressSync(mint, o.owner, false, program);
@@ -143,6 +170,7 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
 
   /** One check: compare, and trade when the pool is outside the band. Returns what it did, for the log. */
   async function check(): Promise<string> {
+    if (await settle()) return "pending";
     const ref = await fetchPrice(spec);
     if ("error" in ref) { problem(`no trade, reference price unavailable (${ref.error})`); return "no reference"; }
     // Token side and quote side of the pool, as each direction's swap sees it.
@@ -206,12 +234,12 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
     }
     const head = `peg ${spec.ticker}: pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% ${off > 0 ? "above" : "below"} $${target.toFixed(2)} (${ref.sources})`;
     if (!o.execute) { o.log(`${head}: [dry run] would ${what}`); return "dry run"; }
-    const sig = await o.send(ixs);
-    addUsed(tokens);
+    const pending: Pending = { at: new Date().toISOString(), day: nyDay(), side: off > 0 ? "sell" : "buy", amountIn: amountIn.toString(), minOut: minOut.toString(),
+      tokens, poolPrice: pool, refPrice: target };
+    setPending(pending);
+    const sig = await whenSigned((signature, lastValidBlockHeight) => setPending({ ...pending, signature, lastValidBlockHeight }), () => o.send(ixs));
+    landed(pending, sig);
     lastProblem = "";
-    fs.mkdirSync(o.stateDir, { recursive: true });
-    fs.appendFileSync(journal, JSON.stringify({ at: new Date().toISOString(), ticker: spec.ticker, pool: spec.pool.toBase58(), poolPrice: pool, refPrice: target,
-      side: off > 0 ? "sell" : "buy", amountIn: amountIn.toString(), minOut: minOut.toString(), tokens, signature: sig }) + "\n");
     await o.alert(`${head}: ${what}. ${sig}`);
     return "traded";
   }
