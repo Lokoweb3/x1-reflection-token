@@ -1,0 +1,369 @@
+openapi: 3.0.3
+info:
+  title: 99 + Tax launch API
+  version: "1.0.0"
+  description: |
+    Launch a Token-2022 tax token on X1 through a 99 + Tax site. The site builds every transaction; the
+    creator's wallet signs it locally and hands it back to `POST /api/send`. The private key is never sent.
+
+    **Pick one server and keep it for the whole launch, including any resume.** Mainnet spends real funds;
+    testnet uses free test coins (faucet at `/faucet`). Before signing anything, call `GET /api/info` and
+    check that `network` is the one you expect for that server; stop if it isn't. A mint started on one
+    network can't be continued on the other.
+
+    **Signing.** Transactions come back base64-encoded. Some already carry the site's own signature (the
+    token step is signed by the new mint's key), so add the creator's signature without dropping the others:
+    with `@solana/web3.js`, `VersionedTransaction.deserialize(bytes)` then `.sign([keypair])`, and send the
+    re-serialized bytes, base64-encoded. `POST /api/send` only relays fully signed transactions that call
+    this site's own programs, and answers once the transaction has confirmed.
+
+    **Every POST** must carry `Origin: <the server URL>` (no trailing slash); anything else gets
+    `403 Forbidden origin` as plain text. Unknown routes get `404 Not found`, also plain text.
+
+    **Approval.** A launch spends funds and can't be undone (the tax is fixed forever, a forever lock can
+    never be withdrawn). Agents must show the person the exact settings and total cost and get their
+    explicit yes before calling `POST /api/launch/token`.
+
+    Limits per IP address: 120 GETs and 30 POSTs a minute, 20 sends a minute, 10 launches an hour.
+servers:
+  - url: https://99tax.vercel.app
+    description: X1 mainnet (real funds)
+  - url: https://99tax-testnet.vercel.app
+    description: X1 testnet (test funds)
+# No API keys or logins: what authorizes a launch step is the creator's own signature on its transaction.
+security: []
+tags:
+  - name: read
+    description: Site settings and launch status. Safe to call any time.
+  - name: launch
+    description: The launch steps, in order. Each returns a transaction for the creator to sign, or sends one.
+paths:
+  /api/info:
+    get:
+      tags: [read]
+      summary: The site's network, fees and enabled features
+      operationId: getInfo
+      responses:
+        "200":
+          description: Site settings. Check `network` before signing anything.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Info" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/launches:
+    get:
+      tags: [read]
+      summary: A wallet's launches (newest 20) and how far each has got
+      operationId: getLaunches
+      parameters:
+        - name: creator
+          in: query
+          required: true
+          description: The creator's wallet address.
+          schema: { $ref: "#/components/schemas/Address" }
+      responses:
+        "200":
+          description: The wallet's launches.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Launch" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/tokens:
+    get:
+      tags: [read]
+      summary: Every registered token on the site
+      operationId: getTokens
+      responses:
+        "200":
+          description: Registered tokens.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                  properties:
+                    mint: { $ref: "#/components/schemas/Address" }
+                    name: { type: string }
+                    symbol: { type: string }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/launch/token:
+    post:
+      tags: [launch]
+      summary: "Step 1: create the token (charges the launch fee once sent)"
+      description: |
+        Checks the settings, and that the wallet can pay for the whole launch, before building anything.
+        The returned transaction creates the mint (signed already by the new mint's key), mints the supply,
+        revokes the mint authority and pays the launch fee. Only call this after the person approved the
+        exact settings and cost.
+      operationId: launchToken
+      parameters: [{ $ref: "#/components/parameters/Origin" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LaunchParams" }
+      responses:
+        "200":
+          description: The step-1 transaction to sign, and the new token's mint address.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tx, mint]
+                properties:
+                  tx: { $ref: "#/components/schemas/UnsignedTx" }
+                  mint: { $ref: "#/components/schemas/Address" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/launch/pool:
+    post:
+      tags: [launch]
+      summary: "Step 2: create the XDEX pool with the whole supply"
+      operationId: launchPool
+      parameters: [{ $ref: "#/components/parameters/Origin" }]
+      requestBody: { $ref: "#/components/requestBodies/LaunchStep" }
+      responses:
+        "200": { $ref: "#/components/responses/Tx" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/launch/lock:
+    post:
+      tags: [launch]
+      summary: "Step 3: lock the pool's liquidity in an lp_locker NFT"
+      operationId: launchLock
+      parameters: [{ $ref: "#/components/parameters/Origin" }]
+      requestBody: { $ref: "#/components/requestBodies/LaunchStep" }
+      responses:
+        "200": { $ref: "#/components/responses/Tx" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/launch/vault:
+    post:
+      tags: [launch]
+      summary: "Step 4 (when status.taxVault): start the tax vault"
+      operationId: launchVault
+      parameters: [{ $ref: "#/components/parameters/Origin" }]
+      requestBody: { $ref: "#/components/requestBodies/LaunchStep" }
+      responses:
+        "200": { $ref: "#/components/responses/Tx" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/launch/passes:
+    post:
+      tags: [launch]
+      summary: "Step 4b (holder-passes launches, testnet trial; when status.holderPasses): turn on holder passes"
+      operationId: launchPasses
+      parameters: [{ $ref: "#/components/parameters/Origin" }]
+      requestBody: { $ref: "#/components/requestBodies/LaunchStep" }
+      responses:
+        "200": { $ref: "#/components/responses/Tx" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/launch/register:
+    post:
+      tags: [launch]
+      summary: "Last step: register the launch once its steps have confirmed"
+      operationId: launchRegister
+      parameters: [{ $ref: "#/components/parameters/Origin" }]
+      requestBody: { $ref: "#/components/requestBodies/LaunchStep" }
+      responses:
+        "200":
+          description: Whether the launch is registered (false until every step has confirmed).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [registered]
+                properties:
+                  registered: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/send:
+    post:
+      tags: [launch]
+      summary: Send a fully signed transaction and wait for it to confirm
+      operationId: send
+      parameters: [{ $ref: "#/components/parameters/Origin" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tx]
+              properties:
+                tx:
+                  type: string
+                  format: byte
+                  description: The transaction from a launch step, with the creator's signature added, base64-encoded.
+                vaultMint:
+                  allOf: [{ $ref: "#/components/schemas/Address" }]
+                  description: With step 4, the token's mint, so the site's pages show the started vault at once.
+      responses:
+        "200":
+          description: Confirmed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signature]
+                properties:
+                  signature: { type: string, description: "Transaction signature (base58)." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+components:
+  parameters:
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      description: The server's own URL, e.g. `https://99tax-testnet.vercel.app`.
+      schema: { type: string, format: uri }
+  requestBodies:
+    LaunchStep:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [mint, creator]
+            properties:
+              mint: { $ref: "#/components/schemas/Address" }
+              creator: { $ref: "#/components/schemas/Address" }
+  responses:
+    Tx:
+      description: The step's transaction, for the creator to sign and pass to `POST /api/send`.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [tx]
+            properties:
+              tx: { $ref: "#/components/schemas/UnsignedTx" }
+    BadRequest:
+      description: Invalid input, a step out of order, or a wallet that can't pay. The message is meant for the person.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            invalidSymbol: { summary: Bad settings, value: { error: Invalid symbol } }
+            invalidJson: { summary: Body isn't JSON, value: { error: Invalid JSON } }
+            unknownLaunch: { summary: No such launch for this mint, value: { error: Unknown launch } }
+            badAddress: { summary: Not a valid address, value: { error: Invalid public key input } }
+    Forbidden:
+      description: The POST didn't carry this site's Origin (or the request came to an unknown host).
+      content:
+        text/plain:
+          schema: { type: string }
+          examples:
+            origin: { value: Forbidden origin }
+            host: { value: Forbidden host }
+    RateLimited:
+      description: Too many requests from this address (no Retry-After header; wait a minute, or an hour for launches).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            perAddress: { value: { error: Too many requests from this address; try again later. } }
+  schemas:
+    Address:
+      type: string
+      description: A base58 X1 address.
+      pattern: "^[1-9A-HJ-NP-Za-km-z]{32,44}$"
+    UnsignedTx:
+      type: string
+      format: byte
+      description: Base64 transaction, not yet signed by the creator (it may carry the site's own signatures).
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    Info:
+      type: object
+      additionalProperties: true
+      required: [network, explorer, feeAmount, feeSymbol, feeMint]
+      properties:
+        network: { type: string, enum: [mainnet, testnet] }
+        explorer: { type: string, format: uri }
+        feeAmount: { type: string, description: "Launch fee, whole tokens." }
+        feeSymbol: { type: string }
+        feeMint: { $ref: "#/components/schemas/Address" }
+        poolCreateFeeXnt: { type: number, nullable: true, description: "XDEX's pool-creation fee, XNT." }
+        gasXnt: { type: string, description: "Distributor gas pre-funded on launches without the Tax Vault, XNT." }
+        creatorBps: { type: integer, description: "The creator's share of the tax (1000 = 10%)." }
+        lockForeverOnly: { type: boolean }
+        launchesPaused: { type: string, nullable: true }
+        quoteTokens:
+          type: array
+          description: Pairs a launch may choose besides XNT.
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              symbol: { type: string }
+              mint: { $ref: "#/components/schemas/Address" }
+        taxVault:
+          type: object
+          additionalProperties: true
+          description: Present when the site runs the Tax Vault; `launches` says whether new XNT launches use it.
+          properties:
+            programId: { $ref: "#/components/schemas/Address" }
+            launches: { type: boolean }
+    LaunchParams:
+      type: object
+      required: [creator, name, symbol, supply, poolTokens, taxBps, autoLpBps, poolXnt, lockDays]
+      properties:
+        creator: { $ref: "#/components/schemas/Address" }
+        name: { type: string, maxLength: 32 }
+        symbol: { type: string, maxLength: 10, pattern: "^[A-Za-z0-9$._-]+$" }
+        description: { type: string, maxLength: 500 }
+        image: { type: string, description: "https:// or ipfs:// link to a PNG, JPG, WebP or GIF (not SVG)." }
+        website: { type: string, description: "https:// link." }
+        twitter: { type: string, description: "https://x.com/... or https://twitter.com/... link." }
+        telegram: { type: string, description: "https://t.me/... link." }
+        supply: { type: string, pattern: "^[0-9]+$", description: "Whole tokens, 1,000 to 10,000,000,000." }
+        poolTokens: { type: string, pattern: "^[0-9]+$", description: "Must equal supply: the whole supply goes into the pool." }
+        taxBps: { type: integer, minimum: 100, maximum: 1000, description: "Tax on every transfer (500 = 5%). Fixed forever." }
+        autoLpBps: { type: integer, minimum: 0, maximum: 5000, description: "Share of the tax that goes to liquidity. autoLpBps + burnBps ≤ 5500." }
+        burnBps: { type: integer, minimum: 0, maximum: 5000, default: 0, description: "Share of the tax that is burned." }
+        quote: { type: string, default: XNT, description: "The pool's pair token; others are listed in /api/info quoteTokens." }
+        poolXnt: { type: string, pattern: "^[0-9]+(\\.[0-9]{1,9})?$", description: "Pair amount for the pool (XNT: at least 0.01)." }
+        lockDays:
+          description: '"forever" (can never be withdrawn) or 1 to 3650 days.'
+          oneOf:
+            - { type: string, enum: [forever] }
+            - { type: integer, minimum: 1, maximum: 3650 }
+        payoutMint: { allOf: [{ $ref: "#/components/schemas/Address" }], description: "Pay holders in this token instead of XNT (Tax Vault XNT launches, where offered)." }
+    Launch:
+      type: object
+      additionalProperties: true
+      properties:
+        mint: { $ref: "#/components/schemas/Address" }
+        symbol: { type: string }
+        status:
+          type: object
+          additionalProperties: true
+          description: Which steps have confirmed; run the ones still false, in order.
+          properties:
+            token: { type: boolean }
+            pool: { type: boolean }
+            lock: { type: boolean }
+            lockNft: { type: string, nullable: true }
+            taxVault: { type: boolean, description: "A vault launch: step 4 is needed." }
+            vault: { type: boolean }
+            holderPasses: { type: boolean }
+            passes: { type: boolean }
+            registered: { type: boolean }

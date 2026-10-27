@@ -258,6 +258,20 @@ from there. (A site without the Tax Vault gives each token its own distributor w
   put it behind an HTTPS reverse proxy, set `factory.publicUrl` and list the host name in
   `factory.hosts`. It only listens on 127.0.0.1 by default.
 
+### For AI agents
+
+`/agents` explains how to let an AI agent launch a token. The site serves:
+
+- `/skill.md`: a skill file (the `SKILL.md` format) agents follow: check the settings and cost, get the person's yes, then launch
+- `/agents/launch.mjs`: the launcher it runs, signing with a local keypair (src/agents/launch.mjs)
+- `/agents/reference.md` and `/agents/openapi.yaml`: the launch API, with its error responses, as Markdown and as OpenAPI 3.0
+- `/llms.txt`: a pointer to the above
+
+The files live in src/agents/; `{{SITE}}` and `{{NETWORK}}` are filled in with `factory.publicUrl` (or the
+network's official site, https://99tax.vercel.app or https://99tax-testnet.vercel.app, when that's a loopback
+address) and the network. Before signing, the launcher stops unless the site's `/api/info` reports the network
+expected for that URL (`--network` for any other site).
+
 ## Token logos and metadata on IPFS
 
 With a Pinata API key with Files: Write (`factory.pinataJwt` in config.json, or `PINATA_JWT`), the launch

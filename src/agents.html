@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For AI agents · 99 + Tax</title>
+<meta name="description" content="Let an AI agent launch your token on 99 + Tax: a skill file, the launch API and a command-line launcher that signs with your own keypair.">
+<style>
+:root { --bg: #fbf8ef; --surface-1: #fbf8ef; --line: rgb(29 27 22 / .18); --text-primary: #1d1b16; --text-secondary: #45413a; --text-muted: #6b665a; --link: #1d1b16; --critical: #c8102e; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary); font: 15px/1.55 system-ui, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 60px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-size: 24px; text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+h1 { margin: 0 0 6px; font-size: 34px; }
+h2 { margin: 0 0 8px; font-size: 20px; }
+.lede { color: var(--text-secondary); margin: 0 0 22px; }
+.card { border: 1px solid var(--line); padding: 20px; margin-bottom: 18px; }
+.muted { color: var(--text-muted); font-size: 13px; }
+.btn { font: 700 14px system-ui, sans-serif; padding: 10px 16px; cursor: pointer; border: 2px solid; background: none; color: inherit; }
+.btn.sm { padding: 6px 10px; font-size: 13px; }
+.btn.primary { color: #fff; }
+.code { position: relative; margin: 10px 0 4px; }
+.code pre { margin: 0; padding: 12px 14px; padding-right: 76px; border: 1px dashed var(--line); font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.code button { position: absolute; top: 6px; right: 6px; }
+ol, ul { padding-left: 22px; margin: 8px 0; }
+li { margin: 4px 0; }
+.warn { border-left: 4px solid var(--critical); }
+.netpick { border: 1px dashed var(--line); padding: 10px 14px; margin: 0 0 18px; }
+details pre { max-height: 480px; overflow: auto; padding: 12px 14px; border: 1px dashed var(--line); font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 560px) { header nav { margin-left: 0; } h1 { font-size: 28px; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
+<script src="/theme.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens">Tokens</a>
+      <a href="/curve">Curve</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/leaderboard">Leaderboard</a>
+      <a href="/wallet">My earnings</a>
+      <a href="/faucet">Faucet</a><a href="/v4">v4</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+  </header>
+
+  <h1>For AI agents</h1>
+  <p class="lede">An AI agent (Claude Code, or any agent that can run commands) can launch a token here for you. It follows this site's skill file and signs with a keypair on your own machine. The key is never sent anywhere: the site builds each transaction, and the agent signs it locally.</p>
+  <p class="netpick">This page is for <b>X1 {{NETWORK}}</b> ({{SITE}}). Every command below uses this site; keep it for the whole launch, including a resume. Other network: <a href="https://99tax.vercel.app/agents">mainnet (real funds)</a> · <a href="https://99tax-testnet.vercel.app/agents">testnet (test funds)</a>.</p>
+
+  <div class="card">
+    <h2>1. Tell your agent</h2>
+    <p>Paste this into your agent, then answer its questions:</p>
+    <div class="code"><pre id="ask">Read {{SITE}}/skill.md and follow it to launch a token for me on X1 {{NETWORK}} using {{SITE}}.</pre><button class="btn sm" data-copy="ask">Copy</button></div>
+    <p class="muted">It checks your settings and the full cost first, and launches only after you say yes.</p>
+  </div>
+
+  <div class="card">
+    <h2>2. Or install it as a Claude Code skill</h2>
+    <p>Then it loads by itself whenever you ask Claude to launch a token on X1:</p>
+    <div class="code"><pre id="install">mkdir -p ~/.claude/skills/x1-token-launchpad
+curl -o ~/.claude/skills/x1-token-launchpad/SKILL.md {{SITE}}/skill.md</pre><button class="btn sm" data-copy="install">Copy</button></div>
+    <p class="muted">Other agents that read <code>SKILL.md</code> files can use the same file.</p>
+  </div>
+
+  <div class="card">
+    <h2>3. Or run it yourself, without an agent</h2>
+    <div class="code"><pre id="run">curl -O {{SITE}}/agents/launch.mjs
+npm i @solana/web3.js@1</pre><button class="btn sm" data-copy="run">Copy</button></div>
+    <p>Check: shows the settings, the full cost and your balances, and sends nothing.</p>
+    <div class="code"><pre id="check">node launch.mjs --site {{SITE}} --keypair wallet.json --name "My Token" --symbol MYT \
+  --supply 1000000000 --tax 5 --pool 10 --lock forever</pre><button class="btn sm" data-copy="check">Copy</button></div>
+    <p>Launch: the same command plus <code>--live</code>, once you're happy with the check.</p>
+    <div class="code"><pre id="launch">node launch.mjs --site {{SITE}} --keypair wallet.json --name "My Token" --symbol MYT \
+  --supply 1000000000 --tax 5 --pool 10 --lock forever --live</pre><button class="btn sm" data-copy="launch">Copy</button></div>
+    <p>Resume a launch that stopped, on the same site it started on:</p>
+    <div class="code"><pre id="resume">node launch.mjs --site {{SITE}} --keypair wallet.json --resume &lt;mint&gt; --live</pre><button class="btn sm" data-copy="resume">Copy</button></div>
+    <p>Your launches and how far each got:</p>
+    <div class="code"><pre id="status">node launch.mjs --site {{SITE}} --keypair wallet.json --status</pre><button class="btn sm" data-copy="status">Copy</button></div>
+    <p class="muted">Before signing anything, the launcher checks this site reports X1 {{NETWORK}}, and stops if it doesn't.</p>
+  </div>
+
+  <div class="card warn">
+    <h2>Before you launch</h2>
+    <ul>
+      <li>A launch can't be undone. The tax rate is fixed forever, and liquidity locked "forever" can never be withdrawn.</li>
+      <li>Never paste your private key or seed phrase into a chat. Give the agent the path to a keypair file on your machine instead.</li>
+      <li>Try it on testnet first: <a href="https://99tax-testnet.vercel.app/agents">99tax-testnet.vercel.app/agents</a>. Free coins are on its faucet page.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Files</h2>
+    <ul>
+      <li><a href="/skill.md">skill.md</a>: the instructions agents follow</li>
+      <li><a href="/agents/reference.md">reference.md</a>: the launch API, step by step, for agents that sign another way</li>
+      <li><a href="/agents/openapi.yaml">openapi.yaml</a>: the same API as an OpenAPI 3.0 file, with the mainnet and testnet servers</li>
+      <li><a href="/agents/launch.mjs">launch.mjs</a>: the launcher (Node 18+), <a href="https://github.com/Lokoweb3/x1-reflection-token/blob/main/src/agents/launch.mjs" target="_blank" rel="noopener">source on GitHub</a></li>
+    </ul>
+    <details><summary>Read skill.md here</summary><pre id="skill">Loading…</pre></details>
+  </div>
+</main>
+<script>
+for (const b of document.querySelectorAll("[data-copy]")) {
+  b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent); b.textContent = "Copied"; }
+    catch { b.textContent = "Select and copy"; }
+    setTimeout(() => { b.textContent = "Copy"; }, 1500);
+  });
+}
+fetch("/skill.md").then((r) => r.text()).then((t) => { document.getElementById("skill").textContent = t; })
+  .catch(() => { document.getElementById("skill").textContent = "Couldn't load it; open skill.md above."; });
+</script>
+</body>
+</html>
