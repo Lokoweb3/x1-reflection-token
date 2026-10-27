@@ -24,7 +24,11 @@ this file first and say so.
   testnet program, fixed 20 XNT) keep their stored 20 XNT through the upgrade: buying,
   graduation and delivery read the target from the account.
 - Fee: **1% of the XNT** on every curve buy and sell, to `FEE_RECEIVER`.
-- The creator may not buy on their own curve (`buyer != creator`).
+- The creator's own wallet may not buy on its curve (`buyer != creator`; the `testnet`
+  build allows it). That doesn't stop a creator buying from other wallets, so the site
+  must not say "the creator can't buy": what holds every wallet, the creator's others
+  included, is the early-buy limit (no single wallet above 1% of the supply in the first
+  2 minutes).
 - Early-buy limit: for the first 120 s after creation, one wallet's position may hold at
   most 1% of the supply (counted across all its buys), all buyers together may take at
   most 10% (`EARLY_TOTAL_BPS`), and a transaction may carry only one buy, sent directly to
@@ -37,8 +41,23 @@ this file first and say so.
 - Refund: a curve left Complete for `REFUND_AFTER_SECS` (7 days) because its XDEX pool
   can't be created opens to `refund` (anyone may send it, per position): the owner gets
   their pro-rata share of `raised_xnt` plus the position's deposit, and after the last one
-  the rest of `auth` goes to the creator. No tokens are minted.
-- Graduation is permissionless (two steps); the caller of the second step gets 0.01 XNT.
+  the rest of `auth` goes to the creator and the curve account is closed (rent to the
+  creator). No tokens are minted.
+- Graduation is permissionless (two instructions, which clients send in **one
+  transaction**, so the pool never exists without its lock); the caller of the second step
+  gets 0.01 XNT. `graduate_pool` refuses to run unless `lp_locker` is executable.
+- Lock fallback: a curve left PoolCreated for `LOCK_AFTER_SECS` (7 days) because
+  `graduate_lock` keeps failing (lp_locker gone or changed) opens to `graduate_burn`
+  (anyone): all of auth's LP is burned, so the liquidity is still locked forever but there
+  is no lock NFT, and the curve goes on to Graduated so buyers get their tokens. Such a
+  token has no fee NFT, no creator reward and can't start a Tax Vault (`init_vault` needs an
+  lp_locker lock); its tax stays withheld. It's the last resort, for when the alternative is
+  buyers never getting their tokens.
+- A creator may `close_curve` a Trading curve with `tokens_sold == 0`: with no positions it
+  closes now (graduation deposit and rent back to the creator); positions emptied by
+  selling still hold their token-account deposits, so it moves to Refunding instead and the
+  last `refund` (deposit only, no XNT was raised) closes it. A closed curve's mint (supply
+  0, mint authority still `auth`) can be given a new curve by its creator.
 - After graduation, anyone can `deliver` a buyer's tokens (the site's crank does all of
   them). When the last position is delivered, the mint authority is set to None.
 - The LP is locked **forever** through the existing `lp_locker` (`lock`), no locker change.
@@ -62,6 +81,7 @@ this file first and say so.
 | `SNIPE_MAX_BPS` | `100` (of total supply, per wallet's position, during the early window) |
 | `EARLY_TOTAL_BPS` | `1000` (of total supply, all buyers together, during the early window) |
 | `REFUND_AFTER_SECS` | `604800` (7 days in Complete before refunds open; feature `short-windows`: `10`) |
+| `LOCK_AFTER_SECS` | `604800` (7 days in PoolCreated before `graduate_burn` opens; feature `short-windows`: `10`) |
 | `STATUS_REFUNDING` | `5` (after Finished in number, but never graduated) |
 | `DECIMALS` | `9` |
 | supply (whole tokens) | `1_000` ..= `10_000_000_000` (u64 base units must not overflow) |
@@ -91,11 +111,11 @@ pub struct Curve {
     pub tokens_sold: u64,
     pub raised_xnt: u64,         // net XNT in the curve (= virtual_xnt - x0)
     pub created_at: i64,
-    pub status: u8,              // 0 Trading, 1 Complete, 2 PoolCreated, 3 Graduated, 4 Finished
+    pub status: u8,              // 0 Trading, 1 Complete, 2 PoolCreated, 3 Graduated, 4 Finished, 5 Refunding
     pub positions: u32,          // open (undelivered) positions
-    pub delivered: u64,          // tokens delivered so far
+    pub delivered: u64,          // tokens delivered so far; Complete: completion time; PoolCreated: pool creation time
     pub pool: Pubkey,            // set in graduate_pool
-    pub lock_nft: Pubkey,        // set in graduate_lock
+    pub lock_nft: Pubkey,        // set in graduate_lock (stays default after graduate_burn)
     pub tax_bps: u16,            // the mint's transfer fee, read at creation
     pub bump: u8,
     pub auth_bump: u8,
@@ -149,7 +169,7 @@ if now < created_at + SNIPE_WINDOW_SECS:
     require position.balance + out <= S * SNIPE_MAX_BPS / 10000     // TooBigEarly
     require tokens_sold + out <= S * EARLY_TOTAL_BPS / 10000        // EarlyWindowFull
     require this is the transaction's only buy, a top-level ix      // OneBuyPerTransaction
-if complete: delivered = now   // completion time, until graduate_pool resets it to 0
+if complete: delivered = now   // completion time, until graduate_pool replaces it
 x += net; y -= out; tokens_sold += out; raised_xnt += net; position.balance += out
 transfer: buyer -> auth: net (+ deposit on first buy); buyer -> FEE_RECEIVER: fee
 ```
@@ -208,7 +228,14 @@ Account lists in this exact order (w = writable, s = signer).
    auth_wxnt(w) [ATA(auth, NATIVE_MINT, SPL Token)], auth_lp(w) [ATA(auth, lp_mint, SPL Token)],
    xdex_program, amm_config, xdex_authority, pool(w), lp_mint(w), vault0(w), vault1(w),
    create_pool_fee(w), observation(w), native_mint, token_program, token_2022_program,
-   associated_token_program, system_program, rent.
+   associated_token_program, system_program, rent, locker_program [== LOCKER_PROGRAM_ID].
+   Refuses (`LockerUnavailable`) unless locker_program is executable. Sets `delivered` to
+   the pool's creation time (for graduate_burn); graduate_lock / graduate_burn reset it to 0.
+   Clients send it with graduate_lock in one transaction (measured: 1,178 bytes with two
+   compute-budget instructions, under the 1,232 limit, and 400k CU together, measured on a
+   local validator by scripts/local-curve-graduate-test.ts; test/curve.test.ts checks the size).
+   (locker_program was appended in the BC-M1 fix; older clients without it fail with
+   Anchor's not-enough-accounts error.)
    Mints `Pg` to auth_token, wraps the curve's `target_xnt` into auth_wxnt, then CPIs XDEX `initialize`
    with creator = auth (same account order as `buildCreatePool` in `src/xdex.ts`,
    open_time 0). Checks xdex_program/amm_config/create_pool_fee against the constants and
@@ -236,6 +263,14 @@ Account lists in this exact order (w = writable, s = signer).
    run before the status check, so calling this before graduate_pool fails with
    `WrongAccount` (pool != curve.pool) rather than `WrongStatus`.
 
+5a. `graduate_burn()` — status PoolCreated → Graduated, once `now ≥ pool creation time
+   (delivered; created_at on curves whose pool predates it) + LOCK_AFTER_SECS`
+   (`BurnNotOpen` before).
+   caller(w,s), curve(w), auth(w), lp_mint(w) [== PDA(["pool_lp_mint", curve.pool], XDEX)],
+   auth_lp(w) [ATA(auth, lp_mint, SPL Token)], token_program, system_program.
+   Burns all of auth_lp (auth signs), closes auth_lp to auth, pays GRADUATE_REWARD to the
+   caller, `lock_nft` stays default, `delivered` = 0, same reserve check. Emits `LpBurned`.
+
 6. `deliver()` — status Graduated (→ Finished when the last position is delivered)
    payer(w,s), curve(w), auth(w), position(w, closed to owner), owner(w) [== position.owner],
    owner_token(w) [ATA(owner, mint, Token-2022)], mint(w), creator(w) [== curve.creator],
@@ -244,7 +279,20 @@ Account lists in this exact order (w = writable, s = signer).
    (auth signs). Refunds `deposit` minus what the account creation actually cost
    (0 if it already existed) to owner, closes the position to owner. When `positions`
    reaches 0: sets the mint authority to None, status Finished, and sends all remaining
-   auth lamports to the creator.
+   auth lamports to the creator. (The curve account is kept: it is the on-chain record of
+   the graduation, pool and lock NFT that the site and the creator's tax-vault step read.)
+
+7. `refund()` — status Complete for REFUND_AFTER_SECS (→ Refunding) or Refunding
+   payer(w,s), curve(w), auth(w), position(w, closed to owner), owner(w), creator(w),
+   system_program. Pays the position's pro-rata share of `raised_xnt` plus its deposit.
+   After the last one, the rest of auth goes to the creator and the curve is closed to the
+   creator.
+
+8. `close_curve()` — status Trading with `tokens_sold == 0` (`CurveNotEmpty` otherwise)
+   creator(w,s) [== curve.creator], curve(w), auth(w), system_program.
+   positions == 0: all of auth to the creator and the curve closed to the creator.
+   positions > 0 (all emptied by selling): status Refunding; `refund` returns each deposit
+   and the last one closes the curve. Emits `CurveClosed`.
 
 ## Tax authority and the creator's start step
 
@@ -286,12 +334,17 @@ Trade { curve, trader, is_buy: bool, xnt: u64 /* gross paid or received before f
         tokens_sold: u64, raised_xnt: u64, ts: i64 }
 Graduated { curve, mint, pool, lock_nft, raised_xnt }
 Delivered { curve, owner, tokens }
+Refunded { curve, owner, tokens, xnt }
+LpBurned { curve, mint, pool, lp_amount, raised_xnt }
+CurveClosed { curve, mint, creator, positions: u32 }
 ```
 
 ## Errors
 
 `BadMint, BadSupply, BadTax, NotTrading, CreatorCannotBuy, ZeroAmount, Slippage,
 TooBigEarly, InsufficientBalance, WrongStatus, WrongAccount, MathOverflow,
-InsufficientReserve, BadTarget` (codes 6000.. in this order; `InsufficientReserve` = 6012
+InsufficientReserve, BadTarget, EarlyWindowFull, OneBuyPerTransaction,
+BadWithdrawAuthority, XdexClosed, RefundNotOpen, LockerUnavailable, BurnNotOpen,
+CurveNotEmpty` (codes 6000.. in this order; `InsufficientReserve` = 6012
 was added by the implementation, see graduate_pool; `BadTarget` = 6013 came with
 selectable targets, see create_curve).

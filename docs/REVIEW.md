@@ -144,7 +144,11 @@ the "for now" upgradeability note and each vault's publisher).
 - Known rounding: with the largest target and the smallest supply a full curve can raise
   up to ~143 lamports less than the target; the graduation deposit covers it and the pool
   still gets exactly the target.
-- Anti-snipe (first 2 minutes: max 1% of supply per buy), creator can't buy, delivery.
+- Anti-snipe (first 2 minutes: no single wallet above 1% of supply, all buyers together
+  10%), the creator's own wallet can't buy (other wallets of theirs can), delivery.
+- Graduation: `graduate_pool` + `graduate_lock` in one transaction (the crank does so);
+  `graduate_pool` checks `lp_locker` is executable; `graduate_burn` after 7 days in
+  PoolCreated; `close_curve` (nothing sold); the last refund closes the curve.
 
 `lp_locker`
 - `lock` / `lock_timed` / `unlock`, fee collection without touching the principal, the

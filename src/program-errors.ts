@@ -68,7 +68,7 @@ export const PROGRAM_ERRORS: Record<ProgramKind, readonly (readonly [string, str
     ["BadSupply", "Supply must be between 1,000 and 10,000,000,000 whole tokens"],
     ["BadTax", "Transfer fee must be 100-1000 bps with no fee-config authority"],
     ["NotTrading", "The curve is not trading"],
-    ["CreatorCannotBuy", "The creator cannot buy on their own curve"],
+    ["CreatorCannotBuy", "The creator's wallet cannot buy on its own curve"],
     ["ZeroAmount", "Amount must be greater than zero"],
     ["Slippage", "Price moved beyond the slippage limit"],
     ["TooBigEarly", "Early-buy limit: in the first 2 minutes one wallet can hold at most 1% of the supply"],
@@ -83,6 +83,9 @@ export const PROGRAM_ERRORS: Record<ProgramKind, readonly (readonly [string, str
     ["BadWithdrawAuthority", "The token's tax must be withdrawable only by a tax vault program's auth PDA"],
     ["XdexClosed", "The XDEX fee tier for graduation doesn't exist or doesn't accept new pools"],
     ["RefundNotOpen", "Refunds open only after the curve has waited 7 days for its pool"],
+    ["LockerUnavailable", "The LP locker program isn't deployed (not executable); the pool waits until it is"],
+    ["BurnNotOpen", "The LP can be burned only after the pool has waited 7 days for its lock"],
+    ["CurveNotEmpty", "Only a curve with nothing sold can be closed"],
   ],
   locker: [
     ["ZeroAmount", "Amount must be greater than zero"],
@@ -106,6 +109,7 @@ export const PROGRAM_ERRORS: Record<ProgramKind, readonly (readonly [string, str
     ["WrongPass", "Pass belongs to a different token"],
     ["BadProof", "Merkle proof doesn't match the current root"],
     ["PoolUnderfunded", "The pool doesn't hold enough to pay this claim"],
+    ["BadRewardMint", "Reward mint can't have a transfer fee, hook, permanent delegate, pause or any extension other than metadata/group"],
   ],
 };
 
@@ -127,7 +131,7 @@ const PLAIN: Record<string, string> = {
   "curve:Slippage": "The price moved while you were signing. Try again, or allow more slippage.",
   "curve:NotTrading": "This curve isn't trading right now (it has filled or graduated).",
   "curve:InsufficientBalance": "You don't hold that many tokens on this curve.",
-  "curve:CreatorCannotBuy": "The creator can't buy on their own curve.",
+  "curve:CreatorCannotBuy": "The creator's wallet can't buy on its own curve.",
   "locker:NotNftHolder": "This wallet doesn't hold the lock NFT.",
   // XDEX (its errors arrive through Anchor's log line).
   "*:ExceededSlippage": "The price moved while you were signing. Try again, or allow more slippage.",

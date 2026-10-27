@@ -147,8 +147,10 @@ pub mod lp_locker {
     }
 
     /// Create the creator-reward vault for a lock NFT and a reward token (e.g. USDC).
-    /// Anyone may pay for it; it only accepts NFTs that belong to an lp_locker lock.
+    /// Anyone may pay for it; it only accepts NFTs that belong to an lp_locker lock, and
+    /// reward mints that nobody can tax, hook, pause or move tokens of (`reward_mint_ok`).
     pub fn init_reward_vault(ctx: Context<InitRewardVault>) -> Result<()> {
+        reward_mint_ok(&ctx.accounts.reward_mint.to_account_info().try_borrow_data()?)?;
         let v = &mut ctx.accounts.vault;
         v.nft_mint = ctx.accounts.nft_mint.key();
         v.reward_mint = ctx.accounts.reward_mint.key();
@@ -565,6 +567,30 @@ fn check_nft_mint(mint: &AccountInfo, owner: &Pubkey) -> Result<()> {
     Ok(())
 }
 
+/// A reward mint must be a plain SPL Token / Token-2022 mint: no transfer fee (deposits
+/// and claims must move exactly what is booked) and nothing that lets anyone hook, pause,
+/// freeze-by-default or move its tokens (permanent delegate, non-transferable, ...): only
+/// metadata / group extensions. Same rule as tax_vault's `reward_mint_ok`.
+pub fn reward_mint_ok(data: &[u8]) -> Result<()> {
+    let state = StateWithExtensions::<MintState>::unpack(data).map_err(|_| error!(LockerError::BadRewardMint))?;
+    require!(state.base.is_initialized, LockerError::BadRewardMint);
+    for ext in state.get_extension_types().map_err(|_| error!(LockerError::BadRewardMint))? {
+        require!(
+            matches!(
+                ext,
+                ExtensionType::MetadataPointer
+                    | ExtensionType::TokenMetadata
+                    | ExtensionType::GroupPointer
+                    | ExtensionType::GroupMemberPointer
+                    | ExtensionType::TokenGroup
+                    | ExtensionType::TokenGroupMember
+            ),
+            LockerError::BadRewardMint
+        );
+    }
+    Ok(())
+}
+
 /// The parts of an XDEX PoolState this program needs (layout verified against X1 pools).
 struct PoolView {
     vault0: Pubkey,
@@ -605,10 +631,10 @@ impl PoolView {
         require_keys_eq!(self.vault0, v0.key(), LockerError::WrongPoolAccount);
         require_keys_eq!(self.vault1, v1.key(), LockerError::WrongPoolAccount);
         let r0 = token_amount(v0)?
-            .checked_sub(self.protocol_fees[0] + self.fund_fees[0])
+            .checked_sub(self.protocol_fees[0].checked_add(self.fund_fees[0]).ok_or(LockerError::MathOverflow)?)
             .ok_or(LockerError::MathOverflow)?;
         let r1 = token_amount(v1)?
-            .checked_sub(self.protocol_fees[1] + self.fund_fees[1])
+            .checked_sub(self.protocol_fees[1].checked_add(self.fund_fees[1]).ok_or(LockerError::MathOverflow)?)
             .ok_or(LockerError::MathOverflow)?;
         require!(r0 > 0 && r1 > 0 && self.lp_supply > 0, LockerError::EmptyPool);
         Ok((isqrt(r0 as u128 * r1 as u128), self.lp_supply as u128))
@@ -812,7 +838,7 @@ pub struct Unlock<'info> {
     pub lock: Account<'info, Lock>,
     #[account(mut, close = holder, seeds = [b"schedule", lock.key().as_ref()], bump = schedule.bump, has_one = lock)]
     pub schedule: Account<'info, LockSchedule>,
-    #[account(mut, address = lock.nft_mint @ LockerError::NotNftHolder)]
+    #[account(address = lock.nft_mint @ LockerError::NotNftHolder)]
     pub nft_mint: InterfaceAccount<'info, NftMint>,
     #[account(
         mut, token::mint = lock.nft_mint, token::authority = holder, token::token_program = token_2022_program,
@@ -1074,6 +1100,8 @@ pub enum LockerError {
     BadProof,
     #[msg("The pool doesn't hold enough to pay this claim")]
     PoolUnderfunded,
+    #[msg("Reward mint can't have a transfer fee, hook, permanent delegate, pause or any extension other than metadata/group")]
+    BadRewardMint,
 }
 
 #[cfg(test)]
@@ -1185,5 +1213,58 @@ mod tests {
         assert!(remaining_value >= principal);
         // Collecting again right away yields nothing.
         assert_eq!(fee_lp(lp - fee, principal, grown, supply).unwrap(), 0);
+    }
+
+    /// A Token-2022 mint with `exts` (or a legacy 82-byte SPL Token mint when None), as raw data.
+    fn mint_data(exts: Option<&[ExtensionType]>) -> Vec<u8> {
+        use anchor_spl::token_2022::spl_token_2022::extension::{BaseStateWithExtensionsMut, StateWithExtensionsMut};
+        use anchor_spl::token_2022::spl_token_2022::state::Mint;
+        use anchor_lang::solana_program::{program_option::COption, program_pack::Pack};
+        let base = Mint { mint_authority: COption::None, supply: 0, decimals: 6, is_initialized: true, freeze_authority: COption::None };
+        let Some(exts) = exts else {
+            let mut d = vec![0u8; Mint::LEN];
+            Mint::pack(base, &mut d).unwrap();
+            return d;
+        };
+        let mut d = vec![0u8; ExtensionType::try_calculate_account_len::<Mint>(exts).unwrap()];
+        let mut st = StateWithExtensionsMut::<Mint>::unpack_uninitialized(&mut d).unwrap();
+        for e in exts {
+            match e {
+                ExtensionType::TransferFeeConfig => { st.init_extension::<TransferFeeConfig>(true).unwrap(); }
+                ExtensionType::MetadataPointer => {
+                    st.init_extension::<anchor_spl::token_2022::spl_token_2022::extension::metadata_pointer::MetadataPointer>(true).unwrap();
+                }
+                ExtensionType::PermanentDelegate => {
+                    st.init_extension::<anchor_spl::token_2022::spl_token_2022::extension::permanent_delegate::PermanentDelegate>(true).unwrap();
+                }
+                ExtensionType::NonTransferable => {
+                    st.init_extension::<anchor_spl::token_2022::spl_token_2022::extension::non_transferable::NonTransferable>(true).unwrap();
+                }
+                ExtensionType::TransferHook => {
+                    st.init_extension::<anchor_spl::token_2022::spl_token_2022::extension::transfer_hook::TransferHook>(true).unwrap();
+                }
+                other => panic!("not set up in this test: {other:?}"),
+            }
+        }
+        st.base = base;
+        st.pack_base();
+        st.init_account_type().unwrap();
+        d
+    }
+
+    /// LP-L1: reward vaults take plain mints only (no fee, hook, delegate, non-transferable...).
+    #[test]
+    fn reward_mints_must_be_plain() {
+        let bad = u32::from(LockerError::BadRewardMint);
+        let code = |r: Result<()>| match r { Err(anchor_lang::error::Error::AnchorError(a)) => a.error_code_number, other => panic!("{other:?}") };
+        assert!(reward_mint_ok(&mint_data(None)).is_ok(), "SPL Token mint (USDC, wrapped XNT)");
+        assert!(reward_mint_ok(&mint_data(Some(&[ExtensionType::MetadataPointer]))).is_ok());
+        for e in [ExtensionType::TransferFeeConfig, ExtensionType::TransferHook, ExtensionType::PermanentDelegate, ExtensionType::NonTransferable] {
+            assert_eq!(code(reward_mint_ok(&mint_data(Some(&[ExtensionType::MetadataPointer, e])))), bad, "{e:?}");
+        }
+        assert_eq!(code(reward_mint_ok(&[0u8; 82])), bad, "uninitialized");
+        // Appended last: earlier codes keep their numbers.
+        assert_eq!(u32::from(LockerError::PoolUnderfunded), 6020);
+        assert_eq!(bad, 6021);
     }
 }
