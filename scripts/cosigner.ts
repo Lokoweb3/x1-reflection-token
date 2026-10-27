@@ -8,8 +8,8 @@
  *     [--network testnet|mainnet | --squads-program <id>] [--program <tax_vault id>]
  *     [--ipfs-gateway <url>[,<url>...]] [--pinata-jwt <jwt> | env PINATA_JWT] [--pinata-api <url>]
  *     [--webhook <url>] [--loop <seconds> (default 20) | --once] [--dry-run]
- *     [--tolerance-bps 500] [--max-moved-bps 1000] [--large-share-bps 2500] [--max-snapshot-age-slots 9000]
- *     [--strict] [--allow-rule-change] [--allow-rebuild] [--wait-minutes 30] [--priority <microlamports>]
+ *     [--tolerance-bps 500] [--max-moved-bps 100] [--large-share-bps 2500] [--max-snapshot-age-slots 9000]
+ *     [--rules <rules json file>] [--strict] [--allow-rule-change] [--allow-rebuild] [--wait-minutes 30] [--priority <microlamports>]
  *
  *   --keypair     a member of the multisig with the Vote (and Execute) permission; pays its
  *                 vote and execute fees (~0.00001 XNT each)
@@ -19,6 +19,10 @@
  *   --pinata-jwt  also pin every approved list file to this Pinata account (a second copy)
  *   --webhook     POST {"text": ...} here for every rejection and every flagged approval
  *   --dry-run     check and report, never vote or execute
+ *   --max-moved-bps  at most 100 (1% of the stated weight may differ from the chain)
+ *   --rules       the payout rules ({minHarvest, minPayout, minCycle, minHolding, excludeOwners,
+ *                 excludeOffCurve}, as pinned with list files) a vault's first list must use;
+ *                 default the site's defaults for the mint. Later lists are held to the previous one's
  *   --wait-minutes  a list file that can't be fetched is retried this long, then rejected
  *   --strict      flags (moved balances, a large share for a new wallet, an old snapshot)
  *                 reject the list too; --allow-rule-change / --allow-rebuild accept a
@@ -37,7 +41,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { DEFAULT_GATEWAY, TRUSTLESS_GATEWAY, normGateway, pinFile } from "../src/factory/ipfs.js";
-import { DEFAULT_VERIFY, checkProposal, type VerifyOptions } from "../src/list-verify.js";
+import { DEFAULT_VERIFY, MAX_MOVED_BPS, checkProposal, type VerifyOptions } from "../src/list-verify.js";
 import { SQUADS_PROGRAM_IDS, approveIx, executeIx, memberOf, readProposal, readQuorum, rejectIx } from "../src/squads.js";
 import { TAX_VAULT_PROGRAM_ID, cidFromBytes } from "../src/taxvault.js";
 import { run, withPriority } from "../src/tx.js";
@@ -70,10 +74,13 @@ const dryRun = has("dry-run");
 const waitMs = Number(flag("wait-minutes") ?? 30) * 60_000;
 const microLamports = Number(flag("priority") ?? 10_000);
 const num = (name: string, d: number) => { const x = flag(name); if (x === undefined) return d; const n = Number(x); if (!Number.isFinite(n) || n < 0) usage(`--${name} takes a number`); return n; };
+if (num("max-moved-bps", DEFAULT_VERIFY.maxMovedBps) > MAX_MOVED_BPS) usage(`--max-moved-bps is at most ${MAX_MOVED_BPS}`);
+const rulesFile = flag("rules");
 const opts: VerifyOptions = {
   toleranceBps: num("tolerance-bps", DEFAULT_VERIFY.toleranceBps), maxMovedBps: num("max-moved-bps", DEFAULT_VERIFY.maxMovedBps),
   largeShareBps: num("large-share-bps", DEFAULT_VERIFY.largeShareBps), maxSnapshotAgeSlots: num("max-snapshot-age-slots", DEFAULT_VERIFY.maxSnapshotAgeSlots),
   allowRuleChange: has("allow-rule-change"), allowRebuild: has("allow-rebuild"), strict: has("strict"),
+  firstListRules: rulesFile ? JSON.parse(fs.readFileSync(path.resolve(rulesFile), "utf8")) : null,
 };
 
 const conn = new Connection(rpc, "confirmed");

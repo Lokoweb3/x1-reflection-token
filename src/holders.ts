@@ -22,10 +22,11 @@ export async function scanTokenAccounts(conn: Connection, mint: PublicKey): Prom
  * The same scan with the slot the RPC read it at (its context slot), so a list's snapshot
  * slot is the slot the balances are from, not a getSlot() taken before the read.
  */
-export async function scanTokenAccountsAt(conn: Connection, mint: PublicKey): Promise<{ slot: number; rows: TokenAccountRow[] }> {
+export async function scanTokenAccountsAt(conn: Connection, mint: PublicKey, minContextSlot?: number): Promise<{ slot: number; rows: TokenAccountRow[] }> {
   const raw = await conn.getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
     commitment: "confirmed",
     withContext: true,
+    ...(minContextSlot !== undefined ? { minContextSlot } : {}),
     filters: [{ memcmp: { offset: 0, bytes: mint.toBase58() } }],
   });
   return {

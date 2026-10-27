@@ -1,14 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import * as squads from "@sqds/multisig";
 import { Keypair, PublicKey, TransactionMessage, type AccountInfo } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
+import { XDEX_PROGRAM_IDS } from "../src/config.js";
 import {
   TAX_VAULT_PROGRAM_ID, buildVaultTree, cidToBytes, publishListIx, rawCid, setPublisherIx, vaultAuthPda, vaultPda, type Vault,
 } from "../src/taxvault.js";
-import { composeList, listFileText, listFromInputs, type ListInputsJson, type RulesJson } from "../src/vault-crank.js";
-import { decodePublishProposal, verifyList, type VerifyInput } from "../src/list-verify.js";
+import { composeList, listFileText, listFromInputs, type ListFileJson, type ListInputsJson, type RulesJson } from "../src/vault-crank.js";
+import { DEFAULT_VERIFY, decodePublishProposal, verifyList, type VerifyInput } from "../src/list-verify.js";
 import { SQUADS_PROGRAM_IDS, decodeVaultTx, proposeIxs, squadsTransactionPda, squadsVaultPda, voteMemo, type VaultTx } from "../src/squads.js";
 import { poolAuthority } from "../src/xdex.js";
 
@@ -145,10 +147,14 @@ test("verify: an attacker's made-up balance doesn't match the chain; a large new
   // A small move within the tolerance is fine; strict turns flags into failures.
   const now = new Map(s.balances); now.set(s.A, 5_100_000n);
   assert.ok(verifyList(s.input(s.make(), { balancesNow: now })).ok);
-  now.set(s.A, 6_000_000n);
+  // A holder the snapshot missed, 0.5% of the weight: flagged, under the 1% limit.
+  now.set(key().toBase58(), 50_000n);
   const moved = verifyList(s.input(s.make(), { balancesNow: now }));
   assert.ok(moved.ok && moved.flags.length === 1, moved.errors.join("\n"));
   assert.equal(verifyList(s.input(s.make(), { balancesNow: now, opts: { strict: true } })).ok, false);
+  // 10% of the weight moved (A bought): no longer within the limit.
+  now.set(s.A, 6_000_000n);
+  assert.ok(verifyList(s.input(s.make(), { balancesNow: now })).errors.some((e) => /don't match the chain/.test(e)));
 });
 
 test("verify: a file that isn't the instruction's (root, CID, vault) or has no inputs fails", () => {
@@ -175,6 +181,86 @@ test("verify: a file that isn't the instruction's (root, CID, vault) or has no i
   const changed = s.make({ rules });
   assert.ok(verifyList(s.input(changed)).errors.some((e) => /rules/.test(e)));
   assert.ok(verifyList(s.input(changed, { opts: { allowRuleChange: true } })).ok);
+});
+
+test("verify: a first list's rules are the co-signer's, not the file's", () => {
+  const s = scenario();
+  const first = { ...s.inputs, prev: null, floor: "0", pot: s.v.holdersFunded.toString() };
+  const v0 = { ...s.v, listEpoch: 0n, listRoot: Buffer.alloc(32), listTotal: 0n, listCid: Buffer.alloc(33), holdersPaid: 0n };
+  const go = (rules: RulesJson, firstListRules: RulesJson | null) => {
+    const m = s.make({ inputs: first, rules, wallets: listFromInputs(null, first).wallets });
+    return verifyList(s.input(m, { vault: v0, prevList: null, paid: new Map(), opts: { firstListRules } }));
+  };
+  assert.deepEqual(go(RULES, RULES).errors, []);
+  // The file raises the minimum holding (or excludes a rival): refused, even with --allow-rule-change.
+  assert.ok(go({ ...RULES, excludeOwners: [s.D] }, RULES).errors.some((e) => /co-signer's first-list rules/.test(e)));
+  assert.ok(go({ ...RULES, minHolding: "2500000" }, RULES).errors.some((e) => /co-signer's first-list rules/.test(e)));
+  assert.ok(go(RULES, null).errors.some((e) => /no first-list rules configured/.test(e)));
+});
+
+// ---------- the real TEST lists 754 -> 755 (audits/payouts/2026-10-27-epoch-755) ----------
+const FIX = new URL("./fixtures/lists/", import.meta.url);
+const L754 = fs.readFileSync(new URL("bafkreifoa4no36cei5yzow6zbpodqv32u67hnlkc7bgankspjxcagtnxnq.json", FIX));
+const L755 = fs.readFileSync(new URL("bafkreie3ccn4joeupdj2kcv67gpowswtyyffptoljjqndhrtxdjw5l56gm.json", FIX));
+/** The mainnet vault just before list 755 was published, and verifyList's input for a 755 built from `inputs`. */
+function test755() {
+  const prev = JSON.parse(L754.toString()) as ListFileJson, real = JSON.parse(L755.toString()) as ListFileJson;
+  const vault = new PublicKey(real.vault), publisher = new PublicKey("8TAJEiAfT1aXLVcXMbw6TCRyDEjcYCzRHzrnJvVpdGkb");
+  const v: Vault = {
+    ...scenario().v, address: vault, mint: new PublicKey(real.mint), publisher, listEpoch: 754n, listRoot: Buffer.from(prev.root, "hex"),
+    listTotal: BigInt(prev.total), listCid: cidToBytes(rawCid(L754)), holdersFunded: BigInt(real.inputs!.holdersFunded), holdersPaid: BigInt(prev.total),
+  };
+  const prevList = { wallets: Object.fromEntries(prev.entries), rules: prev.rules };
+  // The chain at the snapshot: the audit found every stated balance equal to it.
+  const chain = new Map(real.inputs!.balances.map(([w, b]) => [w, BigInt(b)] as [string, bigint]));
+  const build = (inputs: ListInputsJson, file?: Buffer) => {
+    let text = file;
+    if (!text) {
+      const wallets = listFromInputs(prevList.wallets, inputs).wallets;
+      const total = Object.values(wallets).reduce((a, x) => a + BigInt(x), 0n);
+      text = Buffer.from(listFileText({ mint: real.mint, vault: real.vault, epoch: "755", root: buildVaultTree(vault, wallets).root.toString("hex"), total: total.toString(), wallets, rules: real.rules, inputs }));
+    }
+    const f = JSON.parse(text.toString()) as ListFileJson;
+    return (over: Partial<VerifyInput> = {}): VerifyInput => ({
+      taxProgram: TAX, vault: v, publisher, xdex: new PublicKey(XDEX_PROGRAM_IDS.mainnet), file: text!,
+      ix: { vault, root: Buffer.from(f.root, "hex"), epoch: 755n, total: BigInt(f.total), cid: cidToBytes(rawCid(text!)) },
+      prevList, paid: new Map(), balancesNow: new Map(chain), slotNow: Number(real.inputs!.slot) + 7, now: v.lastPublishAt + 3600, ...over,
+    });
+  };
+  return { real, chain, build };
+}
+
+test("verify: the real list 755 passes against its own snapshot", () => {
+  const t = test755();
+  const r = verifyList(t.build(t.real.inputs!, L755)());
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.summary.wallets, 30);
+  assert.equal(r.summary.cid, "bafkreie3ccn4joeupdj2kcv67gpowswtyyffptoljjqndhrtxdjw5l56gm");
+});
+
+test("verify: a list 755 whose stated balances are inflated by 9.9% is rejected", () => {
+  const t = test755();
+  const bal = t.real.inputs!.balances;
+  let weight = 0n;
+  for (const [, b] of bal) weight += BigInt(b);
+  // One holder (the publisher's own wallet, say) claims 9.9% of the weight it doesn't hold.
+  const [w0] = [...bal].sort(([, x], [, y]) => (BigInt(x) < BigInt(y) ? -1 : 1))[0];
+  const one = bal.map(([w, b]) => [w, w === w0 ? (BigInt(b) + (weight * 990n) / 10_000n).toString() : b] as [string, string]);
+  const r1 = verifyList(t.build({ ...t.real.inputs!, balances: one })());
+  assert.equal(r1.ok, false);
+  assert.ok(r1.errors.some((e) => /1 stated balance\(s\) above the chain/.test(e)), r1.errors.join("\n"));
+  assert.ok(r1.errors.some((e) => /9\.\d\d% of the stated weight differs \(limit 1\.00%\)/.test(e)), r1.errors.join("\n"));
+  // Every holder 9.9% up.
+  const all = bal.map(([w, b]) => [w, ((BigInt(b) * 10_990n) / 10_000n).toString()] as [string, string]);
+  const r2 = verifyList(t.build({ ...t.real.inputs!, balances: all })());
+  assert.ok(r2.errors.some((e) => e.startsWith(`${bal.length} stated balance(s) above the chain`)), r2.errors.join("\n"));
+  // Spread thin (4.9% each, under the per-wallet tolerance): still over the chain.
+  const thin = bal.map(([w, b]) => [w, ((BigInt(b) * 10_490n) / 10_000n).toString()] as [string, string]);
+  assert.ok(verifyList(t.build({ ...t.real.inputs!, balances: thin })()).errors.some((e) => /above the chain/.test(e)));
+  // The old 10% limit can't be configured back in.
+  const loose = verifyList(t.build({ ...t.real.inputs!, balances: one })({ opts: { maxMovedBps: 1000 } }));
+  assert.ok(loose.errors.some((e) => /maxMovedBps 1000 is above 100/.test(e)), loose.errors.join("\n"));
+  assert.equal(DEFAULT_VERIFY.maxMovedBps, 100);
 });
 
 /** A stored vault transaction as Squads writes it, from `ixs` (through the SDK's own message encoding). */
