@@ -20,7 +20,7 @@ import {
 
 /** The launchpad's pass rules (earning from a millionth of the supply) and the floors the "turn on" form accepts. */
 const PASS_HOLDING_DIVISOR = 1_000_000n, PASS_HOLDING_FLOOR_DIVISOR = 10_000_000n;
-const MIN_POT_FLOOR = 10_000_000n, MIN_INTERVAL_FLOOR = 60n;
+const MIN_POT_FLOOR = 10_000_000n, MIN_INTERVAL_FLOOR = 86_400n; // the program's MIN_ROUND_INTERVAL
 const short = (k: PublicKey | string) => { const s = k.toString(); return `${s.slice(0, 4)}…${s.slice(-4)}`; };
 
 export function passesApi(conn: Connection, cfg: Config, program: PublicKey, opts: { microLamports: number }) {

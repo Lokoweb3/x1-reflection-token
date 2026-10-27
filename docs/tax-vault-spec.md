@@ -146,7 +146,7 @@ Account lists in this exact order (w = writable, s = signer).
    creator_nft, system_program, instructions [sysvar `Sysvar1nstructions1111111111111111111111111`].
    Checks: mint owned by Token-2022; only the TransferFeeConfig / MetadataPointer /
    TokenMetadata extensions; no freeze authority; TransferFeeConfig present with fee
-   1..9999 bps and `maximum_fee == u64::MAX` (older and newer fee) — else `BadMint`;
+   2..9999 bps (see "Audit hardening") and `maximum_fee == u64::MAX` (older and newer fee) — else `BadMint`;
    **fee config authority None; withdraw-withheld authority == auth** — else `BadAuthority`;
    pool owned by XDEX (layout/discriminator), its mints are {mint (Token-2022), NATIVE_MINT
    (SPL Token)} — else `BadPool`; `lock` is owned by lp_locker, has the right PDA, records
@@ -227,7 +227,8 @@ Account lists in this exact order (w = writable, s = signer).
    publisher(s), vault(w).
    First, if a pending list exists and `now ≥ pending_active_at`, it becomes the active one
    (same as in `pay`). A pending list that isn't due yet is replaced by the new one.
-   Requires signer == publisher, `epoch > max(list_epoch, pending_epoch)`,
+   Requires signer == publisher, `epoch == max(list_epoch, pending_epoch) + 1` (was `>`; see
+   "Audit hardening"),
    `total ≥ max(list_total, pending_total)`, `total ≤ holders_funded`. Sets the pending list
    with `pending_active_at = now + LIST_DELAY_SECS`. Emits `ListPublished`.
 
@@ -770,7 +771,9 @@ With a payout token, `holders_funded`, `holders_paid`, list totals, `fallback_pa
   `payout_mint`, `payout_pool`, `payout_token_program`. The payout mint must be an SPL Token or
   Token-2022 mint with **no freeze authority** and only metadata / group extensions (no transfer
   fee, hook, permanent delegate or pause), and differ from the tax token and wXNT. The pool must
-  be an XDEX pool of exactly that mint against wXNT, with swaps open. It is stored for good:
+  be an XDEX pool of exactly that mint against wXNT, with swaps open. Since the audit hardening
+  the mint must also have **no mint authority** and the pool at least `MIN_PAYOUT_POOL_XNT`
+  (10 XNT); the pool's wXNT vault is a 13th account, after `payout_token_program`. It is stored for good:
   every holders' swap goes through it, so nobody can route the swap through a thin pool.
 * `sell`: in a payout-token vault the holders' XNT goes to `xnt_holders` (not `holders_funded`).
 * `fund_holders`: swaps up to `xnt_holders` into the payout token on the payout pool, capped
@@ -808,3 +811,69 @@ With a payout token, `holders_funded`, `holders_paid`, list totals, `fallback_pa
 * The site's stats stay in XNT: each token payout is also logged at the vault's average swap
   price (`holders-swap` entries), alongside the token amounts.
 * Rehearsal: `scripts/payout-token-rehearsal.ts`.
+
+# Audit hardening (before immutability)
+
+Program changes from the audit's tax_vault findings. **No account layout changes**: the vault
+stays 640 bytes, the pass book and pass accounts keep their sizes and field order, and no
+reserved byte is used. Live vaults deserialize as before. Instruction interfaces that changed
+are listed below; the TypeScript builders in `src/taxvault.ts` and `src/passes.ts` match.
+
+| Name | Value | `short-windows` feature (tests only) |
+|---|---|---|
+| `MIN_SELL_CAP_DIVISOR` | `4` | |
+| `MIN_PAYOUT_POOL_XNT` | `10_000_000_000` (10 XNT) | |
+| `MIN_ROUND_INTERVAL` | `86_400` s | `10` |
+| `ROUND_COOLDOWN_SLOTS` | `1_500` (10 × `MAX_BATCH_SLOTS`, ~10 min) | |
+
+* **TV-M1 `publish_list`:** `epoch` must be exactly `max(list_epoch, pending_epoch) + 1`
+  (`StaleEpoch` otherwise). Before, any larger epoch was accepted, so a publisher (or a stolen
+  publisher key) could publish `u64::MAX` and no later list could ever be newer. The crank
+  (`src/vault-crank.ts`, also used by `scripts/crank.ts`) already builds
+  `max + 1`. A cancelled pending epoch is reused by the next list.
+* **TV-M3 `init_vault_payout`:** the payout mint must have no mint authority (whoever holds
+  it could mint tokens and sell them into the payout pool, draining the XNT side the holders'
+  swaps buy from), and the payout pool must hold at least `MIN_PAYOUT_POOL_XNT` of wXNT. The
+  mint-authority rule is checked only at creation: `fund_holders` keeps checking only the
+  older rules, so a vault created before keeps swapping and paying in its token.
+  **Trust:** which payout token and which pool are the creator's choice. The program refuses
+  tokens and pools it can tell are unsafe (freeze or mint authority, transfer fee / hook /
+  delegate / pause, a paused or thin pool), but it can't tell a sound token from a bad one:
+  holders of a vault paying in a token trust the creator's choice of token and venue (the
+  pool is fixed for good). Tokens with a mint authority, which include USDC.X (mainnet), are
+  refused for new payout vaults unless a payout-mint allow-list is added (an owner decision).
+  New error text: `BadPayoutMint` / `BadPayoutPool` mention the new rules.
+* **TV-M2 holder passes:** `init_passes` refuses `min_interval < MIN_ROUND_INTERVAL`
+  (`BadPassConfig`). The pot cap bounds what one round pays on tokens moved in (at most 80%
+  of the tax they paid), but tokens bought once and held keep earning in every later round,
+  so the interval bounds how fast a bought-in position earns its tax back. The cap also uses
+  the pool's spot price, which a trade in the same transaction can move. Comments that said
+  buying in "always costs more than it earns" now say this. Books already initialised keep
+  their `min_interval`.
+* **TV-M2 / TV-L3 `snapshot_batch(start = 0)`:** a round opens at most once per slot and only
+  `ROUND_COOLDOWN_SLOTS` after the previous round opened (`round_start_slot`, closed or
+  expired; `RoundTooSoon`). A round opened and left to expire used to be reopenable at once,
+  keeping `register_pass`, `remove_pass` and evictions (refused while a round is live) locked
+  out; now a round can hold them for at most `MAX_BATCH_SLOTS` of every `ROUND_COOLDOWN_SLOTS`.
+* **TV-L2 `remove_pass` / `register_pass_evict`:** a pass whose wallet holds under
+  `min_holding` can be removed or evicted even when it is still owed XNT. What it is owed is
+  paid to its wallet in the same instruction (with the pass account's rent, so a wallet
+  emptied of lamports can receive it), booked like `pay_passes` (`holders_paid`, `PassPaid`).
+  Before, an owed pass that couldn't be paid (for example an empty wallet that a small
+  payment would leave rent-paying) kept its slot for good. A pass holding at least
+  `min_holding` still can't be evicted while owed. Interface changes: `remove_pass` takes the
+  vault writable and two more accounts at the end, `auth` (w) and the system program;
+  `register_pass_evict` takes the vault writable and `auth` (w) at the end, after the optional
+  tables record.
+* **TV-L1 `sell`:** the amount sold must be at least `min(cap / MIN_SELL_CAP_DIVISOR,
+  sell buckets)` (`TooSmall`), so nobody can take each slot's one sale with dust. The crank
+  passes all the buckets as `max_tokens`, so it always meets it.
+* **TV-L4:** building with `short-windows` but without `testnet` is a compile error.
+* **I-1 / I-4 `init_vault` / `init_vault_payout`:** the tax token's fee must be at least
+  2 bps (older and newer fee; at 1 bps the sale's impact cap, half the tax, is zero and the
+  vault could never sell: `BadMint`), and publisher and guardian must both be set and be
+  different keys (new error `BadRoles`, code 6049). Rotations later (`set_publisher`,
+  `appoint_publisher`) are unchanged.
+
+Deploying this changes the program hashes: `docs/REVIEW.md`'s hash table and
+`audits/upgrades/*/REPRODUCE.md` must be updated with the deployed build.

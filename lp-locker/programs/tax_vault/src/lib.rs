@@ -68,6 +68,11 @@ declare_id!("Aqt57qzgBy9cJLiygL6V8fHK7Sov7DwXeQFAm8aphxc8");
 #[cfg(not(feature = "passes-testnet"))]
 declare_id!("D9jtb7vgd7SAMJeqi97w9mtG8pL7yBizgsChNyb6jHxW");
 
+// The short windows (seconds-long list delay, appoint and fallback clocks) are for local
+// tests only; a mainnet build with them would let a guardian take over within seconds.
+#[cfg(all(feature = "short-windows", not(feature = "testnet")))]
+compile_error!("the `short-windows` feature needs `testnet` (it is for local tests only)");
+
 pub const LOCKER_PROGRAM_ID: Pubkey = pubkey!("5yPQ75TXYoJ8cEMYdDiQsstTnhwcgwm2skJfXPCFBe9C");
 
 #[cfg(feature = "testnet")]
@@ -115,6 +120,12 @@ pub const FALLBACK_AFTER_SECS: i64 = 30 * 86_400;
 pub const FALLBACK_AFTER_SECS: i64 = 30;
 /// A `sell` whose expected output is under this fails with TooSmall.
 pub const MIN_SELL_XNT: u64 = 2_000_000;
+/// A `sell` must take at least 1/MIN_SELL_CAP_DIVISOR of its impact cap (or every token in
+/// the sell buckets, when they hold less), so nobody can take each slot's one sale with dust.
+pub const MIN_SELL_CAP_DIVISOR: u64 = 4;
+/// `init_vault_payout`: the payout pool must hold at least this much XNT (10 XNT, the site's
+/// default `payoutMinPoolXnt`), so the holders' swaps don't go through a near-empty pool.
+pub const MIN_PAYOUT_POOL_XNT: u64 = 10_000_000_000;
 /// `add_liquidity` needs at least this much XNT set aside.
 pub const MIN_LP_XNT: u64 = 10_000_000;
 pub const CREATOR_BPS: u16 = 1000;
@@ -183,8 +194,10 @@ pub mod tax_vault {
 
     /// `init_vault` for a vault that pays holders in a payout token: the payout token's
     /// XDEX pool against wXNT is fixed here for good (every holders' swap goes through it).
-    /// The payout mint must have no freeze authority and no transfer fee / hook / delegate
-    /// (only metadata or group extensions), and differ from the tax token.
+    /// The payout mint must have no mint or freeze authority and no transfer fee / hook /
+    /// delegate (only metadata or group extensions), and differ from the tax token. The pool
+    /// must hold at least MIN_PAYOUT_POOL_XNT. Which token and venue is the creator's choice:
+    /// the program only refuses tokens and pools it can tell are unsafe (see the spec).
     pub fn init_vault_payout(ctx: Context<InitVaultPayout>, burn_bps: u16, lp_bps: u16, publisher: Pubkey, guardian: Pubkey) -> Result<()> {
         let a = &ctx.accounts;
         check_init(
@@ -195,9 +208,12 @@ pub mod tax_vault {
         require_keys_neq!(a.payout_mint.key(), a.mint.key(), VaultError::BadPayoutMint);
         require_keys_neq!(a.payout_mint.key(), native_mint::ID, VaultError::BadPayoutMint);
         check_payout_mint(&a.payout_mint.to_account_info(), &a.payout_token_program.key())?;
+        new_payout_mint_ok(&a.payout_mint.try_borrow_data()?)?;
         let pool = PoolView::read(&a.payout_pool.to_account_info())?;
-        pool.pair_side(&a.payout_mint.key(), &a.payout_token_program.key()).map_err(|_| error!(VaultError::BadPayoutPool))?;
+        let side = pool.pair_side(&a.payout_mint.key(), &a.payout_token_program.key()).map_err(|_| error!(VaultError::BadPayoutPool))?;
         require!(pool.status & STATUS_SWAP_PAUSED == 0, VaultError::BadPayoutPool);
+        let reserve_xnt = pool.reserve(1 - side, &a.payout_wxnt_vault.to_account_info()).map_err(|_| error!(VaultError::BadPayoutPool))?;
+        require!(reserve_xnt >= MIN_PAYOUT_POOL_XNT, VaultError::BadPayoutPool);
         let (mint, pool_key, nft, payout_pool) = (a.mint.key(), a.pool.key(), a.creator_nft.key(), a.payout_pool.key());
         let (bump, auth_bump) = (ctx.bumps.vault, ctx.bumps.auth);
         let v = &mut ctx.accounts.vault;
@@ -266,7 +282,8 @@ pub mod tax_vault {
         check_solvent(&ctx.accounts.auth.to_account_info(), &ctx.accounts.vault)
     }
 
-    /// Sell up to `max_tokens` from the sell buckets for XNT on the vault's pool.
+    /// Sell up to `max_tokens` from the sell buckets for XNT on the vault's pool; at least
+    /// `math::min_sell` of them (a quarter of the impact cap, or the whole buckets if less).
     pub fn sell(ctx: Context<Sell>, max_tokens: u64) -> Result<()> {
         let clock = Clock::get()?;
         let a = &ctx.accounts;
@@ -291,7 +308,7 @@ pub mod tax_vault {
         let buckets = add(add(v.sell_lp, v.sell_creator)?, v.sell_holders)?;
         let cap = math::max_input_for_impact(reserve_in, math::impact_bps(tax_bps), tax_bps, max_fee)?;
         let amount = max_tokens.min(buckets).min(cap);
-        require!(amount > 0, VaultError::TooSmall);
+        require!(amount > 0 && amount >= math::min_sell(cap, buckets), VaultError::TooSmall);
         let transfer_fee = fee.calculate_fee(amount).ok_or(VaultError::MathOverflow)?;
         let net_in = amount.checked_sub(transfer_fee).ok_or(VaultError::MathOverflow)?;
         let expected = math::cpmm_out(net_in, reserve_in, reserve_out, trade_fee_rate)?;
@@ -1082,7 +1099,7 @@ pub mod tax_vault {
     /// totals, so a vault with one could be made to pay its list wallets out of the passes'
     /// share. From then on the holders' share is split on-chain over registered wallets' live
     /// balances (`snapshot_batch` + `close_round`) and paid with `pay_passes`; `publish_list`
-    /// is refused.
+    /// is refused. `min_interval` must be at least MIN_ROUND_INTERVAL.
     pub fn init_passes(ctx: Context<InitPasses>, min_holding: u64, min_pot: u64, min_interval: i64) -> Result<()> {
         let vault_key = ctx.accounts.vault.key();
         let v = &mut ctx.accounts.vault;
@@ -1090,7 +1107,7 @@ pub mod tax_vault {
         require!(v.payout_pool == Pubkey::default(), VaultError::PaysInToken);
         require!(v.reserved[PASS_MODE_BYTE] == 0, VaultError::PassModeOn);
         math::check_never_listed(v.list_epoch, v.pending_epoch)?;
-        require!(min_interval >= 0, VaultError::BadPassConfig);
+        math::check_min_interval(min_interval)?;
         v.reserved[PASS_MODE_BYTE] = 1;
         let mut b = ctx.accounts.book.load_init()?;
         b.vault = vault_key;
@@ -1133,7 +1150,8 @@ pub mod tax_vault {
 
     /// Read one batch of registered wallets' balances, in book order; the remaining accounts
     /// are their token accounts for entries `start..`. `start == 0` opens a round (once
-    /// `min_interval` has passed and at least `min_pot` is waiting); every later batch must
+    /// `min_interval` has passed since the last closed round, ROUND_COOLDOWN_SLOTS since the
+    /// last opened one, and at least `min_pot` is waiting); every later batch must
     /// continue where the last one stopped, within MAX_BATCH_SLOTS of the first.
     pub fn snapshot_batch<'info>(ctx: Context<'_, '_, 'info, 'info, SnapshotBatch<'info>>, start: u32) -> Result<()> {
         let clock = Clock::get()?;
@@ -1143,6 +1161,7 @@ pub mod tax_vault {
         let mut b = ctx.accounts.book.load_mut()?;
         if start == 0 {
             require!(!round_live(&b, clock.slot), VaultError::RoundOpen);
+            math::check_round_open(b.round_start_slot, clock.slot)?;
             require!(clock.unix_timestamp >= b.last_round_at.saturating_add(b.min_interval), VaultError::RoundTooSoon);
             let pot = v.holders_funded.checked_sub(b.allocated).ok_or(VaultError::Insolvent)?;
             require!(pot > 0 && pot >= b.min_pot, VaultError::PotTooSmall);
@@ -1175,9 +1194,12 @@ pub mod tax_vault {
     /// Split the waiting pot over the round's balances once every registered wallet has
     /// been read. Every round pays at most POT_CAP_PCT_OF_TAX of the transfer tax rate on the
     /// eligible tokens' value at the pool's price, however many batches it was read in; the
-    /// rest waits for the next round. So buying in to be counted (even in the same
-    /// transaction as a one-batch round) or moving tokens between batches to be counted
-    /// twice always costs more in tax than it can earn.
+    /// rest waits for the next round. So within one round, buying in to be counted (even in
+    /// the same transaction as a one-batch round) or moving tokens between batches to be
+    /// counted twice earns less than the tax it pays. That bound is per round: tokens bought
+    /// once and held keep earning in later rounds (that is holding, and `min_interval`, at
+    /// least MIN_ROUND_INTERVAL, sets how often), and the price is the pool's spot price,
+    /// which a trade in the same transaction can move (for the pool's fee and the tax).
     pub fn close_round(ctx: Context<CloseRound>) -> Result<()> {
         let clock = Clock::get()?;
         let a = &ctx.accounts;
@@ -1351,10 +1373,11 @@ pub mod tax_vault {
         Ok(())
     }
 
-    /// Remove a fully paid pass whose wallet now holds under `min_holding` (anyone may send
-    /// it), so the book only carries wallets that can earn. The last pass moves into its
-    /// place; its pass account comes as `moved`. The pass account's rent goes back to its
-    /// wallet.
+    /// Remove a pass whose wallet now holds under `min_holding` (anyone may send it), so the
+    /// book only carries wallets that can earn. Whatever the pass is still owed is paid to its
+    /// wallet first (with the pass account's rent, so even an emptied wallet can take it), so
+    /// an unpaid pass can't keep its slot. The last pass moves into its place; its pass
+    /// account comes as `moved`. The pass account's rent goes back to its wallet.
     pub fn remove_pass(ctx: Context<RemovePass>) -> Result<()> {
         let now_slot = Clock::get()?.slot;
         let mint = ctx.accounts.vault.mint;
@@ -1365,10 +1388,11 @@ pub mod tax_vault {
         let last = (b.count as usize).checked_sub(1).ok_or(VaultError::BadIndex)?;
         require!(i <= last, VaultError::BadIndex);
         require_keys_eq!(b.entries[i].wallet, ctx.accounts.pass.wallet, VaultError::WrongAccount);
-        require!(b.entries[i].owed == b.entries[i].paid, VaultError::PassNotEmpty);
         require_keys_eq!(ctx.accounts.token_account.key(), b.entries[i].token_account, VaultError::WrongAccount);
         let bal = holder_balance(&ctx.accounts.token_account.to_account_info(), &mint, &b.entries[i].wallet)?;
         require!(bal < b.min_holding, VaultError::PassNotEmpty);
+        let (owed, unpaid) = (b.entries[i].owed, b.entries[i].owed.checked_sub(b.entries[i].paid).ok_or(VaultError::MathOverflow)?);
+        let allocated = b.allocated;
         if i != last {
             let moved = ctx.accounts.moved.as_mut().ok_or(VaultError::WrongAccount)?;
             require_keys_eq!(moved.wallet, b.entries[last].wallet, VaultError::WrongAccount);
@@ -1385,13 +1409,16 @@ pub mod tax_vault {
             }
             t.indexed = t.indexed.min(b.count);
         }
-        Ok(())
+        drop(b);
+        let a = &mut *ctx.accounts;
+        pay_leaving_pass(&mut a.vault, &a.auth.to_account_info(), &a.system_program.to_account_info(), &a.wallet.to_account_info(), unpaid, owed, allocated)
     }
 
     /// A wallet takes the slot of an existing pass when the book is full (top-level only, like
     /// `register_pass`), so a full book can't be held for good by small holders: the evicted
-    /// pass must be owed nothing and the new wallet must hold at least EVICT_MULT times its
-    /// live balance (and the registering minimum). The new pass takes the evicted one's index;
+    /// pass must be owed nothing or hold under `min_holding` (what it is owed is then paid to
+    /// its wallet), and the new wallet must hold at least EVICT_MULT times its live balance
+    /// (and the registering minimum). The new pass takes the evicted one's index;
     /// the evicted pass account's rent goes back to its wallet. Not while a round is being
     /// read. With the book's lookup-table record, `indexed` drops to the replaced index so the
     /// new pass's addresses are indexed from there.
@@ -1414,7 +1441,11 @@ pub mod tax_vault {
         math::check_evict(b.count as usize, round_live(&b, now_slot), old.owed, old.paid, b.min_holding, old_bal, new_bal)?;
         b.round_open = 0;
         b.entries[i] = PassEntry { wallet, token_account, weight: 0, owed: 0, paid: 0 };
+        let allocated = b.allocated;
         drop(b);
+        let a = &mut *ctx.accounts;
+        let unpaid = old.owed.checked_sub(old.paid).ok_or(VaultError::MathOverflow)?;
+        pay_leaving_pass(&mut a.vault, &a.auth.to_account_info(), &a.system_program.to_account_info(), &a.evicted_wallet.to_account_info(), unpaid, old.owed, allocated)?;
         let p = &mut ctx.accounts.pass;
         p.wallet = wallet;
         p.index = i as u32;
@@ -1439,10 +1470,20 @@ pub const PASS_BOOK_LEN: usize = 8 + std::mem::size_of::<PassBook>();
 /// wallet to send five batches one after another). The window's length doesn't change the
 /// pot cap's argument: every move between batches pays the transfer tax.
 pub const MAX_BATCH_SLOTS: u64 = 150;
+/// A new round opens at least this many slots (~10 min) after the previous one opened, so a
+/// round left to expire can lock registration out for at most MAX_BATCH_SLOTS of every
+/// ROUND_COOLDOWN_SLOTS.
+pub const ROUND_COOLDOWN_SLOTS: u64 = 10 * MAX_BATCH_SLOTS;
+/// `init_passes` refuses a shorter `min_interval` (one day).
+#[cfg(not(feature = "short-windows"))]
+pub const MIN_ROUND_INTERVAL: i64 = 86_400;
+/// Local testing only.
+#[cfg(feature = "short-windows")]
+pub const MIN_ROUND_INTERVAL: i64 = 10;
 /// A round pays out at most this percentage of the transfer tax rate on the eligible tokens'
 /// value (80%: 4% on a 5% tax), however many batches it was read in. Buying in to be
 /// counted, or moving tokens between batches to be counted twice, then costs the tax for a
-/// smaller gain. The rate is the one the whole eligible amount would pay, so a token's
+/// smaller gain in that round (tokens held on through later rounds earn again). The rate is the one the whole eligible amount would pay, so a token's
 /// maximum fee can only lower the cap.
 pub const POT_CAP_PCT_OF_TAX: u64 = 80;
 /// Registering needs this many times the reward minimum (`min_holding`) in the wallet.
@@ -1509,6 +1550,21 @@ pub struct Pass {
     pub wallet: Pubkey,
     pub index: u32,
     pub bump: u8,
+}
+
+/// Pay a pass leaving the book (`remove_pass`, `register_pass_evict`) what it is still owed
+/// (`unpaid`; `owed` is its cumulative), booked like `pay_passes`.
+fn pay_leaving_pass<'info>(v: &mut Vault, auth: &AccountInfo<'info>, sys: &AccountInfo<'info>, wallet: &AccountInfo<'info>, unpaid: u64, owed: u64, allocated: u64) -> Result<()> {
+    if unpaid == 0 {
+        return Ok(());
+    }
+    let mint_key = v.mint;
+    let auth_seeds: &[&[u8]] = &[b"auth", mint_key.as_ref(), &[v.auth_bump]];
+    pay_from_auth(sys, auth, wallet, unpaid, auth_seeds)?;
+    v.holders_paid = add(v.holders_paid, unpaid)?;
+    require!(v.holders_paid <= allocated && allocated <= v.holders_funded, VaultError::OverFunded);
+    emit!(PassPaid { vault: vault_pda(&v.mint, v.bump)?, wallet: wallet.key(), amount: unpaid, paid: owed });
+    check_solvent(auth, v)
 }
 
 /// A round is being read and its window hasn't run out.
@@ -1626,7 +1682,7 @@ pub struct SponsorHolders<'info> {
 #[derive(Accounts)]
 pub struct RemovePass<'info> {
     pub caller: Signer<'info>,
-    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
     pub vault: Box<Account<'info, Vault>>,
     #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
     pub book: AccountLoader<'info, PassBook>,
@@ -1643,18 +1699,22 @@ pub struct RemovePass<'info> {
     /// The book's lookup-table record, once index_passes has made it.
     #[account(mut, seeds = [b"pass_tables", vault.key().as_ref()], bump = tables.bump)]
     pub tables: Option<Box<Account<'info, PassTables>>>,
+    /// Pays what the pass is still owed.
+    #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
+    pub auth: SystemAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 /// Accounts of `register_pass_evict`, in order: the new wallet (signer, pays the new pass's
 /// rent), vault, book, the new pass (created), the new wallet's associated Token-2022
 /// account, the evicted pass (closed), its wallet (gets that rent back), its token account
-/// (as recorded in the book), the system program, then optionally the book's lookup-table
-/// record.
+/// (as recorded in the book), the system program, optionally the book's lookup-table record,
+/// then auth (pays what the evicted pass is still owed).
 #[derive(Accounts)]
 pub struct RegisterPassEvict<'info> {
     #[account(mut)]
     pub wallet: Signer<'info>,
-    #[account(seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
+    #[account(mut, seeds = [b"vault", vault.mint.as_ref()], bump = vault.bump)]
     pub vault: Box<Account<'info, Vault>>,
     #[account(mut, seeds = [b"passes", vault.key().as_ref()], bump)]
     pub book: AccountLoader<'info, PassBook>,
@@ -1673,6 +1733,9 @@ pub struct RegisterPassEvict<'info> {
     /// The book's lookup-table record, once index_passes has made it.
     #[account(mut, seeds = [b"pass_tables", vault.key().as_ref()], bump = tables.bump)]
     pub tables: Option<Box<Account<'info, PassTables>>>,
+    /// Pays what the evicted pass is still owed.
+    #[account(mut, seeds = [b"auth", vault.mint.as_ref()], bump = vault.auth_bump)]
+    pub auth: SystemAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1913,6 +1976,7 @@ fn setup_vault(
     auth_bump: u8,
     payout_pool: Pubkey,
 ) -> Result<()> {
+    math::check_roles(&publisher, &guardian)?;
     let now = Clock::get()?.unix_timestamp;
     v.mint = mint;
     v.pool = pool;
@@ -1979,6 +2043,16 @@ pub fn payout_mint_ok(data: &[u8]) -> Result<()> {
     reward_mint_ok(data).map_err(|_| error!(VaultError::BadPayoutMint))?;
     let state = StateWithExtensions::<MintState>::unpack(data).map_err(|_| error!(VaultError::BadPayoutMint))?;
     require!(state.base.freeze_authority.is_none(), VaultError::BadPayoutMint);
+    Ok(())
+}
+
+/// A new vault's payout token (`init_vault_payout` only): `payout_mint_ok`, and no mint
+/// authority either. Not checked again after creation, so a vault made before this rule
+/// keeps swapping and paying in its token.
+pub fn new_payout_mint_ok(data: &[u8]) -> Result<()> {
+    payout_mint_ok(data)?;
+    let state = StateWithExtensions::<MintState>::unpack(data).map_err(|_| error!(VaultError::BadPayoutMint))?;
+    require!(state.base.mint_authority.is_none(), VaultError::BadPayoutMint);
     Ok(())
 }
 
@@ -2090,7 +2164,7 @@ pub fn reward_mint_ok(data: &[u8]) -> Result<()> {
 
 /// The mint must be a Token-2022 tax token that nobody can change or freeze: only the
 /// TransferFeeConfig / MetadataPointer / TokenMetadata extensions, no freeze authority, a
-/// fee of 1..9999 bps with no maximum and no fee-config authority, and `auth` as the withdraw-withheld
+/// fee of 2..9999 bps with no maximum and no fee-config authority, and `auth` as the withdraw-withheld
 /// authority. Returns the metadata update authority (if any).
 fn check_vault_mint(mint: &AccountInfo, auth: &Pubkey) -> Result<Option<Pubkey>> {
     require_keys_eq!(*mint.owner, token_2022::ID, VaultError::BadMint);
@@ -2110,8 +2184,7 @@ fn check_vault_mint(mint: &AccountInfo, auth: &Pubkey) -> Result<Option<Pubkey>>
     let withdraw: Option<Pubkey> = cfg.withdraw_withheld_authority.into();
     require!(withdraw == Some(*auth), VaultError::BadAuthority);
     for f in [&cfg.older_transfer_fee, &cfg.newer_transfer_fee] {
-        let bps = u16::from(f.transfer_fee_basis_points);
-        require!(bps > 0 && u64::from(bps) < BPS, VaultError::BadMint);
+        math::check_tax_bps(u64::from(u16::from(f.transfer_fee_basis_points)))?;
         // No fee cap: the sale's impact limit (and so the sandwich protection) relies on
         // the full percentage being charged on large transfers.
         require!(u64::from(f.maximum_fee) == u64::MAX, VaultError::BadMint);
@@ -2522,7 +2595,8 @@ pub mod math {
         Ok(None)
     }
 
-    /// Rules for a new list: newer epoch, total never lower (than the active and pending
+    /// Rules for a new list: the next epoch (exactly one more than the active and pending
+    /// lists', so a publisher can't jump to u64::MAX and lock out every later list), total never lower (than the active and pending
     /// lists, and than what was already paid, which fallback payments can push above the
     /// list total), never above what the holders' share has received.
     #[allow(clippy::too_many_arguments)]
@@ -2536,10 +2610,33 @@ pub mod math {
         epoch: u64,
         total: u64,
     ) -> Result<()> {
-        require!(epoch > list_epoch.max(pending_epoch), VaultError::StaleEpoch);
+        require!(list_epoch.max(pending_epoch).checked_add(1) == Some(epoch), VaultError::StaleEpoch);
         require!(total >= list_total.max(pending_total).max(holders_paid), VaultError::TotalDecreased);
         require!(total <= holders_funded, VaultError::OverFunded);
         Ok(())
+    }
+
+    /// A new vault's tax rate: at least 2 bps (so the sale's impact cap, half the tax, is not
+    /// zero and the vault can sell) and under 100%.
+    pub fn check_tax_bps(bps: u64) -> Result<()> {
+        require!(bps >= 2 && bps < BPS, VaultError::BadMint);
+        Ok(())
+    }
+
+    /// A new vault's roles: a publisher and a guardian that are both set and not the same key
+    /// (the guardian is the check on the publisher).
+    pub fn check_roles(publisher: &Pubkey, guardian: &Pubkey) -> Result<()> {
+        require!(
+            *publisher != Pubkey::default() && *guardian != Pubkey::default() && publisher != guardian,
+            VaultError::BadRoles
+        );
+        Ok(())
+    }
+
+    /// The smallest `sell` allowed: 1/MIN_SELL_CAP_DIVISOR of the impact cap, or every token
+    /// in the sell buckets when they hold less than that.
+    pub fn min_sell(cap: u64, buckets: u64) -> u64 {
+        (cap / MIN_SELL_CAP_DIVISOR).min(buckets)
     }
 
     /// The guardian may appoint a publisher only after APPOINT_AFTER_SECS without a publish.
@@ -2620,6 +2717,26 @@ pub mod math {
         pass_pot(pot, weight, reserve_xnt, reserve_token, pass_cap_bps(tax_on_weight, weight))
     }
 
+    /// A pass book's round interval: at least MIN_ROUND_INTERVAL. Every round can pay a
+    /// holder up to the pot cap again without its tokens moving, so the interval bounds how
+    /// fast a bought-in position earns back its tax.
+    pub fn check_min_interval(min_interval: i64) -> Result<()> {
+        require!(min_interval >= MIN_ROUND_INTERVAL, VaultError::BadPassConfig);
+        Ok(())
+    }
+
+    /// `snapshot_batch(start = 0)`: a new round opens at most once per slot and only
+    /// ROUND_COOLDOWN_SLOTS after the previous round opened (closed or expired), so rounds
+    /// that are opened and left to expire can't keep `register_pass` / `remove_pass` /
+    /// evictions locked out. `prev_start_slot` is 0 before the first round.
+    pub fn check_round_open(prev_start_slot: u64, slot: u64) -> Result<()> {
+        if prev_start_slot != 0 {
+            require!(slot > prev_start_slot, VaultError::RoundTooSoon);
+            require!(slot >= prev_start_slot.saturating_add(ROUND_COOLDOWN_SLOTS), VaultError::RoundTooSoon);
+        }
+        Ok(())
+    }
+
     /// Holder passes go only on a vault that never had a rewards list: none active or past
     /// (`list_epoch`), none pending.
     pub fn check_never_listed(list_epoch: u64, pending_epoch: u64) -> Result<()> {
@@ -2635,11 +2752,12 @@ pub mod math {
     }
 
     /// `register_pass_evict`'s rules: the book is full (otherwise `register_pass`), no round
-    /// is being read, the evicted pass is owed nothing, and the new wallet holds enough.
+    /// is being read, the evicted pass is owed nothing or holds under `min_holding` (what it
+    /// is still owed is then paid to its wallet), and the new wallet holds enough.
     pub fn check_evict(count: usize, round_live: bool, owed: u64, paid: u64, min_holding: u64, evicted_balance: u64, new_balance: u64) -> Result<()> {
         require!(count == MAX_PASSES, VaultError::PassBookNotFull);
         require!(!round_live, VaultError::RoundOpen);
-        require!(owed == paid, VaultError::PassNotEmpty);
+        require!(owed == paid || evicted_balance < min_holding, VaultError::PassNotEmpty);
         require!(new_balance >= evict_minimum(min_holding, evicted_balance), VaultError::EvictTooSmall);
         Ok(())
     }
@@ -2837,6 +2955,8 @@ pub struct InitVaultPayout<'info> {
     pub payout_pool: UncheckedAccount<'info>,
     /// The payout mint's token program (SPL Token or Token-2022).
     pub payout_token_program: Interface<'info, TokenInterface>,
+    /// CHECK: the payout pool's wXNT vault (PoolView::reserve), for its XNT reserve.
+    pub payout_wxnt_vault: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -3240,7 +3360,7 @@ pub struct FallbackPaid {
 
 #[error_code]
 pub enum VaultError {
-    #[msg("Mint must be a Token-2022 tax token with only transfer-fee/metadata extensions, no freeze authority and a 0.01-99.99% fee")]
+    #[msg("Mint must be a Token-2022 tax token with only transfer-fee/metadata extensions, no freeze authority and a 0.02-99.99% fee")]
     BadMint,
     #[msg("Fee config authority must be None, the withdraw authority must be the vault's auth, and the creator (or an atomic hand-over) must create the vault")]
     BadAuthority,
@@ -3292,9 +3412,9 @@ pub enum VaultError {
     PaysInToken,
     #[msg("This vault pays holders in XNT")]
     PaysInXnt,
-    #[msg("Payout token must have no freeze authority and no transfer fee, hook, delegate or pause, and differ from the tax token and XNT")]
+    #[msg("Payout token must have no freeze authority (nor, for a new vault, mint authority) and no transfer fee, hook, delegate or pause, and differ from the tax token and XNT")]
     BadPayoutMint,
-    #[msg("Payout pool must be the payout token's XDEX pool against wXNT, with swaps open")]
+    #[msg("Payout pool must be the payout token's XDEX pool against wXNT, with swaps open (and, for a new vault, at least 10 XNT)")]
     BadPayoutPool,
     #[msg("This vault has no holder passes")]
     NotPassMode,
@@ -3338,6 +3458,8 @@ pub enum VaultError {
     PassBookNotFull,
     #[msg("Taking a pass's slot needs twice its balance (and the registering minimum)")]
     EvictTooSmall,
+    #[msg("Publisher and guardian must both be set and be different keys")]
+    BadRoles,
 }
 
 #[cfg(test)]
@@ -4055,11 +4177,80 @@ mod tests {
         // Refused: under twice the evicted pass's balance.
         assert_eq!(check_evict(MAX_PASSES, false, 0, 0, min, 5_000, 9_999).unwrap_err(), err(VaultError::EvictTooSmall));
         assert_eq!(check_evict(MAX_PASSES, false, 0, 0, min, 0, 1_999).unwrap_err(), err(VaultError::EvictTooSmall));
-        // Refused: the evicted pass is still owed XNT.
-        assert_eq!(check_evict(MAX_PASSES, false, 8, 7, min, 0, 1_000_000).unwrap_err(), err(VaultError::PassNotEmpty));
+        // Refused: the evicted pass is still owed XNT and still holds the minimum.
+        assert_eq!(check_evict(MAX_PASSES, false, 8, 7, min, min, 1_000_000).unwrap_err(), err(VaultError::PassNotEmpty));
+        // Allowed: owed XNT but under the minimum (the instruction pays it to the evicted wallet).
+        assert!(check_evict(MAX_PASSES, false, 8, 7, min, 0, 1_000_000).is_ok());
+        assert!(check_evict(MAX_PASSES, false, 8, 7, min, min - 1, 1_000_000).is_ok());
         // Refused: a round is being read.
         assert_eq!(check_evict(MAX_PASSES, true, 0, 0, min, 0, 1_000_000).unwrap_err(), err(VaultError::RoundOpen));
         // A wallet that already has a pass can't evict: its pass PDA ["pass", vault, wallet]
         // already exists, so the `init` of RegisterPassEvict::pass fails before the instruction runs.
+    }
+    #[test]
+    fn list_epoch_is_exactly_the_next_one() {
+        // max(list_epoch, pending_epoch) + 1 only.
+        assert!(check_publish(3, 5, 50, 60, 100, 0, 6, 60).is_ok());
+        assert!(check_publish(5, 3, 50, 60, 100, 0, 6, 60).is_ok());
+        assert_eq!(check_publish(3, 5, 50, 60, 100, 0, 7, 60).unwrap_err(), error!(VaultError::StaleEpoch)); // max + 2
+        assert_eq!(check_publish(3, 5, 50, 60, 100, 0, u64::MAX, 60).unwrap_err(), error!(VaultError::StaleEpoch));
+        assert_eq!(check_publish(0, 0, 0, 0, 100, 0, 2, 100).unwrap_err(), error!(VaultError::StaleEpoch));
+        // An epoch already at u64::MAX can't be followed (it can't be reached either).
+        assert_eq!(check_publish(u64::MAX, 0, 0, 0, 100, 0, u64::MAX, 100).unwrap_err(), error!(VaultError::StaleEpoch));
+    }
+
+    #[test]
+    fn new_vault_tax_and_roles() {
+        assert_eq!(check_tax_bps(0).unwrap_err(), err(VaultError::BadMint));
+        assert_eq!(check_tax_bps(1).unwrap_err(), err(VaultError::BadMint), "1 bps: impact cap 0, the vault could never sell");
+        assert!(check_tax_bps(2).is_ok());
+        assert_eq!(impact_bps(2), 1);
+        assert!(check_tax_bps(BPS - 1).is_ok());
+        assert_eq!(check_tax_bps(BPS).unwrap_err(), err(VaultError::BadMint));
+        let (a, b) = (Pubkey::new_unique(), Pubkey::new_unique());
+        assert!(check_roles(&a, &b).is_ok());
+        assert_eq!(check_roles(&a, &a).unwrap_err(), err(VaultError::BadRoles));
+        assert_eq!(check_roles(&Pubkey::default(), &b).unwrap_err(), err(VaultError::BadRoles));
+        assert_eq!(check_roles(&a, &Pubkey::default()).unwrap_err(), err(VaultError::BadRoles));
+    }
+
+    #[test]
+    fn a_sale_takes_at_least_a_quarter_of_its_cap() {
+        assert_eq!(min_sell(1_000, 10_000), 250);
+        // Buckets under that: they can be sold whole.
+        assert_eq!(min_sell(1_000, 100), 100);
+        assert_eq!(min_sell(3, 10_000), 0);
+    }
+
+    #[test]
+    fn new_payout_tokens_have_no_mint_authority() {
+        use anchor_lang::solana_program::program_pack::Pack;
+        let mut plain = vec![0u8; MintState::LEN];
+        MintState { decimals: 6, is_initialized: true, supply: 1, ..Default::default() }.pack_into_slice(&mut plain);
+        assert!(new_payout_mint_ok(&plain).is_ok());
+        let mut mintable = vec![0u8; MintState::LEN];
+        MintState { decimals: 6, is_initialized: true, supply: 1, mint_authority: COption::Some(Pubkey::new_unique()), ..Default::default() }
+            .pack_into_slice(&mut mintable);
+        assert_eq!(new_payout_mint_ok(&mintable).unwrap_err(), error!(VaultError::BadPayoutMint));
+        // Existing payout vaults keep swapping and paying in theirs (fund_holders checks payout_mint_ok).
+        assert!(payout_mint_ok(&mintable).is_ok());
+    }
+
+    #[test]
+    fn round_interval_and_cooldown() {
+        #[cfg(not(feature = "short-windows"))]
+        assert_eq!(MIN_ROUND_INTERVAL, 86_400);
+        assert!(check_min_interval(MIN_ROUND_INTERVAL).is_ok());
+        assert_eq!(check_min_interval(MIN_ROUND_INTERVAL - 1).unwrap_err(), err(VaultError::BadPassConfig));
+        assert_eq!(check_min_interval(0).unwrap_err(), err(VaultError::BadPassConfig));
+        assert_eq!(check_min_interval(-1).unwrap_err(), err(VaultError::BadPassConfig));
+        // First round: any slot.
+        assert!(check_round_open(0, 1).is_ok());
+        // Never twice in one slot, and only ROUND_COOLDOWN_SLOTS after the last one opened.
+        assert_eq!(check_round_open(1_000, 1_000).unwrap_err(), err(VaultError::RoundTooSoon));
+        assert_eq!(check_round_open(1_000, 1_000 + MAX_BATCH_SLOTS + 1).unwrap_err(), err(VaultError::RoundTooSoon));
+        assert_eq!(check_round_open(1_000, 1_000 + ROUND_COOLDOWN_SLOTS - 1).unwrap_err(), err(VaultError::RoundTooSoon));
+        assert!(check_round_open(1_000, 1_000 + ROUND_COOLDOWN_SLOTS).is_ok());
+        assert!(ROUND_COOLDOWN_SLOTS > MAX_BATCH_SLOTS);
     }
 }

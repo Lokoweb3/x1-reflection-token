@@ -595,14 +595,14 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   if (r.payoutMint) {
     // Checked again now: the vault fixes the payout pool for good.
     const pt = await payoutToken(conn, cfg, r.payoutMint, r.mint);
-    return [initVaultPayoutIx(program, { ...base, payout: { pool: pt.pool, payoutMint: pt.mint, payoutTokenProgram: pt.tokenProgram } })];
+    return [initVaultPayoutIx(program, { ...base, payout: { pool: pt.pool, payoutMint: pt.mint, payoutTokenProgram: pt.tokenProgram, wxntVault: pt.wxntVault } })];
   }
   return [initVaultIx(program, base)];
 }
 
-/** A holder-passes launch's rules: earning from a millionth of the supply, rounds of 0.05 XNT or more, 5 minutes apart. */
+/** A holder-passes launch's rules: earning from a millionth of the supply, rounds of 0.05 XNT or more, a day apart (the program's MIN_ROUND_INTERVAL). */
 export const PASS_MIN_POT_XNT = "0.05";
-export const PASS_MIN_INTERVAL_SECS = 300n;
+export const PASS_MIN_INTERVAL_SECS = 86_400n;
 
 /**
  * Holder-passes launches, after the vault starts: the creator (its guardian) turns passes on,
