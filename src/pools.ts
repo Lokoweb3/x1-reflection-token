@@ -10,9 +10,10 @@
  */
 import { Connection, PublicKey } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
+import bs58 from "bs58";
 import { bestTrip, gapPct, roundTrip, type Route } from "./arb.js";
 import { listLocks } from "./locker.js";
-import { poolAuthority, snapshot } from "./xdex.js";
+import { POOL_DISC, poolAuthority, snapshot } from "./xdex.js";
 
 const POOL_SIZE = 637;
 const MINT_OFFSETS = [8 + 5 * 32, 8 + 6 * 32] as const;
@@ -73,7 +74,7 @@ async function tokenAmounts(conn: Connection, accounts: PublicKey[]) {
 export async function poolsWith(conn: Connection, xdex: PublicKey, mint: PublicKey, other?: PublicKey) {
   const out: { address: PublicKey; data: Buffer; side: 0 | 1 }[] = [];
   for (const side of [0, 1] as const) {
-    const filters = [{ dataSize: POOL_SIZE }, { memcmp: { offset: MINT_OFFSETS[side], bytes: mint.toBase58() } }];
+    const filters = [{ dataSize: POOL_SIZE }, { memcmp: { offset: 0, bytes: bs58.encode(POOL_DISC) } }, { memcmp: { offset: MINT_OFFSETS[side], bytes: mint.toBase58() } }];
     if (other) filters.push({ memcmp: { offset: MINT_OFFSETS[1 - side], bytes: other.toBase58() } });
     for (const { pubkey, account } of await conn.getProgramAccounts(xdex, { commitment: "confirmed", filters })) out.push({ address: pubkey, data: account.data, side });
   }
