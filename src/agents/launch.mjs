@@ -173,6 +173,8 @@ launch ${params.name} (${params.symbol}) on ${info.network}
   tax         ${params.taxBps / 100}% on every transfer, fixed forever; of the tax: ${params.autoLpBps / 100}% to liquidity, ${params.burnBps / 100}% burned,
               ${info.creatorBps / 100}% to you (the creator), the rest (${(10000 - params.autoLpBps - params.burnBps - info.creatorBps) / 100}%) to holders in XNT
   liquidity   locked ${params.lockDays === "forever" ? "FOREVER (can never be withdrawn)" : `for ${params.lockDays} days`}
+  tax vault   ${vault ? "yes: the Tax Vault program holds and splits the tax (step 4 starts it)" : "no: the site's distributor wallet handles the tax"}
+  wallet      ${creator} signs every step and pays
   cost        launch fee ${fee} ${info.feeSymbol} (you hold ${feeHave})
               about ${xntNeed.toFixed(3)} XNT: pool ${pairXnt}, XDEX pool fee ${info.poolCreateFeeXnt ?? "~0.1"}, ${gas ? `distributor gas ${gas}, ` : ""}network fees ~0.05 (you hold ${xnt.toFixed(3)})`);
 const short = [];
