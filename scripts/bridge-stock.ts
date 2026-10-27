@@ -16,6 +16,8 @@
  * mint, the fee must be a percentage of at most 0.25% with no flat fee, enough Solana guardians must be
  * healthy, and a simulation must debit exactly the amount. Each transfer is written to
  * state/bridge-stock.json before it is sent; one that hasn't been seen arriving on X1 blocks the next.
+ * A transfer whose transaction never shows up is marked failed only once its blockhash has expired and
+ * nothing was debited (src/bridge-journal.ts).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -25,6 +27,7 @@ import {
 import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, unpackAccount } from "@solana/spl-token";
 import bs58 from "bs58";
 import { loadKeypair } from "../src/config.js";
+import { bridgeSendNeverLanded } from "../src/bridge-journal.js";
 
 const API = "https://api.bridge.mainnet.x1.xyz";
 const PROGRAM = new PublicKey("6JbPTuxVuoTgyQeXFb9MH8C8nUY8NBbLP1Lu4B13JfMD");
@@ -52,7 +55,7 @@ const owner = wallet.publicKey;
 const symbol = (flag("stock") ?? "GOOGL").toUpperCase().replace(/X$/, "").replace(/\.$/, "");
 
 type Entry = { signature: string; wallet: string; symbol: string; x1Mint: string; decimals: number; amountRaw: string; feeBps: number;
-  status: "pending_solana" | "pending_x1" | "completed" | "failed"; createdAt: string; x1Signature?: string };
+  status: "pending_solana" | "pending_x1" | "completed" | "failed"; createdAt: string; lastValidBlockHeight?: number; outgoing?: string; x1Signature?: string };
 const readJournal = (): Entry[] => (fs.existsSync(JOURNAL) ? JSON.parse(fs.readFileSync(JOURNAL, "utf8")).entries : []);
 const writeJournal = (entries: Entry[]) => {
   fs.mkdirSync(path.dirname(JOURNAL), { recursive: true });
@@ -107,7 +110,14 @@ async function reconcile(entries: Entry[]) {
     if (e.status === "pending_solana") {
       const s = (await sol.getSignatureStatuses([e.signature], { searchTransactionHistory: true })).value[0];
       if (!s || s.confirmationStatus !== "finalized") {
-        if (!s && Date.now() - Date.parse(e.createdAt) > 5 * 60_000) { e.status = "failed"; writeJournal(entries); console.log(`${e.signature}: never landed on Solana, nothing was sent`); continue; }
+        // Failed only once it can no longer land (blockhash expired) and the tokens were provably not taken.
+        if (!s) {
+          const blockHeight = await sol.getBlockHeight("confirmed");
+          const debited = e.outgoing ? !!(await sol.getAccountInfo(new PublicKey(e.outgoing), "confirmed")) : true;
+          if (bridgeSendNeverLanded(e, { landed: false, blockHeight, debited })) { e.status = "failed"; writeJournal(entries); console.log(`${e.signature}: never landed on Solana, nothing was sent`); continue; }
+          if (e.lastValidBlockHeight === undefined && Date.now() - Date.parse(e.createdAt) > 5 * 60_000)
+            console.log(`${e.signature}: not seen on Solana, but journaled without its block height: check it by hand before marking it failed in ${JOURNAL}`);
+        }
         return false;
       }
       e.status = s.err ? "failed" : "pending_x1";
@@ -138,12 +148,13 @@ function bridgeOut(mint: PublicKey, amount: bigint, slot: number, blockhash: str
   const vaultAta = getAssociatedTokenAddressSync(mint, vault, true, TOKEN_2022_PROGRAM_ID);
   const w = (pubkey: PublicKey, isSigner = false) => ({ pubkey, isSigner, isWritable: true });
   const r = (pubkey: PublicKey) => ({ pubkey, isSigner: false, isWritable: false });
+  const outgoing = pda(Buffer.from("evt_out"), u64(seq));
   const ix = new TransactionInstruction({ programId: PROGRAM,
-    keys: [w(pda(Buffer.from("config"))), w(pda(Buffer.from("token_registry"), mint.toBuffer())), w(pda(Buffer.from("evt_out"), u64(seq))), w(owner, true),
+    keys: [w(pda(Buffer.from("config"))), w(pda(Buffer.from("token_registry"), mint.toBuffer())), w(outgoing), w(owner, true),
       w(getAssociatedTokenAddressSync(mint, owner, false, TOKEN_2022_PROGRAM_ID)), w(mint), w(vault), w(vaultAta), w(feeCollector), w(feeCollectorAta),
       r(TOKEN_2022_PROGRAM_ID), r(SystemProgram.programId)],
     data: Buffer.concat([Buffer.from([27, 194, 57, 119, 215, 165, 247, 150]), u64(seq), u64(amount)]) });
-  return new VersionedTransaction(new TransactionMessage({ payerKey: owner, recentBlockhash: blockhash, instructions: [ix] }).compileToV0Message());
+  return { tx: new VersionedTransaction(new TransactionMessage({ payerKey: owner, recentBlockhash: blockhash, instructions: [ix] }).compileToV0Message()), outgoing };
 }
 
 const entries = readJournal();
@@ -176,9 +187,9 @@ if (want > max || want > cap) fail(`the bridge takes at most ${shares(max < cap 
 if ((await sol.getBalance(owner)) < MIN_SOL) fail("the wallet needs at least 0.003 SOL for the fee");
 
 // A finalized blockhash: the public RPC balances over nodes, and one may not have seen a newer one yet.
-const { blockhash } = await sol.getLatestBlockhash("finalized");
+const { blockhash, lastValidBlockHeight } = await sol.getLatestBlockhash("finalized");
 const slot = await sol.getSlot("confirmed");
-const tx = bridgeOut(mint, want, slot, blockhash, cfg.feeCollector, new PublicKey(cfg.token.feeCollectorAta));
+const { tx, outgoing } = bridgeOut(mint, want, slot, blockhash, cfg.feeCollector, new PublicKey(cfg.token.feeCollectorAta));
 const { ata } = await accountBalance(sol, mint);
 const sim = await sol.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: false, accounts: { encoding: "base64", addresses: [ata.toBase58()] } });
 if (sim.value.err) fail(`the simulation failed: ${JSON.stringify(sim.value.err)}\n${(sim.value.logs ?? []).slice(-6).join("\n")}`);
@@ -194,7 +205,7 @@ if (!has("live")) { console.log("dry run: nothing sent (add --live to send)"); p
 tx.sign([wallet]);
 const signature = bs58.encode(tx.signatures[0]);
 entries.push({ signature, wallet: owner.toBase58(), symbol, x1Mint: cfg.x1Token.mint, decimals: dec, amountRaw: want.toString(), feeBps,
-  status: "pending_solana", createdAt: new Date().toISOString() });
+  status: "pending_solana", createdAt: new Date().toISOString(), lastValidBlockHeight, outgoing: outgoing.toBase58() });
 writeJournal(entries);
 const sent = await sol.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3, minContextSlot: sim.context.slot });
 if (sent !== signature) fail(`the RPC returned signature ${sent}, expected ${signature}; the journal keeps the transfer reserved`);

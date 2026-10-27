@@ -17,6 +17,10 @@
  * engine creates and extends for the wallet (state/arb-alt-<wallet>.json). Several routes that share
  * no pool can be sent at once.
  *
+ * Brakes (src/arb-guard.ts): a route whose sent trades fail 5 times in a row within 10 minutes is skipped for an
+ * hour (with an alert), and with `maxFeesPerDay` the engine sends nothing once the fees of the last 24 hours reach it
+ * (state/arb-fees-<wallet>.json; an alert says so), which pauses every trade, sweep and top-up until the window rolls on.
+ *
  * Ownership: with `own` wallets, each route's mispriced pools (the side pools) are checked for how
  * much of their liquidity those wallets provide (LP held, or locked in the 8N4E… locker); a route
  * on your own pools mostly moves your money, so it can be held to a higher minimum profit.
@@ -31,7 +35,10 @@ import {
   NATIVE_MINT, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction,
   createSyncNativeInstruction, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
+import bs58 from "bs58";
 import { confirmByPolling } from "./tx.js";
+import { FeeCap, ROUTE_FAILURE_BUDGET, RouteFailures, maxTxFee } from "./arb-guard.js";
+import { signed } from "./send-intent.js";
 import { cpmmOut, poolAuthority, swapIx, type Snapshot } from "./xdex.js";
 
 /** One swap of a route: sell `inMint` into `snap`'s pool. */
@@ -63,6 +70,8 @@ export interface EngineOptions {
   stateDir: string;
   log: (s: string) => void;
   alert: (s: string) => Promise<void>;
+  /** Most lamports of fees to pay in any 24 hours; once reached nothing more is sent. Undefined or 0 = no cap. */
+  maxFeesPerDay?: bigint;
 }
 
 const LOCKER_8N4E = new PublicKey("8N4E3ZHBiYRMia8Hs27J6f3b9QM8wiTYcMXukSq96Ejf");
@@ -259,6 +268,21 @@ export function createEngine(o: EngineOptions) {
   /** Trades that went through (bot and scanner alike): how many, and when the latest landed (ms). */
   const traded = { count: 0, lastAt: 0 };
 
+  // ---------- brakes ----------
+  const failures = new RouteFailures();
+  const feeCap = o.maxFeesPerDay ? new FeeCap(o.maxFeesPerDay, path.join(o.stateDir, `arb-fees-${owner.toBase58()}.json`)) : null;
+  let capAlerted = false;
+  /** True (and one alert per pause) when the day's fees have reached the cap. */
+  function feeCapReached() {
+    if (!feeCap?.reached(Date.now())) { capAlerted = false; return false; }
+    if (!capAlerted) {
+      capAlerted = true;
+      void o.alert(`paused: ${xnt(feeCap.spent(Date.now()))} XNT of fees in the last 24 h reached the ${xnt(feeCap.cap)} XNT daily cap; nothing is sent until older fees age out`);
+    }
+    return true;
+  }
+  const routeKey = (p: Plan) => p.route.hops.map((h) => h.snap.pool.address.toBase58()).join(">");
+
   // ---------- sending ----------
   // A recent blockhash kept warm (refreshed every 2 s once warm() is called), so sending doesn't wait for one.
   let bh: { blockhash: string; lastValidBlockHeight: number; at: number } | null = null;
@@ -306,12 +330,18 @@ export function createEngine(o: EngineOptions) {
       used = sim.units;
     }
     const units = !used ? 600_000 : Math.min(1_400_000, Math.ceil(used * 1.2) + 3_000);
-    const all = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opt.priority ?? o.priority }), ComputeBudgetProgram.setComputeUnitLimit({ units }), ...ixs];
+    const price = opt.priority ?? o.priority;
+    if (feeCapReached()) throw new Error("the daily fee cap is reached, not sent");
+    const all = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: price }), ComputeBudgetProgram.setComputeUnitLimit({ units }), ...ixs];
     const { blockhash: recent, lastValidBlockHeight } = await blockhash();
     const tx = await compile(all, useAlt, recent);
     tx.sign([wallet]);
     const raw = tx.serialize();
     if (raw.length > MAX_TX) throw new Error(`transaction is ${raw.length} bytes (max ${MAX_TX})`);
+    // A peg or limit trade journals its signature before it goes out (src/send-intent.ts).
+    signed(bs58.encode(tx.signatures[0]), lastValidBlockHeight);
+    // Counted as paid once broadcast, at the most it can cost (X1 charges for the compute requested).
+    feeCap?.add(maxTxFee(tx.message.header.numRequiredSignatures, units, price), Date.now());
     const signature = await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 3 });
     await confirmByPolling(conn, raw, signature, lastValidBlockHeight);
     return signature;
@@ -368,9 +398,12 @@ export function createEngine(o: EngineOptions) {
   }
 
   async function executeNow(found: { plan: Plan; ownShare: number }[], meta: (p: Plan) => Record<string, unknown>) {
+    if (feeCapReached()) return 0;
     const chosen: typeof found = [];
     const used = new Set<string>();
+    const now = Date.now();
     for (const f of [...found].sort((a, b) => Number(b.plan.profit - a.plan.profit))) {
+      if (failures.skipped(routeKey(f.plan), now)) continue;
       const ps = poolsOf(f.plan);
       if ([...ps].some((k) => used.has(k))) continue;
       chosen.push(f);
@@ -399,6 +432,7 @@ export function createEngine(o: EngineOptions) {
       try {
         const sig = await send(ixs, useAlt, { units: sim.units, priority: racing ? o.racePriority ?? o.priority : o.priority });
         done++;
+        failures.ok(routeKey(p));
         traded.count++;
         traded.lastAt = Date.now();
         // What it really made (fee included), next to what the plan expected; a big shortfall is flagged.
@@ -413,6 +447,8 @@ export function createEngine(o: EngineOptions) {
       } catch (e) {
         markContested(p);
         o.log(`${describe(p)}: didn't go through${racing ? " (at race priority)" : ""} (nothing traded; only the fee if it landed): ${msg(e).split("\n")[0]}`);
+        if (!feeCapReached() && failures.fail(routeKey(p), Date.now()))
+          await o.alert(`${describe(p)}: ${ROUTE_FAILURE_BUDGET.failures} failed sends in a row within ${ROUTE_FAILURE_BUDGET.windowMs / 60_000} min: skipping this route for ${ROUTE_FAILURE_BUDGET.skipMs / 3_600_000} h`);
       }
     }));
     return done;

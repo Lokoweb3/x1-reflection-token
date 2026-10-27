@@ -11,6 +11,8 @@ import { Connection, PublicKey, type TransactionInstruction } from "@solana/web3
 import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
 import { sizeFor } from "./peg.js";
+import { writeFileAtomic } from "./atomic-write.js";
+import { settleIntent, whenSigned, type Intent } from "./send-intent.js";
 
 export interface LimitBuySpec {
   /** The token to buy, its USDC.X pool, and the name the log uses. */
@@ -71,14 +73,41 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
 
   const read = (): Record<string, { spent: string }> => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; } };
   const spent = () => BigInt(read()[id]?.spent ?? "0");
+  /** Count a buy that landed; the same write clears its journaled intent, so a restart can't count it twice. */
   function addSpent(n: bigint) {
     const all = read();
     all[id] = { spent: (spent() + n).toString() };
     fs.mkdirSync(o.stateDir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(all, null, 2) + "\n");
+    writeFileAtomic(file, JSON.stringify(all, null, 2) + "\n");
+  }
+  // A buy is journaled (with its signature, once signed) before it is sent, and settled by the next check if
+  // this one didn't see it through (a crash, or a confirmation that timed out): src/send-intent.ts.
+  type Pending = Intent & { at: string; amountIn: string; minOut: string; tokens: number; poolPrice: number };
+  const pendingOf = () => (read() as Record<string, { spent: string; pending?: Pending }>)[id]?.pending;
+  function setPending(p: Pending | undefined) {
+    const all = read() as Record<string, { spent: string; pending?: Pending }>;
+    all[id] = { spent: spent().toString(), ...(p ? { pending: p } : {}) };
+    fs.mkdirSync(o.stateDir, { recursive: true });
+    writeFileAtomic(file, JSON.stringify(all, null, 2) + "\n");
+  }
+  function landed(p: Pending, signature: string) {
+    addSpent(BigInt(p.amountIn));
+    fs.appendFileSync(journal, JSON.stringify({ at: p.at, order: id, pool: spec.pool.toBase58(), poolPrice: p.poolPrice,
+      limit: spec.price, amountIn: p.amountIn, minOut: p.minOut, tokens: p.tokens, signature }) + "\n");
+  }
+  /** Settle a buy an earlier check journaled; true while it is still in flight (no new buy until it settles). */
+  async function settle(): Promise<boolean> {
+    const p = pendingOf();
+    if (!p) return false;
+    const v = await settleIntent(o.conn, p);
+    if (v === "pending") { note(`an earlier buy ${p.signature} is still in flight: waiting for it`); return true; }
+    if (v === "landed") { landed(p, p.signature!); await o.alert(`limit ${spec.symbol}: an earlier buy landed after all (${p.amountIn} raw USDC.X): ${p.signature}`); }
+    else { setPending(undefined); o.log(`limit ${spec.symbol}: an earlier buy didn't land (${p.signature ?? "never sent"}); nothing spent`); }
+    return false;
   }
 
   async function check(): Promise<string> {
+    if (await settle()) return "pending";
     const sQ = await snapshot(o.conn, o.xdex, spec.pool, spec.quoteMint, spec.mint);
     if (!dec) {
       const [mq, mt] = await Promise.all([getMint(o.conn, spec.quoteMint, "confirmed", sQ.pool.programs[sQ.side]),
@@ -104,12 +133,13 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
     const what = `buy ~${tokens.toFixed(6)} ${spec.symbol} for ${paid.toFixed(4)} USDC.X (~$${(paid / tokens).toFixed(2)} each)`;
     if (!o.execute) { o.log(`limit ${spec.symbol}: ${at}: [dry run] would ${what}`); return "dry run"; }
     const dest = getAssociatedTokenAddressSync(spec.mint, o.owner, false, d.tokProgram);
-    const sig = await o.send([createAssociatedTokenAccountIdempotentInstruction(o.owner, dest, o.owner, spec.mint, d.tokProgram),
-      swapIx(o.xdex, o.owner, { pool: sQ.pool, side: sQ.side, amountIn: r.amountIn, minimumOut: minOut }, ata, dest)]);
-    addSpent(r.amountIn);
+    const pending: Pending = { at: new Date().toISOString(), amountIn: r.amountIn.toString(), minOut: minOut.toString(), tokens, poolPrice: r.poolPrice };
+    setPending(pending);
+    const sig = await whenSigned((signature, lastValidBlockHeight) => setPending({ ...pending, signature, lastValidBlockHeight }),
+      () => o.send([createAssociatedTokenAccountIdempotentInstruction(o.owner, dest, o.owner, spec.mint, d.tokProgram),
+        swapIx(o.xdex, o.owner, { pool: sQ.pool, side: sQ.side, amountIn: r.amountIn, minimumOut: minOut }, ata, dest)]));
+    landed(pending, sig);
     lastNote = "";
-    fs.appendFileSync(journal, JSON.stringify({ at: new Date().toISOString(), order: id, pool: spec.pool.toBase58(), poolPrice: r.poolPrice,
-      limit: spec.price, amountIn: r.amountIn.toString(), minOut: minOut.toString(), tokens, signature: sig }) + "\n");
     await o.alert(`limit ${spec.symbol}: ${at}: ${what}. ${sig}`);
     return "traded";
   }

@@ -6,7 +6,7 @@
  *     [--slippage 0.1] [--loop <seconds> (default 300) | --once] [--skip <mint,...>] [--no-instant]
  *     [--max-subs 400] [--min-liquidity <XNT> (default 5)] [--hubs 3] [--hub-sides 12]
  *     [--own <wallet,...> [--own-min-profit <XNT>]] [--network mainnet|testnet] [--rpc <url>] [--verbose]
- *     [--webhook <url>] [--telegram-token <t> --telegram-chat <id>]
+ *     [--webhook <url>] [--telegram-token <t> --telegram-chat <id>] [--max-fees-day <XNT> (default 0.5, 0 = no cap)]
  *
  *   --skip           tokens another bot already watches: no triangle goes through them
  *   --min-liquidity  only watch triangles whose two XNT pools each hold at least this much XNT
@@ -66,7 +66,7 @@ async function alert(text: string) {
 
 const engine = createEngine({ conn, xdex, wallet, minProfit: lamports(num("min-profit", 0.02)), ownMinProfit, own, maxIn: lamports(num("max-in", 10)),
   slipBps: BigInt(Math.round(num("slippage", 0.1) * 100)), reserve: lamports(0.1), priority: 1000, racePriority: num("race-priority", 1_000_000),
-  stateDir: process.env.REFLECT_STATE_DIR ?? path.join(import.meta.dirname, "..", "state"), log, alert });
+  stateDir: process.env.REFLECT_STATE_DIR ?? path.join(import.meta.dirname, "..", "state"), log, alert, maxFeesPerDay: lamports(num("max-fees-day", 0.5)) });
 const scanner = createScanner({ conn, xdex, engine, execute, skip: new Set((flag("skip") ?? "").split(",").filter(Boolean)),
   minLiquidity: lamports(num("min-liquidity", 5)), maxSubs: num("max-subs", 400), loopSecs, instant: !has("no-instant") && loopSecs > 0,
   hubs: num("hubs", 3), hubSides: num("hub-sides", 12), verbose: has("verbose"), log });
