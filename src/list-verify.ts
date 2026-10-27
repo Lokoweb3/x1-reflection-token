@@ -8,10 +8,12 @@
  *   verifyList             pure: the file (by its CID) gives the instruction's root; totals fit
  *                          the vault; nobody drops below the previous list or what they were
  *                          paid; the entries equal the allocation recomputed from the file's
- *                          inputs with its rules; no excluded wallet earns; the stated
- *                          balances match the chain (within a tolerance)
+ *                          inputs with its rules (a first list's rules are the co-signer's,
+ *                          not the file's); no excluded wallet earns; no stated balance is
+ *                          above the chain's and at most 1% of the stated weight moved
  *   checkProposal          fetches everything verifyList needs (vault, list files, paid
- *                          records, today's balances) for one proposal and runs it
+ *                          records, balances re-scanned at or after the file's snapshot slot)
+ *                          for one proposal and runs it
  *
  * Errors fail the list (the co-signer rejects it); flags are reported (and fail it only with
  * `strict`).
@@ -23,8 +25,8 @@ import {
   CID_CODEC, CID_LEN, IX, buildVaultTree, cidFromBytes, decodeVault, effectiveList, vaultAuthPda, type Vault,
 } from "./taxvault.js";
 import {
-  ACTIVATION_MARGIN_SECS, type ListFileJson, type RulesJson, defaultRules, eligibilityFor, listFromInputs, parseListFile, publisherExclusion,
-  readPaidRecords, rulesFromJson,
+  ACTIVATION_MARGIN_SECS, type CrankRules, type ListFileJson, type RulesJson, defaultRules, eligibilityFor, listFromInputs, parseListFile, publisherExclusion,
+  readPaidRecords, rulesFromJson, rulesJson,
 } from "./vault-crank.js";
 import { readQuorum, readVaultTx, squadsVaultPda, type VaultTx } from "./squads.js";
 import { fetchFromGateways } from "./factory/ipfs.js";
@@ -32,7 +34,7 @@ import { fetchFromGateways } from "./factory/ipfs.js";
 export interface VerifyOptions {
   /** A wallet whose balance differs from the stated one by more than this share of it (bps) is "moved". */
   toleranceBps: number;
-  /** More than this share (bps) of the stated weight moved: the snapshot doesn't match the chain. */
+  /** More than this share (bps) of the stated weight moved: the snapshot doesn't match the chain. At most MAX_MOVED_BPS. */
   maxMovedBps: number;
   /** A wallet new to the list getting more than this share (bps) of the pot is flagged. */
   largeShareBps: number;
@@ -44,9 +46,20 @@ export interface VerifyOptions {
   allowRebuild: boolean;
   /** Flags fail the list too. */
   strict: boolean;
+  /**
+   * The rules a list must use when there is no previous list with rules to hold it to (a first
+   * list): the co-signer's own, never the file's. null: such a list is refused.
+   */
+  firstListRules: RulesJson | null;
 }
+/**
+ * The most of the stated weight (bps) that may differ from the chain: above it a publisher could
+ * inflate its own share by nearly as much (audit SV-H1, a 9.9% inflation passed at 1000).
+ */
+export const MAX_MOVED_BPS = 100;
 export const DEFAULT_VERIFY: VerifyOptions = {
-  toleranceBps: 500, maxMovedBps: 1000, largeShareBps: 2500, maxSnapshotAgeSlots: 9000, allowRuleChange: false, allowRebuild: false, strict: false,
+  toleranceBps: 500, maxMovedBps: MAX_MOVED_BPS, largeShareBps: 2500, maxSnapshotAgeSlots: 9000, allowRuleChange: false, allowRebuild: false, strict: false,
+  firstListRules: null,
 };
 
 /** publish_list's arguments. */
@@ -90,7 +103,7 @@ export interface VerifyInput {
   prevList: { wallets: Record<string, string>; rules?: RulesJson } | null;
   /** PaidRecords now. */
   paid: Map<string, bigint>;
-  /** Eligible balances now, under the file's rules (null: not compared). */
+  /** Eligible balances at or after the file's snapshot slot, under the adopted rules (null: not compared). */
   balancesNow: Map<string, bigint> | null;
   slotNow: number | null;
   /** Unix seconds (for the pending list's time). */
@@ -104,6 +117,9 @@ export interface VerifyResult {
   summary: { mint: string; epoch: string; total: string; wallets: number; pot: string | null; newXnt: string | null; prevEpoch: string | null; moved: number; cid: string | null };
 }
 
+/** The rules that decide who earns differ. */
+const eligibilityDiffers = (p: CrankRules, r: CrankRules) => p.minHolding !== r.minHolding || p.excludeOffCurve !== r.excludeOffCurve
+  || [...p.excludeOwners].sort().join(",") !== [...r.excludeOwners].sort().join(",");
 const max = (...xs: bigint[]) => xs.reduce((a, b) => (b > a ? b : a), 0n);
 const short = (w: string) => `${w.slice(0, 4)}…${w.slice(-4)}`;
 const pct = (bps: bigint | number) => `${(Number(bps) / 100).toFixed(2)}%`;
@@ -124,6 +140,7 @@ function pairsOk(p: unknown): p is [string, string][] {
 export function verifyList(a: VerifyInput): VerifyResult {
   const o = { ...DEFAULT_VERIFY, ...a.opts };
   const errors: string[] = [], flags: string[] = [];
+  if (!(o.maxMovedBps <= MAX_MOVED_BPS)) errors.push(`maxMovedBps ${o.maxMovedBps} is above ${MAX_MOVED_BPS}`);
   const v = a.vault;
   const summary: VerifyResult["summary"] = { mint: v.mint.toBase58(), epoch: a.ix.epoch.toString(), total: a.ix.total.toString(), wallets: 0, pot: null, newXnt: null,
     prevEpoch: null, moved: 0, cid: cidFromBytes(a.ix.cid) };
@@ -232,17 +249,25 @@ export function verifyList(a: VerifyInput): VerifyResult {
   const paidExcluded = [...excluded].filter((w) => gained(w) > 0n);
   if (paidExcluded.length) errors.push(`excluded wallet(s) get XNT: ${paidExcluded.map(short).join(", ")}`);
   if (a.prevList?.rules && f.rules) {
-    const p = rulesFromJson(a.prevList.rules, rules);
-    const changed = p.minHolding !== rules.minHolding || p.excludeOffCurve !== rules.excludeOffCurve
-      || [...p.excludeOwners].sort().join(",") !== [...rules.excludeOwners].sort().join(",");
-    if (changed) (o.allowRuleChange ? flags : errors).push("the eligibility rules (minHolding, excludeOwners, excludeOffCurve) differ from the previous list's");
+    if (eligibilityDiffers(rulesFromJson(a.prevList.rules, rules), rules)) {
+      (o.allowRuleChange ? flags : errors).push("the eligibility rules (minHolding, excludeOwners, excludeOffCurve) differ from the previous list's");
+    }
+  } else if (f.rules) {
+    // A first list (or one after a list without rules): the co-signer's rules, not the file's.
+    if (!o.firstListRules) errors.push("no previous list's rules to hold this list to, and no first-list rules configured");
+    else if (eligibilityDiffers(rulesFromJson(o.firstListRules, rules), rules)) {
+      errors.push("the eligibility rules (minHolding, excludeOwners, excludeOffCurve) differ from the co-signer's first-list rules");
+    }
   }
 
-  // --- the stated balances vs the chain now ---
+  // --- the stated balances vs the chain (re-scanned at or after the snapshot slot) ---
   if (a.balancesNow) {
     const stated = new Map(inp.balances.map(([w, b]) => [w, BigInt(b)] as [string, bigint]));
     let weight = 0n, moved = 0n;
     const movedWallets: string[] = [];
+    // More than the chain holds is never a timing artefact the list should be paid on.
+    const above = [...stated].filter(([w, s]) => s > (a.balancesNow!.get(w) ?? 0n));
+    if (above.length) errors.push(`${above.length} stated balance(s) above the chain: ${above.slice(0, 5).map(([w, s]) => `${short(w)} ${s} > ${a.balancesNow!.get(w) ?? 0n}`).join(", ")}`);
     for (const x of stated.values()) weight += x;
     for (const w of new Set([...stated.keys(), ...a.balancesNow.keys()])) {
       const s = stated.get(w) ?? 0n, n = a.balancesNow.get(w) ?? 0n;
@@ -322,10 +347,23 @@ export async function checkProposal(conn: Connection, a: { squadsProgram: Public
   const pool = await conn.getAccountInfo(v.pool, "confirmed");
   if (!pool) { out.refused = "the vault's pool doesn't exist"; return out; }
   const xdex = pool.owner;
-  let rules = defaultRules(0n);
-  try { rules = rulesFromJson((JSON.parse(out.file.toString("utf8")) as ListFileJson).rules, rules); } catch { /* verifyList reports it */ }
-  const [paid, { slot: slotNow, rows }] = await Promise.all([readPaidRecords(conn, a.taxProgram, v.address), scanTokenAccountsAt(conn, v.mint)]);
-  const balancesNow = eligibleBalances(rows, eligibilityFor(rules, vaultAuthPda(a.taxProgram, v.mint), xdex, publisherExclusion(publisher)));
-  out.result = verifyList({ taxProgram: a.taxProgram, vault: v, publisher, xdex, ix: out.args, file: out.file, prevList, paid, balancesNow, slotNow, now, opts: a.opts });
+  let f: Partial<ListFileJson> = {};
+  try { f = JSON.parse(out.file.toString("utf8")); } catch { /* verifyList reports it */ }
+  // A first list's rules: the co-signer's (--rules), else the site's defaults for this mint; never the file's.
+  const firstListRules = a.opts?.firstListRules ?? rulesJson(defaultRules(BigInt((await conn.getTokenSupply(v.mint, "confirmed")).value.amount)));
+  // Balances are compared under the rules the list is held to (verifyList refuses a file whose rules differ,
+  // unless a rule change is allowed: then under the file's).
+  const rules = rulesFromJson(a.opts?.allowRuleChange && f.rules ? f.rules : prevList?.rules ?? firstListRules, defaultRules(0n));
+  // Re-scan no earlier than the snapshot: what the RPC serves is the chain at or after inputs.slot.
+  const minContextSlot = typeof f.inputs?.slot === "string" && /^\d{1,15}$/.test(f.inputs.slot) ? Number(f.inputs.slot) : undefined;
+  let scan: Awaited<ReturnType<typeof scanTokenAccountsAt>>;
+  try { scan = await scanTokenAccountsAt(conn, v.mint, minContextSlot); } catch (e) {
+    if (/min.?context.?slot/i.test(e instanceof Error ? e.message : String(e))) { out.wait = `the RPC hasn't reached the snapshot slot ${minContextSlot} yet`; return out; }
+    throw e;
+  }
+  const paid = await readPaidRecords(conn, a.taxProgram, v.address);
+  const balancesNow = eligibleBalances(scan.rows, eligibilityFor(rules, vaultAuthPda(a.taxProgram, v.mint), xdex, publisherExclusion(publisher)));
+  out.result = verifyList({ taxProgram: a.taxProgram, vault: v, publisher, xdex, ix: out.args, file: out.file, prevList, paid, balancesNow, slotNow: scan.slot, now,
+    opts: { ...a.opts, firstListRules } });
   return out;
 }

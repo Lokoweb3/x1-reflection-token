@@ -4,7 +4,7 @@
  * goes offline".
  *
  *   npx tsx scripts/crank.ts --rpc <url> --keypair <file> (--mint <mint>[,<mint>...] | --all)
- *     [--publisher <keypair file>] [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]]
+ *     [--publisher <keypair file> [--accept-rules]] [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]]
  *     [--pinata-jwt <jwt> | env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet]
  *
  *   --keypair     the wallet that pays the fees (and the PaidRecord rents) and earns the crank
@@ -16,6 +16,9 @@
  *   --publisher   the vault's publisher key (e.g. one the creator appointed): also builds,
  *                 pins (needs a Pinata key) and publishes rewards lists for the vaults it
  *                 publishes for; a list in fallback ends the fallback
+ *   --accept-rules  with --publisher: publish even when the payout rules adopted from the active
+ *                 list's file differ from the defaults (a minimum holding of a millionth of the
+ *                 supply, no excluded owners ...); without it such a vault gets no new list
  *   --loop        run again every <seconds> (default: one pass)
  *   --ipfs-gateway where list files are read (default Pinata's gateway, then trustless-gateway.link,
  *                  then ipfs.io); an entry may be a base URL or a template with {cid}
@@ -49,7 +52,7 @@ const flag = (name: string) => { const i = argv.indexOf(`--${name}`); return i >
 const has = (name: string) => argv.includes(`--${name}`);
 function usage(problem?: string): never {
   if (problem) console.error(`crank: ${problem}\n`);
-  console.error("Usage: npx tsx scripts/crank.ts --rpc <url> --keypair <file> (--mint <mint>[,<mint>...] | --all) [--publisher <keypair>]\n"
+  console.error("Usage: npx tsx scripts/crank.ts --rpc <url> --keypair <file> (--mint <mint>[,<mint>...] | --all) [--publisher <keypair> [--accept-rules]]\n"
     + "         [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]] [--pinata-jwt <jwt>|env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet]");
   process.exit(2);
 }
@@ -196,6 +199,15 @@ async function crankVault(mint: PublicKey) {
     const pc = vaultCrank({ ...env, signer: publisher });
     const next = await pc.nextList(t, v, v.listEpoch > 0n ? cur?.wallets ?? null : {}, notes, fallback);
     if (!next) { notes.push("no new list (not enough new XNT for holders yet)"); return; }
+    // The rules came from an IPFS file a past publisher wrote: re-publishing them takes a decision.
+    const def = rulesJson(defaultRules(info.supply)), adopted = rulesJson(t.rules);
+    const norm = (r: typeof def, k: keyof typeof def) => JSON.stringify(k === "excludeOwners" ? [...r[k]].sort() : r[k]);
+    const differ = (Object.keys(def) as (keyof typeof def)[]).filter((k) => norm(def, k) !== norm(adopted, k));
+    if (differ.length) {
+      const what = differ.map((k) => `${k} ${JSON.stringify(adopted[k])} (default ${JSON.stringify(def[k])})`).join(", ");
+      if (!has("accept-rules")) { notes.push(`a new list is due but its payout rules differ from the defaults: ${what}; not published (--accept-rules publishes with them)`); return; }
+      log(`  --accept-rules: publishing with ${what}`);
+    }
     if (!pinataJwt) { notes.push("a new list is due but there's no Pinata key (--pinata-jwt or PINATA_JWT): not published"); return; }
     const text = listFileText({ mint: mint.toBase58(), vault: v.address.toBase58(), epoch: next.epoch.toString(), root: next.root.toString("hex"),
       total: next.total.toString(), wallets: next.wallets, rules: rulesJson(t.rules), inputs: next.inputs });
