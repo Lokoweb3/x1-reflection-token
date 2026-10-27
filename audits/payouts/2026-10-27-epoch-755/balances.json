@@ -1,0 +1,3164 @@
+{
+ "scanSlot": 88896824,
+ "changes": [
+  {
+   "slot": 88874426,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "532664182249",
+   "signature": "3itkawnZrUbB1aCXNmihgwVoymDj5G1MBeMHgeJdVBzoPR1AyUiA2VspbAD6qaxHdDKacqe2Pr9gRj7gVLw65mZn"
+  },
+  {
+   "slot": 88874426,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-560699139210",
+   "signature": "3itkawnZrUbB1aCXNmihgwVoymDj5G1MBeMHgeJdVBzoPR1AyUiA2VspbAD6qaxHdDKacqe2Pr9gRj7gVLw65mZn"
+  },
+  {
+   "slot": 88874419,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "2670758891683",
+   "signature": "4G2Y6rv8iC1A1R4JRFcBqVh77z5VV5dvhQeuLCA2digmE7k3KNfCZhCcWzpgeTuQennkixZxM9zUxKwzKShGAfU1"
+  },
+  {
+   "slot": 88874419,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-2811325149140",
+   "signature": "4G2Y6rv8iC1A1R4JRFcBqVh77z5VV5dvhQeuLCA2digmE7k3KNfCZhCcWzpgeTuQennkixZxM9zUxKwzKShGAfU1"
+  },
+  {
+   "slot": 88874410,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "3373590178967",
+   "signature": "3NsX3JyNmGK9v2YZ3EF6MxfpuHRhA7kAMcsBT39qmASyVbhWZoca2ZyU1zAhQi8mZJcWG9vKHaeMZffXbJ3grArF"
+  },
+  {
+   "slot": 88874339,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-42205631024290",
+   "signature": "9BdULdRFJMzH54CwPiR7DRCxFiurNCESPNF5Qg1iX2k78Enx564o7jg6o86shSmFqSm32UZ6xu1weoDujcznuSK"
+  },
+  {
+   "slot": 88874339,
+   "account": "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "38090581999421",
+   "signature": "9BdULdRFJMzH54CwPiR7DRCxFiurNCESPNF5Qg1iX2k78Enx564o7jg6o86shSmFqSm32UZ6xu1weoDujcznuSK"
+  },
+  {
+   "slot": 88873774,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1210261683343",
+   "signature": "2XxWeSahEAodP3yPg1TLgVMVC4teAytBQ2wCm9Rka8jm8UDfS9B4DbJ9BiaNb38Hgrr55omaiTDgJwuo1phgYM6A"
+  },
+  {
+   "slot": 88873774,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1273959666677",
+   "signature": "2XxWeSahEAodP3yPg1TLgVMVC4teAytBQ2wCm9Rka8jm8UDfS9B4DbJ9BiaNb38Hgrr55omaiTDgJwuo1phgYM6A"
+  },
+  {
+   "slot": 88873767,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "6068091377942",
+   "signature": "uK8nBTr6v64tP8CJTTwgt8ZRRZt2mk322wyochYqFVVdo8EunPGBhQ8oKiiFJJTwLz3UHop9ZsaypAwaN8U4nny"
+  },
+  {
+   "slot": 88873767,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-6387464608361",
+   "signature": "uK8nBTr6v64tP8CJTTwgt8ZRRZt2mk322wyochYqFVVdo8EunPGBhQ8oKiiFJJTwLz3UHop9ZsaypAwaN8U4nny"
+  },
+  {
+   "slot": 88873759,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "7664957530033",
+   "signature": "4kyMM7NoVBegZUQxpwBGQGGdtDmkUutYySDzxa6bfWNL5uNAjJTpCzYRVMLdjDpPoNeSzS6Ygj3ZQxujU7KtDa1P"
+  },
+  {
+   "slot": 88873668,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-103226591349335",
+   "signature": "5fXcumJxWjNC3oKXyLRvbZBYk1fRSup9a1spNWTUmNEohcDpSGQPPvwjxsvLYWHzZcsnhG2mC1b9fLcoSTvwDPMG"
+  },
+  {
+   "slot": 88873668,
+   "account": "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "93161998692774",
+   "signature": "5fXcumJxWjNC3oKXyLRvbZBYk1fRSup9a1spNWTUmNEohcDpSGQPPvwjxsvLYWHzZcsnhG2mC1b9fLcoSTvwDPMG"
+  },
+  {
+   "slot": 88864298,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "490801229343",
+   "signature": "43UmCSWWsH25EkwbSW3eQZaUpRhyAdtz9n3m7dFGET8e9WAWaZgkeNEk9HwQrnS9Ajwhfqmgyt4Y8VFV9JTvfPKP"
+  },
+  {
+   "slot": 88864298,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-516632872993",
+   "signature": "43UmCSWWsH25EkwbSW3eQZaUpRhyAdtz9n3m7dFGET8e9WAWaZgkeNEk9HwQrnS9Ajwhfqmgyt4Y8VFV9JTvfPKP"
+  },
+  {
+   "slot": 88864290,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "2460862390143",
+   "signature": "4K4C6YdL7M4nAGy5akWnsWU2ZWvBfU8kc1Z2g5xh1WAFFe5prvkZPpKZkUawUSwLLYXKbbr6VZbfwPfLdusVcRvq"
+  },
+  {
+   "slot": 88864290,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-2590381463309",
+   "signature": "4K4C6YdL7M4nAGy5akWnsWU2ZWvBfU8kc1Z2g5xh1WAFFe5prvkZPpKZkUawUSwLLYXKbbr6VZbfwPfLdusVcRvq"
+  },
+  {
+   "slot": 88864282,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "3108457755970",
+   "signature": "2HR4N6ke8AZB4zPaqe56VBje5Ht67qeHbtVuL8puSK7mPM5Z2ez9iL55qK6mDUHKb3vDEuWWiyKAPXVMh7RM6559"
+  },
+  {
+   "slot": 88864180,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-27529257629595",
+   "signature": "2BqYuw36cN8qSCEE7ZdWkT7sH3otmSh6HJLvNq6Yh2cb3XVcYwX8XJveN8T8gCgGzHBEpbJq1NoEVKQDRYbjRNta"
+  },
+  {
+   "slot": 88864180,
+   "account": "8kbUgYAyFzfS8G2sWXjW7M2yBWhJJqs6uwW9MVUeKBoA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "24845155010709",
+   "signature": "2BqYuw36cN8qSCEE7ZdWkT7sH3otmSh6HJLvNq6Yh2cb3XVcYwX8XJveN8T8gCgGzHBEpbJq1NoEVKQDRYbjRNta"
+  },
+  {
+   "slot": 88862335,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "4846674717058",
+   "signature": "51713cV4sPRDAJM1EbCnaZ1T7euPc97HDYwLcnconv9jBxZ9cf9GLYT1QRywdVj4tvzfQ2quPqp2B6P8bDskLM2L"
+  },
+  {
+   "slot": 88862335,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-5101762860062",
+   "signature": "51713cV4sPRDAJM1EbCnaZ1T7euPc97HDYwLcnconv9jBxZ9cf9GLYT1QRywdVj4tvzfQ2quPqp2B6P8bDskLM2L"
+  },
+  {
+   "slot": 88862328,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "22902972008638",
+   "signature": "3GBeBZYKkm2JPntUUEPyNmCeyQsurxYhpst1FihD9wPZuyZ6cucuNxJXJYUtBtqd4WdH29KdyaAQBgT2K1XWyk3z"
+  },
+  {
+   "slot": 88862328,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-24108391588041",
+   "signature": "3GBeBZYKkm2JPntUUEPyNmCeyQsurxYhpst1FihD9wPZuyZ6cucuNxJXJYUtBtqd4WdH29KdyaAQBgT2K1XWyk3z"
+  },
+  {
+   "slot": 88862320,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "28930069905648",
+   "signature": "3LrV1TXoPq1tapVcp1JTHsBScf5fUHN7v1LJttbGdRju3JFYVXzosUyUq3nyKsVJqi8xLJbUpqrJoXPg1xjGManh"
+  },
+  {
+   "slot": 88862276,
+   "account": "8W1vByYWY1KCdPLHcw5ZtoeMmmM5ejtNfEaLZ7LC2t5t",
+   "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+   "delta": "-770000000000000",
+   "signature": "2BJWfRZ5UFADpGVUChjGDDoB95TZeZWhjAKP6Ufu1saiFj93bpuTX6RBhT46EpeGt9t4UFtYBtyytTJMhi8vBrxr"
+  },
+  {
+   "slot": 88862276,
+   "account": "8kbUgYAyFzfS8G2sWXjW7M2yBWhJJqs6uwW9MVUeKBoA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "731500000000000",
+   "signature": "2BJWfRZ5UFADpGVUChjGDDoB95TZeZWhjAKP6Ufu1saiFj93bpuTX6RBhT46EpeGt9t4UFtYBtyytTJMhi8vBrxr"
+  },
+  {
+   "slot": 88852518,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1395104276388",
+   "signature": "oxK2P5ZJFuy4TDAE9LG24RnzNdmZNRBNGwqjUQC55WVN3Z522RxUJodL8tCjosYXviCZat34kSSwhXmweH3iY4w"
+  },
+  {
+   "slot": 88852518,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1468530817251",
+   "signature": "oxK2P5ZJFuy4TDAE9LG24RnzNdmZNRBNGwqjUQC55WVN3Z522RxUJodL8tCjosYXviCZat34kSSwhXmweH3iY4w"
+  },
+  {
+   "slot": 88852509,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "1762236980701",
+   "signature": "2oTTRpwRWyyLDxVJwVbEzsv5nSBjaNSvmz6hAA2ayh7NoTSTGwg4MjTJS8GNWRFs97LvRTVKLNAxrFUGYBR3xE3C"
+  },
+  {
+   "slot": 88852343,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-22149786700958",
+   "signature": "4HpMgXtENgKvAhVPz2Mmhf2cLyASTYjbnUBicTWCLEi5dzhXe6k4g8asTCc7yuucevd7Hsgq9PXSpUTtxwdCqXAS"
+  },
+  {
+   "slot": 88852343,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "19990182497614",
+   "signature": "4HpMgXtENgKvAhVPz2Mmhf2cLyASTYjbnUBicTWCLEi5dzhXe6k4g8asTCc7yuucevd7Hsgq9PXSpUTtxwdCqXAS"
+  },
+  {
+   "slot": 88802912,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "600413141656",
+   "signature": "3HwbDwuhboUhMZqLNY1XrtvRZWqy2AoRjxhMcfPhWbyFtg4EsQ419eto78mdp52u9c6nqrdoPjSD9Fwuu2cHid2v"
+  },
+  {
+   "slot": 88802912,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-632013833323",
+   "signature": "3HwbDwuhboUhMZqLNY1XrtvRZWqy2AoRjxhMcfPhWbyFtg4EsQ419eto78mdp52u9c6nqrdoPjSD9Fwuu2cHid2v"
+  },
+  {
+   "slot": 88802905,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "3010443839196",
+   "signature": "624LaKoEUS74vNvg5zR4m5zcFvsNe8vmms8HqLzZrQriMk3WPBrS3pEN2GiA3rJeNk1ycJMA5HKQw6DwBGeCG1cr"
+  },
+  {
+   "slot": 88802905,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-3168888251786",
+   "signature": "624LaKoEUS74vNvg5zR4m5zcFvsNe8vmms8HqLzZrQriMk3WPBrS3pEN2GiA3rJeNk1ycJMA5HKQw6DwBGeCG1cr"
+  },
+  {
+   "slot": 88802897,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "3802665902143",
+   "signature": "3WRyLFhJ6sLC8nupoPSDa7H8HakQfFdAcpBCYQ61AtWpVfYM1JUUhmzgfdakoShmAEWwaAX65GhxRUUfoZDsvZxn"
+  },
+  {
+   "slot": 88802748,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1108886216606",
+   "signature": "37oVSXUBjDJQRLraw9h4Kiowi31ESVJz1GA9ZWVARZiqYL7Kx9dnyiRaFGvkTmnn5DzHTNx8rwkePHABMQfyHnrZ"
+  },
+  {
+   "slot": 88802748,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1167248649059",
+   "signature": "37oVSXUBjDJQRLraw9h4Kiowi31ESVJz1GA9ZWVARZiqYL7Kx9dnyiRaFGvkTmnn5DzHTNx8rwkePHABMQfyHnrZ"
+  },
+  {
+   "slot": 88802741,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-48402425016849",
+   "signature": "4Kj4dmQEJFjiPPWLSp5Pv78uEX1MVXAf8WnJWUZsWAhQ1K98fJVYf655tHLzxeETXBzGWBee4i5Js1mGyBV9QEN"
+  },
+  {
+   "slot": 88802741,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "43683188577705",
+   "signature": "4Kj4dmQEJFjiPPWLSp5Pv78uEX1MVXAf8WnJWUZsWAhQ1K98fJVYf655tHLzxeETXBzGWBee4i5Js1mGyBV9QEN"
+  },
+  {
+   "slot": 88802741,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "5559824293938",
+   "signature": "2khHd6c3UybG6Ldn7QFgajKrDgWK651dSrBjnHcX4hHZAsgXyLjRow4JdqsXQc1jZGATcafbsHZrFirnnK7sgf8f"
+  },
+  {
+   "slot": 88802741,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-5852446625198",
+   "signature": "2khHd6c3UybG6Ldn7QFgajKrDgWK651dSrBjnHcX4hHZAsgXyLjRow4JdqsXQc1jZGATcafbsHZrFirnnK7sgf8f"
+  },
+  {
+   "slot": 88802732,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "7022935950237",
+   "signature": "4nvfGGaRVz224qtxGzPUwnVijxk7SFkbcSER26CXhmwVDrjzXnEopuZtSCF98RB6tLvQBPqdFQSP1awV1fmDy9Zj"
+  },
+  {
+   "slot": 88802680,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-90246461055272",
+   "signature": "3dj15AtDAGjDT7z7oJo5YGC6QuPsutrr5vnJAD8RNjphQ6xpApMvKajKCRpbTci7L6DBHNuivshfSLtgkbyNdRpB"
+  },
+  {
+   "slot": 88802680,
+   "account": "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "81447431102382",
+   "signature": "3dj15AtDAGjDT7z7oJo5YGC6QuPsutrr5vnJAD8RNjphQ6xpApMvKajKCRpbTci7L6DBHNuivshfSLtgkbyNdRpB"
+  },
+  {
+   "slot": 88799321,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1784700927067",
+   "signature": "4i1kRXRdevYfcWLkdasE3L5F6K7c6iY9iUixrA3YQa8PHzxq7sfoG6Qa6WbL74zkZ1pYLj8fgtWv5BQLCyJ775EH"
+  },
+  {
+   "slot": 88799321,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1878632554808",
+   "signature": "4i1kRXRdevYfcWLkdasE3L5F6K7c6iY9iUixrA3YQa8PHzxq7sfoG6Qa6WbL74zkZ1pYLj8fgtWv5BQLCyJ775EH"
+  },
+  {
+   "slot": 88799313,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "8948107374010",
+   "signature": "5YPH1HgRteCKXk8FMHjmW9h8YgKEpPeHZNDJoGZyE1HYVNzouM5B4aNffbrJsy3zbsWdqqxzesFWGY8cFtrF1VDW"
+  },
+  {
+   "slot": 88799313,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-9419060393695",
+   "signature": "5YPH1HgRteCKXk8FMHjmW9h8YgKEpPeHZNDJoGZyE1HYVNzouM5B4aNffbrJsy3zbsWdqqxzesFWGY8cFtrF1VDW"
+  },
+  {
+   "slot": 88799305,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "11302872472433",
+   "signature": "38otJAYqvFYgF7ybnS2CANM6J3juCRuoxr9yFMbnXJr5G2bsLqpLf6KjBGyruaRfNC68sADbosKhF37GtSdRmyoM"
+  },
+  {
+   "slot": 88799190,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-48152825259487",
+   "signature": "2Ly1eBQ194QK1d61kn7JyszVbKkpaSL68nBzAB4r3JbYnzWJPhdFy9zjo5Z5gjwaSmwqrW4S1guaYkSqZ3A446r"
+  },
+  {
+   "slot": 88799190,
+   "account": "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "43457924796686",
+   "signature": "2Ly1eBQ194QK1d61kn7JyszVbKkpaSL68nBzAB4r3JbYnzWJPhdFy9zjo5Z5gjwaSmwqrW4S1guaYkSqZ3A446r"
+  },
+  {
+   "slot": 88799157,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "2009961764183",
+   "signature": "41crfSLCdtSrij5QVf7CNSd7gbwgETAfeGZKgCz5Wtd6DxXpZzkR2b1dcruvNwKZ18RpgowEZ5jdRsduRwHaHSZy"
+  },
+  {
+   "slot": 88799157,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-2115749225456",
+   "signature": "41crfSLCdtSrij5QVf7CNSd7gbwgETAfeGZKgCz5Wtd6DxXpZzkR2b1dcruvNwKZ18RpgowEZ5jdRsduRwHaHSZy"
+  },
+  {
+   "slot": 88799150,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "10077452419178",
+   "signature": "24AhbCs55VrLTS4yrQqydhqzEyDn2BFqbJoLkkqeb9rXrUgtvWRhfNgGt6G7At2Miysc4a8AJkKWWKqHraQVz6xT"
+  },
+  {
+   "slot": 88799150,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-10607844651767",
+   "signature": "24AhbCs55VrLTS4yrQqydhqzEyDn2BFqbJoLkkqeb9rXrUgtvWRhfNgGt6G7At2Miysc4a8AJkKWWKqHraQVz6xT"
+  },
+  {
+   "slot": 88799143,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-99891451007655",
+   "signature": "2xJvcpUjVjBCxkQwFnwL43zZvcXk3VVLv1bAMW4jX4TsWWvbhsZ5GzXFBLQgWEW432MfSWTV9GNVt8s1F13ES1vE"
+  },
+  {
+   "slot": 88799143,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "90152034534408",
+   "signature": "2xJvcpUjVjBCxkQwFnwL43zZvcXk3VVLv1bAMW4jX4TsWWvbhsZ5GzXFBLQgWEW432MfSWTV9GNVt8s1F13ES1vE"
+  },
+  {
+   "slot": 88799141,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "12729413582120",
+   "signature": "3hStazV9fP1csqa9D6FV3zj8Tw5GKdkTWxzjDo6gzCCaXw5W6F1WbwpUNHrTf98BVyYXEv3oiwaC2Ujm4K7RLT1Z"
+  },
+  {
+   "slot": 88799062,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-70960496947227",
+   "signature": "4x4cxBbgfyhbJsTYtoBuSsgDo9dtMKvJtcS4TiTTdxe6vtNDrNYKg4HKNUzTFVJRv3Gm1n4Fhw1bNuyjEQ2oxaJr"
+  },
+  {
+   "slot": 88799062,
+   "account": "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "64041848494871",
+   "signature": "4x4cxBbgfyhbJsTYtoBuSsgDo9dtMKvJtcS4TiTTdxe6vtNDrNYKg4HKNUzTFVJRv3Gm1n4Fhw1bNuyjEQ2oxaJr"
+  },
+  {
+   "slot": 88799026,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-100324115970315",
+   "signature": "2NRuz1jF2BZxL72tb54gMjyYftyJveW53WyMCZbWHEkjCrGGcwxm2uD7U4DQYcwQmXAW6T2poLXFDCuLTuH8zNb4"
+  },
+  {
+   "slot": 88799026,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "90542514663209",
+   "signature": "2NRuz1jF2BZxL72tb54gMjyYftyJveW53WyMCZbWHEkjCrGGcwxm2uD7U4DQYcwQmXAW6T2poLXFDCuLTuH8zNb4"
+  },
+  {
+   "slot": 88798997,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "860293220913",
+   "signature": "4Ys8bydwHT3LGq1sLCaCn3QkGTYrYcf8ZNzddgC58MPkikR7PxzkveCCntG2V1EoStAH3ZDd9mQ3B9VoPHDEXv7u"
+  },
+  {
+   "slot": 88798997,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-905571811488",
+   "signature": "4Ys8bydwHT3LGq1sLCaCn3QkGTYrYcf8ZNzddgC58MPkikR7PxzkveCCntG2V1EoStAH3ZDd9mQ3B9VoPHDEXv7u"
+  },
+  {
+   "slot": 88798990,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "4313438762982",
+   "signature": "4eKKR8UZgFwxMc4d6QrXnXnew4HxNyPUsBLw76wqGSeUBFPRDf526Y3yPzZtDtnLfvTf7wntALdcXEy7TrqQqaF6"
+  },
+  {
+   "slot": 88798990,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-4540461855771",
+   "signature": "4eKKR8UZgFwxMc4d6QrXnXnew4HxNyPUsBLw76wqGSeUBFPRDf526Y3yPzZtDtnLfvTf7wntALdcXEy7TrqQqaF6"
+  },
+  {
+   "slot": 88798981,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "5448554226925",
+   "signature": "5rNpojSsFeGyjmYVqnCiSDvs17RQzZ7vqox1dXrbg4y19vQWKGVPh5jT9pXBL8dWoHtCF4SAS5iZxR7rvcy9SPrf"
+  },
+  {
+   "slot": 88798956,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-70134273033768",
+   "signature": "2TdG6VvUeAfzW8U5PXbbvYAuJi7VuAkQR9XT9DcbUQpjFpJHt4LshJeBCRRDNmb1hdkdCrMVqrRtfhd9czqmLbN2"
+  },
+  {
+   "slot": 88798956,
+   "account": "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "63296181412975",
+   "signature": "2TdG6VvUeAfzW8U5PXbbvYAuJi7VuAkQR9XT9DcbUQpjFpJHt4LshJeBCRRDNmb1hdkdCrMVqrRtfhd9czqmLbN2"
+  },
+  {
+   "slot": 88794105,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1649818108309",
+   "signature": "2dtBjpW64emRKmjcZyeh2izh963fW2ArrNrGk1fF7GKxm6Cu8FJwWK69XHB6JaDXu5ag9UsVpCGwCAeemzqWJqVr"
+  },
+  {
+   "slot": 88794105,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1736650640326",
+   "signature": "2dtBjpW64emRKmjcZyeh2izh963fW2ArrNrGk1fF7GKxm6Cu8FJwWK69XHB6JaDXu5ag9UsVpCGwCAeemzqWJqVr"
+  },
+  {
+   "slot": 88794098,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "6456481512035",
+   "signature": "2CGcrLC2AE3CdjrziQTz2ZharheyrcUGTpv4iYJXbU99geKQsW7ZhVYqHxVVi1zHnXbrR1AtvQaoJ11NstVsv1dt"
+  },
+  {
+   "slot": 88794098,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-6796296328458",
+   "signature": "2CGcrLC2AE3CdjrziQTz2ZharheyrcUGTpv4iYJXbU99geKQsW7ZhVYqHxVVi1zHnXbrR1AtvQaoJ11NstVsv1dt"
+  },
+  {
+   "slot": 88794090,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "8155555594149",
+   "signature": "2B7NHfqYzXtqVwoyypb1nf4tfEVz3WtEyRYU4KNmezkTnotC19yx5SvDpKotgfDcPk9DL6iSHMjV8Bg51f6abpQq"
+  },
+  {
+   "slot": 88793946,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-110481504317173",
+   "signature": "A9rieywmJAfF55PPrCnSdShTsMb1omT8aEjQTHBo3ffQXBcys2eN5CHRMjNGdw2mfatLpiUQBY5h3Uxu1Hz2uTW"
+  },
+  {
+   "slot": 88793946,
+   "account": "6Hd9UkVd71zRkFBs3d4rTF45pAypB7A7W3cWc4GMfWPA",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "99709557646248",
+   "signature": "A9rieywmJAfF55PPrCnSdShTsMb1omT8aEjQTHBo3ffQXBcys2eN5CHRMjNGdw2mfatLpiUQBY5h3Uxu1Hz2uTW"
+  },
+  {
+   "slot": 88773264,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "-131620897055",
+   "signature": "2K8xDF4hYV3zRCuSMBDi5HWJ5FTC8tp6xGNPvVbb1KEhZjjP8HgWfCrugyPxMUMEU77fsE3jwbxWyT1FyHrvoWkK"
+  },
+  {
+   "slot": 88773264,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "125039852202",
+   "signature": "2K8xDF4hYV3zRCuSMBDi5HWJ5FTC8tp6xGNPvVbb1KEhZjjP8HgWfCrugyPxMUMEU77fsE3jwbxWyT1FyHrvoWkK"
+  },
+  {
+   "slot": 88772896,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1815381785295",
+   "signature": "61KYXBWUR1sw92bmwj1sb31S82ZfKFFQpQ4Bcad7hm9g1pcUT2RvksSJ5iyuKBNFibeDbzK2pHTTxDnqnPYvjeM5"
+  },
+  {
+   "slot": 88772896,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1910928195048",
+   "signature": "61KYXBWUR1sw92bmwj1sb31S82ZfKFFQpQ4Bcad7hm9g1pcUT2RvksSJ5iyuKBNFibeDbzK2pHTTxDnqnPYvjeM5"
+  },
+  {
+   "slot": 88772888,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "2293113834057",
+   "signature": "3PpkFihKcQSgpdW6gcozLdRGrZ9Y97VHfAdJGVHNwXFAsWohALwdxPAFwGx6YHjFd9VVd1sQhdtNW23FH4r2KAa5"
+  },
+  {
+   "slot": 88772741,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "9661643073343",
+   "signature": "2CHngPVJSam5cxxhzSAusNJojAJWareeEAHyjvitZDKuTJktDkZaUXooCPS4f5wwifmFDxSYGeyjnciiVWT2UzYx"
+  },
+  {
+   "slot": 88772741,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-10170150603519",
+   "signature": "2CHngPVJSam5cxxhzSAusNJojAJWareeEAHyjvitZDKuTJktDkZaUXooCPS4f5wwifmFDxSYGeyjnciiVWT2UzYx"
+  },
+  {
+   "slot": 88772733,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "48430574056072",
+   "signature": "2W6ZRqKNgeTCDxfsngeo736KE4otmUSjpEpariFEMKs5NgBw2a6hwLuQhmV8wjuLjv8if9YLXuAPFfLyUQxVC94Y"
+  },
+  {
+   "slot": 88772733,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-50979551637971",
+   "signature": "2W6ZRqKNgeTCDxfsngeo736KE4otmUSjpEpariFEMKs5NgBw2a6hwLuQhmV8wjuLjv8if9YLXuAPFfLyUQxVC94Y"
+  },
+  {
+   "slot": 88772726,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "61175461965564",
+   "signature": "3B93LAgRe7QuSKXi295HABbSgNEgzJP9uoXtBFLgQComznXdJNGQ6KKXa1X3gZo8erq1aYpjXvdimJBjZzK8EWqT"
+  },
+  {
+   "slot": 88772704,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-768492576995415",
+   "signature": "62zKs6YAfw9GggeTUAn8yiW8PnGJBRBT9HRe2FVSYerrsXW3Sxy9mAX4zACBrxmkTbsYGRynJgCFghVNED2tAvDj"
+  },
+  {
+   "slot": 88772704,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "693564550738361",
+   "signature": "62zKs6YAfw9GggeTUAn8yiW8PnGJBRBT9HRe2FVSYerrsXW3Sxy9mAX4zACBrxmkTbsYGRynJgCFghVNED2tAvDj"
+  },
+  {
+   "slot": 88772577,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "20985608824406",
+   "signature": "dvKecU5TdQLNg3FeE5J259bKpF72NEk25RqxLE5dgniFNL43F8e7Ahfpj1j85eF7ciMpH8mXb55x4kGRWRZv55D"
+  },
+  {
+   "slot": 88772577,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-22090114552007",
+   "signature": "dvKecU5TdQLNg3FeE5J259bKpF72NEk25RqxLE5dgniFNL43F8e7Ahfpj1j85eF7ciMpH8mXb55x4kGRWRZv55D"
+  },
+  {
+   "slot": 88772569,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "105160262085812",
+   "signature": "4YC4jKBpzTZeUGzJYE7VXPDC1ZLrp32FUEu5CFLPDBnCfjbp9yfFd6mA9JceroUiE6gQ11HE29XaX9X7x4QfcCPB"
+  },
+  {
+   "slot": 88772569,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-110695012721908",
+   "signature": "4YC4jKBpzTZeUGzJYE7VXPDC1ZLrp32FUEu5CFLPDBnCfjbp9yfFd6mA9JceroUiE6gQ11HE29XaX9X7x4QfcCPB"
+  },
+  {
+   "slot": 88772561,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "132834015266289",
+   "signature": "3wCaxRqyUoCWUcWAdhtEqm4ypWvQC5sdcVS6pmGzwhpreQJkpUJhYGBAjNsw66hbn48cAeUDPBwsJEuyomFWrbgr"
+  },
+  {
+   "slot": 88772557,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-815341177937436",
+   "signature": "5R7KivqovyndcxTrPhVhxFrYWWRZ8ocBhN8D96xh6TGs1SdJvBCYW2XSYbh3KCDjZjc5M1DEeXh2gMG58TySAANH"
+  },
+  {
+   "slot": 88772557,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "735845413088535",
+   "signature": "5R7KivqovyndcxTrPhVhxFrYWWRZ8ocBhN8D96xh6TGs1SdJvBCYW2XSYbh3KCDjZjc5M1DEeXh2gMG58TySAANH"
+  },
+  {
+   "slot": 88772439,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-857176370131274",
+   "signature": "49hjRjAeRUpfRGzgAXd3yAXWWtRCkY2Wi78c6qjbgwo2nfrDDWkj3GFD4yFhLsaaT9eRFRz8jDWE2zCKZxZVKgUW"
+  },
+  {
+   "slot": 88772439,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "773601674043474",
+   "signature": "49hjRjAeRUpfRGzgAXd3yAXWWtRCkY2Wi78c6qjbgwo2nfrDDWkj3GFD4yFhLsaaT9eRFRz8jDWE2zCKZxZVKgUW"
+  },
+  {
+   "slot": 88772413,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "131620897055",
+   "signature": "2ZaXcvUrBHv61NvNGgndouZhDKU4mEfXrWpdZHWuZM2M78hdPSs8V2BdV3SxcrwZ3XES4xGQcYwQGeQzaakyhCmc"
+  },
+  {
+   "slot": 88772413,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-138548312688873",
+   "signature": "2ZaXcvUrBHv61NvNGgndouZhDKU4mEfXrWpdZHWuZM2M78hdPSs8V2BdV3SxcrwZ3XES4xGQcYwQGeQzaakyhCmc"
+  },
+  {
+   "slot": 88772413,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "124914812349505",
+   "signature": "2ZaXcvUrBHv61NvNGgndouZhDKU4mEfXrWpdZHWuZM2M78hdPSs8V2BdV3SxcrwZ3XES4xGQcYwQGeQzaakyhCmc"
+  },
+  {
+   "slot": 88756335,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "-1979918187032",
+   "signature": "DkzHfdW1gSrSYPmuKWoFQUow8W8M8gAhPTnptrrCs8sfFyu4ioXoHYxdo1g78h3KXvokKTcqPqXbPhEd985ijme"
+  },
+  {
+   "slot": 88756335,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1880922277680",
+   "signature": "DkzHfdW1gSrSYPmuKWoFQUow8W8M8gAhPTnptrrCs8sfFyu4ioXoHYxdo1g78h3KXvokKTcqPqXbPhEd985ijme"
+  },
+  {
+   "slot": 88755772,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1392287955447",
+   "signature": "jN2zBJE5qBTPVTkZHi61kTYiwvdXsBL3N7wKBW4hNhqANYUVPhhzskaKspoHJddqhbtmBigdQvYvTUdvCX4AfEm"
+  },
+  {
+   "slot": 88755772,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1465566268892",
+   "signature": "jN2zBJE5qBTPVTkZHi61kTYiwvdXsBL3N7wKBW4hNhqANYUVPhhzskaKspoHJddqhbtmBigdQvYvTUdvCX4AfEm"
+  },
+  {
+   "slot": 88755765,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "6980709311555",
+   "signature": "5xSREq14Z9sVdDEnJbuUgqWcijfJAP12PiR2eqV8WK3FqhWGbRUakTWuJyvLP6ahd84jYFPgZy1gkvZPUjNpC4Da"
+  },
+  {
+   "slot": 88755765,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-7348115064795",
+   "signature": "5xSREq14Z9sVdDEnJbuUgqWcijfJAP12PiR2eqV8WK3FqhWGbRUakTWuJyvLP6ahd84jYFPgZy1gkvZPUjNpC4Da"
+  },
+  {
+   "slot": 88755757,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "8817738077754",
+   "signature": "5Cfq8FCqk2jDAc6mUDam4Yfzvv5JUAhuFumYZvgxnkqddGZP9gwqFFv21k2VZE1yyHLfAv3To1k7gb5KGTXxkMUs"
+  },
+  {
+   "slot": 88755613,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-48675169482047",
+   "signature": "5w1wPxmQpkXX43CTd5f9sXi5W7tTTngBPhbUhdfdRx23nbPJQtHDaQb1UeNNf44W6kyGf4tnXrPqULGMqboNiCeY"
+  },
+  {
+   "slot": 88755613,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "43929340457546",
+   "signature": "5w1wPxmQpkXX43CTd5f9sXi5W7tTTngBPhbUhdfdRx23nbPJQtHDaQb1UeNNf44W6kyGf4tnXrPqULGMqboNiCeY"
+  },
+  {
+   "slot": 88755610,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "22161842736797",
+   "signature": "4UVr6VRToYNHSz5mo7TvJoguVnmcY4cSQ3VoMYw5FiKr9AYyebee6o6fukr5K2EsSmy9So9bsQfUqTAxPf5ifQrk"
+  },
+  {
+   "slot": 88755610,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-23328255512418",
+   "signature": "4UVr6VRToYNHSz5mo7TvJoguVnmcY4cSQ3VoMYw5FiKr9AYyebee6o6fukr5K2EsSmy9So9bsQfUqTAxPf5ifQrk"
+  },
+  {
+   "slot": 88755602,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "111050103767446",
+   "signature": "7j5tfh5HZ686NxsxvZL5SaMKBuzYgCrnwRvsv9Wz8Tbu8emM3HmsNhcW2WUdurhVPw62RcwHrVeHGXhzohbA3Yv"
+  },
+  {
+   "slot": 88755602,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-116894846070996",
+   "signature": "7j5tfh5HZ686NxsxvZL5SaMKBuzYgCrnwRvsv9Wz8Tbu8emM3HmsNhcW2WUdurhVPw62RcwHrVeHGXhzohbA3Yv"
+  },
+  {
+   "slot": 88755594,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "140273815285195",
+   "signature": "48RGEn9CqRXrZZnpFGNtQhv4ZQ4cTPBkT6BrpH5ocTiwaKv9JT84JT8dS6djfC4qW4pXcuLcBE25ux8fbqS5MZxN"
+  },
+  {
+   "slot": 88755448,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "1817325126265",
+   "signature": "58AF9oLwr3ieL3WTM7Cix46nrijZBKzpHHg1QyBsmkWdwCRvJ6HjLZ6JyvBcb69syHx7axRKQzPLcUTLUMkVYMUa"
+  },
+  {
+   "slot": 88755448,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-1912742350825648",
+   "signature": "58AF9oLwr3ieL3WTM7Cix46nrijZBKzpHHg1QyBsmkWdwCRvJ6HjLZ6JyvBcb69syHx7axRKQzPLcUTLUMkVYMUa"
+  },
+  {
+   "slot": 88755448,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1724523512750195",
+   "signature": "58AF9oLwr3ieL3WTM7Cix46nrijZBKzpHHg1QyBsmkWdwCRvJ6HjLZ6JyvBcb69syHx7axRKQzPLcUTLUMkVYMUa"
+  },
+  {
+   "slot": 88755446,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1991196838364",
+   "signature": "3em2VrkdkhQY175mK43vbHborvZQqNV2LXtAiderg9yETGqFc69r1uQ2WeHwTZMo31XRRupD4A8Xts6wwcvDvPJr"
+  },
+  {
+   "slot": 88755446,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-2095996671963",
+   "signature": "3em2VrkdkhQY175mK43vbHborvZQqNV2LXtAiderg9yETGqFc69r1uQ2WeHwTZMo31XRRupD4A8Xts6wwcvDvPJr"
+  },
+  {
+   "slot": 88755438,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "9983377685301",
+   "signature": "3YrR7u6gP4CgksMMtfmZa7HJ8zKZgsAERJupX167RgQvtbmnGiCSCrsKJefvzTe5XRkvLkzMtfDaoJi8fq95WAEE"
+  },
+  {
+   "slot": 88755438,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-10508818616107",
+   "signature": "3YrR7u6gP4CgksMMtfmZa7HJ8zKZgsAERJupX167RgQvtbmnGiCSCrsKJefvzTe5XRkvLkzMtfDaoJi8fq95WAEE"
+  },
+  {
+   "slot": 88755430,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "12610582339328",
+   "signature": "54EHjDVbAoRFfmcGYZzo7c3uys8YXnjtNF5B23aedKCfCgW7ZFFDQpiNLfZHr4Pze7RkBNb7F7ktMd68ALyqmues"
+  },
+  {
+   "slot": 88755321,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "162593060767",
+   "signature": "2RFiEqRitYei6TURiB63sPef7T5jdAW3JuYz3j8EfFNHuLc4TEZ81S3vGvcwB8ur3gEtZ4cH9EqsEeGrkZccYFtM"
+  },
+  {
+   "slot": 88755321,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-171150590280822",
+   "signature": "2RFiEqRitYei6TURiB63sPef7T5jdAW3JuYz3j8EfFNHuLc4TEZ81S3vGvcwB8ur3gEtZ4cH9EqsEeGrkZccYFtM"
+  },
+  {
+   "slot": 88755321,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "154308944320712",
+   "signature": "2RFiEqRitYei6TURiB63sPef7T5jdAW3JuYz3j8EfFNHuLc4TEZ81S3vGvcwB8ur3gEtZ4cH9EqsEeGrkZccYFtM"
+  },
+  {
+   "slot": 88755283,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "426686030850",
+   "signature": "DjqLTwEDyHy7pcCQmvTXu7dNpB1f8CxQNjNAPbhCUBs8EjfTteHPbyUnErbRov4sTxkCJw6vtrb8cGQnvwy9Srm"
+  },
+  {
+   "slot": 88755283,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-449143190369",
+   "signature": "DjqLTwEDyHy7pcCQmvTXu7dNpB1f8CxQNjNAPbhCUBs8EjfTteHPbyUnErbRov4sTxkCJw6vtrb8cGQnvwy9Srm"
+  },
+  {
+   "slot": 88755275,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "2139394811237",
+   "signature": "29fJSiPnLtLnUxrwEPukN76uNALjtM6D64e7nyeRHyeXgU1u3QCqvsFx8EPfAQKxbo6yQFq5YWYnC2LeesFXTVBe"
+  },
+  {
+   "slot": 88755275,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-2251994538145",
+   "signature": "29fJSiPnLtLnUxrwEPukN76uNALjtM6D64e7nyeRHyeXgU1u3QCqvsFx8EPfAQKxbo6yQFq5YWYnC2LeesFXTVBe"
+  },
+  {
+   "slot": 88755267,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "2702393445774",
+   "signature": "2cRHJgxS37iQEyCum5GbqJg3Gh99UwRvWm9LE9pvra37ZnNBCvcK61aAw1NN3QpukiNxLyA7h83C9x9o4PDZNG1e"
+  },
+  {
+   "slot": 88755140,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "11386523098991",
+   "signature": "2e3ZbkAgWwitekdgzRAKSamEdTg9rS42WHAu3dvrzLa5iSBpttgJKg1QUTFrtnKDQGGDwsFnSBZ6eom625gGSCyS"
+  },
+  {
+   "slot": 88755140,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-11985813788412",
+   "signature": "2e3ZbkAgWwitekdgzRAKSamEdTg9rS42WHAu3dvrzLa5iSBpttgJKg1QUTFrtnKDQGGDwsFnSBZ6eom625gGSCyS"
+  },
+  {
+   "slot": 88755129,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "57074110860595",
+   "signature": "258xVgJKi77UZNmCL1By1CAgvg86CVyYMi2hAa2d7UhPvYY223L82evdSryk1WYJuD2cfbLi7CaQ7LngK6SP8Ji3"
+  },
+  {
+   "slot": 88755129,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-60078011432206",
+   "signature": "258xVgJKi77UZNmCL1By1CAgvg86CVyYMi2hAa2d7UhPvYY223L82evdSryk1WYJuD2cfbLi7CaQ7LngK6SP8Ji3"
+  },
+  {
+   "slot": 88755116,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "72093613718646",
+   "signature": "UsceVARV7PsSbmYfFYxx4MMCGejDU9MKLCCgZKdLWgqWzcJZrVGYzts1sn7gdBsiFnqXmyAiAo7U1qUNTDtJo6F"
+  },
+  {
+   "slot": 88754955,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-180945345789932",
+   "signature": "4rkDsbfXoUify4kNnzndS87N5z16qp82a6qoH4R2cBcniHX5LPqroNKMwpogfwxvJHT9HBGUi7oRhQoZJkZ8KqN8"
+  },
+  {
+   "slot": 88754955,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "163303174575413",
+   "signature": "4rkDsbfXoUify4kNnzndS87N5z16qp82a6qoH4R2cBcniHX5LPqroNKMwpogfwxvJHT9HBGUi7oRhQoZJkZ8KqN8"
+  },
+  {
+   "slot": 88754950,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-801510187188882",
+   "signature": "3DF2ZWKs6nJxXseSZ29ksjUYD45AvHqnTKC856Pc6QvuWzXXt4h6kWAaHcFwnsoirWsv5iuMihM2yuQfbK57xpsZ"
+  },
+  {
+   "slot": 88754950,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "723362943937965",
+   "signature": "3DF2ZWKs6nJxXseSZ29ksjUYD45AvHqnTKC856Pc6QvuWzXXt4h6kWAaHcFwnsoirWsv5iuMihM2yuQfbK57xpsZ"
+  },
+  {
+   "slot": 88753489,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1059659132775",
+   "signature": "4YD5J1aQxeJ5TJuRV9wTq2okMi2SQYyF4VpVuQ4AHAztXUicLyk97hGz7FJsTwmZXCEpDwGXtdJRKLp6jE4Dyt6U"
+  },
+  {
+   "slot": 88753489,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1115430666079",
+   "signature": "4YD5J1aQxeJ5TJuRV9wTq2okMi2SQYyF4VpVuQ4AHAztXUicLyk97hGz7FJsTwmZXCEpDwGXtdJRKLp6jE4Dyt6U"
+  },
+  {
+   "slot": 88753482,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "5313013562942",
+   "signature": "5VznRpf6oEdVu14ppbtaBrLMhic9rC2xC1LKx3xvMRyHxNbKsFExfe8jLqmepuTDm8PKzKuFAwzuJtsnjZJvpxY2"
+  },
+  {
+   "slot": 88753482,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-5592645855729",
+   "signature": "5VznRpf6oEdVu14ppbtaBrLMhic9rC2xC1LKx3xvMRyHxNbKsFExfe8jLqmepuTDm8PKzKuFAwzuJtsnjZJvpxY2"
+  },
+  {
+   "slot": 88753474,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "6711175026874",
+   "signature": "5JS87hbEFfh2tTWrrF3v25PD84VU4PSFRym8sqQoFT1uFKXErWhxisr5YFfVyjxKuA5ZwpkDbDrR3er9hBD3rCWg"
+  },
+  {
+   "slot": 88753432,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-90394201033162",
+   "signature": "CY8VaQ9ctUd7f3aFUg558zzcMvFYb4vCHJXnPFYA3XN2YKFQUWLvUF2RrDBaxDJ8Ju3FWo6AMZsbTeD8YT9mm9Z"
+  },
+  {
+   "slot": 88753432,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "81580766432427",
+   "signature": "CY8VaQ9ctUd7f3aFUg558zzcMvFYb4vCHJXnPFYA3XN2YKFQUWLvUF2RrDBaxDJ8Ju3FWo6AMZsbTeD8YT9mm9Z"
+  },
+  {
+   "slot": 88748599,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "-179617412277",
+   "signature": "4jfpC9G7hGURgD8Hqwej4hMi2ehobFGjukHCCxYCsxUQYufzJRkfAGAzGTaejfDW1NgJRvJBcZ9vpFjMnAwwcvQ5"
+  },
+  {
+   "slot": 88748599,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "170636541663",
+   "signature": "4jfpC9G7hGURgD8Hqwej4hMi2ehobFGjukHCCxYCsxUQYufzJRkfAGAzGTaejfDW1NgJRvJBcZ9vpFjMnAwwcvQ5"
+  },
+  {
+   "slot": 88748597,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "397496955457",
+   "signature": "2bDixHQdgmR1QF1KhXH6cq5y9AndeLCzM8d817WHrHc2rfYVu5vh3RWunQbdaHmLAnU2Twd27mb89PAf1nZqi9UT"
+  },
+  {
+   "slot": 88748597,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-418417847850",
+   "signature": "2bDixHQdgmR1QF1KhXH6cq5y9AndeLCzM8d817WHrHc2rfYVu5vh3RWunQbdaHmLAnU2Twd27mb89PAf1nZqi9UT"
+  },
+  {
+   "slot": 88748590,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1993043103037",
+   "signature": "5XeZ3xSgTGVAaZXng2Ho6uNR8rmF4o1kGcV1dvcrVw2tVn1ZR1avzqTK5MW9kAMA582S1m4VhTw4MxqSHrX7BiBF"
+  },
+  {
+   "slot": 88748590,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-2097940108460",
+   "signature": "5XeZ3xSgTGVAaZXng2Ho6uNR8rmF4o1kGcV1dvcrVw2tVn1ZR1avzqTK5MW9kAMA582S1m4VhTw4MxqSHrX7BiBF"
+  },
+  {
+   "slot": 88748582,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "2517528130151",
+   "signature": "5rnpkHySw6YDYRenG3rm9jkcGd62DJaaemvE723sf3B2P1BtHzn6Y8HudJWG9EiYoY373gTJ3LMkxWVXLFgennzP"
+  },
+  {
+   "slot": 88748431,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "10607400408898",
+   "signature": "579NeTxW7d8DPcvUnAZ4JQtjjSiwAUBE6pBaC8hucuXfQHrBex3viQPW4uuQM7QypojKNeKJAWvHiTrRFBzt6UhF"
+  },
+  {
+   "slot": 88748431,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-11165684640946",
+   "signature": "579NeTxW7d8DPcvUnAZ4JQtjjSiwAUBE6pBaC8hucuXfQHrBex3viQPW4uuQM7QypojKNeKJAWvHiTrRFBzt6UhF"
+  },
+  {
+   "slot": 88748424,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "53169978888225",
+   "signature": "2Ds7yaDLonBzurBmeSKqriGtLPHcrNRgCyFZZJ2Lk37tvooV1v79yeLxLWqVVVtVdyEHtNp5CZBjS6LVdcQ6gCuh"
+  },
+  {
+   "slot": 88748424,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-55968398829711",
+   "signature": "2Ds7yaDLonBzurBmeSKqriGtLPHcrNRgCyFZZJ2Lk37tvooV1v79yeLxLWqVVVtVdyEHtNp5CZBjS6LVdcQ6gCuh"
+  },
+  {
+   "slot": 88748416,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "67162078595652",
+   "signature": "4NheHsMG2t9LuUzHZNQcfS6BhMamsdNZPtc4XxFyZ4tEHoPJXW6XNPtax2teFsHfrhG9uUq5gWEnx226ckTtqRBu"
+  },
+  {
+   "slot": 88748286,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-697248211647543",
+   "signature": "5ckCtgMgEhvvtSjFjr3cvRWY8vaHYkYKDEyC28mbTTGwpcX5GUn1PUpSvHTPiYtkfmkWTyxJZwzW6YSdaoXiZMNm"
+  },
+  {
+   "slot": 88748286,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "629266511011906",
+   "signature": "5ckCtgMgEhvvtSjFjr3cvRWY8vaHYkYKDEyC28mbTTGwpcX5GUn1PUpSvHTPiYtkfmkWTyxJZwzW6YSdaoXiZMNm"
+  },
+  {
+   "slot": 88748274,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "25168275448228",
+   "signature": "4vrzPGihojf3AyUBmUVwKJuQgBc42qMdAVqTGP2MpD6NeLv9bzFcp6bwD9mWK8318CDZGi3oMwvtFZjDA2jTMt5n"
+  },
+  {
+   "slot": 88748274,
+   "account": "rTz2DKHTmdMtyAFLBnPBm5X7C5r8CNyinA7Y68gNYcT",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-27887285815212",
+   "signature": "4vrzPGihojf3AyUBmUVwKJuQgBc42qMdAVqTGP2MpD6NeLv9bzFcp6bwD9mWK8318CDZGi3oMwvtFZjDA2jTMt5n"
+  },
+  {
+   "slot": 88748270,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1337329367563",
+   "signature": "2rvmWnXt3QgN4QNbZkzwWQTjwNeUHnmRVJDxH5LCfjzutjC4D3mmmzWfjX8tzHZwpGcxT2XTAF3EonpMQqU2oEjM"
+  },
+  {
+   "slot": 88748270,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1407715123751",
+   "signature": "2rvmWnXt3QgN4QNbZkzwWQTjwNeUHnmRVJDxH5LCfjzutjC4D3mmmzWfjX8tzHZwpGcxT2XTAF3EonpMQqU2oEjM"
+  },
+  {
+   "slot": 88748263,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "6705168607997",
+   "signature": "2smGsz8QZjf1M3CKbMw5zfQkheb9mKwZQa4hmWYhcnvmcFuoMJfVVhjfbdGk5NTY1LadeTL1Wc76aGrCwNo9w9c7"
+  },
+  {
+   "slot": 88748263,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-7058072218945",
+   "signature": "2smGsz8QZjf1M3CKbMw5zfQkheb9mKwZQa4hmWYhcnvmcFuoMJfVVhjfbdGk5NTY1LadeTL1Wc76aGrCwNo9w9c7"
+  },
+  {
+   "slot": 88748263,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "179617412277",
+   "signature": "ewbD5JEj7BbtQYvr4iDWgjwtn5ZdqEbXyQK1frKhkAr994CKqQGQdbGVdZGVVkqteC87rLAMT1yNQT2Y22Mte2A"
+  },
+  {
+   "slot": 88748263,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-189070960291190",
+   "signature": "ewbD5JEj7BbtQYvr4iDWgjwtn5ZdqEbXyQK1frKhkAr994CKqQGQdbGVdZGVVkqteC87rLAMT1yNQT2Y22Mte2A"
+  },
+  {
+   "slot": 88748263,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "170465905121135",
+   "signature": "ewbD5JEj7BbtQYvr4iDWgjwtn5ZdqEbXyQK1frKhkAr994CKqQGQdbGVdZGVVkqteC87rLAMT1yNQT2Y22Mte2A"
+  },
+  {
+   "slot": 88748254,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "8469686662733",
+   "signature": "4Co5JhnU2MaqEuU7Xqyip8GvEvh5vVKwJRGyVngAAiZHG3n8Jsm1Zb3dvHWdNFz3MidhP14iaWe21LTAPzjir3Jf"
+  },
+  {
+   "slot": 88748243,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "-102814849897",
+   "signature": "4Z5vbrFns7DPA4Kce3JcGAYypq3PNzTY5Nwub8mWVtw5Qi3hR9vyiojcTVb8dzdH4vBUw9867z4ZVtg1ci635fK4"
+  },
+  {
+   "slot": 88748243,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "97674107402",
+   "signature": "4Z5vbrFns7DPA4Kce3JcGAYypq3PNzTY5Nwub8mWVtw5Qi3hR9vyiojcTVb8dzdH4vBUw9867z4ZVtg1ci635fK4"
+  },
+  {
+   "slot": 88748239,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-63314830422364",
+   "signature": "fUk1WScdPUtJJCmNdLEk2zeYGhb3tM6tgzD6PJ3ohv9BSVNRvdExiid9x6YwMLtLiPCSbw5n4TsgdvqCQE1M4Ts"
+  },
+  {
+   "slot": 88748239,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "57141634456182",
+   "signature": "fUk1WScdPUtJJCmNdLEk2zeYGhb3tM6tgzD6PJ3ohv9BSVNRvdExiid9x6YwMLtLiPCSbw5n4TsgdvqCQE1M4Ts"
+  },
+  {
+   "slot": 88748234,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "43577449707438",
+   "signature": "3Mz5ZmdbGRTreDHJfWb5Tcg97PjnPMko63pdkVHbknVGfytz8Z1umyrTTUA18ALPbgmDSaZoQWW5o5ipFC451m9n"
+  },
+  {
+   "slot": 88748234,
+   "account": "rTz2DKHTmdMtyAFLBnPBm5X7C5r8CNyinA7Y68gNYcT",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-48285262833728",
+   "signature": "3Mz5ZmdbGRTreDHJfWb5Tcg97PjnPMko63pdkVHbknVGfytz8Z1umyrTTUA18ALPbgmDSaZoQWW5o5ipFC451m9n"
+  },
+  {
+   "slot": 88747944,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1285123408622",
+   "signature": "5CcRh2wUbJWxZWSk37sBD7CxQ4M84qzxyAs8eHTwg7fhTegm7oVEE19S5e8TBZ8uDavBYuUvsZVubFMZfVqRUKDA"
+  },
+  {
+   "slot": 88747944,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1352761482760",
+   "signature": "5CcRh2wUbJWxZWSk37sBD7CxQ4M84qzxyAs8eHTwg7fhTegm7oVEE19S5e8TBZ8uDavBYuUvsZVubFMZfVqRUKDA"
+  },
+  {
+   "slot": 88747936,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "6443425182889",
+   "signature": "ob19Bhv34uQKgs5XxGJLKPFLRTz9GZ43nhR4vweYAjBt3wY3yzVu7CQAq5vAh3nLTAePS2j2twz19NDjgVfYDuX"
+  },
+  {
+   "slot": 88747936,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-6782552824094",
+   "signature": "ob19Bhv34uQKgs5XxGJLKPFLRTz9GZ43nhR4vweYAjBt3wY3yzVu7CQAq5vAh3nLTAePS2j2twz19NDjgVfYDuX"
+  },
+  {
+   "slot": 88747928,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "8139063388912",
+   "signature": "4E33dPDKRUcKWtuj7SNHfLim889HwzFQegV3NfHmAFh1swRSn4srCF3qXPbSLpzLAXEecqGrvtPF1dQsezXj17cW"
+  },
+  {
+   "slot": 88747891,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "102814849897",
+   "signature": "15byNKZd7QReqJSrdPrcjmGPg6PxjsWzbsJ5zHcR5G5eJ7eM2aw4HivicDpeduacs4jJSS4WST4Wk8ZTQK5Ttj3"
+  },
+  {
+   "slot": 88747891,
+   "account": "rTz2DKHTmdMtyAFLBnPBm5X7C5r8CNyinA7Y68gNYcT",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-108226157785438",
+   "signature": "15byNKZd7QReqJSrdPrcjmGPg6PxjsWzbsJ5zHcR5G5eJ7eM2aw4HivicDpeduacs4jJSS4WST4Wk8ZTQK5Ttj3"
+  },
+  {
+   "slot": 88747891,
+   "account": "2LKEbAGr4M1jKnbtpnV9mTV3YfG3DVFgiAUEADS6CTHR",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "97576433293955",
+   "signature": "15byNKZd7QReqJSrdPrcjmGPg6PxjsWzbsJ5zHcR5G5eJ7eM2aw4HivicDpeduacs4jJSS4WST4Wk8ZTQK5Ttj3"
+  },
+  {
+   "slot": 88696055,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "-75110468466",
+   "signature": "8a31t7iCFBXBHfvup8e5h55HkFCguwhnzHsjFwdnDDFVAKhHpXn2aMpsdFWwdpuCLWyNyXPx77hm5aqY4j78Tib"
+  },
+  {
+   "slot": 88696055,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "71354945042",
+   "signature": "8a31t7iCFBXBHfvup8e5h55HkFCguwhnzHsjFwdnDDFVAKhHpXn2aMpsdFWwdpuCLWyNyXPx77hm5aqY4j78Tib"
+  },
+  {
+   "slot": 88695380,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "952287795110",
+   "signature": "2ECyTp9xfAtThbJbjaRU3khCPmBqGNeetuGq2Q742VoqQpvQDgMTDpEPtpkC9L7ENhwYGhzpQh6KxQMg9nsWtmxW"
+  },
+  {
+   "slot": 88695380,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1002408205379",
+   "signature": "2ECyTp9xfAtThbJbjaRU3khCPmBqGNeetuGq2Q742VoqQpvQDgMTDpEPtpkC9L7ENhwYGhzpQh6KxQMg9nsWtmxW"
+  },
+  {
+   "slot": 88695372,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "4774679922111",
+   "signature": "4eaN9KULSzgVvg16vCLhBLgquwPUqED7xsvMAn3kZf3wfWEjRQk6ug9ebPv5xoUoswhUdka8ttsnGLEXBg6W23T1"
+  },
+  {
+   "slot": 88695372,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-5025978865381",
+   "signature": "4eaN9KULSzgVvg16vCLhBLgquwPUqED7xsvMAn3kZf3wfWEjRQk6ug9ebPv5xoUoswhUdka8ttsnGLEXBg6W23T1"
+  },
+  {
+   "slot": 88695364,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "6031174638457",
+   "signature": "56mSXgZFpaF7XjY5q9SLPZtWEzafupZUxjEsec8sXEiCCbBdKVec5f1gRj7uVW9jL4heFatHVnsY9uds2s5vGJVk"
+  },
+  {
+   "slot": 88695200,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "75110468466",
+   "signature": "335veihcX3V4vbgWaE1gRtE2cAuzM5Yo2VEBUVA48Hj6xjEATDNsCtxEcar4FdorFXrb1zZok8Rpma4FL1cjmZHA"
+  },
+  {
+   "slot": 88695200,
+   "account": "rTz2DKHTmdMtyAFLBnPBm5X7C5r8CNyinA7Y68gNYcT",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-79063651016115",
+   "signature": "335veihcX3V4vbgWaE1gRtE2cAuzM5Yo2VEBUVA48Hj6xjEATDNsCtxEcar4FdorFXrb1zZok8Rpma4FL1cjmZHA"
+  },
+  {
+   "slot": 88695200,
+   "account": "Hyvb75SAvMof44331mgAhpAT59jxP2DVe9fTFXXLUoRp",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "71283590097000",
+   "signature": "335veihcX3V4vbgWaE1gRtE2cAuzM5Yo2VEBUVA48Hj6xjEATDNsCtxEcar4FdorFXrb1zZok8Rpma4FL1cjmZHA"
+  },
+  {
+   "slot": 88683119,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "-77466646993",
+   "signature": "mkHJkRcw82Rywrfbcv5TJb3SgknHnvqdZFVTKK7Z5b6JpCzM9Sy1TGPTyH6chKFaPit9ijMQcVXvrt3m7P6ot5o"
+  },
+  {
+   "slot": 88683119,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "73593314643",
+   "signature": "mkHJkRcw82Rywrfbcv5TJb3SgknHnvqdZFVTKK7Z5b6JpCzM9Sy1TGPTyH6chKFaPit9ijMQcVXvrt3m7P6ot5o"
+  },
+  {
+   "slot": 88682817,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "1051250580862",
+   "signature": "5XDS3j1Q8FNXkAKB3pEYxuaELdAqmqhVQFHnd5G3uDaTVUiwnBw5Yz6vca1FnYi6hJstZQGrsHcs1csWupEAJ3Cf"
+  },
+  {
+   "slot": 88682817,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-1106579558803",
+   "signature": "5XDS3j1Q8FNXkAKB3pEYxuaELdAqmqhVQFHnd5G3uDaTVUiwnBw5Yz6vca1FnYi6hJstZQGrsHcs1csWupEAJ3Cf"
+  },
+  {
+   "slot": 88682810,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "5270855049710",
+   "signature": "aW1zKsmy4C5mzYA4LGdCuvo4RaDrqwpiKXQvysZuQdzjSMGCKzmwmz7X3vPkidAEKXACnfu5S5PetCpBeBdNwVC"
+  },
+  {
+   "slot": 88682810,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-5548268473379",
+   "signature": "aW1zKsmy4C5mzYA4LGdCuvo4RaDrqwpiKXQvysZuQdzjSMGCKzmwmz7X3vPkidAEKXACnfu5S5PetCpBeBdNwVC"
+  },
+  {
+   "slot": 88682802,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "6657922168054",
+   "signature": "4bSrjG5HKWj4ETZUgoqcZuEQXXLjPzr3wWCoEGHT3kRuzw7dvu12w5gzZGpVkaZ1tMTBiMkA6g7t4zKbUh7fUofT"
+  },
+  {
+   "slot": 88682733,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "77466646993",
+   "signature": "63cGDybAMzWNKNJ8TMCCPKW9YAGKM7pUtjPDTmsgyyNgXPQqUdx8uAUVWBqrHgKP7A6E6dtbLeSouEVMv4qXruc8"
+  },
+  {
+   "slot": 88682733,
+   "account": "rTz2DKHTmdMtyAFLBnPBm5X7C5r8CNyinA7Y68gNYcT",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-81543838938950",
+   "signature": "63cGDybAMzWNKNJ8TMCCPKW9YAGKM7pUtjPDTmsgyyNgXPQqUdx8uAUVWBqrHgKP7A6E6dtbLeSouEVMv4qXruc8"
+  },
+  {
+   "slot": 88682733,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "73519721327758",
+   "signature": "63cGDybAMzWNKNJ8TMCCPKW9YAGKM7pUtjPDTmsgyyNgXPQqUdx8uAUVWBqrHgKP7A6E6dtbLeSouEVMv4qXruc8"
+  },
+  {
+   "slot": 88670417,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "2940156950862",
+   "signature": "3k95turrbKpEWxkxtSZuT56WWEmYegzZr2Ffop7RYtthHn48pCNZV8ZVPYFJmk5kJkU1KA1sZ3VzvDQTN5yb75JF"
+  },
+  {
+   "slot": 88670417,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-3094902053539",
+   "signature": "3k95turrbKpEWxkxtSZuT56WWEmYegzZr2Ffop7RYtthHn48pCNZV8ZVPYFJmk5kJkU1KA1sZ3VzvDQTN5yb75JF"
+  },
+  {
+   "slot": 88670409,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "14740836320042",
+   "signature": "45PxMH1deF2qa4q5Hwv3aT3EtzAUqPBCG2Yez7iNPxeewKa69AXWxxSxNKksMq4ey6zxRADEtdh1AjWS4ZWfi6kq"
+  },
+  {
+   "slot": 88670409,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "-15516669810571",
+   "signature": "45PxMH1deF2qa4q5Hwv3aT3EtzAUqPBCG2Yez7iNPxeewKa69AXWxxSxNKksMq4ey6zxRADEtdh1AjWS4ZWfi6kq"
+  },
+  {
+   "slot": 88670401,
+   "account": "EdcVtdhmmH4X4Mkrfw37v1CXY6TC7q7abAoWD3cBhtT7",
+   "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+   "delta": "18620003772684",
+   "signature": "4bCAsUPEUKhqhRuN4DSYzp2tg67iP6Z8HtAGuuxTLUWpDaSs2Fp9Z1QziQe8fMfNsnuxpFjRmZhFL9vQGBks4vr4"
+  },
+  {
+   "slot": 88670282,
+   "account": "AUaG4Aj2kDzzLzfwFcxvxQftkh7qkGo9Kv4HXuPJB5Ri",
+   "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+   "delta": "2086836190197",
+   "signature": "4vNmAQ5NqqnwGhT4GHWCc8rKXokaT4D9snLyQV5agYHajyqceaKJ7fFEfG2AWJu2pbxQpE4AcUkKxcJ6rBk8vGwN"
+  },
+  {
+   "slot": 88670282,
+   "account": "2XikhqEXWJa8afkZCDDAYUirBkATX89WZBS8DcHmPzRD",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "-462456773451027",
+   "signature": "4vNmAQ5NqqnwGhT4GHWCc8rKXokaT4D9snLyQV5agYHajyqceaKJ7fFEfG2AWJu2pbxQpE4AcUkKxcJ6rBk8vGwN"
+  },
+  {
+   "slot": 88670282,
+   "account": "F7y4j6TrmYcBXpXyQkCLpWNvPuxUkcgCKMYQG2UEteY4",
+   "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+   "delta": "437137265104583",
+   "signature": "4vNmAQ5NqqnwGhT4GHWCc8rKXokaT4D9snLyQV5agYHajyqceaKJ7fFEfG2AWJu2pbxQpE4AcUkKxcJ6rBk8vGwN"
+  },
+  {
+   "slot": 88648718,
+   "account": "4i78Hyo6f5nYkMuGzLEQNxTn2wpjqNtEnxThaCKskNzV",
+   "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+   "delta": "-405534798366",
+   "signature": "3xgwqDtZNFRYiuyrZVTq1M8JUdT4LmKFWo21uDdJt7CaBwY9QCSAapGQyXu7LiAXTDx8dVmuQJ2h7hEnmtxeY6A7"
+  },
+  {
+   "slot": 88648718,
+   "account": "6DNw6HM6jtk5JfgzTNPnVZdZ4mC3CQJUug4BdyhL5uiz",
+   "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+   "delta": "385258058447",
+   "signature": "3xgwqDtZNFRYiuyrZVTq1M8JUdT4LmKFWo21uDdJt7CaBwY9QCSAapGQyXu7LiAXTDx8dVmuQJ2h7hEnmtxeY6A7"
+  }
+ ],
+ "lists": [
+  {
+   "epoch": "749",
+   "snapshotSlot": "88648472",
+   "matchedAtSlot": 88648472,
+   "holders": [
+    {
+     "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+     "now": "8529704375000000",
+     "snapshot": "8529704375000000",
+     "excluded": null,
+     "stated": "8529704375000000"
+    },
+    {
+     "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+     "now": "492639285690921339",
+     "snapshot": "492523766612609032",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+     "now": "653666552096368",
+     "snapshot": "653666552096368",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "8aSTUiArrR7VQ67Fe8Tj1atXdtzPbyr2xb66XPaGreZ1",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+     "now": "9500000000000",
+     "snapshot": "9500000000000",
+     "excluded": null,
+     "stated": "9500000000000"
+    },
+    {
+     "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+     "now": "17706309925170451",
+     "snapshot": "17706309925170451",
+     "excluded": null,
+     "stated": "17706309925170451"
+    },
+    {
+     "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+     "now": "54238179118075854",
+     "snapshot": "54238179118075854",
+     "excluded": null,
+     "stated": "54238179118075854"
+    },
+    {
+     "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+     "now": "171645042412",
+     "snapshot": "171645042412",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+     "now": "10000000000000",
+     "snapshot": "10000000000000",
+     "excluded": null,
+     "stated": "10000000000000"
+    },
+    {
+     "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+     "now": "19308353974230898",
+     "snapshot": "19308353974230898",
+     "excluded": null,
+     "stated": "19308353974230898"
+    },
+    {
+     "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+     "now": "2731821881437877",
+     "snapshot": "2731821881437877",
+     "excluded": null,
+     "stated": "2731821881437877"
+    },
+    {
+     "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+     "now": "7441580042262870",
+     "snapshot": "7439493206072673",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+     "now": "0",
+     "snapshot": "405534798366",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "qzEHNtwhEzBQwZQAKv1Wcaq2zbBSmCUwPAQXxZjhj7V",
+     "now": "595720200",
+     "snapshot": "595720200",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "2xrNm4KU8T7WWr8ZeWgG2JxekvQ6eMAms57RakaLnZ5K",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+     "now": "7249999999999999",
+     "snapshot": "7249999999999999",
+     "excluded": null,
+     "stated": "7249999999999999"
+    },
+    {
+     "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+     "now": "733115027301413",
+     "snapshot": "733115027301413",
+     "excluded": null,
+     "stated": "733115027301413"
+    },
+    {
+     "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "5deP7s4Wtm41TjjzrFNsc4CAA4APrc45LZBeZnn4pkQ8",
+     "now": "8012876471",
+     "snapshot": "8012876471",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+     "now": "2781163201543682",
+     "snapshot": "2781163201543682",
+     "excluded": null,
+     "stated": "2781163201543682"
+    },
+    {
+     "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+     "now": "1042404705595689",
+     "snapshot": "1042404705595689",
+     "excluded": null,
+     "stated": "1042404705595689"
+    },
+    {
+     "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+     "now": "9731881366941",
+     "snapshot": "9467963387803",
+     "excluded": "vault auth PDA",
+     "stated": null
+    },
+    {
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "now": "28405374649008212",
+     "snapshot": "29175374649008212",
+     "excluded": null,
+     "stated": "29175374649008212"
+    },
+    {
+     "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+     "now": "437137265104583",
+     "snapshot": "0",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+     "now": "58336047960408218",
+     "snapshot": "58336047960408218",
+     "excluded": null,
+     "stated": "58336047960408218"
+    },
+    {
+     "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+     "now": "215596373935670",
+     "snapshot": "215596373935670",
+     "excluded": null,
+     "stated": "215596373935670"
+    },
+    {
+     "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "now": "99829397373118865",
+     "snapshot": "99829397373118865",
+     "excluded": null,
+     "stated": "99829397373118865"
+    },
+    {
+     "owner": "Bn2KqRQ4iKf4RN2LumGsDLSMzupXGucBRMtDH3VNEfFY",
+     "now": "999999996",
+     "snapshot": "999999996",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+     "now": "217433530594993",
+     "snapshot": "217433530594993",
+     "excluded": null,
+     "stated": "217433530594993"
+    },
+    {
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "now": "66036049648922340",
+     "snapshot": "66036049648922340",
+     "excluded": null,
+     "stated": "66036049648922340"
+    },
+    {
+     "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+     "now": "47593261880226218",
+     "snapshot": "47593261880226218",
+     "excluded": null,
+     "stated": "47593261880226218"
+    },
+    {
+     "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+     "now": "69301316615",
+     "snapshot": "69301316615",
+     "excluded": "excludeOwners",
+     "stated": null
+    }
+   ]
+  },
+  {
+   "epoch": "750",
+   "snapshotSlot": "88748444",
+   "matchedAtSlot": 88748444,
+   "holders": [
+    {
+     "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+     "now": "8529704375000000",
+     "snapshot": "8529704375000000",
+     "excluded": null,
+     "stated": "8529704375000000"
+    },
+    {
+     "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+     "now": "492639285690921339",
+     "snapshot": "492044575533779492",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+     "now": "653666552096368",
+     "snapshot": "653666552096368",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "8aSTUiArrR7VQ67Fe8Tj1atXdtzPbyr2xb66XPaGreZ1",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+     "now": "9500000000000",
+     "snapshot": "9500000000000",
+     "excluded": null,
+     "stated": "9500000000000"
+    },
+    {
+     "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+     "now": "17706309925170451",
+     "snapshot": "17706309925170451",
+     "excluded": null,
+     "stated": "17706309925170451"
+    },
+    {
+     "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+     "now": "54238179118075854",
+     "snapshot": "54238179118075854",
+     "excluded": null,
+     "stated": "54238179118075854"
+    },
+    {
+     "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+     "now": "171645042412",
+     "snapshot": "171645042412",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+     "now": "10000000000000",
+     "snapshot": "10000000000000",
+     "excluded": null,
+     "stated": "10000000000000"
+    },
+    {
+     "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+     "now": "19308353974230898",
+     "snapshot": "19308353974230898",
+     "excluded": null,
+     "stated": "19308353974230898"
+    },
+    {
+     "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+     "now": "2731821881437877",
+     "snapshot": "2731821881437877",
+     "excluded": null,
+     "stated": "2731821881437877"
+    },
+    {
+     "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+     "now": "7441580042262870",
+     "snapshot": "7441580042262870",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+     "now": "0",
+     "snapshot": "179617412277",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "qzEHNtwhEzBQwZQAKv1Wcaq2zbBSmCUwPAQXxZjhj7V",
+     "now": "595720200",
+     "snapshot": "595720200",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "2xrNm4KU8T7WWr8ZeWgG2JxekvQ6eMAms57RakaLnZ5K",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+     "now": "7249999999999999",
+     "snapshot": "7249999999999999",
+     "excluded": null,
+     "stated": "7249999999999999"
+    },
+    {
+     "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+     "now": "733115027301413",
+     "snapshot": "733115027301413",
+     "excluded": null,
+     "stated": "733115027301413"
+    },
+    {
+     "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "5deP7s4Wtm41TjjzrFNsc4CAA4APrc45LZBeZnn4pkQ8",
+     "now": "8012876471",
+     "snapshot": "8012876471",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+     "now": "2781163201543682",
+     "snapshot": "2781163201543682",
+     "excluded": null,
+     "stated": "2781163201543682"
+    },
+    {
+     "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+     "now": "1042404705595689",
+     "snapshot": "1042404705595689",
+     "excluded": null,
+     "stated": "1042404705595689"
+    },
+    {
+     "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+     "now": "9731881366941",
+     "snapshot": "9517900527036",
+     "excluded": "vault auth PDA",
+     "stated": null
+    },
+    {
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "now": "28405374649008212",
+     "snapshot": "29175374649008212",
+     "excluded": null,
+     "stated": "29175374649008212"
+    },
+    {
+     "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+     "now": "437137265104583",
+     "snapshot": "437137265104583",
+     "excluded": null,
+     "stated": "437137265104583"
+    },
+    {
+     "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+     "now": "58336047960408218",
+     "snapshot": "58336047960408218",
+     "excluded": null,
+     "stated": "58336047960408218"
+    },
+    {
+     "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+     "now": "215596373935670",
+     "snapshot": "215596373935670",
+     "excluded": null,
+     "stated": "215596373935670"
+    },
+    {
+     "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "now": "99829397373118865",
+     "snapshot": "99829397373118865",
+     "excluded": null,
+     "stated": "99829397373118865"
+    },
+    {
+     "owner": "Bn2KqRQ4iKf4RN2LumGsDLSMzupXGucBRMtDH3VNEfFY",
+     "now": "999999996",
+     "snapshot": "999999996",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+     "now": "217433530594993",
+     "snapshot": "217433530594993",
+     "excluded": null,
+     "stated": "217433530594993"
+    },
+    {
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "now": "66036049648922340",
+     "snapshot": "66036049648922340",
+     "excluded": null,
+     "stated": "66036049648922340"
+    },
+    {
+     "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+     "now": "47593261880226218",
+     "snapshot": "47593261880226218",
+     "excluded": null,
+     "stated": "47593261880226218"
+    },
+    {
+     "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+     "now": "69301316615",
+     "snapshot": "69301316615",
+     "excluded": "excludeOwners",
+     "stated": null
+    }
+   ]
+  },
+  {
+   "epoch": "751",
+   "snapshotSlot": "88755160",
+   "matchedAtSlot": 88755160,
+   "holders": [
+    {
+     "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+     "now": "8529704375000000",
+     "snapshot": "8529704375000000",
+     "excluded": null,
+     "stated": "8529704375000000"
+    },
+    {
+     "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+     "now": "492639285690921339",
+     "snapshot": "492017367167968781",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+     "now": "653666552096368",
+     "snapshot": "653666552096368",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "8aSTUiArrR7VQ67Fe8Tj1atXdtzPbyr2xb66XPaGreZ1",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+     "now": "9500000000000",
+     "snapshot": "9500000000000",
+     "excluded": null,
+     "stated": "9500000000000"
+    },
+    {
+     "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+     "now": "17706309925170451",
+     "snapshot": "17706309925170451",
+     "excluded": null,
+     "stated": "17706309925170451"
+    },
+    {
+     "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+     "now": "54238179118075854",
+     "snapshot": "54238179118075854",
+     "excluded": null,
+     "stated": "54238179118075854"
+    },
+    {
+     "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+     "now": "171645042412",
+     "snapshot": "171645042412",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+     "now": "10000000000000",
+     "snapshot": "10000000000000",
+     "excluded": null,
+     "stated": "10000000000000"
+    },
+    {
+     "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+     "now": "19308353974230898",
+     "snapshot": "19308353974230898",
+     "excluded": null,
+     "stated": "19308353974230898"
+    },
+    {
+     "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+     "now": "2731821881437877",
+     "snapshot": "2731821881437877",
+     "excluded": null,
+     "stated": "2731821881437877"
+    },
+    {
+     "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+     "now": "7441580042262870",
+     "snapshot": "7441580042262870",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "qzEHNtwhEzBQwZQAKv1Wcaq2zbBSmCUwPAQXxZjhj7V",
+     "now": "595720200",
+     "snapshot": "595720200",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "2xrNm4KU8T7WWr8ZeWgG2JxekvQ6eMAms57RakaLnZ5K",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+     "now": "7249999999999999",
+     "snapshot": "7249999999999999",
+     "excluded": null,
+     "stated": "7249999999999999"
+    },
+    {
+     "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+     "now": "733115027301413",
+     "snapshot": "733115027301413",
+     "excluded": null,
+     "stated": "733115027301413"
+    },
+    {
+     "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "5deP7s4Wtm41TjjzrFNsc4CAA4APrc45LZBeZnn4pkQ8",
+     "now": "8012876471",
+     "snapshot": "8012876471",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+     "now": "2781163201543682",
+     "snapshot": "2781163201543682",
+     "excluded": null,
+     "stated": "2781163201543682"
+    },
+    {
+     "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+     "now": "1042404705595689",
+     "snapshot": "1042404705595689",
+     "excluded": null,
+     "stated": "1042404705595689"
+    },
+    {
+     "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+     "now": "9731881366941",
+     "snapshot": "9551957703971",
+     "excluded": "vault auth PDA",
+     "stated": null
+    },
+    {
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "now": "28405374649008212",
+     "snapshot": "29175374649008212",
+     "excluded": null,
+     "stated": "29175374649008212"
+    },
+    {
+     "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+     "now": "437137265104583",
+     "snapshot": "437137265104583",
+     "excluded": null,
+     "stated": "437137265104583"
+    },
+    {
+     "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+     "now": "58336047960408218",
+     "snapshot": "58336047960408218",
+     "excluded": null,
+     "stated": "58336047960408218"
+    },
+    {
+     "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+     "now": "215596373935670",
+     "snapshot": "215596373935670",
+     "excluded": null,
+     "stated": "215596373935670"
+    },
+    {
+     "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "now": "99829397373118865",
+     "snapshot": "99829397373118865",
+     "excluded": null,
+     "stated": "99829397373118865"
+    },
+    {
+     "owner": "Bn2KqRQ4iKf4RN2LumGsDLSMzupXGucBRMtDH3VNEfFY",
+     "now": "999999996",
+     "snapshot": "999999996",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+     "now": "217433530594993",
+     "snapshot": "217433530594993",
+     "excluded": null,
+     "stated": "217433530594993"
+    },
+    {
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "now": "66036049648922340",
+     "snapshot": "66036049648922340",
+     "excluded": null,
+     "stated": "66036049648922340"
+    },
+    {
+     "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+     "now": "47593261880226218",
+     "snapshot": "47593261880226218",
+     "excluded": null,
+     "stated": "47593261880226218"
+    },
+    {
+     "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+     "now": "69301316615",
+     "snapshot": "69301316615",
+     "excluded": "excludeOwners",
+     "stated": null
+    }
+   ]
+  },
+  {
+   "epoch": "752",
+   "snapshotSlot": "88757060",
+   "matchedAtSlot": 88757060,
+   "holders": [
+    {
+     "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+     "now": "8529704375000000",
+     "snapshot": "8529704375000000",
+     "excluded": null,
+     "stated": "8529704375000000"
+    },
+    {
+     "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+     "now": "492639285690921339",
+     "snapshot": "491965567376323394",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+     "now": "653666552096368",
+     "snapshot": "653666552096368",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "8aSTUiArrR7VQ67Fe8Tj1atXdtzPbyr2xb66XPaGreZ1",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+     "now": "9500000000000",
+     "snapshot": "9500000000000",
+     "excluded": null,
+     "stated": "9500000000000"
+    },
+    {
+     "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+     "now": "17706309925170451",
+     "snapshot": "17706309925170451",
+     "excluded": null,
+     "stated": "17706309925170451"
+    },
+    {
+     "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+     "now": "54238179118075854",
+     "snapshot": "54238179118075854",
+     "excluded": null,
+     "stated": "54238179118075854"
+    },
+    {
+     "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+     "now": "171645042412",
+     "snapshot": "171645042412",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+     "now": "10000000000000",
+     "snapshot": "10000000000000",
+     "excluded": null,
+     "stated": "10000000000000"
+    },
+    {
+     "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+     "now": "19308353974230898",
+     "snapshot": "19308353974230898",
+     "excluded": null,
+     "stated": "19308353974230898"
+    },
+    {
+     "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+     "now": "2731821881437877",
+     "snapshot": "2731821881437877",
+     "excluded": null,
+     "stated": "2731821881437877"
+    },
+    {
+     "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+     "now": "7441580042262870",
+     "snapshot": "7441580042262870",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "qzEHNtwhEzBQwZQAKv1Wcaq2zbBSmCUwPAQXxZjhj7V",
+     "now": "595720200",
+     "snapshot": "595720200",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "2xrNm4KU8T7WWr8ZeWgG2JxekvQ6eMAms57RakaLnZ5K",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+     "now": "7249999999999999",
+     "snapshot": "7249999999999999",
+     "excluded": null,
+     "stated": "7249999999999999"
+    },
+    {
+     "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+     "now": "733115027301413",
+     "snapshot": "733115027301413",
+     "excluded": null,
+     "stated": "733115027301413"
+    },
+    {
+     "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "5deP7s4Wtm41TjjzrFNsc4CAA4APrc45LZBeZnn4pkQ8",
+     "now": "8012876471",
+     "snapshot": "8012876471",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+     "now": "2781163201543682",
+     "snapshot": "2781163201543682",
+     "excluded": null,
+     "stated": "2781163201543682"
+    },
+    {
+     "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+     "now": "1042404705595689",
+     "snapshot": "1042404705595689",
+     "excluded": null,
+     "stated": "1042404705595689"
+    },
+    {
+     "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+     "now": "9731881366941",
+     "snapshot": "9613750918337",
+     "excluded": "vault auth PDA",
+     "stated": null
+    },
+    {
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "now": "28405374649008212",
+     "snapshot": "29175374649008212",
+     "excluded": null,
+     "stated": "29175374649008212"
+    },
+    {
+     "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+     "now": "437137265104583",
+     "snapshot": "437137265104583",
+     "excluded": null,
+     "stated": "437137265104583"
+    },
+    {
+     "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+     "now": "58336047960408218",
+     "snapshot": "58336047960408218",
+     "excluded": null,
+     "stated": "58336047960408218"
+    },
+    {
+     "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+     "now": "215596373935670",
+     "snapshot": "215596373935670",
+     "excluded": null,
+     "stated": "215596373935670"
+    },
+    {
+     "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "now": "99829397373118865",
+     "snapshot": "99829397373118865",
+     "excluded": null,
+     "stated": "99829397373118865"
+    },
+    {
+     "owner": "Bn2KqRQ4iKf4RN2LumGsDLSMzupXGucBRMtDH3VNEfFY",
+     "now": "999999996",
+     "snapshot": "999999996",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+     "now": "217433530594993",
+     "snapshot": "217433530594993",
+     "excluded": null,
+     "stated": "217433530594993"
+    },
+    {
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "now": "66036049648922340",
+     "snapshot": "66036049648922340",
+     "excluded": null,
+     "stated": "66036049648922340"
+    },
+    {
+     "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+     "now": "47593261880226218",
+     "snapshot": "47593261880226218",
+     "excluded": null,
+     "stated": "47593261880226218"
+    },
+    {
+     "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+     "now": "69301316615",
+     "snapshot": "69301316615",
+     "excluded": "excludeOwners",
+     "stated": null
+    }
+   ]
+  },
+  {
+   "epoch": "753",
+   "snapshotSlot": "88772590",
+   "matchedAtSlot": 88772590,
+   "holders": [
+    {
+     "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+     "now": "8529704375000000",
+     "snapshot": "8529704375000000",
+     "excluded": null,
+     "stated": "8529704375000000"
+    },
+    {
+     "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+     "now": "492639285690921339",
+     "snapshot": "491915009285957543",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+     "now": "653666552096368",
+     "snapshot": "653666552096368",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "8aSTUiArrR7VQ67Fe8Tj1atXdtzPbyr2xb66XPaGreZ1",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+     "now": "9500000000000",
+     "snapshot": "9500000000000",
+     "excluded": null,
+     "stated": "9500000000000"
+    },
+    {
+     "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+     "now": "17706309925170451",
+     "snapshot": "17706309925170451",
+     "excluded": null,
+     "stated": "17706309925170451"
+    },
+    {
+     "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+     "now": "54238179118075854",
+     "snapshot": "54238179118075854",
+     "excluded": null,
+     "stated": "54238179118075854"
+    },
+    {
+     "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+     "now": "171645042412",
+     "snapshot": "171645042412",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+     "now": "10000000000000",
+     "snapshot": "10000000000000",
+     "excluded": null,
+     "stated": "10000000000000"
+    },
+    {
+     "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+     "now": "19308353974230898",
+     "snapshot": "19308353974230898",
+     "excluded": null,
+     "stated": "19308353974230898"
+    },
+    {
+     "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+     "now": "2731821881437877",
+     "snapshot": "2731821881437877",
+     "excluded": null,
+     "stated": "2731821881437877"
+    },
+    {
+     "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+     "now": "7441580042262870",
+     "snapshot": "7441580042262870",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "ueAtvunDsCP963s6kvsQ8q3xSfPVekHddj4dLG5bDwm",
+     "now": "0",
+     "snapshot": "131620897055",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "qzEHNtwhEzBQwZQAKv1Wcaq2zbBSmCUwPAQXxZjhj7V",
+     "now": "595720200",
+     "snapshot": "595720200",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "2xrNm4KU8T7WWr8ZeWgG2JxekvQ6eMAms57RakaLnZ5K",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+     "now": "7249999999999999",
+     "snapshot": "7249999999999999",
+     "excluded": null,
+     "stated": "7249999999999999"
+    },
+    {
+     "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+     "now": "733115027301413",
+     "snapshot": "733115027301413",
+     "excluded": null,
+     "stated": "733115027301413"
+    },
+    {
+     "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "5deP7s4Wtm41TjjzrFNsc4CAA4APrc45LZBeZnn4pkQ8",
+     "now": "8012876471",
+     "snapshot": "8012876471",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+     "now": "2781163201543682",
+     "snapshot": "2781163201543682",
+     "excluded": null,
+     "stated": "2781163201543682"
+    },
+    {
+     "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+     "now": "1042404705595689",
+     "snapshot": "1042404705595689",
+     "excluded": null,
+     "stated": "1042404705595689"
+    },
+    {
+     "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+     "now": "9731881366941",
+     "snapshot": "9662638910711",
+     "excluded": "vault auth PDA",
+     "stated": null
+    },
+    {
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "now": "28405374649008212",
+     "snapshot": "29175374649008212",
+     "excluded": null,
+     "stated": "29175374649008212"
+    },
+    {
+     "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+     "now": "437137265104583",
+     "snapshot": "437137265104583",
+     "excluded": null,
+     "stated": "437137265104583"
+    },
+    {
+     "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+     "now": "58336047960408218",
+     "snapshot": "58336047960408218",
+     "excluded": null,
+     "stated": "58336047960408218"
+    },
+    {
+     "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+     "now": "215596373935670",
+     "snapshot": "215596373935670",
+     "excluded": null,
+     "stated": "215596373935670"
+    },
+    {
+     "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "now": "99829397373118865",
+     "snapshot": "99829397373118865",
+     "excluded": null,
+     "stated": "99829397373118865"
+    },
+    {
+     "owner": "Bn2KqRQ4iKf4RN2LumGsDLSMzupXGucBRMtDH3VNEfFY",
+     "now": "999999996",
+     "snapshot": "999999996",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+     "now": "217433530594993",
+     "snapshot": "217433530594993",
+     "excluded": null,
+     "stated": "217433530594993"
+    },
+    {
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "now": "66036049648922340",
+     "snapshot": "66036049648922340",
+     "excluded": null,
+     "stated": "66036049648922340"
+    },
+    {
+     "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+     "now": "47593261880226218",
+     "snapshot": "47593261880226218",
+     "excluded": null,
+     "stated": "47593261880226218"
+    },
+    {
+     "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+     "now": "69301316615",
+     "snapshot": "69301316615",
+     "excluded": "excludeOwners",
+     "stated": null
+    }
+   ]
+  },
+  {
+   "epoch": "754",
+   "snapshotSlot": "88799010",
+   "matchedAtSlot": 88799010,
+   "holders": [
+    {
+     "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+     "now": "8529704375000000",
+     "snapshot": "8529704375000000",
+     "excluded": null,
+     "stated": "8529704375000000"
+    },
+    {
+     "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+     "now": "492639285690921339",
+     "snapshot": "491895783891779922",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+     "now": "653666552096368",
+     "snapshot": "653666552096368",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "8aSTUiArrR7VQ67Fe8Tj1atXdtzPbyr2xb66XPaGreZ1",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+     "now": "9500000000000",
+     "snapshot": "9500000000000",
+     "excluded": null,
+     "stated": "9500000000000"
+    },
+    {
+     "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+     "now": "17706309925170451",
+     "snapshot": "17706309925170451",
+     "excluded": null,
+     "stated": "17706309925170451"
+    },
+    {
+     "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+     "now": "54238179118075854",
+     "snapshot": "54238179118075854",
+     "excluded": null,
+     "stated": "54238179118075854"
+    },
+    {
+     "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+     "now": "171645042412",
+     "snapshot": "171645042412",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+     "now": "10000000000000",
+     "snapshot": "10000000000000",
+     "excluded": null,
+     "stated": "10000000000000"
+    },
+    {
+     "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+     "now": "19308353974230898",
+     "snapshot": "19308353974230898",
+     "excluded": null,
+     "stated": "19308353974230898"
+    },
+    {
+     "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+     "now": "2731821881437877",
+     "snapshot": "2731821881437877",
+     "excluded": null,
+     "stated": "2731821881437877"
+    },
+    {
+     "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+     "now": "7441580042262870",
+     "snapshot": "7441580042262870",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "qzEHNtwhEzBQwZQAKv1Wcaq2zbBSmCUwPAQXxZjhj7V",
+     "now": "595720200",
+     "snapshot": "595720200",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "2xrNm4KU8T7WWr8ZeWgG2JxekvQ6eMAms57RakaLnZ5K",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+     "now": "7249999999999999",
+     "snapshot": "7249999999999999",
+     "excluded": null,
+     "stated": "7249999999999999"
+    },
+    {
+     "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+     "now": "733115027301413",
+     "snapshot": "733115027301413",
+     "excluded": null,
+     "stated": "733115027301413"
+    },
+    {
+     "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "5deP7s4Wtm41TjjzrFNsc4CAA4APrc45LZBeZnn4pkQ8",
+     "now": "8012876471",
+     "snapshot": "8012876471",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+     "now": "2781163201543682",
+     "snapshot": "2781163201543682",
+     "excluded": null,
+     "stated": "2781163201543682"
+    },
+    {
+     "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+     "now": "1042404705595689",
+     "snapshot": "1042404705595689",
+     "excluded": null,
+     "stated": "1042404705595689"
+    },
+    {
+     "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+     "now": "9731881366941",
+     "snapshot": "9695713458825",
+     "excluded": "vault auth PDA",
+     "stated": null
+    },
+    {
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "now": "28405374649008212",
+     "snapshot": "29175374649008212",
+     "excluded": null,
+     "stated": "29175374649008212"
+    },
+    {
+     "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+     "now": "437137265104583",
+     "snapshot": "437137265104583",
+     "excluded": null,
+     "stated": "437137265104583"
+    },
+    {
+     "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+     "now": "58336047960408218",
+     "snapshot": "58336047960408218",
+     "excluded": null,
+     "stated": "58336047960408218"
+    },
+    {
+     "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+     "now": "215596373935670",
+     "snapshot": "215596373935670",
+     "excluded": null,
+     "stated": "215596373935670"
+    },
+    {
+     "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "now": "99829397373118865",
+     "snapshot": "99829397373118865",
+     "excluded": null,
+     "stated": "99829397373118865"
+    },
+    {
+     "owner": "Bn2KqRQ4iKf4RN2LumGsDLSMzupXGucBRMtDH3VNEfFY",
+     "now": "999999996",
+     "snapshot": "999999996",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+     "now": "217433530594993",
+     "snapshot": "217433530594993",
+     "excluded": null,
+     "stated": "217433530594993"
+    },
+    {
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "now": "66036049648922340",
+     "snapshot": "66036049648922340",
+     "excluded": null,
+     "stated": "66036049648922340"
+    },
+    {
+     "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+     "now": "47593261880226218",
+     "snapshot": "47593261880226218",
+     "excluded": null,
+     "stated": "47593261880226218"
+    },
+    {
+     "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+     "now": "69301316615",
+     "snapshot": "69301316615",
+     "excluded": "excludeOwners",
+     "stated": null
+    }
+   ]
+  },
+  {
+   "epoch": "755",
+   "snapshotSlot": "88874439",
+   "matchedAtSlot": 88874439,
+   "holders": [
+    {
+     "owner": "JAseSDKAwLyM4ccFaBqBJsh566yHcv7tnXiX9ui3QprV",
+     "now": "8529704375000000",
+     "snapshot": "8529704375000000",
+     "excluded": null,
+     "stated": "8529704375000000"
+    },
+    {
+     "owner": "9Dpjw2pB5kXJr6ZTHiqzEMfJPic3om9jgNacnwpLCoaU",
+     "now": "492639285690921339",
+     "snapshot": "492639285690921339",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "44fNpT8DjpYgLzYEZqUHYogJiEreaPXajme2TigHPTnL",
+     "now": "653666552096368",
+     "snapshot": "653666552096368",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "8aSTUiArrR7VQ67Fe8Tj1atXdtzPbyr2xb66XPaGreZ1",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "9XZUcduirkB5wrGY29dVuCRPhYdueYMxL6q73Fkw54B9",
+     "now": "9500000000000",
+     "snapshot": "9500000000000",
+     "excluded": null,
+     "stated": "9500000000000"
+    },
+    {
+     "owner": "5E6qDFVw9PdEWAJkGLsTt8pQLGnYvGvgV2MXBS39pcNm",
+     "now": "17706309925170451",
+     "snapshot": "17706309925170451",
+     "excluded": null,
+     "stated": "17706309925170451"
+    },
+    {
+     "owner": "7T4HqfKW2XE76RTcD8uFNQFTfSbe1djK9KtC6DYbFVj9",
+     "now": "54238179118075854",
+     "snapshot": "54238179118075854",
+     "excluded": null,
+     "stated": "54238179118075854"
+    },
+    {
+     "owner": "8AYq6sfAzXyKC9FU7gpYQxUGCoUX1v9XxbANYmGyVJg2",
+     "now": "171645042412",
+     "snapshot": "171645042412",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "DX38UJqioMGtXrkStz4eoM5t4FoWC5nub6jwiKP8xcZG",
+     "now": "10000000000000",
+     "snapshot": "10000000000000",
+     "excluded": null,
+     "stated": "10000000000000"
+    },
+    {
+     "owner": "2ffnM3r9GST75sku2PRPEFUqz2LQHEJ5xFWRzgHRYbxW",
+     "now": "19308353974230898",
+     "snapshot": "19308353974230898",
+     "excluded": null,
+     "stated": "19308353974230898"
+    },
+    {
+     "owner": "DA6uYATGe7dmqT3GCyE9Singwb3XdQut3b4B2AB8fiJG",
+     "now": "2731821881437877",
+     "snapshot": "2731821881437877",
+     "excluded": null,
+     "stated": "2731821881437877"
+    },
+    {
+     "owner": "5GjJLVFfSExiFXJpKY3cUFnnX3UexJBA6AxDA9UGXm4g",
+     "now": "7441580042262870",
+     "snapshot": "7441580042262870",
+     "excluded": "off-curve (program-owned)",
+     "stated": null
+    },
+    {
+     "owner": "qzEHNtwhEzBQwZQAKv1Wcaq2zbBSmCUwPAQXxZjhj7V",
+     "now": "595720200",
+     "snapshot": "595720200",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "2xrNm4KU8T7WWr8ZeWgG2JxekvQ6eMAms57RakaLnZ5K",
+     "now": "1",
+     "snapshot": "1",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "8LeHRNV9ghS75sNUpfPy3tjG1RhNZwp9Y6MefkHMuAz6",
+     "now": "7249999999999999",
+     "snapshot": "7249999999999999",
+     "excluded": null,
+     "stated": "7249999999999999"
+    },
+    {
+     "owner": "HM2Htd2Ubc5e4eQm4GZrfg23LbJBqvpzWzkxm3PuVAiG",
+     "now": "733115027301413",
+     "snapshot": "733115027301413",
+     "excluded": null,
+     "stated": "733115027301413"
+    },
+    {
+     "owner": "JT1nf12GNbegVfvsYcGqnMDkbFMypNFpRnZzC9sEN6M",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "5deP7s4Wtm41TjjzrFNsc4CAA4APrc45LZBeZnn4pkQ8",
+     "now": "8012876471",
+     "snapshot": "8012876471",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "4GJVC4E4EYaC4H3ZkMGNWrrGZdJFaEhiomnRY15kTQb1",
+     "now": "2781163201543682",
+     "snapshot": "2781163201543682",
+     "excluded": null,
+     "stated": "2781163201543682"
+    },
+    {
+     "owner": "Hk4w6eYLEFZBpmyCwscyXyhGeCiti5XzPVY2MXUk7Q3G",
+     "now": "1042404705595689",
+     "snapshot": "1042404705595689",
+     "excluded": null,
+     "stated": "1042404705595689"
+    },
+    {
+     "owner": "CWRTWvYTBv3uUkBmLQtp3rXCqM1BQ5nYvoW7XScWuTZS",
+     "now": "9731881366941",
+     "snapshot": "9731881366941",
+     "excluded": "vault auth PDA",
+     "stated": null
+    },
+    {
+     "owner": "99jYyWGJwnj9yZX7KmELKyKA3bNg5epgN8S3933WY2tM",
+     "now": "28405374649008212",
+     "snapshot": "28405374649008212",
+     "excluded": null,
+     "stated": "28405374649008212"
+    },
+    {
+     "owner": "HgCXiYCDDdzH6RZxxJDusWLkMCPzGxmwnb9F8oGZptVw",
+     "now": "437137265104583",
+     "snapshot": "437137265104583",
+     "excluded": null,
+     "stated": "437137265104583"
+    },
+    {
+     "owner": "9MEiLuNSvtCNt9QD8Gp6KCdkCgqQjuPLVoMaTUMwTjtQ",
+     "now": "58336047960408218",
+     "snapshot": "58336047960408218",
+     "excluded": null,
+     "stated": "58336047960408218"
+    },
+    {
+     "owner": "9i9RaFpoVhg32uEVjGgn8Yhu8XU9AE6iPvoXuMyPwWF5",
+     "now": "215596373935670",
+     "snapshot": "215596373935670",
+     "excluded": null,
+     "stated": "215596373935670"
+    },
+    {
+     "owner": "t9M8kqmkf4ffDxJytdwmUWPwXgY1NTGs1kbv4ryTMen",
+     "now": "100000000000000",
+     "snapshot": "100000000000000",
+     "excluded": null,
+     "stated": "100000000000000"
+    },
+    {
+     "owner": "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n",
+     "now": "99829397373118865",
+     "snapshot": "99829397373118865",
+     "excluded": null,
+     "stated": "99829397373118865"
+    },
+    {
+     "owner": "Bn2KqRQ4iKf4RN2LumGsDLSMzupXGucBRMtDH3VNEfFY",
+     "now": "999999996",
+     "snapshot": "999999996",
+     "excluded": null,
+     "stated": null
+    },
+    {
+     "owner": "3YUgWw4qnzRuj3LJGSbPb1h2mmJB1aTppUtgTX6uVSMq",
+     "now": "217433530594993",
+     "snapshot": "217433530594993",
+     "excluded": null,
+     "stated": "217433530594993"
+    },
+    {
+     "owner": "H93iy2APCGRYkqAFULUaUAzxzvSwoGwV1fypnwXEGTSu",
+     "now": "66036049648922340",
+     "snapshot": "66036049648922340",
+     "excluded": null,
+     "stated": "66036049648922340"
+    },
+    {
+     "owner": "1f2kbCpezrEFUMgjjyruGQW6JeQnXXj8fJfYzdFmYgB",
+     "now": "47593261880226218",
+     "snapshot": "47593261880226218",
+     "excluded": null,
+     "stated": "47593261880226218"
+    },
+    {
+     "owner": "Gak64Yhjd9Ky9aLWfxJHYGQzgFMhc49vzbZgcxDsiVWa",
+     "now": "69301316615",
+     "snapshot": "69301316615",
+     "excluded": "excludeOwners",
+     "stated": null
+    }
+   ]
+  }
+ ]
+}
