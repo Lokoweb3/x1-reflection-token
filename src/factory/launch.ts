@@ -40,7 +40,7 @@ import {
   getTokenMetadata, getTransferFeeConfig, unpackMint,
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
-import { Config, FACTORY_DIR, ROOT, fromBaseUnits, loadKeypair, toBaseUnits } from "../config.js";
+import { Config, FACTORY_DIR, ROOT, fromBaseUnits, keypairPublicKey, toBaseUnits } from "../config.js";
 import { decodeVault, initVaultIx, initVaultPayoutIx, paysInToken, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
 import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passes.js";
 import { payoutToken } from "./payout.js";
@@ -289,8 +289,9 @@ export function validateParams(raw: Record<string, unknown>, quoteSymbols: strin
 
 const launchDir = (mint: string) => path.join(FACTORY_DIR, "launches", mint);
 export const readLaunch = (mint: string): LaunchRecord | null => {
-  const f = path.join(launchDir(new PublicKey(mint).toBase58()), "launch.json");
-  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : null;
+  const key = new PublicKey(mint).toBase58();
+  const f = path.join(launchDir(key), "launch.json");
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : pendingLaunches.get(key)?.record ?? null;
 };
 /**
  * Change a launched token's logo, description and social links: pin new metadata to IPFS
@@ -325,13 +326,18 @@ export function applyMetadataUpdate(r: LaunchRecord, next: Partial<LaunchRecord>
 }
 
 function writeLaunch(r: LaunchRecord) {
+  // A record still waiting for its token goes to disk now, with its distributor key.
+  const pending = pendingLaunches.get(r.mint);
+  pendingLaunches.delete(r.mint);
   fs.mkdirSync(launchDir(r.mint), { recursive: true, mode: 0o700 });
+  if (pending?.distributor) fs.writeFileSync(path.join(launchDir(r.mint), "distributor.json"), JSON.stringify(Array.from(pending.distributor.secretKey)), { mode: 0o600 });
   fs.writeFileSync(path.join(launchDir(r.mint), "launch.json"), JSON.stringify(r, null, 2) + "\n", { mode: 0o600 });
 }
 export function listLaunches(): LaunchRecord[] {
   const dir = path.join(FACTORY_DIR, "launches");
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).map((m) => readLaunch(m)).filter((r): r is LaunchRecord => !!r)
+  const saved = fs.existsSync(dir) ? fs.readdirSync(dir).map((m) => readLaunch(m)).filter((r): r is LaunchRecord => !!r) : [];
+  const onDisk = new Set(saved.map((r) => r.mint));
+  return [...saved, ...[...pendingLaunches.values()].map((p) => p.record).filter((r) => !onDisk.has(r.mint))]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 export const registeredLaunches = () => listLaunches().filter((r) => r.registeredAt);
@@ -405,13 +411,76 @@ async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, pu
     createTransferCheckedInstruction(fromUsdc, usdc, toUsdc, creator, fee, usdcMint.decimals, [], usdcProgram),
     ...(distributor ? [SystemProgram.transfer({ fromPubkey: creator, toPubkey: distributor.publicKey, lamports: toBaseUnits(f.gasXnt ?? "0.05", 9) })] : []),
   ];
-  return { ixs, mintKp, distributor, withdrawAuthority };
+  return { ixs, mintKp, distributor, withdrawAuthority, uri };
 }
 
-/** Save a new launch record and its distributor key (factory/launches/<mint>/); vault launches have none. */
+/**
+ * New launches whose first transaction (it creates the mint) hasn't been seen on-chain yet.
+ * They're kept in memory, so a step 1 that's never signed leaves nothing on disk; once the
+ * mint is on-chain the record and its distributor key (vault launches have none) go to
+ * factory/launches/<mint>/ (persistLaunch, sweepPendingLaunches). Readable meanwhile like
+ * any record (readLaunch, listLaunches), so the next steps and the status work as before.
+ */
+const pendingLaunches = new Map<string, { record: LaunchRecord; distributor: Keypair | null; at: number }>();
+/** A step 1 transaction can't land once its blockhash expires (about a minute): well past that, it never will. */
+const PENDING_LAUNCH_MS = 15 * 60_000;
 function saveNewLaunch(record: LaunchRecord, distributor: Keypair | null) {
-  writeLaunch(record);
-  if (distributor) fs.writeFileSync(path.join(launchDir(record.mint), "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)), { mode: 0o600 });
+  // At most a site-wide hour of launch starts (rateLimit "launch") is ever waiting.
+  if (pendingLaunches.size >= 500) pendingLaunches.delete(pendingLaunches.keys().next().value!);
+  pendingLaunches.set(record.mint, { record, distributor, at: Date.now() });
+}
+/** Whether `mint` is a new launch still waiting for its first transaction. */
+export const isPendingLaunch = (mint: string) => pendingLaunches.has(mint);
+/** Save a waiting launch's record (its mint is on-chain now). */
+export function persistLaunch(mint: string) {
+  const p = pendingLaunches.get(mint);
+  if (p) writeLaunch(p.record);
+}
+
+/**
+ * Save the waiting launches whose mint is on-chain now and forget those whose step 1 can no
+ * longer land. Run every half minute, so a launch whose creator stops after step 1 (it paid
+ * the fee) can still be continued, after a restart too.
+ */
+export async function sweepPendingLaunches(conn: Connection) {
+  const list = [...pendingLaunches.values()];
+  for (let i = 0; i < list.length; i += 100) {
+    const chunk = list.slice(i, i + 100);
+    const infos = await conn.getMultipleAccountsInfo(chunk.map((p) => new PublicKey(p.record.mint)), "confirmed");
+    chunk.forEach((p, j) => {
+      if (infos[j]) writeLaunch(p.record);
+      else if (Date.now() - p.at > PENDING_LAUNCH_MS) pendingLaunches.delete(p.record.mint);
+    });
+  }
+}
+/** On shutdown: save the waiting launches that may still land (a later sweep or GC tidies them). */
+export function flushPendingLaunches() {
+  for (const p of [...pendingLaunches.values()]) if (Date.now() - p.at < PENDING_LAUNCH_MS) writeLaunch(p.record);
+}
+
+/**
+ * Remove launch records left by a step 1 that never landed: unregistered, over a day old,
+ * no mint on-chain and (with a distributor wallet) nothing in that wallet. Anything else,
+ * including every launch whose token exists, is kept.
+ */
+export async function gcLaunchRecords(conn: Connection) {
+  const dir = path.join(FACTORY_DIR, "launches");
+  if (!fs.existsSync(dir)) return [];
+  const removed: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    const f = path.join(dir, name, "launch.json");
+    if (!fs.existsSync(f)) continue;
+    let r: LaunchRecord;
+    try { r = JSON.parse(fs.readFileSync(f, "utf8")); } catch { continue; }
+    if (r.registeredAt || r.mint !== name || !(Date.now() - Date.parse(r.createdAt) > 86_400_000)) continue;
+    // Only the record and its distributor key: a token config or state means it got further.
+    if (fs.readdirSync(path.join(dir, name)).some((x) => x !== "launch.json" && x !== "distributor.json")) continue;
+    const [mintInfo, distInfo] = await conn.getMultipleAccountsInfo([new PublicKey(r.mint), new PublicKey(r.distributor)], "confirmed");
+    if (mintInfo || (fs.existsSync(path.join(dir, name, "distributor.json")) && distInfo && distInfo.lamports > 0)) continue;
+    fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    removed.push(r.mint);
+  }
+  return removed;
 }
 
 /** Mark a token as vault-managed in its launch record and per-launch config (the migration script). */
@@ -434,7 +503,7 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
   const vault = isVaultLaunch(cfg, pair);
   if (passesProgram && !vault) throw new Error("Holder passes need a Tax Vault launch paired with XNT.");
   const program = vault ? passesProgram ?? vaultProgramOf(cfg) : null;
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, () => null, program);
+  const { ixs, mintKp, distributor, withdrawAuthority, uri } = await buildMintSetup(conn, cfg, p, publicUrl, () => null, program);
   const mint = mintKp.publicKey;
   const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint, pair.mint).pool;
   const record: LaunchRecord = {
@@ -443,7 +512,7 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
     ...(vault ? { taxVault: true } : {}), ...(passesProgram ? { vaultProgram: passesProgram.toBase58() } : {}),
   };
   saveNewLaunch(record, distributor);
-  return { ixs, signers: [mintKp], record };
+  return { ixs, signers: [mintKp], record, uri };
 }
 
 /**
@@ -474,7 +543,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
   if (passesProgram && !vault) throw new Error("Holder passes need a Tax Vault launch.");
   // The curve program only takes a token whose tax a tax vault program withdraws (no wallet can).
   if (!vault) throw new Error("Curve launches need the Tax Vault, which isn't set up on this site right now.");
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? passesProgram ?? vaultProgramOf(cfg) : null);
+  const { ixs, mintKp, distributor, withdrawAuthority, uri } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? passesProgram ?? vaultProgramOf(cfg) : null);
   const mint = mintKp.publicKey;
   const target = parseTarget(p.poolXnt, cfg.network); // validateCurveParams put the target there
   ixs.push(createCurveIx(curveProgram, cfg.network, new PublicKey(p.creator), mint, BigInt(p.supply), target));
@@ -488,7 +557,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
     ...(vault ? { taxVault: true } : {}), ...(passesProgram ? { vaultProgram: passesProgram.toBase58() } : {}),
   };
   saveNewLaunch(record, distributor);
-  return { ixs, signers: [mintKp], record };
+  return { ixs, signers: [mintKp], record, uri };
 }
 
 /** Step 2: create the XDEX pool with the creator's tokens and XNT (or their pair token, e.g. JACK). */
@@ -586,7 +655,7 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   if (await conn.getAccountInfo(vaultPda(program, mint), "confirmed")) throw new Error("The tax vault is already started.");
   const burnBps = r.burnBps ?? 0, lpBps = r.autoLpBps;
   if (!validSplit(burnBps, lpBps)) throw new Error(`The tax vault can't take this split (burn ${burnBps / 100}%, liquidity ${lpBps / 100}%).`);
-  const publisher = loadKeypair(tv.publisherKeypair).publicKey;
+  const publisher = keypairPublicKey(tv.publisherKeypair);
   const creator = new PublicKey(r.creator);
   const c = r.kind === "curve" ? await readCurveOf(conn, cfg, r) : null;
   if (r.kind === "curve" && (!c || !isGraduated(c.status))) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
@@ -641,7 +710,7 @@ async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
   const info = await conn.getAccountInfo(addr, "confirmed");
   if (!info || !info.owner.equals(program)) throw new Error("Start the tax vault first (the step after the LP lock).");
   const v = decodeVault(addr, info.data);
-  const publisher = tv?.publisherKeypair ? loadKeypair(tv.publisherKeypair).publicKey : null;
+  const publisher = tv?.publisherKeypair ? keypairPublicKey(tv.publisherKeypair) : null;
   if (!v.mint.equals(new PublicKey(r.mint)) || !v.guardian.equals(new PublicKey(r.creator)) || (publisher && !v.publisher.equals(publisher))
       || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps) {
     throw new Error("This token's tax vault doesn't match the launch (publisher, guardian or split differ).");
