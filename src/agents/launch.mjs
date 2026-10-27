@@ -97,7 +97,7 @@ async function finish(mint) {
   if (status.holderPasses && !status.passes) await signAndSend("4b. turn on holder passes", "/api/launch/passes", { mint, creator, vaultMint: mint });
   console.log("\n== register");
   const { registered } = await api("/api/launch/register", { mint, creator });
-  if (!registered) die(`registration didn't go through yet; rerun with --resume ${mint} --live`);
+  if (!registered) die(`registration didn't go through yet; rerun with --site ${site} --resume ${mint} --live`);
   console.log(`\nlive: ${info.explorer}/address/${mint}\npage: ${site}/tokens`);
 }
 
@@ -186,5 +186,5 @@ if (maxCost !== undefined && xntNeed > Number(maxCost)) die(`this launch needs a
 if (!live) { console.log("\ncheck only: nothing sent. Add --live to launch (the tax and a forever lock can't be changed afterwards)."); process.exit(0); }
 
 const { mint } = await signAndSend("1. create the token (pays the launch fee)", "/api/launch/token", { ...params, creator });
-console.log(`mint: ${mint}   (if anything below fails: node launch.mjs --keypair ${keyPath} --resume ${mint} --live)`);
+console.log(`mint: ${mint}   (if anything below fails: node launch.mjs --site ${site} --keypair ${keyPath} --resume ${mint} --live)`);
 await finish(mint);
