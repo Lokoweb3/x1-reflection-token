@@ -267,9 +267,9 @@ from there. (A site without the Tax Vault gives each token its own distributor w
 - `/agents/reference.md` and `/agents/openapi.yaml`: the launch API, with its error responses, as Markdown and as OpenAPI 3.0
 - `/llms.txt`: a pointer to the above
 
-The files live in src/agents/; `{{SITE}}` and `{{NETWORK}}` are filled in with `factory.publicUrl` (or the
-network's official site, https://99tax.vercel.app or https://99tax-testnet.vercel.app, when that's a loopback
-address) and the network. Before signing, the launcher stops unless the site's `/api/info` reports the network
+The files live in src/agents/; `{{SITE}}` and `{{NETWORK}}` are filled in with `factory.publicUrl` and the
+network, so a public site needs `factory.publicUrl` set to its public URL (https://99tax.vercel.app on mainnet,
+https://99tax-testnet.vercel.app on testnet). Before signing, the launcher stops unless the site's `/api/info` reports the network
 expected for that URL (`--network` for any other site).
 
 ## Token logos and metadata on IPFS

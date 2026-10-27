@@ -90,13 +90,8 @@ const AGENT_FILES: Record<string, [string, string]> = {
 };
 const V4_PAGE = path.join(ROOT, "src", "v4.html");
 /** Serve a page; without a faucet (e.g. mainnet), leave its "Faucet" tab out, and the "Curve" tab without the curve program. */
-/**
- * Fill this site's URL and network into an agent file or page. A loopback publicUrl (a server whose public
- * URL isn't set) would send agents to 127.0.0.1, so then it's the network's official site instead.
- */
-const OFFICIAL_SITE = { mainnet: "https://99tax.vercel.app", testnet: "https://99tax-testnet.vercel.app" } as const;
-const agentSite = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/.test(publicUrl) ? OFFICIAL_SITE[cfg.network] : publicUrl.replace(/\/$/, "");
-const forSite = (text: string) => text.replaceAll("{{SITE}}", agentSite).replaceAll("{{NETWORK}}", cfg.network);
+/** Fill this site's URL (factory.publicUrl, as it is: a local site stays local) and network into an agent file or page. */
+const forSite = (text: string) => text.replaceAll("{{SITE}}", publicUrl.replace(/\/$/, "")).replaceAll("{{NETWORK}}", cfg.network);
 function page(file: string) {
   let html = fs.readFileSync(file, "utf8");
   if (!faucetOn()) html = html.replace(/\s*<a href="\/faucet"[^>]*>Faucet<\/a>/g, "");
