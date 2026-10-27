@@ -166,6 +166,8 @@ export const ERRORS = [
   "HoldingTooSmall", "NothingToIndex", "PassTablesFull",
   // Holder passes: only on a vault that never had a list; taking a full book's slot (register_pass_evict).
   "HadList", "PassBookNotFull", "EvictTooSmall",
+  // New vaults: publisher and guardian set and different.
+  "BadRoles",
 ] as const;
 export const errorName = (code: number) => ERRORS[code - 6000] ?? null;
 /** The program's error name in a simulation/transaction error ({"Custom":6012} etc.), or null. */
@@ -639,10 +641,12 @@ export const authPayoutAccount = (auth: PublicKey, p: Pick<PayoutPoolAccounts, "
   getAssociatedTokenAddressSync(p.payoutMint, auth, true, p.payoutTokenProgram);
 
 /** init_vault for a vault that pays holders in the payout token of `payout` (fixed for good). */
-export function initVaultPayoutIx(programId: PublicKey, a: Parameters<typeof initVaultIx>[1] & { payout: Pick<PayoutPoolAccounts, "pool" | "payoutMint" | "payoutTokenProgram"> }) {
+export function initVaultPayoutIx(programId: PublicKey, a: Parameters<typeof initVaultIx>[1] & { payout: Pick<PayoutPoolAccounts, "pool" | "payoutMint" | "payoutTokenProgram" | "wxntVault"> }) {
   const base = initVaultIx(programId, a);
   base.data.set(IX.initVaultPayout, 0);
-  base.keys.push(m(a.payout.payoutMint, false, false), m(a.payout.pool, false, false), m(a.payout.payoutTokenProgram, false, false));
+  // The pool's wXNT vault: the program checks its XNT reserve (MIN_PAYOUT_POOL_XNT).
+  base.keys.push(m(a.payout.payoutMint, false, false), m(a.payout.pool, false, false), m(a.payout.payoutTokenProgram, false, false),
+    m(a.payout.wxntVault, false, false));
   return base;
 }
 

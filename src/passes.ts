@@ -144,11 +144,13 @@ export function registerPassEvictIx(program: PublicKey, wallet: PublicKey, mint:
   const vault = vaultPda(program, mint);
   return new TransactionInstruction({
     programId: program, data: disc("register_pass_evict"),
-    keys: [m(wallet, true, true), m(vault, false, false), m(passBookPda(program, vault), false, true),
+    keys: [m(wallet, true, true), m(vault, false, true), m(passBookPda(program, vault), false, true),
       m(passPda(program, vault, wallet), false, true), m(holderTokenAccount(wallet, mint), false, false),
       m(passPda(program, vault, evicted.wallet), false, true), m(evicted.wallet, false, true), m(evicted.tokenAccount, false, false),
       m(SystemProgram.programId, false, false),
-      tables ? m(passTablesPda(program, vault), false, true) : m(program, false, false)],
+      tables ? m(passTablesPda(program, vault), false, true) : m(program, false, false),
+      // auth pays the evicted pass what it is still owed (a pass under the minimum can be owed).
+      m(vaultAuthPda(program, mint), false, true)],
   });
 }
 
@@ -161,18 +163,20 @@ export const evictMinimum = (minHolding: bigint, evictedBalance: bigint) => {
 };
 
 /**
- * The pass a newcomer would take the slot of in a full book: among passes owed nothing, the
- * one whose wallet holds the least now (balances read as the program reads them), with that
- * balance. Null when every pass is owed something.
+ * The pass a newcomer would take the slot of in a full book: among passes owed nothing or
+ * holding under the book's minimum (the program then pays what they are owed), the one whose
+ * wallet holds the least now (balances read as the program reads them), with that balance.
+ * Null when every pass is owed something and holds the minimum.
  */
 export async function evictionCandidate(conn: Connection, mint: PublicKey, book: PassBook): Promise<{ entry: PassEntry; balance: bigint } | null> {
   let best: { entry: PassEntry; balance: bigint } | null = null;
-  const candidates = book.entries.filter((e) => e.owed === e.paid);
+  const candidates = book.entries;
   for (let i = 0; i < candidates.length; i += 100) {
     const part = candidates.slice(i, i + 100);
     const infos = await conn.getMultipleAccountsInfo(part.map((e) => e.tokenAccount), "confirmed");
     part.forEach((e, j) => {
       const balance = heldBy(infos[j], mint, e.wallet);
+      if (e.owed !== e.paid && balance >= book.minHolding) return;
       if (!best || balance < best.balance) best = { entry: e, balance };
     });
   }
@@ -211,8 +215,8 @@ export function payPassesIx(program: PublicKey, caller: PublicKey, mint: PublicK
 
 /**
  * remove_pass for the pass at `index` (anyone may send it once the wallet holds less than
- * the book's minimum and is owed nothing): the book's last pass moves into its place, and
- * the pass account's rent goes back to its wallet. `tables`: whether the book's lookup-table
+ * the book's minimum): what the pass is still owed is paid to its wallet, the book's last
+ * pass moves into its place, and the pass account's rent goes back to its wallet. `tables`: whether the book's lookup-table
  * record exists (the program then keeps its `indexed` count right; leave it out and it
  * isn't). An omitted optional account is passed as the program's own ID (Anchor's rule).
  */
@@ -221,10 +225,11 @@ export function removePassIx(program: PublicKey, caller: PublicKey, mint: Public
   const e = book.entries[index], last = book.entries[book.count - 1];
   return new TransactionInstruction({
     programId: program, data: disc("remove_pass"),
-    keys: [m(caller, true, false), m(vault, false, false), m(passBookPda(program, vault), false, true),
+    keys: [m(caller, true, false), m(vault, false, true), m(passBookPda(program, vault), false, true),
       m(passPda(program, vault, e.wallet), false, true), m(e.wallet, false, true), m(e.tokenAccount, false, false),
       index === book.count - 1 ? m(program, false, false) : m(passPda(program, vault, last.wallet), false, true),
-      tables ? m(passTablesPda(program, vault), false, true) : m(program, false, false)],
+      tables ? m(passTablesPda(program, vault), false, true) : m(program, false, false),
+      m(vaultAuthPda(program, mint), false, true), m(SystemProgram.programId, false, false)],
   });
 }
 
@@ -235,10 +240,10 @@ export function heldBy(info: { owner: PublicKey; data: Buffer } | null, mint: Pu
   return info.data.readBigUInt64LE(64);
 }
 
-/** The wallets whose pass remove_pass accepts now: holding under the book's minimum and owed nothing. */
+/** The wallets whose pass remove_pass accepts now: holding under the book's minimum (anything still owed is paid on removal). */
 export async function removablePasses(conn: Connection, mint: PublicKey, book: PassBook): Promise<Set<string>> {
   const out = new Set<string>();
-  const candidates = book.entries.filter((e) => e.owed === e.paid);
+  const candidates = book.entries;
   for (let i = 0; i < candidates.length; i += 100) {
     const part = candidates.slice(i, i + 100);
     const infos = await conn.getMultipleAccountsInfo(part.map((e) => e.tokenAccount), "confirmed");
