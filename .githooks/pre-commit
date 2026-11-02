@@ -3,13 +3,32 @@
 # format of every *.keypair.json and of `solana-keygen` output), in any file, whatever its name.
 # Install once per clone:  git config core.hooksPath .githooks
 # A false positive can be committed with --no-verify, after checking it really isn't a key.
+#
+# Exit 0: nothing found. Exit 1: a key was found. Exit 2: a file couldn't be scanned (it never
+# counts as clean, because a scan that failed proves nothing).
 set -euo pipefail
+export LC_ALL=C   # byte-wise matching: staged binaries can't trip a locale's encoding rules
+KEY_RE='\[(([01]?[0-9]{1,2}|2[0-4][0-9]|25[0-5]),){63}([01]?[0-9]{1,2}|2[0-4][0-9]|25[0-5])\]'
 found=0
-while IFS= read -r -d '' f; do
-  # Staged content, whitespace removed, so a key split over lines is caught too.
-  if git show ":$f" 2>/dev/null | tr -d ' \t\r\n' | grep -Eq '\[(([01]?[0-9]{1,2}|2[0-4][0-9]|25[0-5]),){63}([01]?[0-9]{1,2}|2[0-4][0-9]|25[0-5])\]'; then
+# The list comes from a variable, not a process substitution, so git failing here stops the hook.
+names=$(git diff --cached --name-only --diff-filter=ACMRT -z | tr '\0' '\1') \
+  || { echo "pre-commit: couldn't list the staged files" >&2; exit 2; }
+while IFS= read -r -d $'\1' f; do
+  # A submodule entry has no blob to read.
+  [[ $(git --literal-pathspecs ls-files --stage -- "$f" | cut -c1-6) == 160000 ]] && continue
+  # Staged content, whitespace removed, so a key split over lines is caught too. -a: a NUL doesn't
+  # turn the file into "binary". -c, not -q, and stdout captured here, not /dev/null: grep then
+  # reads to the end of the stream instead of exiting at the first match, which would kill the
+  # writers with SIGPIPE and, under pipefail, turn a match into "no match".
+  result=$(git show ":$f" 2>/dev/null | tr -d ' \t\r\n' | grep -acE -- "$KEY_RE"; printf ' %s' "${PIPESTATUS[@]}") || true
+  read -r -d '' _count show_rc tr_rc grep_rc <<< "$result" || true
+  if [[ ${show_rc:-x} != 0 || ${tr_rc:-x} != 0 || ! ${grep_rc:-x} =~ ^[01]$ ]]; then
+    echo "pre-commit: couldn't scan $f (git show: ${show_rc:-?}, tr: ${tr_rc:-?}, grep: ${grep_rc:-?}); not committing" >&2
+    exit 2
+  fi
+  if [[ $grep_rc == 0 ]]; then
     echo "pre-commit: $f looks like a secret key (a JSON array of 64 bytes). Unstage it: git restore --staged -- '$f'" >&2
     found=1
   fi
-done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+done <<< "$names"
 exit "$found"

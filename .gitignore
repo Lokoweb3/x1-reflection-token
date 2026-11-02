@@ -6,6 +6,8 @@ state/
 **/factory/
 !/src/factory/
 **/launches/**/distributor.json
+# Launches still in progress: distributor keys, under any factory dir (REFLECT_FACTORY_DIR can be anywhere).
+**/pending-launches/
 # The mainnet site's config, launches and keys on the server.
 /mainnet/
 *.keypair.json
