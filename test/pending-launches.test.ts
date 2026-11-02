@@ -185,19 +185,21 @@ test("the journal GC removes only what never reached the chain, after a day", as
   fs.rmSync(journal(torn.mint), { recursive: true });
 });
 
-test("recoverPendingLaunches brings back what may still land; past its window the GC decides", async (t) => {
-  const { record } = await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1");
-  // A fresh process's memory: nothing pending. (The real kill and restart is in factory-site.test.ts.)
-  const { mint } = record;
+test("recoverPendingLaunches brings back every journal, whatever its age; the sweep settles it on an answer from the chain", async (t) => {
+  const { record: { mint } } = await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1");
   const c = clock(t), now = c.start;
   c.set(now + 16 * 60_000);
   await sweepPendingLaunches(fakeConn());
   assert.equal(isPendingLaunch(mint), false);
-  assert.equal(recoverPendingLaunches(), 0, "past the window: not listed again");
-  c.set(now);
+  // A restart much later: readable again, until a chain read that answers says otherwise.
+  c.set(now + 3 * 3_600_000);
   assert.ok(recoverPendingLaunches() >= 1);
   assert.ok(isPendingLaunch(mint));
-  await sweepPendingLaunches(fakeConn(new Set([mint])));
+  assert.equal(readLaunch(mint)?.mint, mint);
+  const down = { getMultipleAccountsInfo: async () => { throw new Error("rpc down"); } } as unknown as Connection;
+  assert.equal(await sweepPendingLaunches(down), false, "reported, to be retried soon");
+  assert.ok(isPendingLaunch(mint), "a failed read decides nothing");
+  assert.equal(await sweepPendingLaunches(fakeConn(new Set([mint]))), true);
   assert.ok(fs.existsSync(file(mint, "distributor.json")));
 });
 

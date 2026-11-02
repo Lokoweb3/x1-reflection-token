@@ -163,49 +163,55 @@ function cidHash(token: string): string | null {
 
 /**
  * What a link says about the content it names:
- *   hash     it names IPFS content (any gateway, ipfs://, a subdomain gateway, a bare CID)
- *   web      an ordinary web link, with nothing about IPFS in it
- *   unclear  it looks like IPFS but the content can't be identified (a mutable ipns name, a CID
- *            form not read here, an IPFS path with no CID)
+ *   direct    exactly that IPFS content: a bare CID, ipfs://<cid>, /ipfs/<cid> on a gateway,
+ *             <cid>.ipfs.<gateway>
+ *   mentions  a CID, but not as the thing served: a file inside a directory CID (/ipfs/<cid>/a.json),
+ *             or just somewhere in a URL (?cache=<cid>). It may be that content; it doesn't say it's not.
+ *   web       an ordinary web link: it could serve anything
+ *   unclear   it looks like IPFS but can't be read (a mutable ipns name, a CID form not read here)
+ *   none      no link at all
  */
-export type ContentRef = { kind: "hash"; hash: string } | { kind: "web" } | { kind: "unclear" };
+export type ContentRef = { kind: "direct" | "mentions"; hash: string } | { kind: "web" | "unclear" | "none" };
 export function contentRef(link: unknown): ContentRef {
   const text = typeof link === "string" ? link.trim() : "";
-  if (!text) return { kind: "web" };
-  const named = (token: string): ContentRef => { const hash = cidHash(token); return hash ? { kind: "hash", hash } : { kind: "unclear" }; };
+  if (!text) return { kind: "none" };
+  const named = (token: string, rest = ""): ContentRef => {
+    const hash = cidHash(token);
+    return !hash ? { kind: "unclear" } : { kind: rest.replace(/^\/+|\/+$/g, "") ? "mentions" : "direct", hash };
+  };
   if (CID_V0.test(text) || CID_V1_BASE32.test(text)) return named(text);
   if (/^ipns:\/\//i.test(text)) return { kind: "unclear" };
-  const ipfs = /^ipfs:\/\/(?:ipfs\/)?([^/?#]+)/i.exec(text);
-  if (ipfs) return named(ipfs[1]);
+  const ipfs = /^ipfs:\/\/(?:ipfs\/)?([^/?#]+)([^?#]*)/i.exec(text);
+  if (ipfs) return named(ipfs[1], ipfs[2]);
   if (/^ipfs:/i.test(text)) return { kind: "unclear" };
   let url: URL;
   try { url = new URL(text); } catch { return { kind: "unclear" }; }
   if (/(^|\.)ipns\./i.test(url.hostname) || /(^|\/)ipns\//i.test(url.pathname)) return { kind: "unclear" };
   const sub = /^([^.]+)\.ipfs\./i.exec(url.hostname);
-  if (sub) return named(sub[1]);
-  const inPath = /(?:^|\/)ipfs\/([^/?#]+)/i.exec(url.pathname);
-  if (inPath) return named(decodeURIComponent(inPath[1]));
+  if (sub) return named(sub[1], url.pathname);
+  const inPath = /(?:^|\/)ipfs\/([^/?#]+)(.*)$/i.exec(url.pathname);
+  if (inPath) return named(decodeURIComponent(inPath[1]), inPath[2]);
   const found = CID_IN_TEXT.exec(`${url.pathname}${url.search}`);
-  if (found) return named(found[1]);
+  if (found) { const hash = cidHash(found[1]); return hash ? { kind: "mentions", hash } : { kind: "unclear" }; }
   return /ipfs/i.test(text) ? { kind: "unclear" } : { kind: "web" };
 }
 /**
  * Whether a link names the content of `pinned` (a link or CID): true, false, or null when that
- * can't be established. Compared by content, never by how the link is spelled.
+ * can't be established. Compared by content, never by how the link is spelled. Only a direct
+ * reference to other content says "false"; a mention of the same hash counts as "true", and
+ * anything else can't be told apart from a link that serves this file, so it's null.
  */
 export function sameContent(link: unknown, pinned: string): boolean | null {
   const a = contentRef(link), b = contentRef(pinned);
-  if (b.kind !== "hash") return link === pinned ? true : null;
-  if (a.kind === "hash") return a.hash === b.hash;
-  return a.kind === "web" ? false : null;
+  if (a.kind === "none") return false;
+  if (b.kind !== "direct" && b.kind !== "mentions") return link === pinned ? true : null;
+  if (a.kind !== "direct" && a.kind !== "mentions") return null;
+  if (a.hash === b.hash) return true;
+  return a.kind === "direct" && b.kind === "direct" ? false : null;
 }
-/**
- * Whether a token's on-chain metadata link still uses the `pinned` file. Null, so the pin stays,
- * for anything but a link naming IPFS content: a web link could serve that file for all we know.
- */
+/** Whether a token's on-chain metadata link still uses the `pinned` file. No link at all can't be told either: null. */
 export function chainLinkUses(onChain: unknown, pinned: string): boolean | null {
-  if (contentRef(onChain).kind !== "hash") return null;
-  return sameContent(onChain, pinned);
+  return contentRef(onChain).kind === "none" ? null : sameContent(onChain, pinned);
 }
 
 /**

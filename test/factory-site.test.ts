@@ -92,24 +92,74 @@ test("a journal that can't be written: no transaction goes out, and the visitor 
   } finally { fs.rmSync(root, { force: true }); }
 });
 
-test("a registration's result reaches the status at once, whatever a read cached during its checks", async () => {
+test("a saved record reaches the status at once: its cached answer is dropped by the write itself", async () => {
   const creator = Keypair.generate();
   const { mint } = await (await site.startLaunch(creator)).json() as { mint: string };
   const who = creator.publicKey.toBase58();
   const status = async () => (await (await site.call(`/api/launches?creator=${who}`)).json() as { mint: string; status: { token: boolean } }[]).find((r) => r.mint === mint)!.status;
-  // The registration is inside its chain checks...
-  const held = site.rpc.hold("getMultipleAccounts");
-  const registering = site.call("/api/launch/register", { body: { mint, creator: who } });
-  await held.reached;
-  // ...when a status read goes through and is cached ("token: false"; held.release also frees it below).
-  const reading = status();
-  await new Promise((r) => setTimeout(r, 100));
-  held.release();
-  assert.equal((await reading).token, false);
-  await registering;
-  // The chain moved meanwhile; the cached answer is younger than its 15 s, and must not be served.
+  assert.equal((await status()).token, false, "cached for 15 s");
   site.rpc.onChain.add(mint);
+  assert.equal((await status()).token, false, "still the cached answer");
+  await site.call("/api/launch/pool", { body: { mint, creator: who } }); // saves the record
+  assert.ok(fs.existsSync(site.launchFile(mint, "launch.json")));
   assert.equal((await status()).token, true);
+});
+
+test("requests that change nothing don't drop a creator's cached status, so they can't drain its budget", async () => {
+  const creator = Keypair.generate();
+  const { mint } = await (await site.startLaunch(creator)).json() as { mint: string };
+  const who = creator.publicKey.toBase58();
+  const reader = "198.51.100.20";
+  const posts = [
+    { path: "/api/launch/not-a-route", body: { creator: who } },
+    { path: "/api/launch/pool", body: { mint, creator: who } }, // refused: its token isn't on-chain
+    { path: "/api/launch/register", body: { mint, creator: who } }, // refused too
+    { path: "/api/curve/create", body: { creator: who } }, // no curves on this site, and invalid
+  ];
+  // More rounds than this reader's 30 charged status reads: each answered from the cache.
+  for (let i = 0; i < 36; i++) {
+    const p = posts[i % posts.length];
+    const posted = await site.call(p.path, { ip: `198.51.100.${100 + i}`, body: p.body });
+    assert.ok(posted.status >= 400, `${p.path}: ${posted.status}`);
+    await posted.arrayBuffer();
+    const read = await site.call(`/api/launches?creator=${who}`, { ip: reader });
+    assert.equal(read.status, 200, `round ${i}`);
+    await read.arrayBuffer();
+  }
+});
+
+test("a flood on one expired balance is one chain read, one admission", async () => {
+  const wallet = addr(), p = `/api/balance/${wallet}`;
+  assert.equal((await site.call(p, { ip: "198.51.100.30" })).status, 200);
+  const before = site.rpc.calls.getBalance ?? 0;
+  await site.skipClock();
+  const held = site.rpc.hold("getBalance");
+  const flood = Array.from({ length: 120 }, (_, i) => site.call(p, { ip: `198.51.100.${40 + i % 6}` }));
+  await held.reached;
+  await new Promise((r) => setTimeout(r, 50));
+  held.release();
+  for (const res of await Promise.all(flood)) { assert.equal(res.status, 200); await res.arrayBuffer(); }
+  assert.equal((site.rpc.calls.getBalance ?? 0) - before, 1);
+});
+
+test("the server down past a launch's window with the RPC down too: saved once the RPC is back", async () => {
+  const started = await (await site.startLaunch()).json() as { mint: string; error?: string };
+  assert.equal(started.error, undefined);
+  const { mint } = started;
+  await site.kill();
+  const f = site.journalFile(mint, "launch.json");
+  const r = JSON.parse(fs.readFileSync(f, "utf8"));
+  fs.writeFileSync(f, JSON.stringify({ ...r, createdAt: new Date(Date.now() - 3 * 3_600_000).toISOString() }));
+  site.rpc.onChain.add(mint);
+  site.rpc.down.add("getMultipleAccounts");
+  await site.boot();
+  await new Promise((res) => setTimeout(res, 1_000));
+  assert.equal(fs.existsSync(site.launchFile(mint, "launch.json")), false, "the chain can't be read yet");
+  assert.equal((await site.call(`/meta/${mint}.json`)).status, 200, "readable meanwhile, like a saved record");
+  assert.ok(fs.existsSync(f), "and nothing was given up on");
+  site.rpc.down.delete("getMultipleAccounts");
+  await until(() => fs.existsSync(site.launchFile(mint, "launch.json")), "the retry after the RPC came back", 15_000);
+  assert.ok(fs.existsSync(site.launchFile(mint, "distributor.json")));
 });
 
 const addr = () => Keypair.generate().publicKey.toBase58();
@@ -146,6 +196,8 @@ test("real lookups still hit the site-wide cap, but it doesn't stop a launch in 
   const creator = Keypair.generate();
   const { mint } = await (await site.startLaunch(creator)).json() as { mint: string };
   const who = creator.publicKey.toBase58();
+  const balance = `/api/balance/${addr()}`;
+  assert.equal((await site.call(balance, { ip: "198.51.100.8" })).status, 200, "cached while there's budget");
   // Valid addresses that each need a read: this is what the cap is for. Exhaust it from many addresses.
   const seen = new Set<number>();
   for (let i = 0; i < 14; i++) {
@@ -158,4 +210,8 @@ test("real lookups still hit the site-wide cap, but it doesn't stop a launch in 
   const res = await site.call(`/api/launches?creator=${who}`, { ip: "198.51.100.8" });
   assert.equal(res.status, 200, await res.clone().text());
   assert.ok((await res.json() as { mint: string }[]).some((r) => r.mint === mint));
+  // An expired balance is a real lookup too: once past its freshness it's charged, so refused now.
+  assert.equal((await site.call(balance, { ip: "198.51.100.8" })).status, 200, "still fresh: from the cache");
+  await site.skipClock();
+  assert.equal((await site.call(balance, { ip: "198.51.100.9" })).status, 429, "expired: refused like any lookup");
 });

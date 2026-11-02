@@ -10,7 +10,7 @@
  * (factory/vault.ts, scripts/crank.ts, scripts/cosigner.ts), so nothing here can remove them.
  */
 import type { Config } from "../config.js";
-import { cidOfUrl, sameContent, unpinOrphan } from "./ipfs.js";
+import { cidOfUrl, contentRef, sameContent, unpinOrphan } from "./ipfs.js";
 
 /** Metadata and receipts: their transaction's blockhash is long expired by then. */
 export const ORPHAN_AFTER_MS = 30 * 60_000;
@@ -48,8 +48,12 @@ export function pinTracker(cfg: Config, log: (s: string) => void = console.log) 
 
   /** Whether a waiting or kept pin points at `url`, or might (a logo is in use while its metadata may be). */
   const referenced = (url: string) => {
-    for (const r of keptRefs) if (sameContent(r, url) !== false) return true;
-    for (const p of pins.values()) for (const r of p.refs) if (sameContent(r, url) !== false) return true;
+    // A metadata JSON's image that's an ordinary web link says nothing about any file pinned here;
+    // counting it would keep every pin for good once one launch pasted its logo's address. (A launch's
+    // own logo link is judged in logoUsed.)
+    const points = (r: string) => contentRef(r).kind !== "web" && sameContent(r, url) !== false;
+    for (const r of keptRefs) if (points(r)) return true;
+    for (const p of pins.values()) if (p.refs.some(points)) return true;
     return false;
   };
 

@@ -12,7 +12,6 @@ import { Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/w
 import { AccountLayout, MINT_SIZE, MintLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
-const BLOCKHASH = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
 
 /** The RPC methods the server calls while starting and launching, answered from `accounts`. */
 export function fakeRpc(feeMint: PublicKey) {
@@ -24,6 +23,7 @@ export function fakeRpc(feeMint: PublicKey) {
   const onChain = new Set<string>();
   const calls: Record<string, number> = {};
   const held = new Map<string, () => void>();
+  const down = new Set<string>();
   const lookup = (k: string) => {
     if (k === feeMint.toBase58()) return account(mintData);
     if (onChain.has(k)) return account(Buffer.alloc(0));
@@ -35,13 +35,14 @@ export function fakeRpc(feeMint: PublicKey) {
     req.on("end", async () => {
       const { id, method, params } = JSON.parse(body);
       calls[method] = (calls[method] ?? 0) + 1;
+      if (down.has(method)) { res.statusCode = 500; res.end("down"); return; }
       const hold = held.get(method);
       if (hold) { held.delete(method); hold(); await new Promise<void>((r) => { holdReleases.push(r); }); }
       const ctx = { context: { slot: 1, apiVersion: "1.18" } };
       const value = (v: unknown) => ({ ...ctx, value: v });
       let result: unknown = null;
       switch (method) {
-        case "getLatestBlockhash": result = value({ blockhash: BLOCKHASH, lastValidBlockHeight: 1_000_000 }); break;
+        case "getLatestBlockhash": result = value({ blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 1_000_000 }); break;
         case "getMinimumBalanceForRentExemption": result = 1_000_000; break;
         case "getBalance": result = value(1_000_000_000_000); break;
         case "getAccountInfo": {
@@ -78,7 +79,7 @@ export function fakeRpc(feeMint: PublicKey) {
   const fundedTokenAccounts = new Set<string>();
   const holdReleases: (() => void)[] = [];
   return {
-    server, onChain, calls, fundedTokenAccounts,
+    server, onChain, calls, fundedTokenAccounts, down,
     /** The next call of `method` waits until `release()`; `arrived` resolves when it comes in. */
     hold(method: string) {
       let arrived = () => {};
@@ -117,7 +118,7 @@ export async function startSite() {
   let child = null as ChildProcess | null;
   let output = "";
   async function boot() {
-    child = spawn(process.execPath, ["--import", "tsx", path.join(ROOT, "src", "factory-server.ts")], {
+    child = spawn(process.execPath, ["--import", "tsx", "--import", path.join(ROOT, "test", "helpers", "clock-preload.mjs"), path.join(ROOT, "src", "factory-server.ts")], {
       cwd: ROOT, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, REFLECT_CONFIG: path.join(dir, "config.json"), REFLECT_FACTORY_DIR: factoryDir, REFLECT_STATE_DIR: stateDir, REFLECT_RPC_URL: rpcUrl, REFLECT_RPC_GAP_MS: "0", PINATA_JWT: "", NODE_TEST_CONTEXT: "" },
     });
@@ -160,6 +161,8 @@ export async function startSite() {
     log: () => output,
     launchFile: (mint: string, f: string) => path.join(factoryDir, "launches", mint, f),
     journalFile: (mint: string, f: string) => path.join(factoryDir, "pending-launches", mint, f),
+    /** The server's clock moves 31 s on (test/helpers/clock-preload.mjs). */
+    async skipClock() { child!.kill("SIGUSR2"); await new Promise((r) => setTimeout(r, 100)); },
     async ensureUp() { if (child?.exitCode !== null || child?.signalCode !== null) await boot(); },
     /** As a crash or `kill -9`: no handler of the server's runs. */
     kill() {

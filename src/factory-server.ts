@@ -26,7 +26,7 @@ import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wal
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch,
-  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, isPendingLaunch, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
+  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, isPendingLaunch, onLaunchSaved, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
 import { readRewardVault, rewardSummary } from "./locker.js";
@@ -54,6 +54,7 @@ import { passesApi } from "./factory/passes-api.js";
 import { isFileError, limitKey } from "./factory/limits.js";
 import { isAddress, planView, type KnownSubjects, type Lane } from "./factory/view-gate.js";
 import { crankRelayBook } from "./factory/crank-relays.js";
+import { freshCache } from "./factory/fresh-cache.js";
 import { explainError, type ProgramKind } from "./program-errors.js";
 import { buildPassesStep, buildVaultStep, isVaultLaunch, minHoldingFor, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
@@ -382,9 +383,12 @@ function forgetLaunches(creator: unknown) {
   try { swrForget(`/api/launches?creator=${new PublicKey(String(creator)).toBase58()}`); } catch { /* not an address */ }
 }
 
+// A creator's cached list is only dropped on a real change, here and where a launch starts or a
+// signed transaction was relayed (afterSend): anyone can post anything naming a creator, and
+// each drop means a chain read charged to the status budget.
+onLaunchSaved((r) => forgetLaunches(r.creator));
+
 async function post(url: string, body: Record<string, unknown>, ip: string) {
-  // A launch step (even a refused one) may follow a change on-chain: the creator's list is read afresh.
-  if (url.startsWith("/api/launch/") || url === "/api/curve/create") forgetLaunches(body.creator);
   if (url === "/api/launch/token") {
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
     const p = validateParams(body, quoteTokens.map((q) => q.symbol));
@@ -570,15 +574,11 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     applyMetadataUpdate(r, p.next);
     for (const k of [...pendingMeta.keys()]) if (k.startsWith(`${r.mint} `)) pendingMeta.delete(k);
     tokenListCache = null;
-    forgetLaunches(r.creator);
     return { updated: true };
   }
   if (url === "/api/launch/register") {
-    // Forgotten again now it's done: a status read during those chain checks may have cached the state before.
-    try {
-      const r = await registerLaunch(conn, cfg, ownLaunch(body));
-      return { registered: !!r.registeredAt };
-    } finally { forgetLaunches(body.creator); }
+    const r = await registerLaunch(conn, cfg, ownLaunch(body));
+    return { registered: !!r.registeredAt };
   }
   if (url === "/api/launch/claim-reward") {
     const r = readLaunch(String(body.mint));
@@ -894,7 +894,7 @@ const poolCreateFee = sticky<number | null>(async () => {
   return Number(a.data.readBigUInt64LE(36)) / 1e9;
 }, null);
 
-const balanceCache = new Map<string, { at: number; data: { network: string; xnt: number } }>();
+const balances = freshCache<{ network: string; xnt: number }>(30_000, 5_000);
 /**
  * Stale-while-revalidate for read-only views. Public RPCs rate-limit (mainnet's hard), so
  * a view that answered once keeps its last good answer: after `freshMs` it's refreshed in
@@ -975,9 +975,14 @@ async function get(url: URL, ip?: string) {
   // A balance not cached yet (one RPC call per made-up address), or a wallet's holder passes
   // (uncached: it reads every claims-mode token's passes).
   const bal = /^\/api\/balance\/([^/]+)$/.exec(url.pathname), passes = /^\/api\/passes\/([^/]+)$/.exec(url.pathname);
-  if (bal || passes) {
-    if (!isAddress((bal ?? passes)![1])) return null;
-    if ((passes || !balanceCache.has(bal![1])) && !admit("lookup")()) throw new RateLimited("The site is busy looking things up right now; try again in a minute.");
+  const busy = () => new RateLimited("The site is busy looking things up right now; try again in a minute.");
+  if (bal) {
+    if (!isAddress(bal[1])) return null;
+    return balances.get(bal[1], admit("lookup"), busy, async () => ({ network: cfg.network, xnt: (await conn.getBalance(new PublicKey(bal[1]))) / 1e9 }));
+  }
+  if (passes) {
+    if (!isAddress(passes[1])) return null;
+    if (!admit("lookup")()) throw busy();
   }
   return getView(url);
 }
@@ -1055,16 +1060,6 @@ async function getView(url: URL) {
   const lb = /^\/api\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (lb) return leaderboard(lb[1]);
   if (url.pathname === "/api/faucet") return faucetStatus(conn, cfg, url.searchParams.get("wallet") ?? undefined);
-  // A wallet's XNT on this site's network (the wrong-network hint in wallet.js). Cached 30 s.
-  const bal = /^\/api\/balance\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
-  if (bal) {
-    const hit = balanceCache.get(bal[1]);
-    if (hit && Date.now() - hit.at < 30_000) return hit.data;
-    const data = { network: cfg.network, xnt: (await conn.getBalance(new PublicKey(bal[1]))) / 1e9 };
-    balanceCache.set(bal[1], { at: Date.now(), data });
-    if (balanceCache.size > 5_000) balanceCache.clear();
-    return data;
-  }
   const wp = /^\/api\/passes\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (wp) return walletPasses(new PublicKey(wp[1]).toBase58());
   const wv = /^\/api\/wallet\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
@@ -1868,19 +1863,24 @@ setInterval(() => warmViews(), 300_000).unref();
 // moves to the launches once the token is on-chain; ones that never landed are tidied away after
 // a day. Unused pinned files are removed from Pinata.
 try { const n = recoverPendingLaunches(); if (n) console.log(`Pending launches: ${n} back from the journal`); } catch (e) { console.error(`pending launches: ${e instanceof Error ? e.message : e}`); }
-sweepPendingLaunches(conn).catch((e) => console.error(`pending launches: ${e instanceof Error ? e.message : e}`));
-setInterval(() => sweepPendingLaunches(conn).catch((e) => console.error(`pending launches: ${e instanceof Error ? e.message : e}`)), 30_000).unref();
+// Every half minute; soon again after a failed chain read, since the launches that landed while
+// the server was down wait on it.
+let sweepRetryMs = 5_000;
+async function sweepLoop() {
+  const ok = await sweepPendingLaunches(conn).catch((e) => { console.error(`pending launches: ${e instanceof Error ? e.message : e}`); return false; });
+  setTimeout(() => sweepLoop(), ok ? 30_000 : sweepRetryMs).unref();
+  sweepRetryMs = ok ? 5_000 : Math.min(sweepRetryMs * 2, 30_000);
+}
+sweepLoop();
 async function gcLaunches() {
   const removed = await gcLaunchRecords(conn).catch((e) => { console.error(`launch records GC: ${e instanceof Error ? e.message : e}`); return []; });
   if (removed.length) console.log(`Removed ${removed.length} launch record(s) whose token never reached the chain: ${removed.join(", ")}`);
   await gcJournal();
 }
 async function gcJournal() {
-  const removed = await gcPendingJournal(conn).catch((e) => { console.error(`launch journal GC: ${e instanceof Error ? e.message : e}`); return []; });
+  const removed: string[] = await gcPendingJournal(conn).catch((e) => { console.error(`launch journal GC: ${e instanceof Error ? e.message : e}`); return []; });
   if (removed.length) console.log(`Removed ${removed.length} launch journal(s) whose token never reached the chain: ${removed.join(", ")}`);
 }
-// At once for the journal: a launch that landed while the server was down is saved now.
-gcJournal();
 setTimeout(() => gcLaunches(), 60_000).unref();
 setInterval(() => gcLaunches(), 6 * 3_600_000).unref();
 setInterval(() => pins.sweep().catch((e) => console.error(`[pins] ${e instanceof Error ? e.message : e}`)), 5 * 60_000).unref();

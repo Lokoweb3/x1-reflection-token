@@ -1,7 +1,7 @@
 /** "Run the vault now" relays are matched to their token by what the transaction does. No network. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from "@solana/web3.js";
+import { AddressLookupTableAccount, ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { crankRelayBook, planIdentity } from "../src/factory/crank-relays.js";
 
 const payer = Keypair.generate();
@@ -56,12 +56,29 @@ test("a wallet's own additions (priority fee, Lighthouse guard) still match the 
   assert.deepEqual(book.take(["sig"], a.toBase58()), ["sig"]);
 });
 
-test("the identity survives signing and reads both transaction formats; junk has none", () => {
+test("the identity survives signing; junk has none", () => {
   const b64 = plan(Keypair.generate().publicKey);
   assert.equal(planIdentity(b64), planIdentity(signed(b64)));
-  const legacy = VersionedTransaction.deserialize(Buffer.from(b64, "base64"));
-  assert.equal(planIdentity(Buffer.from(legacy.serialize()).toString("base64")), planIdentity(b64));
   assert.equal(planIdentity("AA=="), null);
+});
+
+test("a real v0 transaction is read too: the same instructions match, and accounts from a lookup table have no identity", () => {
+  const mint = Keypair.generate().publicKey;
+  const step = new TransactionInstruction({ programId: VAULT_PROGRAM, keys: [{ pubkey: payer.publicKey, isSigner: true, isWritable: true }, { pubkey: mint, isSigner: false, isWritable: true }], data: Buffer.from("collect") });
+  const v0 = (tables: AddressLookupTableAccount[] = []) => {
+    const message = new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: BLOCKHASH, instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), step] }).compileToV0Message(tables);
+    assert.equal(message.version, 0, "really a v0 message");
+    const tx = new VersionedTransaction(message);
+    tx.sign([payer]);
+    return Buffer.from(tx.serialize()).toString("base64");
+  };
+  assert.equal(planIdentity(v0()), planIdentity(plan(mint)), "same payer, blockhash and instructions as the legacy plan");
+  const book = crankRelayBook();
+  book.planned(plan(mint), mint.toBase58());
+  book.relayed(v0(), "sig");
+  assert.deepEqual(book.take(["sig"], mint.toBase58()), ["sig"]);
+  const table = new AddressLookupTableAccount({ key: Keypair.generate().publicKey, state: { deactivationSlot: 2n ** 64n - 1n, lastExtendedSlot: 0, lastExtendedSlotStartIndex: 0, authority: undefined, addresses: [mint] } });
+  assert.equal(planIdentity(v0([table])), null);
 });
 
 test("old plans and relays are dropped", (t) => {

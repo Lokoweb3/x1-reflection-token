@@ -46,7 +46,7 @@ import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passe
 import { payoutToken } from "./payout.js";
 import { buildCreatePool, decodePool, poolAddresses, snapshot, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
-import { syncDir, writeFileDurable } from "./durable.js";
+import { mkdirDurable, writeFileDurable } from "./durable.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
@@ -326,25 +326,26 @@ export function applyMetadataUpdate(r: LaunchRecord, next: Partial<LaunchRecord>
   writeLaunch({ ...r, ...next });
 }
 
+/** Told after a launch's record is on disk: what a cached view of it shows may have changed. */
+let launchSaved: (r: LaunchRecord) => void = () => undefined;
+export const onLaunchSaved = (fn: (r: LaunchRecord) => void) => { launchSaved = fn; };
+
 /**
- * Save a launch's record. A launch still in the journal moves to launches/<mint>/ (key first,
- * record last); it only stops being a pending launch once both are on disk, so if a write
- * fails the entry and its journal stay and the save is tried again later.
+ * Save a launch's record. A launch still in the journal is copied to launches/<mint>/, key first
+ * and record last, each flushed with every directory above it; only then does the journal go. It
+ * stays a pending launch until both are on disk, so if a write fails, or the power goes, the
+ * journal still holds them and the save is tried again later.
  */
 function writeLaunch(r: LaunchRecord) {
   const dir = launchDir(r.mint), journal = pendingDir(r.mint);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  syncDir(path.dirname(dir));
+  mkdirDurable(dir, FACTORY_DIR);
   const key = path.join(journal, "distributor.json");
-  if (fs.existsSync(key)) {
-    fs.renameSync(key, path.join(dir, "distributor.json"));
-    syncDir(dir);
-    syncDir(journal);
-  }
+  if (fs.existsSync(key)) writeFileDurable(path.join(dir, "distributor.json"), fs.readFileSync(key, "utf8"));
   writeFileDurable(path.join(dir, "launch.json"), JSON.stringify(r, null, 2) + "\n");
   pendingLaunches.delete(r.mint);
   // Saved. A leftover journal is only clutter: the GC clears it.
   try { fs.rmSync(journal, { recursive: true, force: true }); } catch (e) { console.error(`launch journal ${r.mint}: ${errText(e)}`); }
+  launchSaved(r);
 }
 export function listLaunches(): LaunchRecord[] {
   const dir = path.join(FACTORY_DIR, "launches");
@@ -448,18 +449,14 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 function saveNewLaunch(record: LaunchRecord, distributor: Keypair | null) {
   const dir = pendingDir(record.mint);
   try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirDurable(dir, FACTORY_DIR);
     if (distributor) writeFileDurable(path.join(dir, "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)));
     writeFileDurable(path.join(dir, "launch.json"), JSON.stringify(record, null, 2) + "\n");
-    syncDir(pendingRoot());
-    syncDir(FACTORY_DIR);
   } catch (e) {
     fs.rmSync(dir, { recursive: true, force: true }); // never handed out, so nothing can land
     throw e;
   }
-  // At most a site-wide hour of launch starts (rateLimit "launch") is ever waiting. One dropped
-  // from memory here stays in the journal, and the GC still saves it if its mint shows up.
-  if (pendingLaunches.size >= 500) pendingLaunches.delete(pendingLaunches.keys().next().value!);
+  // Few at a time: starts are limited site-wide (rateLimit "launch") and each goes within minutes.
   pendingLaunches.set(record.mint, { record, at: Date.now() });
 }
 /** Whether `mint` is a new launch still waiting for its first transaction. */
@@ -474,27 +471,41 @@ export function persistLaunch(mint: string) {
   try { writeLaunch(p.record); return true; } catch (e) { console.error(`saving launch ${mint}: ${errText(e)}`); return false; }
 }
 
+const LAUNCH_READ_BATCH = 100;
+let sweeping: Promise<boolean> | null = null;
 /**
  * Save the waiting launches whose mint is on-chain now and stop listing those whose step 1 can
- * no longer land (their journal stays for gcPendingJournal). Run every half minute, so a launch
- * whose creator stops after step 1 (it paid the fee) can still be continued.
+ * no longer land (their journal stays for gcPendingJournal). Only a chain read that answered
+ * decides anything: a failed one affects its own batch, which stays as it was. One sweep at a
+ * time. Whether everything was read and saved; if not, the caller should try again soon.
  */
-export async function sweepPendingLaunches(conn: Connection) {
+export function sweepPendingLaunches(conn: Connection) {
+  return (sweeping ??= sweepOnce(conn).finally(() => { sweeping = null; }));
+}
+async function sweepOnce(conn: Connection) {
   const list = [...pendingLaunches.keys()];
-  for (let i = 0; i < list.length; i += 100) {
-    const chunk = list.slice(i, i + 100);
-    const infos = await conn.getMultipleAccountsInfo(chunk.map((m) => new PublicKey(m)), "confirmed");
+  let ok = true;
+  for (let i = 0; i < list.length; i += LAUNCH_READ_BATCH) {
+    const chunk = list.slice(i, i + LAUNCH_READ_BATCH);
+    let infos;
+    try { infos = await conn.getMultipleAccountsInfo(chunk.map((m) => new PublicKey(m)), "confirmed"); }
+    catch (e) { ok = false; console.error(`pending launches: ${errText(e)}`); continue; }
     chunk.forEach((mint, j) => {
       // Looked up afresh: while the chain read ran, another path may have saved it and moved on.
       const p = pendingLaunches.get(mint);
       if (!p) return;
-      if (infos[j]) persistLaunch(mint);
+      if (infos[j]) { if (!persistLaunch(mint)) ok = false; }
       else if (Date.now() - p.at > PENDING_LAUNCH_MS) pendingLaunches.delete(mint);
     });
   }
+  return ok;
 }
 
-/** After a restart: back into memory, the journalled launches that may still land. Returns how many. */
+/**
+ * After a restart: every journalled launch back into memory, however long the server was down,
+ * so it's readable at once and the sweep settles it against the chain, retrying until the chain
+ * answers. Returns how many.
+ */
 export function recoverPendingLaunches() {
   const root = pendingRoot();
   if (!fs.existsSync(root)) return 0;
@@ -503,7 +514,6 @@ export function recoverPendingLaunches() {
     const r = readJournal(name);
     if (!r || fs.existsSync(path.join(launchDir(name), "launch.json"))) continue; // the GC tidies these
     const at = Date.parse(r.createdAt);
-    if (Date.now() - at > PENDING_LAUNCH_MS) continue; // the GC checks these against the chain
     pendingLaunches.set(name, { record: r, at: Number.isFinite(at) ? at : Date.now() });
     n++;
   }
@@ -516,47 +526,70 @@ function readJournal(name: string): LaunchRecord | null {
   } catch { return null; }
 }
 
+/** A journal whose launch is already saved: its key if that's all that's left to move, then the journal. */
+function tidySavedJournal(name: string) {
+  const key = path.join(pendingDir(name), "distributor.json"), dest = path.join(launchDir(name), "distributor.json");
+  if (fs.existsSync(key)) {
+    const secret = fs.readFileSync(key, "utf8");
+    if (!fs.existsSync(dest)) writeFileDurable(dest, secret);
+    else if (fs.readFileSync(dest, "utf8") !== secret) { console.error(`launch journal ${name}: a different key is already saved; kept`); return; }
+  }
+  fs.rmSync(pendingDir(name), { recursive: true, force: true });
+}
+
+const JOURNAL_READ_BATCH = 50; // each is the mint and the distributor wallet
+let journalGc: Promise<string[]> | null = null;
 /**
- * The journals of launches no longer in memory (past their window, or the server was down
- * meanwhile). A mint on-chain: saved. Removed only when over a day old with no mint on-chain and
- * nothing in the distributor wallet; anything unclear stays. Returns the mints removed.
+ * The journals of launches no longer in memory (past their window). A mint on-chain: saved.
+ * Removed only when over a day old with no mint on-chain and nothing in the distributor wallet;
+ * anything unclear stays. Calls during a run share it, and a failed read affects its own batch.
+ * Returns the mints removed.
  */
-export async function gcPendingJournal(conn: Connection) {
+export function gcPendingJournal(conn: Connection) {
+  return (journalGc ??= gcJournalOnce(conn).finally(() => { journalGc = null; }));
+}
+async function gcJournalOnce(conn: Connection) {
   const root = pendingRoot();
   if (!fs.existsSync(root)) return [];
   const removed: string[] = [];
+  const saved = (name: string) => fs.existsSync(path.join(launchDir(name), "launch.json"));
+  const waiting: { name: string; mint: PublicKey; wallet: PublicKey | null }[] = [];
   for (const name of fs.readdirSync(root)) {
     if (pendingLaunches.has(name)) continue;
     let mint: PublicKey;
     try { mint = new PublicKey(name); } catch { continue; }
-    const dir = pendingDir(name), r = readJournal(name);
-    // Already saved (a crash just before the journal was cleared): only its key may be left to move.
-    if (fs.existsSync(path.join(launchDir(name), "launch.json"))) {
-      const key = path.join(dir, "distributor.json");
-      if (!fs.existsSync(key)) fs.rmSync(dir, { recursive: true, force: true });
-      else if (!fs.existsSync(path.join(launchDir(name), "distributor.json"))) {
-        fs.renameSync(key, path.join(launchDir(name), "distributor.json"));
-        syncDir(launchDir(name));
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-      continue;
-    }
-    const keyFile = path.join(dir, "distributor.json");
-    let wallet: PublicKey | null = null;
-    if (fs.existsSync(keyFile)) {
+    try {
+      if (saved(name)) { tidySavedJournal(name); continue; }
+      const keyFile = path.join(pendingDir(name), "distributor.json");
       // Without the record, the key file is where the wallet's address comes from.
-      try { wallet = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(keyFile, "utf8")))).publicKey; } catch { continue; }
-    }
-    const [mintInfo, walletInfo] = await conn.getMultipleAccountsInfo([mint, ...(wallet ? [wallet] : [])], "confirmed");
-    if (mintInfo) {
-      if (r) writeLaunch(r);
-      else console.error(`launch journal ${name}: the mint is on-chain but the record is missing or unreadable; kept`);
-      continue;
-    }
-    const at = r ? Date.parse(r.createdAt) : fs.statSync(dir).mtimeMs;
-    if (!(Date.now() - at > PENDING_JOURNAL_MS) || (walletInfo && walletInfo.lamports > 0)) continue;
-    fs.rmSync(dir, { recursive: true, force: true });
-    removed.push(name);
+      const wallet = fs.existsSync(keyFile) ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(keyFile, "utf8")))).publicKey : null;
+      waiting.push({ name, mint, wallet });
+    } catch (e) { console.error(`launch journal ${name}: ${e instanceof SyntaxError ? "unreadable key file" : errText(e)}; kept`); }
+  }
+  for (let i = 0; i < waiting.length; i += JOURNAL_READ_BATCH) {
+    const chunk = waiting.slice(i, i + JOURNAL_READ_BATCH);
+    let infos;
+    try { infos = await conn.getMultipleAccountsInfo(chunk.flatMap((j) => [j.mint, j.wallet ?? j.mint]), "confirmed"); }
+    catch (e) { console.error(`launch journal GC: ${errText(e)}`); continue; }
+    chunk.forEach(({ name, wallet }, k) => {
+      const mintInfo = infos[2 * k], walletInfo = wallet ? infos[2 * k + 1] : null;
+      try {
+        // Decided on what's there now: during that read the launch may have been saved and moved on.
+        const dir = pendingDir(name);
+        if (pendingLaunches.has(name) || !fs.existsSync(dir)) return;
+        if (saved(name)) { tidySavedJournal(name); return; }
+        const r = readJournal(name);
+        if (mintInfo) {
+          if (r) writeLaunch(r);
+          else console.error(`launch journal ${name}: the mint is on-chain but the record is missing or unreadable; kept`);
+          return;
+        }
+        const at = r ? Date.parse(r.createdAt) : fs.statSync(dir).mtimeMs;
+        if (!(Date.now() - at > PENDING_JOURNAL_MS) || (walletInfo && walletInfo.lamports > 0)) return;
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed.push(name);
+      } catch (e) { console.error(`launch journal ${name}: ${errText(e)}`); }
+    });
   }
   return removed;
 }

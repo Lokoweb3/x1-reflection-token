@@ -198,24 +198,42 @@ test("usage is compared by content: another gateway, ipfs://, v0 or upper case i
     `https://other.example/ipfs/${v0}`, `ipfs://${v0}`, `ipfs://${cid.toUpperCase()}`, cid, `https://proxy.example/x/${cid}.png`]) {
     assert.equal(sameContent(link, `${GW}${cid}`), true, link);
   }
-  assert.equal(sameContent(`https://ipfs.io/ipfs/${cidOf(fresh())}`, `${GW}${cid}`), false, "another file");
-  assert.equal(sameContent("https://example.com/logo.png", `${GW}${cid}`), false, "a web link, nothing about IPFS");
-  for (const link of ["ipfs://garbage", "ipns://name.example", `https://ipfs.io/ipns/${cid}`, "https://ipfs.io/ipfs/not-a-cid", "not a link"]) {
-    assert.equal(contentRef(link).kind, "unclear", link);
-    assert.equal(sameContent(link, `${GW}${cid}`), null, link);
+  const other = cidOf(fresh());
+  // Only a direct reference to other content says "different".
+  for (const link of [`https://ipfs.io/ipfs/${other}`, `https://ipfs.io/ipfs/${other}/`, `ipfs://${other}`, `https://${other}.ipfs.dweb.link/`, other, `https://ipfs.io/ipfs/${other}?filename=a.png`]) {
+    assert.equal(contentRef(link).kind, "direct", link);
+    assert.equal(sameContent(link, `${GW}${cid}`), false, link);
   }
-  // A token's own on-chain link: anything but identified IPFS content keeps the pin.
+  // A file inside a directory CID, or a CID somewhere in a URL, doesn't say what's served: in doubt.
+  for (const link of [`https://ipfs.io/ipfs/${other}/metadata.json`, `ipfs://${other}/metadata.json`, `https://${other}.ipfs.dweb.link/metadata.json`, `https://proxy.example/x?cache=${other}`, `https://proxy.example/${other}.png`]) {
+    assert.equal(contentRef(link).kind, "mentions", link);
+    assert.equal(sameContent(link, `${GW}${cid}`), null, link);
+    assert.equal(chainLinkUses(link, `${GW}${cid}`), null, link);
+  }
+  // Mentioning this very file is enough to keep it.
+  assert.equal(sameContent(`https://ipfs.io/ipfs/${cid}/metadata.json`, `${GW}${cid}`), true);
+  assert.equal(sameContent(`https://proxy.example/x?cache=${cid}`, `${GW}${cid}`), true);
+  // An ordinary web link could serve this file for all anyone knows; so could what can't be read.
+  for (const link of ["https://example.com/logo.png", "ipfs://garbage", "ipns://name.example", `https://ipfs.io/ipns/${cid}`, "https://ipfs.io/ipfs/not-a-cid", "not a link"]) {
+    assert.equal(sameContent(link, `${GW}${cid}`), null, link);
+    assert.equal(chainLinkUses(link, `${GW}${cid}`), null, link);
+  }
+  // No link at all: nothing is named, though a token's own empty link keeps its pin.
+  for (const none of ["", undefined]) {
+    assert.equal(contentRef(none).kind, "none");
+    assert.equal(sameContent(none, `${GW}${cid}`), false);
+    assert.equal(chainLinkUses(none, `${GW}${cid}`), null);
+  }
   assert.equal(chainLinkUses(`ipfs://${cid}`, `${GW}${cid}`), true);
-  assert.equal(chainLinkUses(`ipfs://${cidOf(fresh())}`, `${GW}${cid}`), false);
-  for (const link of ["https://example.com/meta.json", "ipfs://garbage", "", undefined]) assert.equal(chainLinkUses(link, `${GW}${cid}`), null, String(link));
+  assert.equal(chainLinkUses(`ipfs://${other}`, `${GW}${cid}`), false);
 });
 
 test("a file named under another gateway or ipfs:// is not deleted as unused", async (t) => {
   const p = fakePinata();
   try {
     const tr = pinTracker(cfg, () => undefined);
-    const [meta, logo, viaRef, unclear, plain, gone] = [fresh(), fresh(), fresh(), fresh(), fresh(), fresh()];
-    for (const n of [meta, logo, viaRef, unclear, plain, gone]) await pinJson(cfg, String(n), "f.json", "test");
+    const [meta, logo, viaRef, unclear, plain, gone, proxied, inDir, pasted, viaWebRef] = Array.from({ length: 10 }, fresh);
+    for (const n of [meta, logo, viaRef, unclear, plain, gone, proxied, inDir, pasted, viaWebRef]) await pinJson(cfg, String(n), "f.json", "test");
     // A token whose link moved to another spelling of the same CID (what tokenUriIs now answers).
     tr.track(GW + cidOf(meta), "metadata", async () => chainLinkUses(`ipfs://${cidOf(meta)}`, GW + cidOf(meta)));
     // A launch whose record names the logo through another gateway.
@@ -225,11 +243,19 @@ test("a file named under another gateway or ipfs:// is not deleted as unused", a
     tr.track(GW + cidOf(meta + 100), "kept", async () => true, { refs: [`ipfs://${cidOf(viaRef)}`] });
     // A launch naming something that can't be identified: in doubt, kept.
     tr.track(GW + cidOf(unclear), "logo", async () => tr.logoUsed(["ipfs://garbage"], GW + cidOf(unclear)));
-    // Only web links and other files: this one really is unused, so the cleanup still works.
-    tr.track(GW + cidOf(gone), "logo", async () => tr.logoUsed(["https://example.com/a.png", `ipfs://${cidOf(plain)}`], GW + cidOf(gone)));
+    // A token's link is a proxy with another CID in its query, or a file in a directory: kept.
+    tr.track(GW + cidOf(proxied), "metadata", async () => chainLinkUses(`https://proxy.example/m.json?cache=${cidOf(plain)}`, GW + cidOf(proxied)));
+    tr.track(GW + cidOf(inDir), "metadata", async () => chainLinkUses(`ipfs://${cidOf(plain)}/metadata.json`, GW + cidOf(inDir)));
+    // A launch whose logo is an ordinary web link: it could serve this file, so logos are kept.
+    tr.track(GW + cidOf(pasted), "logo", async () => tr.logoUsed(["https://example.com/a.png"], GW + cidOf(pasted)));
+    // Only direct references to other files: this one really is unused, so the cleanup still works.
+    // A kept metadata JSON's web-link image doesn't count against it, or one pasted logo would keep every pin.
+    tr.track(GW + cidOf(meta + 200), "kept", async () => true, { refs: ["https://example.com/a.png"] });
+    tr.track(GW + cidOf(gone), "logo", async () => tr.logoUsed([`ipfs://${cidOf(plain)}`], GW + cidOf(gone)), { after: 32 * 60_000 });
+    tr.track(GW + cidOf(viaWebRef), "metadata", async () => false, { after: 32 * 60_000 });
     const c = clock(t), now = c.start;
     for (let i = 0; i < 8; i++) { c.set(now + (31 + 11 * i) * 60_000); await tr.sweep(); }
-    assert.deepEqual(p.deleted, [`https://api.pinata.cloud/v3/files/public/id-${gone}`]);
+    assert.deepEqual(p.deleted.sort(), [gone, viaWebRef].map((n) => `https://api.pinata.cloud/v3/files/public/id-${n}`).sort());
   } finally { p.restore(); }
 });
 
