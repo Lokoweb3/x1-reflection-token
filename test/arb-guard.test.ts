@@ -158,9 +158,16 @@ test("only a missing fee journal is a fresh start: anything else refuses, and ke
     assert.throws(() => cap.reached(0), FeeJournalError, `reached on ${JSON.stringify(text)}`);
     assert.equal(fs.readFileSync(file, "utf8"), text, "left for a person to look at");
   }
-  const file = feesFile();
-  fs.mkdirSync(file);
-  assert.throws(() => new FeeCap(1_000n, file).reserve(1n, 0), FeeJournalError, "unreadable: a directory stands in for a read error");
+  // Unreadable, not malformed: a reading check must refuse by itself, before any write could fail for another reason.
+  const dir = feesFile();
+  fs.mkdirSync(dir);
+  assert.throws(() => new FeeCap(1_000n, dir).reached(0), FeeJournalError, "a directory stands in for a read error");
+  if (process.getuid?.() !== 0) {
+    const locked = feesFile();
+    fs.writeFileSync(locked, '{"paid":[{"at":1,"fee":"1"}]}');
+    fs.chmodSync(locked, 0o000);
+    assert.throws(() => new FeeCap(1_000n, locked).spent(2), (e: Error) => e instanceof FeeJournalError && /EACCES/.test(e.message));
+  }
 });
 
 test("a journal from before signatures were recorded is still read", () => {
