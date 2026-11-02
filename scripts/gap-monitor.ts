@@ -7,7 +7,7 @@
  *   npx tsx scripts/gap-monitor.ts --mint <token mint> [--network mainnet|testnet] [--rpc <url>]
  *     [--min-profit 0.05] [--gap <percent>] [--loop <seconds> (default 60) | --once]
  *     [--remind <minutes> (default 60)] [--webhook <url>]
- *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
+ *     [env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *
  *   --min-profit  alert when the best round trip returns at least this much XNT more than it
  *                 puts in (after every fee and tax)
@@ -33,10 +33,11 @@ const has = (name: string) => argv.includes(`--${name}`);
 function usage(problem?: string): never {
   if (problem) console.error(problem);
   console.error("usage: npx tsx scripts/gap-monitor.ts --mint <token mint> [--network mainnet|testnet] [--rpc <url>] [--min-profit 0.05] [--gap <percent>]\n"
-    + "         [--loop <seconds> | --once] [--remind <minutes>] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>] (see the file's header)");
+    + "         [--loop <seconds> | --once] [--remind <minutes>] [--webhook <url>] (Telegram: env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID; see the file's header)");
   process.exit(problem ? 1 : 0);
 }
 if (has("help") || has("h")) usage();
+if (has("telegram-token") || has("telegram-chat")) usage("Telegram settings come from the environment only (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID): a token on the command line shows in ps and the journal");
 const num = (name: string, d: number) => { const x = flag(name); if (x === undefined) return d; const n = Number(x); if (!Number.isFinite(n) || n < 0) usage(`--${name} takes a number`); return n; };
 const mint = new PublicKey(flag("mint") ?? usage("--mint is required"));
 const network = flag("network") ?? "mainnet";
@@ -48,11 +49,10 @@ const gapAlert = flag("gap") !== undefined ? num("gap", 0) : null;
 const loopSecs = has("once") ? 0 : num("loop", 60);
 const remindMs = num("remind", 60) * 60_000;
 const webhook = flag("webhook");
-if (!!flag("telegram-token") !== !!flag("telegram-chat")) usage("Telegram needs both --telegram-token and --telegram-chat");
-// From the environment only when both are set (a token left over from another bot isn't enough).
+// Only when both are set (a token left over from another bot isn't enough).
 const envTg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
-const tgToken = flag("telegram-token") ?? (envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined);
-const tgChat = flag("telegram-chat") ?? (envTg ? process.env.TELEGRAM_CHAT_ID : undefined);
+const tgToken = envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined;
+const tgChat = envTg ? process.env.TELEGRAM_CHAT_ID : undefined;
 
 const log = (s: string) => console.log(`${new Date().toISOString().slice(0, 19).replace("T", " ")} ${s}`);
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));

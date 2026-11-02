@@ -1689,7 +1689,7 @@ function clientIp(req: http.IncomingMessage) {
   if ((peer === "127.0.0.1" || peer === "::1") && typeof fwd === "string" && fwd) {
     const ip = fwd.split(",")[0].trim();
     // Only a request from this machine itself skips the rate limits: a forwarded "127.0.0.1"
-    // was written by the client (Caddy in Vercel mode trusts the header from anyone).
+    // was written by the client (in Vercel mode Caddy passes on what Vercel, or anyone else holding the secrets, sent).
     return ip === "127.0.0.1" || ip === "::1" ? `forwarded ${ip}` : ip;
   }
   return peer;

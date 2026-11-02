@@ -215,8 +215,8 @@ async function untilChainTime(unix: number, what: string) {
   ok(`chain time past ${what}`);
 }
 /** A repo script as its operator would run it; async because the IPFS stand-in runs in this process. */
-async function script(file: string, args: string[], opts: { expectCode?: number; quiet?: boolean } = {}) {
-  const child = spawn(process.execPath, [path.join("node_modules", "tsx", "dist", "cli.mjs"), file, ...args], { env: { ...process.env, PINATA_JWT: "" }, stdio: ["ignore", "pipe", "pipe"] });
+async function script(file: string, args: string[], opts: { expectCode?: number; quiet?: boolean; pinataJwt?: string } = {}) {
+  const child = spawn(process.execPath, [path.join("node_modules", "tsx", "dist", "cli.mjs"), file, ...args], { env: { ...process.env, PINATA_JWT: opts.pinataJwt ?? "" }, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   child.stdout!.on("data", (d) => { out += d; }); child.stderr!.on("data", (d) => { out += d; });
   const timer = setTimeout(() => child.kill(), 300_000);
@@ -321,7 +321,7 @@ try {
   {
     const pins0 = pins;
     const before = await readVault(mint);
-    const out = await script("scripts/cosigner.ts", [...cosignerArgs, "--once", "--pinata-jwt", JWT, "--pinata-api", `${IPFS}/v3/files`]);
+    const out = await script("scripts/cosigner.ts", [...cosignerArgs, "--once", "--pinata-api", `${IPFS}/v3/files`], { pinataJwt: JWT });
     assert.match(out, new RegExp(`#${p2.index}: PASS`));
     assert.ok(pins > pins0 && /second copy: \w+ \(same CID\)/.test(out), "the co-signer pinned a second copy (same CID)");
     const v = await readVault(mint);

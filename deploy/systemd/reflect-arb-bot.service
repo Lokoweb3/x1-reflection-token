@@ -19,6 +19,16 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/x1-reflection-token/state
+# No privileges, kernel or cgroup tweaks; network sockets only (IP and local).
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+# The arb bot runs as the same user as the sites: hide their keys and configs from it.
+# systemd paths don't glob, so each key file is listed; arb.keypair.json (its own wallet)
+# stays readable. Add any other *.keypair.json in /opt/x1-reflection-token here.
+InaccessiblePaths=-/opt/x1-reflection-token/mainnet -/opt/x1-reflection-token/factory
+InaccessiblePaths=-/opt/x1-reflection-token/config.json -/opt/x1-reflection-token/distributor.keypair.json -/opt/x1-reflection-token/faucet.keypair.json
 
 [Install]
 WantedBy=multi-user.target
