@@ -4,10 +4,10 @@ The runbook for moving mainnet onto the Tax Vault and reopening launches. Nothin
 done until the owner decides to go; every step says who runs it and where. Prepared
 30 Sep 2026.
 
-## Status (1 Oct 2026)
+## Status (27 Oct 2026)
 
 Path **B** (unaudited beta) was chosen, with the team key (53fT) as upgrade authority until
-the Squads multisig is set up. Done:
+the Squads multisig is set up. Done (1 Oct 2026):
 
 - P1–P3: config switches; the full rehearsal on a local copy of mainnet passed
   (`scripts/mainnet-vault-rehearsal.ts`).
@@ -17,8 +17,16 @@ the Squads multisig is set up. Done:
   the retired distributor paid what it owed and was swept to 53fT.
 - The mainnet recovery page is pinned (`bafybeid64cd…`) and served at `/recovery`.
 
-Left: phase 4 (reopen launches), P4/P5 (Squads multisig as upgrade authority), P6 (VM),
-the audit.
+Checked on-chain 26–27 Oct 2026 ([audits/upgrades/2026-10-26](../audits/upgrades/2026-10-26/README.md),
+`getAccountInfo`): `tax_vault` and `lp_locker` are each on their one and only deployment
+(1 Oct and 27 Sep 2026), bytes `25e9881f…` and `f25f916e…`, upgrade authority still **53fT**
+(a plain key, so phase 1 step 4 hasn't happened); Test's withdraw authority is the vault's
+auth PDA (`CWRTWvYT…`), its vault is v3 with publisher `8TAJ…dGkb`.
+
+Left: phase 4 (reopen launches; still paused per the README, server config not checked),
+phase 5 (v4 on mainnet: the chain still runs the v3 bytes), P4/P5 (Squads multisig as
+upgrade authority), P6 (VM; not verified either way), the audit. The go / no-go checklist
+at the end was not ticked off when path B went ahead and is left as written.
 
 ## Where mainnet was before the rollout
 
@@ -53,12 +61,12 @@ cost: code that hasn't had a formal audit holds real funds. Either way, book the
 |---|---|---|---|
 | P1 | Allow vault launches on mainnet behind a config switch: `factory.taxVault.mainnet: true` | dev | **done** |
 | P2 | "Unaudited beta" notice on the launch form and every vault panel: `factory.taxVault.beta: true` (path B; English and Spanish) | dev | **done** |
-| P3 | Mainnet rehearsal on a local validator cloning **mainnet** XDEX, `lp_locker`, USDC.X and its XNT pool (`CAJe…`) and Test's accounts: deploy the mainnet build, migrate Test, full crank cycle with the **USDC.X** creator reward, holder payout, a new launch on the vault | dev | to do |
+| P3 | Mainnet rehearsal on a local validator cloning **mainnet** XDEX, `lp_locker`, USDC.X and its XNT pool (`CAJe…`) and Test's accounts: deploy the mainnet build, migrate Test, full crank cycle with the **USDC.X** creator reward, holder payout, a new launch on the vault | dev | **done** (`scripts/mainnet-vault-rehearsal.ts`, `91ca5c8`) |
 | P4 | Squads multisig on mainnet (`multisig.mainnet.x1.xyz`), e.g. 2-of-3 (your main wallet, a second device or hardware wallet, a trusted third party); note its **vault address** | owner | to do |
 | P5 | Trial one upgrade through a Squads multisig **on testnet** first, so the process is known before it guards mainnet | owner + dev | to do |
 | P6 | VM maintenance (4 GB, updates, reboot) done beforehand | owner | to do |
 | P7 | Funds: 53fT ≥ **4.3 XNT** on mainnet (has 5.12); a new mainnet publisher key with ~0.1 XNT | owner | 53fT ok |
-| P8 | Hide the JACK pair (the vault takes XNT pairs only; a JACK launch would fall back to a server hot wallet) | dev (config) | at rollout |
+| P8 | Hide the JACK pair (the vault takes XNT pairs only; a JACK launch would fall back to a server hot wallet) | dev (config) | **done** at phase 2 (per the status above) |
 
 ## Rollout
 

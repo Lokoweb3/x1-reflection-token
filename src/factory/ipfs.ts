@@ -9,6 +9,7 @@
  * (factory.pinataApiUrl / PINATA_API_URL, factory.ipfsGateway / IPFS_GATEWAY), e.g. at a
  * local stand-in for rehearsals.
  */
+import bs58 from "bs58";
 import { Config } from "../config.js";
 
 /** Pinata's upload API (works with keys that have Files: Write). */
@@ -49,8 +50,8 @@ export const gatewayFor = (g: string, cid: string) => (g.includes("{cid}") ? g.r
 /** Tidy a gateway entry: a base gets its trailing "/", a "{cid}" template is kept as it is. */
 export const normGateway = (g: string) => (g.includes("{cid}") ? g : g.replace(/\/?$/, "/"));
 
-/** Upload one file to public IPFS through Pinata (or a stand-in with the same API); returns its content ID. */
-export async function pinFile(t: PinTarget, blob: Blob, filename: string, label: string) {
+/** Upload one file to public IPFS through Pinata (or a stand-in with the same API). */
+async function postFile(t: PinTarget, blob: Blob, filename: string, label: string) {
   const form = new FormData();
   form.append("file", blob, filename);
   form.append("network", "public"); // public IPFS, so wallets and gateways can fetch it
@@ -60,9 +61,178 @@ export async function pinFile(t: PinTarget, blob: Blob, filename: string, label:
   // Pinata's own reason (a revoked key, missing Files: Write, the plan's file or storage limit) is in the body.
   if (r.status === 401 || r.status === 403) throw new Error(`IPFS upload was refused (${r.status}: ${text.replace(/\s+/g, " ").slice(0, 160) || "no reason given"}): check the Pinata key is active, has Files: Write, and the plan isn't at its limit.`);
   if (!r.ok) throw new Error(`IPFS upload failed (${r.status}): ${text.slice(0, 160)}`);
-  const cid = (JSON.parse(text) as { data?: { cid?: string } }).data?.cid;
+  const data = (JSON.parse(text) as { data?: { cid?: string; id?: string; is_duplicate?: boolean | null } }).data;
+  const cid = data?.cid;
   if (!cid) throw new Error("IPFS upload returned no content ID");
+  return { cid, id: data?.id, duplicate: !!data?.is_duplicate };
+}
+
+/**
+ * Upload one file and return its content ID. Identical bytes get the same CID, so an upload
+ * that overlaps a removal of that CID (unpinOrphan) may be answered with a pin about to vanish:
+ * it waits for the removal to finish and uploads again, so the pin exists when the CID is
+ * returned. That CID is never removed by this process after that.
+ */
+export async function pinFile(t: PinTarget, blob: Blob, filename: string, label: string) {
+  const started = ++pinClock;
+  const { cid, id, duplicate } = await postFile(t, blob, filename, label);
+  const racing = unpinning.get(cid);
+  if (racing || (lastUnpin.get(cid) ?? 0) > started) {
+    sharedCids.add(cid);
+    pinIds.delete(cid);
+    if (racing) { racing.waiters++; await racing.done; }
+    await postFile(t, blob, filename, label);
+    return cid;
+  }
+  // Remembered so a pin nothing ended up using can be removed (unpinOrphan); a file that was
+  // already pinned (the same bytes uploaded twice) may be in use elsewhere, so it never is.
+  if (duplicate || pinIds.has(cid)) { sharedCids.add(cid); pinIds.delete(cid); }
+  else if (id) pinIds.set(cid, id);
+  if (pinIds.size > 5_000) pinIds.delete(pinIds.keys().next().value!);
   return cid;
+}
+
+/** Pinata file ids of what this process pinned, by CID; and CIDs uploaded more than once. */
+const pinIds = new Map<string, string>();
+const sharedCids = new Set<string>();
+/** Orders uploads and removals, to tell whether an upload overlapped a removal of its CID. */
+let pinClock = 0;
+/** Removals in flight by CID, with how many uploads wait for each; and when each CID's last one began. */
+const unpinning = new Map<string, { done: Promise<void>; waiters: number }>();
+const lastUnpin = new Map<string, number>();
+/** Pinata's files API (for removing a pin), unless the uploads go to a stand-in without one. */
+const filesUrl = (cfg: Config) => process.env.PINATA_FILES_URL || (uploadUrl(cfg) === PINATA_UPLOAD_URL ? "https://api.pinata.cloud/v3/files/public" : "");
+
+/**
+ * Remove a pin this process made that nothing ended up using (its transaction never landed).
+ * Only a CID uploaded once, by this process, is removed. Returns whether it's gone: false too
+ * when an upload of the same content overlapped the removal (it is pinned again).
+ */
+export async function unpinOrphan(cfg: Config, cid: string) {
+  const id = pinIds.get(cid);
+  if (!id || sharedCids.has(cid) || !filesUrl(cfg) || !ipfsEnabled(cfg)) return false;
+  let finish = () => {};
+  const entry = { done: new Promise<void>((resolve) => { finish = resolve; }), waiters: 0 };
+  unpinning.set(cid, entry);
+  lastUnpin.set(cid, ++pinClock);
+  if (lastUnpin.size > 5_000) lastUnpin.delete(lastUnpin.keys().next().value!);
+  try {
+    const r = await fetch(`${filesUrl(cfg)}/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${jwt(cfg)}` }, signal: AbortSignal.timeout(30_000) });
+    if (!r.ok && r.status !== 404) throw new Error(`unpin ${cid} failed (${r.status}): ${(await r.text()).slice(0, 160)}`);
+    pinIds.delete(cid);
+    return entry.waiters === 0 && !sharedCids.has(cid);
+  } finally {
+    unpinning.delete(cid);
+    finish();
+  }
+}
+
+/** The CID in a link to this site's gateway, else null. */
+export function cidOfUrl(cfg: Config, url: string) {
+  const base = gatewayBase(cfg);
+  return url.startsWith(base) && /^[A-Za-z0-9]{46,64}$/.test(url.slice(base.length)) ? url.slice(base.length) : null;
+}
+
+const CID_V0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/;
+const CID_V1_BASE32 = /^[bB][A-Za-z2-7]{20,}$/;
+/** Something in a link shaped like a CID: base58 Qm..., or base32 v1 (raw "bafkrei...", dag-pb "bafybei..."). */
+const CID_IN_TEXT = /(?:^|[^A-Za-z0-9])(Qm[1-9A-HJ-NP-Za-km-z]{44}|[bB][aA][fF][A-Za-z2-7]{50,})(?![A-Za-z0-9])/;
+/** The hash inside a CID: the same file's hash whichever CID version or letter case spells it. Null if it can't be read. */
+function cidHash(token: string): string | null {
+  let bytes: Uint8Array;
+  try {
+    if (CID_V0.test(token)) bytes = bs58.decode(token);
+    else if (CID_V1_BASE32.test(token)) {
+      const out: number[] = [];
+      let bits = 0, acc = 0;
+      for (const ch of token.slice(1).toLowerCase()) {
+        acc = (acc << 5) | "abcdefghijklmnopqrstuvwxyz234567".indexOf(ch);
+        bits += 5;
+        if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 0xff); acc &= (1 << bits) - 1; }
+      }
+      if (out[0] !== 1) return null; // only CID version 1 is spelled this way
+      let at = 1;
+      while (out[at] & 0x80) at++; // the codec, a varint: raw and dag-pb files can share one hash
+      bytes = Uint8Array.from(out.slice(at + 1));
+    } else return null;
+  } catch { return null; }
+  // A multihash is its type, its length, then that many bytes.
+  if (bytes.length < 3 || bytes[0] > 0x7f || bytes[1] !== bytes.length - 2) return null;
+  return Buffer.from(bytes).toString("hex");
+}
+
+/**
+ * What a link says about the content it names:
+ *   direct    exactly that IPFS content: a bare CID, ipfs://<cid>, /ipfs/<cid> on a gateway,
+ *             <cid>.ipfs.<gateway>
+ *   mentions  a CID, but not as the thing served: a file inside a directory CID (/ipfs/<cid>/a.json),
+ *             or just somewhere in a URL (?cache=<cid>). It may be that content; it doesn't say it's not.
+ *   web       an ordinary web link: it could serve anything
+ *   unclear   it looks like IPFS but can't be read (a mutable ipns name, a CID form not read here)
+ *   none      no link at all
+ */
+export type ContentRef = { kind: "direct" | "mentions"; hash: string } | { kind: "web" | "unclear" | "none" };
+export function contentRef(link: unknown): ContentRef {
+  const text = typeof link === "string" ? link.trim() : "";
+  if (!text) return { kind: "none" };
+  const named = (token: string, rest = ""): ContentRef => {
+    const hash = cidHash(token);
+    return !hash ? { kind: "unclear" } : { kind: rest.replace(/^\/+|\/+$/g, "") ? "mentions" : "direct", hash };
+  };
+  if (CID_V0.test(text) || CID_V1_BASE32.test(text)) return named(text);
+  if (/^ipns:\/\//i.test(text)) return { kind: "unclear" };
+  const ipfs = /^ipfs:\/\/(?:ipfs\/)?([^/?#]+)([^?#]*)/i.exec(text);
+  if (ipfs) return named(ipfs[1], ipfs[2]);
+  if (/^ipfs:/i.test(text)) return { kind: "unclear" };
+  let url: URL;
+  try { url = new URL(text); } catch { return { kind: "unclear" }; }
+  if (/(^|\.)ipns\./i.test(url.hostname) || /(^|\/)ipns\//i.test(url.pathname)) return { kind: "unclear" };
+  const sub = /^([^.]+)\.ipfs\./i.exec(url.hostname);
+  if (sub) return named(sub[1], url.pathname);
+  const inPath = /(?:^|\/)ipfs\/([^/?#]+)(.*)$/i.exec(url.pathname);
+  if (inPath) return named(decodeURIComponent(inPath[1]), inPath[2]);
+  const found = CID_IN_TEXT.exec(`${url.pathname}${url.search}`);
+  if (found) { const hash = cidHash(found[1]); return hash ? { kind: "mentions", hash } : { kind: "unclear" }; }
+  return /ipfs/i.test(text) ? { kind: "unclear" } : { kind: "web" };
+}
+/**
+ * Whether a link names the content of `pinned` (a link or CID): true, false, or null when that
+ * can't be established. Compared by content, never by how the link is spelled. Only a direct
+ * reference to other content says "false"; a mention of the same hash counts as "true", and
+ * anything else can't be told apart from a link that serves this file, so it's null.
+ */
+export function sameContent(link: unknown, pinned: string): boolean | null {
+  const a = contentRef(link), b = contentRef(pinned);
+  if (a.kind === "none") return false;
+  if (b.kind !== "direct" && b.kind !== "mentions") return link === pinned ? true : null;
+  if (a.kind !== "direct" && a.kind !== "mentions") return null;
+  if (a.hash === b.hash) return true;
+  return a.kind === "direct" && b.kind === "direct" ? false : null;
+}
+/** Whether a token's on-chain metadata link still uses the `pinned` file. No link at all can't be told either: null. */
+export function chainLinkUses(onChain: unknown, pinned: string): boolean | null {
+  return contentRef(onChain).kind === "none" ? null : sameContent(onChain, pinned);
+}
+
+/**
+ * A response body, read as it streams in and given up on past `maxBytes` (a gateway or a
+ * file it serves could otherwise make the server hold any amount in memory).
+ */
+export async function readCapped(r: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(r.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) { await r.body?.cancel().catch(() => undefined); throw new Error(`larger than ${maxBytes} bytes`); }
+  if (!r.body) return Buffer.alloc(0);
+  const reader = r.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) { await reader.cancel().catch(() => undefined); throw new Error(`larger than ${maxBytes} bytes`); }
+    parts.push(value);
+  }
+  return Buffer.concat(parts);
 }
 const upload = (cfg: Config, blob: Blob, filename: string, label: string) => pinFile({ jwt: jwt(cfg), uploadUrl: uploadUrl(cfg) }, blob, filename, label);
 
@@ -81,10 +251,8 @@ export async function fetchFromGateways(gateways: string[], cid: string, maxByte
   for (const g of gateways) {
     try {
       const r = await fetch(gatewayFor(g, cid), { signal: AbortSignal.timeout(30_000) });
-      if (!r.ok) { errors.push(`${g}: ${r.status}`); continue; }
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length > maxBytes) { errors.push(`${g}: larger than ${maxBytes} bytes`); continue; }
-      return buf;
+      if (!r.ok) { errors.push(`${g}: ${r.status}`); await r.body?.cancel().catch(() => undefined); continue; }
+      return await readCapped(r, maxBytes);
     } catch (e) {
       errors.push(`${g}: ${e instanceof Error ? e.message : e}`);
     }

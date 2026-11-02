@@ -14,7 +14,7 @@ import {
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
 import crypto from "node:crypto";
 import { receiptData, receiptSvg, receiptUri } from "./web/receipt.js";
-import { gatewayBase, gatewayUrl, pinJson, pinReceiptPng } from "./factory/ipfs.js";
+import { gatewayBase, gatewayUrl, pinJson, pinReceiptPng, readCapped } from "./factory/ipfs.js";
 import { Config, requireMint } from "./config.js";
 import { poolAuthority, snapshot } from "./xdex.js";
 import {
@@ -238,7 +238,8 @@ export async function nftArt(cfg: Config, uri: string): Promise<{ image: string;
   if (!artCache.has(uri)) {
     try {
       const r = await fetch(uri, { signal: AbortSignal.timeout(10_000) });
-      const j = r.ok ? await r.json() as { image?: unknown; properties?: { receipt_sha256?: unknown }; attributes?: unknown } : null;
+      // A receipt's metadata JSON is ~2 KB: anything past 64 KB isn't one.
+      const j = r.ok ? JSON.parse((await readCapped(r, 64_000)).toString("utf8")) as { image?: unknown; properties?: { receipt_sha256?: unknown }; attributes?: unknown } : null;
       const image = typeof j?.image === "string" && j.image.startsWith(base) ? j.image : null;
       const hash = typeof j?.properties?.receipt_sha256 === "string" ? j.properties.receipt_sha256 : null;
       const attributes = Array.isArray(j?.attributes)

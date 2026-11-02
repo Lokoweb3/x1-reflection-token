@@ -20,7 +20,7 @@ import type { Config } from "../src/config.js";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curve-vault-test-"));
 process.env.REFLECT_FACTORY_DIR = dir;
 process.env.PINATA_JWT = "";
-const { buildCurveStep, buildVaultStep, launchStatus, validateCurveParams, vaultLaunches, vaultManaged } = await import("../src/factory/launch.js");
+const { buildCurveStep, buildVaultStep, launchStatus, persistLaunch, readLaunch, validateCurveParams, vaultLaunches, vaultManaged } = await import("../src/factory/launch.js");
 const { CURVE_DISC, CURVE_LEN, CurveStatus, IX: CURVE_IX, authPda, curvePda, curveSetup } = await import("../src/curve.js");
 const { IX, vaultAuthPda, vaultPda } = await import("../src/taxvault.js");
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -111,8 +111,13 @@ test("with the Tax Vault set up, a curve token's tax is withdrawable only by the
   assert.ok(vaultManaged(record), "the factory distributor skips it");
   // Minting goes to the curve (set before create_curve, the last instruction).
   assert.ok(ixs.at(-1)!.programId.equals(CURVE));
+  // Kept in memory until the mint is on-chain, then saved (still no key file).
+  assert.equal(fs.existsSync(launchFile(record.mint, "launch.json")), false);
+  assert.equal(readLaunch(record.mint)?.taxVault, true);
+  persistLaunch(record.mint);
   const saved = JSON.parse(fs.readFileSync(launchFile(record.mint, "launch.json"), "utf8"));
   assert.equal(saved.taxVault, true);
+  assert.equal(fs.existsSync(launchFile(record.mint, "distributor.json")), false);
   assert.ok(!authPda(CURVE, mint).equals(vaultAuthPda(TAX_VAULT, mint)));
 });
 

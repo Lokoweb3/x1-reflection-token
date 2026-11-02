@@ -149,8 +149,10 @@ function logEventAt(mint: string, e: Record<string, unknown>) {
  * `program`: the vault program this service runs (default factory.taxVault.programId). A
  * server can run one per program (the holder-passes trial next to the regular one); each
  * handles only the launches recorded under its program (LaunchRecord.vaultProgram).
+ * `crankConn`: the connection the crank's own passes use (one with its own queue keeps them
+ * from waiting behind visitors' page views on `conn`).
  */
-export function vaultService(conn: Connection, cfg: Config, opts: { microLamports: number }, program = vaultProgramOf(cfg)) {
+export function vaultService(conn: Connection, cfg: Config, opts: { microLamports: number }, program = vaultProgramOf(cfg), crankConn: Connection = conn) {
   /** Whether this launch's vault is under this service's program. */
   const mine = (r: LaunchRecord) => vaultProgramOf(cfg, r).equals(program);
   const xdex = new PublicKey(cfg.xdex.programId);
@@ -170,7 +172,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   let lowLoggedAt = 0;
   async function checkCrankBalance() {
     if (!crank) return;
-    crankBalance = BigInt(await conn.getBalance(crank.publicKey, "confirmed"));
+    crankBalance = BigInt(await crankConn.getBalance(crank.publicKey, "confirmed"));
     if (crankBalance < lowLamports && Date.now() - lowLoggedAt > 3_600_000) {
       lowLoggedAt = Date.now();
       console.error(`[vault crank] LOW BALANCE: ${crank.publicKey.toBase58()} has ${fromBaseUnits(crankBalance, 9)} XNT for fees (warns under ${fromBaseUnits(lowLamports, 9)}). Top it up or the vaults stop.`);
@@ -181,7 +183,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     balanceXnt: crankBalance === null ? null : fromBaseUnits(crankBalance, 9),
     low: crankBalance !== null && crankBalance < lowLamports,
   });
-  const core = crank ? vaultCrank({ conn, program, xdex, network: cfg.network, signer: crank, microLamports: opts.microLamports,
+  const core = crank ? vaultCrank({ conn: crankConn, program, xdex, network: cfg.network, signer: crank, microLamports: opts.microLamports,
     onTx: (t, v, signature, events) => record(t.mint.toBase58(), v, signature, events, crank!.publicKey.toBase58()) }) : null;
 
   // ---------- publisher quorum (Squads) ----------
@@ -225,6 +227,8 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   }
 
   const readVault = (mint: PublicKey) => readVaultAccount(conn, program, mint);
+  /** The same, on the crank's connection (its passes). */
+  const crankRead = (mint: PublicKey) => readVaultAccount(crankConn, program, mint);
 
   // ---------- read views ----------
   const viewCache = new Map<string, { at: number; data: Promise<Vault | null> }>();
@@ -490,15 +494,15 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     try { last = JSON.parse(fs.readFileSync(f, "utf8")).last; } catch { /* first run */ }
     // A node that has pruned the last indexed transaction (testnet drops old history) answers
     // "not found": read the newest ones instead (already-logged ones are skipped) and move on.
-    const sigs = await conn.getSignaturesForAddress(v.address, { until: last, limit: 50 }, "confirmed").catch((e) => {
-      if (last && /not found/i.test(msg(e))) return conn.getSignaturesForAddress(v.address, { limit: 50 }, "confirmed");
+    const sigs = await crankConn.getSignaturesForAddress(v.address, { until: last, limit: 50 }, "confirmed").catch((e) => {
+      if (last && /not found/i.test(msg(e))) return crankConn.getSignaturesForAddress(v.address, { limit: 50 }, "confirmed");
       throw e;
     });
     if (!sigs.length) return;
     const logged = loggedSignatures(mint);
     for (const s of [...sigs].reverse()) {
       if (s.err || logged.has(s.signature)) continue;
-      const tx = await conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+      const tx = await crankConn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
       if (!tx?.meta || tx.meta.err) continue;
       const events = parseEvents(tx.meta.logMessages ?? [], program).filter((e) => e.vault === v.address.toBase58());
       if (!events.length) continue;
@@ -529,7 +533,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     }
     if (!missing.length) return;
     for (const sig of missing) {
-      const tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+      const tx = await crankConn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
       if (tx?.meta) known[sig] = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses }).get(0)!.toBase58();
     }
     fs.writeFileSync(sendersPath(mint), JSON.stringify(known));
@@ -899,7 +903,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     };
     const t = tokenOf(r);
     // Only the creator can start a vault (init_vault); until then there's nothing to crank.
-    const v = await readVault(t.mint);
+    const v = await crankRead(t.mint);
     if (!v) { status.set(r.mint, { at: new Date().toISOString(), ok, notes: ["no vault yet (the creator starts it after the LP lock or the curve's graduation)"] }); return; }
     seen.add(r.mint);
     // Other crankers' transactions into the log first (a failed read only delays it to the next pass).
@@ -920,7 +924,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const passes = await c.readPassBook(vault).catch(() => null);
     if (passes) {
       await step("holder passes", async () => {
-        const now = (await readVault(t.mint)) ?? vault;
+        const now = (await crankRead(t.mint)) ?? vault;
         if (pool) await c.passRound(t, now, pool, notes);
       });
       viewCache.delete(r.mint);
@@ -937,14 +941,14 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
       return;
     }
     await step("rewards list", async () => {
-      const now = await readVault(t.mint);
+      const now = await crankRead(t.mint);
       if (!now) return;
       const file: VaultListFile = readListFile(r.mint) ?? { version: 1, mint: r.mint, vault: now.address.toBase58(), active: null, next: null, history: [] };
       const q = await quorumFor(now.publisher, true);
       if (!(await syncList(t, now, file, notes, q))) return;
-      const fresh = (await readVault(t.mint)) ?? now; // a re-sent list changes the pending fields
+      const fresh = (await crankRead(t.mint)) ?? now; // a re-sent list changes the pending fields
       await listStep(r, t, fresh, file, notes, q);
-      const latest = (await readVault(t.mint)) ?? fresh;
+      const latest = (await crankRead(t.mint)) ?? fresh;
       await payStep(t, latest, file, notes);
     });
     viewCache.delete(r.mint);
@@ -957,7 +961,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const unflagged = launches.filter((r) => !vaultManaged(r) && !r.vaultProgram && !seen.has(r.mint));
     for (let i = 0; i < unflagged.length; i += 100) {
       const chunk = unflagged.slice(i, i + 100);
-      const infos = await conn.getMultipleAccountsInfo(chunk.map((r) => addrOf(r.mint)), "confirmed");
+      const infos = await crankConn.getMultipleAccountsInfo(chunk.map((r) => addrOf(r.mint)), "confirmed");
       chunk.forEach((r, j) => { if (infos[j]?.owner.equals(program)) seen.add(r.mint); });
     }
     return launches.filter((r) => (vaultManaged(r) && mine(r)) || seen.has(r.mint));
