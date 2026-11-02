@@ -63,11 +63,13 @@ the app, distributors and keys stay on the server (Vercel can't run them).
    everything else gets a 404.
    Port 80 only answers certificate challenges. Keep 80 and 443 open in the firewall
    (DigitalOcean: Networking → Firewalls, or the droplet's own ufw).
-2. On your machine: `npx vercel login`, add the header secret to the Vercel project
-   (`npx vercel env add REFLECT_ORIGIN_SECRET production`, the `REFLECT_ORIGIN_SECRET` value from
-   `/etc/caddy/reflect-origin.env`; Vercel adds it to every forwarded request, so it's never in
-   `vercel.json`), then
-   `BACKEND=https://<ORIGIN_HOST> SECRET=<that secret> PROJECT=<project> bash deploy/vercel-deploy.sh`.
+2. On your machine: `npx vercel login`, then
+   `BACKEND=https://<ORIGIN_HOST> SECRET=<that secret> PROJECT=<project> bash deploy/vercel-deploy.sh`,
+   which creates the project and links `.vercel-site/` to it. Pages are a 404 until the next
+   step: `cd .vercel-site && npx vercel env add REFLECT_ORIGIN_SECRET production` (the
+   `REFLECT_ORIGIN_SECRET` value from `/etc/caddy/reflect-origin.env`; Vercel adds it to every
+   forwarded request, so it's never in `vercel.json`), `cd ..`, and run the same `vercel-deploy.sh`
+   command again (a new value only reaches a new deployment).
    The hop from Vercel to the server is HTTPS too: over plain HTTP anyone on the path could
    rewrite pages or the transactions a wallet signs (the script refuses an `http://` backend).
    The generated config (with the secret) stays in `.vercel-site/`, which git ignores.
@@ -76,6 +78,69 @@ the app, distributors and keys stay on the server (Vercel can't run them).
 
 Note: Vercel's free Hobby plan is for non-commercial use; a launchpad that charges fees
 may need the Pro plan under their terms.
+
+These steps are for a **new** server, which enforces the header from the start. `setup.sh`
+refuses to overwrite a Caddyfile that already serves a site (`CADDYFILE_OVERWRITE=1` to override).
+
+### Moving a live front door onto the header secret
+
+A server already live on the path secret alone must not get the enforcing config first: until
+Vercel sends the header, every request would be a 404. So the order is: secrets, a config that
+only reports, Vercel, a check, and only then enforcement. No step takes the site down, and each
+can be undone on its own. Do it on a quiet moment, with the Vercel CLI logged in on your machine.
+`deploy/origin-gate.sh` is run as root on the server, from `/opt/x1-reflection-token`.
+
+1. **Secrets, nothing enforced.** `deploy/origin-gate.sh provision`. This creates
+   `/etc/caddy/reflect-origin.env` and Caddy's drop-in (the secrets from the env file; a check of
+   them before each start and reload; no `--environ`, which would print them to the journal) and
+   saves today's config as `/etc/caddy/Caddyfile.pre-origin-auth`. Caddy keeps running as it is.
+2. **Observe.** Write the observe config and apply it:
+   - One front door: `deploy/origin-gate.sh render observe "$(cat /root/.reflect-vercel-secret)"
+     <project>.vercel.app "$(cat /root/.reflect-origin-host)" > /root/Caddyfile.observe`.
+   - More than one (the live server has mainnet and testnet), or a Caddyfile changed by hand: copy
+     `/etc/caddy/Caddyfile` to `/root/Caddyfile.observe` and change it by hand, keeping every site's
+     own host, path secret and port. For each front door, next to its path matcher, add the
+     `@authed` matcher and `header @authed X-Origin-Auth-Seen ok` line from
+     `deploy/Caddyfile.vercel.observe.template` (with a different matcher name per front door if
+     two share a site block), and in its `reverse_proxy` add `header_up -X-Origin-Auth` and
+     `header_up X-Forwarded-For {http.request.header.X-Forwarded-For}`. Remove the global
+     `trusted_proxies 0.0.0.0/0 ::/0` block.
+
+   Then `deploy/origin-gate.sh apply /root/Caddyfile.observe` (it stops on a bad secret, or if
+   `caddy validate` refuses the file, before anything changes). Check the site still loads.
+3. **Check Caddy sees the header.** For each front door, `ORIGIN_URL=https://<origin host>/<path secret>
+   FRONT_DOOR=https://<project>.vercel.app deploy/origin-gate.sh verify observe`. The "front door"
+   line fails at this point (Vercel isn't sending it yet); every "origin" line must pass.
+4. **Vercel, each front door.** On your machine, with that door's `DIR` and `PROJECT`:
+   `cd <DIR> && npx vercel env add REFLECT_ORIGIN_SECRET production && cd ..`, then
+   `BACKEND=https://<origin host> SECRET=<its path secret> PROJECT=<project> DIR=<DIR> bash deploy/vercel-deploy.sh`.
+   The site keeps working whether or not the header arrives.
+5. **Check each door really sends it.** Step 3's command again: now every line must pass,
+   including "front door". Also load the site in a browser and try a read through it. **Don't go on
+   until this passes for every front door.** If only the "front door" line fails, the value on
+   Vercel or the deployment is wrong; fix it and repeat step 4. The site is still up meanwhile.
+6. **Enforce.** Write the enforcing config: `render enforce` as in step 2, or by hand, from your
+   observe config: per front door, make the path matcher carry the two `header X-Origin-Auth` lines
+   as in `deploy/Caddyfile.vercel.template`, and remove the `@authed` matcher and the
+   `X-Origin-Auth-Seen` line. Then `deploy/origin-gate.sh apply /root/Caddyfile.enforce`.
+7. **Check enforcement.** For each door, `... deploy/origin-gate.sh verify enforce`: the origin
+   without the right header must be a 404, the front door must still work. Keep a browser on the
+   site for a few minutes.
+
+**Rollback.** At any step, `deploy/origin-gate.sh apply /root/Caddyfile.observe` goes back to
+observing (the site works with or without the header), or
+`deploy/origin-gate.sh apply /etc/caddy/Caddyfile.pre-origin-auth` to the config from before. Each
+is one reload, with no Vercel change needed: a header Caddy doesn't check does no harm. A bad
+Vercel deployment: `npx vercel rollback` in that door's `DIR`. Only once enforcement has held for a
+while, delete `/root/Caddyfile.observe` and `/etc/caddy/Caddyfile.pre-origin-auth`: observe
+mode lets the path secret alone through, so it isn't a place to stay.
+
+After enforcement, a Vercel deployment on a project without `REFLECT_ORIGIN_SECRET` is a 404 on
+every page: run `verify enforce` after anything that touches a front door.
+
+An unset or malformed secret (under 32 letters and digits) never serves requests on a default:
+`apply` and each reload refuse it and Caddy keeps its running config; a Caddy start refuses it,
+so Caddy stays down. Fix `/etc/caddy/reflect-origin.env` and `systemctl start caddy`.
 
 ## 2. Install
 
@@ -173,13 +238,12 @@ taken-over server could hand them a draining transaction. Keep it locked down:
   1. `new=$(head -c 48 /dev/urandom | base64 | tr -dc A-Za-z0-9 | head -c 48)`, set
      `REFLECT_ORIGIN_SECRET_NEXT=$new` in `/etc/caddy/reflect-origin.env`, `systemctl reload caddy`.
      Caddy now accepts the old and the new value.
-  2. On your machine, for each Vercel project: `npx vercel env rm REFLECT_ORIGIN_SECRET production`,
+  2. On your machine, for each Vercel project, in its `DIR`: `npx vercel env rm REFLECT_ORIGIN_SECRET production`,
      `npx vercel env add REFLECT_ORIGIN_SECRET production` (the new value), and redeploy
      (`deploy/vercel-deploy.sh`, with that project's `DIR`/`PROJECT`) so it takes effect.
   3. Check the site loads, then set `REFLECT_ORIGIN_SECRET=$new` too and `systemctl reload caddy`:
      the old value stops working.
-  Check: `curl -s -o /dev/null -w '%{http_code}' https://<ORIGIN_HOST>/<path secret>/` is 404
-  (no header), and the Vercel address still serves the site.
+  Check: `ORIGIN_URL=... FRONT_DOOR=... deploy/origin-gate.sh verify enforce` (see above).
 - **Faucet captcha:** create a free Cloudflare Turnstile widget (dash.cloudflare.com →
   Turnstile, add your domain) and put its keys in `config.json` as
   `factory.turnstile: { "siteKey": "...", "secret": "..." }` (or `TURNSTILE_SECRET` in the
@@ -221,6 +285,14 @@ cd /opt/x1-reflection-token
 sudo -u reflect git pull --ff-only && sudo -u reflect npm ci
 systemctl restart reflect-factory reflect-dashboard reflect-distributor reflect-factory-distributor
 ```
+
+On the live server, also restart whichever of `reflect-mainnet-factory`,
+`reflect-mainnet-factory-distributor`, `reflect-arb-bot`, `reflect-arb-scan` and
+`reflect-gap-monitor` are running. A changed unit file takes effect only after
+`cp deploy/systemd/<unit>.service /etc/systemd/system/ && systemctl daemon-reload` and a restart.
+The Telegram token and Pinata key are environment-only: a `--telegram-token`, `--telegram-chat` or
+`--pinata-jwt` left in `/etc/reflect-*.env` or `state/arb.env` makes that program exit with a usage
+error, so take them out first (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PINATA_JWT`).
 
 Distributors hold their lock only during a cycle and every transaction is journaled
 before it's sent, so restarting mid-cycle is safe: the next cycle reconciles it.

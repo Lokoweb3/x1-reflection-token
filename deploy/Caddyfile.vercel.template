@@ -1,4 +1,4 @@
-# Backend for the Vercel front door (deploy/vercel-deploy.sh). Vercel serves HTTPS on
+# ENFORCING backend for the Vercel front door (deploy/vercel-deploy.sh). Vercel serves HTTPS on
 # __PUBLIC_HOST__ and forwards every request to https://__ORIGIN_HOST__/__SECRET__/...: TLS
 # all the way to this server, so nobody on the path can read or change pages or transactions.
 # Caddy gets and renews the certificate for __ORIGIN_HOST__ itself. A request needs both the
@@ -18,12 +18,14 @@ __ORIGIN_HOST__ {
 	encode gzip
 	# Vercel forwards the home page as /__SECRET__ (no slash) and the rest as /__SECRET__/...
 	# Two accepted header values so the secret can be rotated without downtime; both are set
-	# (to the same value outside a rotation). The defaults only apply if the env file is missing.
+	# (to the same value outside a rotation). No default values, on purpose: an unset secret
+	# leaves "header X-Origin-Auth" with no value, which Caddy refuses to load, so the old config
+	# stays up (or Caddy stays down), and nothing is ever served on a value that's in this repo.
 	@site {
 		path /__SECRET__ /__SECRET__/*
 		# Values for one field are OR-ed: either secret passes.
-		header X-Origin-Auth {$REFLECT_ORIGIN_SECRET:origin-secret-unset-see-deploy-README}
-		header X-Origin-Auth {$REFLECT_ORIGIN_SECRET_NEXT:origin-secret-unset-see-deploy-README}
+		header X-Origin-Auth {$REFLECT_ORIGIN_SECRET}
+		header X-Origin-Auth {$REFLECT_ORIGIN_SECRET_NEXT}
 	}
 	handle @site {
 		uri strip_prefix /__SECRET__

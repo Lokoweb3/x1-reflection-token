@@ -19,8 +19,9 @@ mkdir -p "$DIR/public"
 # Every request also carries X-Origin-Auth, which Caddy checks (deploy/Caddyfile.vercel.template).
 # Its value is the Vercel project's REFLECT_ORIGIN_SECRET environment variable, expanded by
 # Vercel at request time, so it is never written here; a visitor's own X-Origin-Auth is dropped.
-# Set it once per project (same value as REFLECT_ORIGIN_SECRET in /etc/caddy/reflect-origin.env):
-#   npx vercel env add REFLECT_ORIGIN_SECRET production
+# Set it once per project, from that project's $DIR, where this script's first run links it (same
+# value as REFLECT_ORIGIN_SECRET in /etc/caddy/reflect-origin.env), then run this script again:
+#   cd "$DIR" && npx vercel env add REFLECT_ORIGIN_SECRET production
 cat > "$DIR/vercel.json" <<JSON
 {
   "\$schema": "https://openapi.vercel.sh/vercel.json",
@@ -40,7 +41,8 @@ JSON
 cd "$DIR"
 npx --yes vercel@latest deploy --prod --yes --name "$PROJECT"
 echo
-echo "If REFLECT_ORIGIN_SECRET isn't set on this Vercel project, every page is a 404: add it"
-echo "(npx vercel env add REFLECT_ORIGIN_SECRET production) and run this again."
+echo "If REFLECT_ORIGIN_SECRET isn't set on this Vercel project, every page is a 404 once the server"
+echo "enforces the header: add it (cd $DIR && npx vercel env add REFLECT_ORIGIN_SECRET production) and"
+echo "run this again. Check on the server: deploy/origin-gate.sh verify (deploy/README.md)."
 echo "Now add the Vercel address to config.json on the server (factory.publicUrl and factory.hosts),"
 echo "then: systemctl restart reflect-factory"
