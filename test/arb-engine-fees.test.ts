@@ -29,7 +29,7 @@ function fakeConn(opts: { fee?: (sig: string) => number | null } = {}) {
 
 function engineOn(conn: Connection, wallet: Keypair, stateDir: string, cap: bigint, alerts: string[] = [], feeReconcile?: { everyMs?: number; hurryWaitMs?: number }) {
   return createEngine({ conn, xdex: PublicKey.default, wallet, minProfit: 0n, maxIn: 1n, slipBps: 0n, reserve: 0n, priority: 1_000, stateDir,
-    log: () => undefined, alert: async (s) => { alerts.push(s); }, maxFeesPerDay: cap, feeReconcile });
+    log: () => undefined, alert: async (s) => { alerts.push(s); }, maxFeesPerDay: cap, feeReconcile, backgroundFeeWrites: true });
 }
 const until = async (ok: () => boolean, ms = 3_000) => { const end = Date.now() + ms; while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 15)); return ok(); };
 // Each distinct transfer amount signs differently, so signatures don't collide.
@@ -174,7 +174,7 @@ test("reservations that can't be settled don't hide the one behind them", async 
   // No proof for any of them: history that doesn't reach the sends.
   Object.assign(proofAvailable(conn), { getSignaturesForAddress: async () => [] });
   engineOn(conn, wallet, stateDir, 10n ** 9n, [], { everyMs: 10 });
-  assert.ok(await until(() => !feesOf(stateDir, wallet).unsettled(Date.now()).some((u) => u.signature === "LATE")), "reached past the five oldest");
+  assert.ok(await until(() => !feesOf(stateDir, wallet).unsettled(Date.now()).some((u) => u.signature === "LATE")), "reached past the oldest");
 });
 
 test("one request that throws costs only its own reservation", async () => {
@@ -188,29 +188,135 @@ test("one request that throws costs only its own reservation", async () => {
   assert.deepEqual(feesOf(stateDir, wallet).unsettled(Date.now()).map((u) => u.signature), ["BAD"]);
 });
 
-test("a direct send (sweep, peg, limit) against a full cap reconciles first, and goes out if that makes room", async () => {
+/** Every simulation the send runs, in order with the reconciliation it must follow. */
+function withSimulation(conn: Connection, events: string[]) {
+  conn.simulateTransaction = (async () => { events.push("simulate"); return { value: { err: null, unitsConsumed: 100_000, logs: [] } }; }) as unknown as typeof conn.simulateTransaction;
+  const get = conn.getTransaction.bind(conn);
+  conn.getTransaction = (async (sig: string, c: unknown) => { events.push("reconcile"); return get(sig, c as never); }) as typeof conn.getTransaction;
+  const send = conn.sendRawTransaction.bind(conn);
+  conn.sendRawTransaction = (async (raw: Buffer) => { events.push("broadcast"); return send(raw); }) as typeof conn.sendRawTransaction;
+}
+const fullRow = (fee: bigint | string, signature = "FULL") => [{ at: Date.now() - 1_000, fee: fee.toString(), signature, lastValidBlockHeight: 100 }];
+const cap = reservation + 1_000n;
+const settledSmall = (sig: string) => (sig === "FULL" ? 500 : null);
+
+test("a direct send (sweep, peg, limit) against a full cap reconciles first, simulates after that, and goes out", async () => {
   const wallet = Keypair.generate(), stateDir = dir();
-  const cap = reservation + 1_000n;
-  // Recent reservations, so only a send's own urgent pass reaches them; together they fill the cap.
-  seed(stateDir, wallet, [{ at: Date.now() - 1_000, fee: cap.toString(), signature: "FULL", lastValidBlockHeight: 100 }]);
-  const { conn, sent } = fakeConn({ fee: (sig) => (sig === "FULL" ? 500 : 600) });
-  assert.equal(await engineOn(conn, wallet, stateDir, cap).send(ix(wallet, 1), false, { units: 100_000 }).then(() => "sent"), "sent");
+  seed(stateDir, wallet, fullRow(cap)); // recent, so only a send's own urgent pass reaches it
+  const { conn, sent } = fakeConn({ fee: settledSmall });
+  const events: string[] = [];
+  withSimulation(conn, events);
+  await engineOn(conn, wallet, stateDir, cap).send(ix(wallet, 1));
   assert.equal(sent.length, 1);
+  assert.deepEqual(events.slice(0, 3), ["reconcile", "simulate", "broadcast"], "the simulation comes after the wait");
 });
 
-test("the same with room short of the fee, not at the cap: the reservation's own refusal reconciles too", async () => {
+test("a direct send short of room, not at the cap: starts over after the wait, with a fresh simulation", async () => {
   const wallet = Keypair.generate(), stateDir = dir();
-  const cap = reservation + 1_000n;
-  seed(stateDir, wallet, [{ at: Date.now() - 1_000, fee: "2000", signature: "ALMOST", lastValidBlockHeight: 100 }]);
-  const { conn, sent } = fakeConn({ fee: (sig) => (sig === "ALMOST" ? 500 : null) });
-  await engineOn(conn, wallet, stateDir, cap).send(ix(wallet, 1), false, { units: 100_000 });
+  seed(stateDir, wallet, fullRow("2000"));
+  const { conn, sent } = fakeConn({ fee: settledSmall });
+  const events: string[] = [];
+  withSimulation(conn, events);
+  await engineOn(conn, wallet, stateDir, cap).send(ix(wallet, 1));
   assert.equal(sent.length, 1);
+  assert.deepEqual(events.slice(0, 4), ["simulate", "reconcile", "simulate", "broadcast"]);
+});
+
+for (const [name, row] of [["at a full cap", cap], ["short of room", 2_000n]] as const)
+  test(`a trade simulated before a wait for room (${name}) is refused, though room opened, and goes out on the next check`, async () => {
+    const wallet = Keypair.generate(), stateDir = dir();
+    seed(stateDir, wallet, fullRow(row));
+    const { conn, sent } = fakeConn({ fee: settledSmall });
+    const alerts: string[] = [];
+    const engine = engineOn(conn, wallet, stateDir, cap, alerts);
+    await assert.rejects(engine.send(ix(wallet, 1), false, { units: 100_000 }), (e: Error) => e instanceof FeeCapReached);
+    assert.equal(sent.length, 0, "no stale trade with skipPreflight");
+    assert.equal(feesOf(stateDir, wallet).spent(Date.now()), 500n, "room was made");
+    assert.deepEqual(alerts.filter((a) => a.startsWith("paused")), [], "room now: not a pause");
+    await engine.send(ix(wallet, 1), false, { units: 100_000 });
+    assert.equal(sent.length, 1);
+  });
+
+test("a dry run's engine never rewrites the fee journal, and makes no RPC call for it", async () => {
+  const wallet = Keypair.generate(), stateDir = dir();
+  const file = path.join(stateDir, `arb-fees-${wallet.publicKey.toBase58()}.json`);
+  seed(stateDir, wallet, rowsAgo(10, "LANDED"));
+  const before = fs.readFileSync(file, "utf8"), { mtimeMs, ino } = fs.statSync(file);
+  const { conn } = fakeConn({ fee: () => 1 });
+  let calls = 0;
+  conn.getTransaction = (async () => { calls++; return { meta: { fee: 1 } }; }) as unknown as typeof conn.getTransaction;
+  const engine = createEngine({ conn, xdex: PublicKey.default, wallet, minProfit: 0n, maxIn: 1n, slipBps: 0n, reserve: 0n, priority: 1_000, stateDir,
+    log: () => undefined, alert: async () => undefined, maxFeesPerDay: 10n ** 9n, feeReconcile: { everyMs: 5 } });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.ok(engine);
+  assert.equal(calls, 0);
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+  assert.deepEqual([fs.statSync(file).mtimeMs, fs.statSync(file).ino], [mtimeMs, ino]);
+  assert.equal(fs.existsSync(`${file}.lock`), false);
+});
+
+test("the scripts give only live runs the background write capability", () => {
+  for (const script of ["arb-bot.ts", "arb-scan.ts"])
+    assert.match(fs.readFileSync(path.join(import.meta.dirname, "..", "scripts", script), "utf8"), /backgroundFeeWrites: execute \}\)/, script);
+});
+
+test("a background pass that finds the journal bad alerts once, before any send hits it", async () => {
+  const wallet = Keypair.generate(), stateDir = dir();
+  fs.writeFileSync(path.join(stateDir, `arb-fees-${wallet.publicKey.toBase58()}.json`), "{ torn");
+  const { conn } = fakeConn();
+  const alerts: string[] = [];
+  engineOn(conn, wallet, stateDir, 10n ** 9n, alerts, { everyMs: 5 });
+  assert.ok(await until(() => alerts.length > 0), "alerted");
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(alerts.length, 1, "once");
+  assert.match(alerts[0], /^not sending: .*fee journal/);
+});
+
+test("a live run on a journal another user left says so: who owns it, who's asking, the fix", { skip: process.getuid?.() === 0 }, async () => {
+  const wallet = Keypair.generate(), stateDir = dir();
+  const file = path.join(stateDir, `arb-fees-${wallet.publicKey.toBase58()}.json`);
+  seed(stateDir, wallet, []);
+  fs.chmodSync(file, 0o000);
+  // A test can't make a root-owned file without root, so a modelled stat says it's root's. The read's EACCES is real.
+  const stat = fs.statSync;
+  (fs as { statSync: unknown }).statSync = (p: fs.PathLike, ...rest: unknown[]) => (String(p) === file ? { uid: 0 } : (stat as (...a: unknown[]) => unknown)(p, ...rest));
+  try {
+    const { conn, sent } = fakeConn();
+    const alerts: string[] = [];
+    await assert.rejects(engineOn(conn, wallet, stateDir, 10n ** 9n, alerts).send(ix(wallet, 1), false, { units: 100_000 }), FeeJournalError);
+    assert.equal(sent.length, 0);
+    assert.match(alerts[0], /EACCES/);
+    assert.match(alerts[0], new RegExp(`belongs to uid 0 and this process runs as uid ${process.getuid!()}`));
+    assert.match(alerts[0], /chown/);
+  } finally { (fs as { statSync: unknown }).statSync = stat; }
+});
+
+test("a reconcile pass is bounded, and a run of refused sends doesn't repeat it", async () => {
+  const wallet = Keypair.generate(), stateDir = dir();
+  seed(stateDir, wallet, rowsAgo(10, "a", "b", "c", "d", "e", "f", "g"));
+  const { conn } = fakeConn({ fee: () => null });
+  const asked: string[] = [];
+  const get = conn.getTransaction.bind(conn);
+  conn.getTransaction = (async (sig: string, c: unknown) => { asked.push(sig); return get(sig, c as never); }) as typeof conn.getTransaction;
+  engineOn(conn, wallet, stateDir, 10n ** 9n);
+  await until(() => asked.length >= 3, 500);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(asked.length, 3, "a few at a time");
+
+  const w2 = Keypair.generate(), d2 = dir();
+  seed(d2, w2, fullRow(cap));
+  const c2 = fakeConn({ fee: () => null });
+  let lookups = 0;
+  c2.conn.getTransaction = (async () => { lookups++; return null; }) as unknown as typeof c2.conn.getTransaction;
+  const engine = engineOn(c2.conn, w2, d2, cap);
+  await assert.rejects(engine.send(ix(w2, 1), false, { units: 100_000 }), FeeCapReached);
+  await assert.rejects(engine.send(ix(w2, 2), false, { units: 100_000 }), FeeCapReached);
+  assert.equal(lookups, 1, "the second refusal doesn't look again within the gap");
 });
 
 test("no room to be made: refused, and a hung RPC can't hold the send past its bound", async () => {
   const wallet = Keypair.generate(), stateDir = dir();
-  const cap = reservation + 1_000n;
-  seed(stateDir, wallet, [{ at: Date.now() - 1_000, fee: cap.toString(), signature: "FULL", lastValidBlockHeight: 100 }]);
+  seed(stateDir, wallet, fullRow(cap));
   const { conn, sent } = fakeConn();
   conn.getTransaction = (() => new Promise(() => undefined)) as unknown as typeof conn.getTransaction;
   const started = Date.now();

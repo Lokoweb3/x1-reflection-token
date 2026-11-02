@@ -21,7 +21,7 @@
  * hour (with an alert), and with `maxFeesPerDay` the engine sends nothing that would take the fees of the last 24 hours
  * past it (state/arb-fees-<wallet>.json, shared by every process on the wallet; an alert says so), which pauses every
  * trade, sweep and top-up until the window rolls on. Each send reserves its fee before broadcast; transaction metadata
- * then replaces the estimate, also on a timer of its own, and before a send is refused for lack of room. A fee journal that can't be read stops sending, with an alert, until someone fixes it.
+ * then replaces the estimate, also on a timer of its own (live runs only), and before a send is refused for lack of room. A fee journal that can't be read stops sending, with an alert, until someone fixes it.
  *
  * Ownership: with `own` wallets, each route's mispriced pools (the side pools) are checked for how
  * much of their liquidity those wallets provide (LP held, or locked in the 8N4E… locker); a route
@@ -75,6 +75,11 @@ export interface EngineOptions {
   alert: (s: string) => Promise<void>;
   /** Most lamports of fees to pay in any 24 hours; once reached nothing more is sent. Undefined or 0 = no cap. */
   maxFeesPerDay?: bigint;
+  /**
+   * May this engine rewrite the fee journal by itself, with no send of its own (startup and timer reconciliation)? Only
+   * a live run: a dry run may be looking at the live state directory, and perhaps as another user. Default no.
+   */
+  backgroundFeeWrites?: boolean;
   /** Fee reconciliation's pace: how often it runs, and how long a send waits for it when the cap is in the way (tests shorten these). */
   feeReconcile?: { everyMs?: number; hurryWaitMs?: number };
 }
@@ -87,12 +92,13 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const MAX_TX = 1232;
 const FEE_SETTLE_RETRY_MS = 1_500;
 const FEE_RECONCILE_EVERY_MS = 60_000;
-const FEE_RECONCILE_HURRY_GAP_MS = 15_000;
+const FEE_RECONCILE_HURRY_GAP_MS = 60_000;
 const FEE_RECONCILE_HURRY_WAIT_MS = 10_000;
 const FEE_RECONCILE_REQUEST_MS = 15_000;
 /** Reservations younger than this are left to the send that made them. */
 const FEE_RECONCILE_AFTER_MS = 3 * 60_000;
-const FEE_RECONCILE_MAX = 5;
+/** One reservation can take up to 10 RPC calls: this and the gaps above keep it to about 60 a minute at the very worst. */
+const FEE_RECONCILE_MAX = 3;
 
 /** Rent of one new token account (about 0.0021 XNT): a route that needs accounts opened must earn it on top of its minimum. */
 export const ACCOUNT_RENT = 2_100_000n;
@@ -296,6 +302,7 @@ export function createEngine(o: EngineOptions) {
   };
   /** A journal or lock that can't be trusted stops all sending: one alert saying so. */
   const journalTrouble = (e: unknown) => {
+    if (!(e instanceof FeeJournalError)) return;
     journalProblem = e;
     if (!journalAlerted) { journalAlerted = true; void o.alert(`not sending: ${msg(e)}`); }
   };
@@ -327,7 +334,7 @@ export function createEngine(o: EngineOptions) {
   /** After a send: settle while the transaction is fresh; reconcileFees picks up any this misses. Never throws. */
   async function settleSoon(signature: string) {
     for (let i = 0; i < 4; i++) {
-      if (await settleFee(signature).catch(() => false)) return;
+      if (await settleFee(signature).catch((e) => { journalTrouble(e); return false; })) return;
       await new Promise((r) => setTimeout(r, FEE_SETTLE_RETRY_MS).unref?.());
     }
   }
@@ -350,6 +357,7 @@ export function createEngine(o: EngineOptions) {
       })(), FEE_RECONCILE_REQUEST_MS, true);
     } catch (e) {
       retries.failed(u.signature, Date.now());
+      journalTrouble(e);
       o.log(`fee reconcile: ${u.signature}: ${msg(e).split("\n")[0]}`);
     }
   }
@@ -367,19 +375,16 @@ export function createEngine(o: EngineOptions) {
       const now = Date.now();
       const due = feeCap.unsettled(now).filter((u) => hurry || now - u.at > FEE_RECONCILE_AFTER_MS);
       for (const u of retries.pick(due, now, FEE_RECONCILE_MAX, hurry)) await reconcileOne(u);
-    })().catch((e) => o.log(`fee reconcile: ${msg(e).split("\n")[0]}`)).finally(() => { reconciling = null; });
+    })().catch((e) => { journalTrouble(e); o.log(`fee reconcile: ${msg(e).split("\n")[0]}`); }).finally(() => { reconciling = null; });
     return reconciling;
   }
   /** The cap's in the way of a send: give reconciliation a bounded chance to make room first. */
   const reconcileBeforeRefusing = () => within(reconcileFees(true), reconcileHurryWait).catch(() => undefined);
-  /** Like feeCapReached, after trying to make room. */
-  async function blockedByCap() {
-    try { if (feeCap.reached(Date.now())) await reconcileBeforeRefusing(); } catch { /* feeCapReached says what's wrong */ }
-    return feeCapReached();
+  // On a live run it goes by itself, whatever the bot is doing: a pass with no paying route never reaches a send. Won't keep a process alive.
+  if (o.backgroundFeeWrites) {
+    void reconcileFees();
+    setInterval(() => void reconcileFees(), reconcileEvery).unref();
   }
-  // Runs by itself, whatever the bot is doing: a pass with no paying route never reaches a send. Won't keep a process alive.
-  void reconcileFees();
-  setInterval(() => void reconcileFees(), reconcileEvery).unref();
   const routeKey = (p: Plan) => p.route.hops.map((h) => h.snap.pool.address.toBase58()).join(">");
 
   // ---------- sending ----------
@@ -421,7 +426,15 @@ export function createEngine(o: EngineOptions) {
    * rejects is never sent (it would only burn its fee). It goes out without the RPC's own preflight check
    * (already simulated), at `priority` micro-lamports per compute unit.
    */
-  async function send(ixs: TransactionInstruction[], useAlt = false, opt: { units?: number; priority?: number } = {}) {
+  async function send(ixs: TransactionInstruction[], useAlt = false, opt: { units?: number; priority?: number; again?: boolean } = {}): Promise<string> {
+    // Waiting for fee room leaves a simulation stale, and the transaction goes out without preflight, so a wait never
+    // comes between the two. A trade the caller already simulated is refused after any wait (the next route check prices
+    // it afresh). A send that simulates here (sweep, close-dust, skim, wrap, setup, peg, limit) waits first, or starts over.
+    let full = false;
+    try { full = feeCap.reached(Date.now()); } catch { /* feeCapReached says what's wrong */ }
+    if (full) await reconcileBeforeRefusing();
+    if (feeCapReached()) throw journalProblem ?? new FeeCapReached("the daily fee cap is reached, not sent");
+    if (full && opt.units !== undefined) throw new FeeCapReached("waited for fee room after this trade was simulated, not sent: the next check retries");
     let used = opt.units;
     if (used === undefined) {
       const sim = await simulate(ixs, useAlt);
@@ -430,7 +443,6 @@ export function createEngine(o: EngineOptions) {
     }
     const units = !used ? 600_000 : Math.min(1_400_000, Math.ceil(used * 1.2) + 3_000);
     const price = opt.priority ?? o.priority;
-    if (await blockedByCap()) throw journalProblem ?? new FeeCapReached("the daily fee cap is reached, not sent");
     const all = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: price }), ComputeBudgetProgram.setComputeUnitLimit({ units }), ...ixs];
     const { blockhash: recent, lastValidBlockHeight } = await blockhash();
     const tx = await compile(all, useAlt, recent);
@@ -443,10 +455,9 @@ export function createEngine(o: EngineOptions) {
     const reservation = x1FeeReservation(tx.message.header.numRequiredSignatures, units, price), reserving = { signature: journaled, lastValidBlockHeight };
     if (!reserveFee(reservation, reserving)) {
       await reconcileBeforeRefusing();
-      if (!reserveFee(reservation, reserving)) {
-        capPaused(Date.now());
-        throw new FeeCapReached("the daily fee cap has no room for this transaction, not sent");
-      }
+      if (opt.units === undefined && !opt.again) return send(ixs, useAlt, { ...opt, again: true });
+      if (!feeCap.fits(reservation, Date.now())) capPaused(Date.now());
+      throw new FeeCapReached("the daily fee cap had no room for this transaction when it was built, not sent");
     }
     // A peg or limit trade journals its signature before it goes out (src/send-intent.ts).
     signed(journaled, lastValidBlockHeight);
@@ -510,7 +521,7 @@ export function createEngine(o: EngineOptions) {
   }
 
   async function executeNow(found: { plan: Plan; ownShare: number }[], meta: (p: Plan) => Record<string, unknown>) {
-    if (await blockedByCap()) return 0;
+    if (feeCapReached()) { void reconcileBeforeRefusing(); return 0; }
     const chosen: typeof found = [];
     const used = new Set<string>();
     const now = Date.now();

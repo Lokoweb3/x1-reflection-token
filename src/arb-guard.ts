@@ -52,6 +52,16 @@ export class FeeCapReached extends Error {}
 export class FeeJournalError extends Error {}
 
 const errno = (e: unknown) => (e as NodeJS.ErrnoException)?.code;
+/** For a permission error: who owns `target`, against who's asking, and the fix. A journal left by another user (a run as root) reads as just "EACCES". */
+function ownerProblem(target: string, e: unknown) {
+  if (errno(e) !== "EACCES" && errno(e) !== "EPERM") return "";
+  const me = process.getuid?.();
+  try {
+    const owner = fs.statSync(target).uid;
+    if (owner !== me) return `; ${target} belongs to uid ${owner} and this process runs as uid ${me}: was it run as another user? Run: chown ${me} ${target}`;
+    return `; this process (uid ${me}) owns ${target}, so check its mode`;
+  } catch { return `; this process (uid ${me}) can't even look at ${target}: check who owns its directory`; }
+}
 const sleepSync = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 const isAlive = (pid: number) => {
   try { process.kill(pid, 0); return true; } catch (e) { return errno(e) !== "ESRCH"; }
@@ -129,7 +139,7 @@ export function withFileLock<T>(file: string, fn: (stillHeld: () => boolean) => 
     }
   } catch (e) {
     if (e instanceof FeeJournalError) throw e;
-    throw new FeeJournalError(`can't take the lock ${lock}: ${(e as Error).message}`);
+    throw new FeeJournalError(`can't take the lock ${lock}: ${(e as Error).message}${ownerProblem(path.dirname(file), e)}`);
   } finally { fs.rmSync(mine, { force: true }); }
   const stillHeld = () => { try { return fs.readFileSync(lock, "utf8") === me; } catch { return false; } };
   try { return fn(stillHeld); } finally { if (stillHeld()) fs.rmSync(lock, { force: true }); }
@@ -153,7 +163,7 @@ export class FeeCap {
     let text: string;
     try { text = fs.readFileSync(this.file, "utf8"); } catch (e) {
       if (errno(e) === "ENOENT") return [];
-      throw bad((e as Error).message);
+      throw bad(`${(e as Error).message}${ownerProblem(this.file, e)}`);
     }
     let rows: unknown;
     try { rows = (JSON.parse(text) as { paid?: unknown }).paid; } catch (e) { throw bad((e as Error).message); }
@@ -169,7 +179,7 @@ export class FeeCap {
     if (!stillHeld()) throw new FeeJournalError(`lost the lock on ${this.file} (someone deleted it?); not writing, not sending`);
     try {
       writeFileDurable(this.file, JSON.stringify({ paid: paid.map((p) => ({ ...p, fee: p.fee.toString() })) }) + "\n");
-    } catch (e) { throw new FeeJournalError(`can't write the fee journal ${this.file}: ${(e as Error).message}`); }
+    } catch (e) { throw new FeeJournalError(`can't write the fee journal ${this.file}: ${(e as Error).message}${ownerProblem(path.dirname(this.file), e)}`); }
   }
   private update<T>(now: number, fn: (paid: FeeEntry[], stillHeld: () => boolean) => T): T {
     return withFileLock(this.file, (stillHeld) => fn(this.read(now), stillHeld), this.lock);
@@ -177,6 +187,8 @@ export class FeeCap {
 
   /** Lamports paid (or reserved) in the 24 hours before `now`. The file is replaced atomically, so this needs no lock. */
   spent(now: number): bigint { return this.read(now).reduce((t, p) => t + p.fee, 0n); }
+  /** Would `fee` fit under the cap now? Just a look: only `reserve` claims the room. */
+  fits(fee: bigint, now: number): boolean { return this.cap === 0n || this.spent(now) + fee <= this.cap; }
   /** True when the cap is reached: send nothing more. */
   reached(now: number): boolean { return this.cap > 0n && this.spent(now) >= this.cap; }
   /**

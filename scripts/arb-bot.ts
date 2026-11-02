@@ -174,7 +174,7 @@ async function alert(text: string) {
 // more (trades, sweeps, peg and limit buys) until they age out; a route whose sends fail 5 times in a row within
 // 10 minutes is skipped for an hour (src/arb-guard.ts). Both alert.
 const maxFeesPerDay = lamports(num("max-fees-day", 0.5));
-const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, racePriority, stateDir, log, alert, maxFeesPerDay });
+const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, racePriority, stateDir, log, alert, maxFeesPerDay, backgroundFeeWrites: execute });
 const { wxntAta, balanceOf, send } = engine;
 
 if (has("unwrap")) {
