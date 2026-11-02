@@ -257,11 +257,22 @@ taken-over server could hand them a draining transaction. Keep it locked down:
 ## 5. Backups
 
 `deploy/backup.sh` runs daily at 03:15 UTC and writes an encrypted archive of
-`config.json`, every `*.keypair.json`, `state/`, `factory/` and `mainnet/` to
-`/var/backups/reflect` (keeps 30), then copies it off the server. It writes to a temp file,
-keeps only an archive that tar and gpg both finished, and checks it is encrypted as expected;
-tar's errors land in `/var/log/reflect-backup.log`. Settings live in `/etc/reflect-backup.env`
-(root-only):
+`config.json`, every `*.keypair.json` and `*-keypair.json`, `state/`, `factory/` (with
+`factory/pending-launches/`) and `mainnet/` to `/var/backups/reflect` (keeps 30), then copies it
+off the server. It stops without an archive if the config, the folders or every key file are
+missing. It writes to a temp file, keeps only an archive that tar and gpg both finished, reads the
+archive stream back to check it's a complete tar.gz with those contents, and checks it is
+encrypted as expected (with the passphrase fallback it also decrypts it). A file changing while
+it's read is only a warning. Messages land in `/var/log/reflect-backup.log`; **nothing alerts on a
+failed run**, so look there now and then (`grep -c 'Backup written' /var/log/reflect-backup.log`,
+and `ls -lt /var/backups/reflect | head`).
+
+With a public key, only you can test that a backup really decrypts: every so often, on your own
+machine, `gpg -d <newest> | tar -tzf - | grep -c distributor.json`, using the copy from off the
+server. Not in the archive, and to be set up again after a total loss: the files in `/etc` (the
+`reflect-*.env` settings and alert tokens, `caddy/reflect-origin.env`) and the path secret in `/root`.
+
+Settings live in `/etc/reflect-backup.env` (root-only):
 
 - **Encrypt to a public key** (recommended): the server can then write backups but not read
   them. On your own machine: `gpg --quick-gen-key "reflect backups" rsa4096 encr never`, keep
