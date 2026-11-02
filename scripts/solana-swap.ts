@@ -4,10 +4,12 @@
  *
  *   npx tsx scripts/solana-swap.ts --in <mint|USDC|SOL> --out <mint|GOOGLx> --amount <in units> [--slippage 0.5] [--keypair ./arb.keypair.json] [--live]
  *
- * Before sending: every instruction must be one a swap needs (src/swap-guard.ts: no approvals, authority changes,
- * account closes or SOL transfers to anyone but this wallet), and the simulation must succeed with account
- * post-states that spend no more than --amount of the input token, deliver at least the quote's minimum, and cost
- * no more lamports than the fee budget. After sending it waits for finality and prints what actually arrived.
+ * Before sending: every instruction must be one a swap needs (src/swap-guard.ts: no approvals, no authority changes,
+ * no account closes or SOL transfers to anyone but this wallet), and the simulation must succeed with account
+ * post-states that spend no more than --amount of the input token, deliver at least the quote's minimum, leave every
+ * token account of the wallet with the wallet and with no new delegate, and cost no more lamports than the fee budget
+ * (Solana's fees, plus rent only for new token accounts the wallet owns). After sending it waits for finality and
+ * prints what actually arrived.
  */
 import {
   Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount,
@@ -15,7 +17,7 @@ import {
 import { NATIVE_MINT, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import bs58 from "bs58";
 import { loadKeypair } from "../src/config.js";
-import { checkSwapEffect, checkSwapInstructions, tokenAccountAmount } from "../src/swap-guard.js";
+import { checkSwapEffect, checkSwapInstructions, checkWalletAccounts, tokenAccountAmount } from "../src/swap-guard.js";
 
 const ALIAS: Record<string, string> = {
   USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -25,6 +27,7 @@ const ALIAS: Record<string, string> = {
 const JUP = "https://lite-api.jup.ag/swap/v1";
 const MIN_SOL = 2_000_000; // lamports left for later fees
 const MAX_PRIORITY = 200_000; // lamports: the priority fee cap asked of Jupiter below
+const MAX_WATCHED = 100; // the most accounts one RPC call returns
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
@@ -103,7 +106,8 @@ for (const l of tx.message.addressTableLookups) {
   tables.push(t!);
 }
 const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet.publicKey);
-const bad = checkSwapInstructions(TransactionMessage.decompile(tx.message, { addressLookupTableAccounts: tables }).instructions, { owner: wallet.publicKey, wsolAta });
+const instructions = TransactionMessage.decompile(tx.message, { addressLookupTableAccounts: tables }).instructions;
+const bad = checkSwapInstructions(instructions, { owner: wallet.publicKey, wsolAta });
 if (bad.length) fail(`the swap transaction does more than swap:\n  ${bad.join("\n  ")}`);
 
 // Simulate with the wallet's accounts' post-states and check what it would really move.
@@ -113,7 +117,10 @@ const ataFor = async (mint: string) => {
   return getAssociatedTokenAddressSync(new PublicKey(mint), wallet.publicKey, false, info!.owner);
 };
 const inAta = inMint === ALIAS.SOL ? null : await ataFor(inMint), outAta = outMint === ALIAS.SOL ? null : await ataFor(outMint);
-const watched = [wallet.publicKey, wsolAta, ...(inAta ? [inAta] : []), ...(outAta ? [outAta] : [])];
+// Besides the wallet and its input, output and wSOL accounts: every other account the transaction can write.
+const fixed = [wallet.publicKey, wsolAta, ...(inAta ? [inAta] : []), ...(outAta ? [outAta] : [])];
+const watched = [...new Map([...fixed, ...instructions.flatMap((ix) => ix.keys.filter((k) => k.isWritable).map((k) => k.pubkey))].map((k) => [k.toBase58(), k])).values()];
+if (watched.length > MAX_WATCHED) fail(`the swap writes ${watched.length} accounts, more than can be checked (${MAX_WATCHED})`);
 const pre = await conn.getMultipleAccountsInfo(watched, "confirmed");
 const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, accounts: { encoding: "base64", addresses: watched.map((k) => k.toBase58()) } });
 if (sim.value.err) fail(`the simulation failed: ${JSON.stringify(sim.value.err)}\n${(sim.value.logs ?? []).slice(-6).join("\n")}`);
@@ -123,9 +130,13 @@ const postData = (i: number) => Buffer.from(post[i]!.data[0], "base64");
 const lamportsBefore = (i: number) => BigInt(pre[i]?.lamports ?? 0), lamportsAfter = (i: number) => BigInt(post[i]?.lamports ?? 0);
 const amountBefore = (i: number) => (pre[i] ? tokenAccountAmount(pre[i]!.data) : 0n), amountAfter = (i: number) => (post[i] ? tokenAccountAmount(postData(i)) : 0n);
 const inIdx = inAta ? 2 : -1, outIdx = outAta ? 2 + (inAta ? 1 : 0) : -1;
-// Rent for token accounts the swap opens (the wallet's own) is part of what it may cost.
-const newRent = [inIdx, outIdx].filter((i) => i >= 0 && !pre[i] && post[i]).reduce((t, i) => t + lamportsAfter(i), 0n);
-const maxFee = 5_000n * BigInt(tx.message.header.numRequiredSignatures) + BigInt(MAX_PRIORITY) + newRent;
+const accounts = checkWalletAccounts(watched.map((address, i) => ({ address,
+  pre: pre[i] ? { lamports: BigInt(pre[i]!.lamports), owner: pre[i]!.owner, data: Buffer.from(pre[i]!.data) } : null,
+  post: post[i] ? { lamports: BigInt(post[i]!.lamports), owner: new PublicKey(post[i]!.owner), data: postData(i) } : null })),
+  { owner: wallet.publicKey, wsolAta, inAta, outAta });
+if (accounts.problems.length) fail(`the simulated swap touches the wallet's accounts:\n  ${accounts.problems.join("\n  ")}`);
+// Solana's fee model (X1's is in src/arb-guard.ts): base per signature, priority capped above, rent of the wallet's new accounts.
+const maxFee = 5_000n * BigInt(tx.message.header.numRequiredSignatures) + BigInt(MAX_PRIORITY) + accounts.newRent;
 const effect = checkSwapEffect({ amount, minOut, maxFee, inIsSol: inMint === ALIAS.SOL, outIsSol: outMint === ALIAS.SOL,
   inDebit: inIdx >= 0 ? amountBefore(inIdx) - amountAfter(inIdx) : 0n, outCredit: outIdx >= 0 ? amountAfter(outIdx) - amountBefore(outIdx) : 0n,
   solDelta: lamportsAfter(0) + lamportsAfter(1) - lamportsBefore(0) - lamportsBefore(1) });
