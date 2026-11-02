@@ -44,7 +44,9 @@ function curveData(mint: PublicKey, o: { status: number; delivered?: bigint; cre
 /** What the stand-in chain does. `refuse`: simulations carrying this step fail with lp_locker's error. */
 const world = {
   accounts: new Map<string, { owner: string; data: Buffer }>(),
-  refuse: new Set<Step>(), simDown: false, sendDown: false, sends: [] as Buffer[], programQueries: [] as string[],
+  refuse: new Set<Step>(), sends: [] as Buffer[], programQueries: [] as string[],
+  // The RPC failing only for transactions carrying these steps, so a burn or refund that follows could go through.
+  simDown: new Set<Step>(), sendDown: new Set<Step>(),
 };
 const account = (a: { owner: string; data: Buffer }) => ({ data: [a.data.toString("base64"), "base64"], executable: false, lamports: 1_000_000, owner: a.owner, rentEpoch: 0, space: a.data.length });
 const ctx = { context: { slot: 1, apiVersion: "1.18" } };
@@ -62,14 +64,15 @@ before(async () => {
         return [...world.accounts.entries()].filter(([, a]) => a.owner === program.toBase58()).map(([pubkey, a]) => ({ pubkey, account: account(a) }));
       }
       case "simulateTransaction": {
-        if (world.simDown) return rpcError(-32005, "Too many requests");
         const raw = Buffer.from(params[0], "base64");
+        if ([...world.simDown].some((s) => raw.includes(IX[s]))) return rpcError(-32005, "Too many requests");
         const refused = [...world.refuse].some((s) => raw.includes(IX[s]));
         return { ...ctx, value: { err: refused ? { InstructionError: [2, { Custom: 6001 }] } : null, unitsConsumed: 1000, accounts: null, returnData: null,
           logs: refused ? [`Program ${LOCKER_PROGRAM_ID.toBase58()} failed: custom program error: 0x1771`] : [] } };
       }
       case "sendTransaction": {
-        if (world.sendDown) return rpcError(-32005, "Too many requests");
+        const raw = Buffer.from(params[0], "base64");
+        if ([...world.sendDown].some((s) => raw.includes(IX[s]))) return rpcError(-32005, "Too many requests");
         const tx = Transaction.from(Buffer.from(params[0], "base64"));
         world.sends.push(...tx.instructions.filter((i) => i.programId.equals(program)).map((i) => i.data));
         return "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
@@ -81,7 +84,7 @@ before(async () => {
   });
 });
 after(async () => { await rpc.close(); fs.rmSync(dir, { recursive: true, force: true }); });
-beforeEach(() => { world.accounts.clear(); world.refuse.clear(); world.simDown = false; world.sendDown = false; world.sends.length = 0; world.programQueries.length = 0; });
+beforeEach(() => { world.accounts.clear(); world.refuse.clear(); world.simDown.clear(); world.sendDown.clear(); world.sends.length = 0; world.programQueries.length = 0; });
 
 const cfg = () => ({ network: "testnet", factory: { curve: { programId: program.toBase58(), crankKeypair: crankKey } }, xdex: { programId: "7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf" } }) as never;
 const service = () => curves.curveService(conn(), cfg(), { microLamports: 1 });
@@ -98,18 +101,18 @@ async function passes(t: TestContext, s: ReturnType<typeof service>, n: number, 
 }
 const pastBurn = () => BigInt(now() - LOCK_AFTER_SECS - DAY);
 
-test("past the burn deadline: an RPC outage never burns, however long it lasts", async (t) => {
+test("past the burn deadline: RPC errors on the lock's simulation never burn, however long they last", async (t) => {
   const mint = Keypair.generate().publicKey;
   put(mint, curveData(mint, { status: CurveStatus.PoolCreated, delivered: pastBurn() }));
-  world.simDown = true;
+  world.simDown.add("graduateLock");
   await passes(t, service(), 6, REFUSAL_SPAN_SECS);
   assert.equal(sent("graduateBurn"), 0);
 });
 
-test("past the burn deadline: failed sends with a healthy simulation never burn", async (t) => {
+test("past the burn deadline: the lock's send failing with a healthy simulation never burns", async (t) => {
   const mint = Keypair.generate().publicKey;
   put(mint, curveData(mint, { status: CurveStatus.PoolCreated, delivered: pastBurn() }));
-  world.sendDown = true;
+  world.sendDown.add("graduateLock");
   await passes(t, service(), 6, REFUSAL_SPAN_SECS);
   assert.equal(sent("graduateBurn"), 0);
 });
@@ -132,9 +135,9 @@ test("a lock that starts working again resets the count", async (t) => {
   world.refuse.add("graduateLock");
   await passes(t, s, 1, 0);
   world.refuse.clear();
-  world.sendDown = true; // healthy simulation, but the send fails
+  world.sendDown.add("graduateLock"); // healthy simulation, but the send fails
   await passes(t, s, 1, 0);
-  world.sendDown = false;
+  world.sendDown.clear();
   world.refuse.add("graduateLock");
   await passes(t, s, 1, REFUSAL_SPAN_SECS);
   assert.equal(sent("graduateBurn"), 0);
@@ -152,11 +155,11 @@ test("before the burn deadline a refused lock never burns", async (t) => {
 test("the old program's pool: starts the wait once the lock keeps being refused, never burns on the curve's age", async (t) => {
   const mint = Keypair.generate().publicKey;
   put(mint, curveData(mint, { status: CurveStatus.PoolCreated, delivered: 0n, createdAt: now() - 400 * DAY }));
-  world.simDown = true;
+  world.simDown.add("graduateLock");
   const s = service();
   await passes(t, s, 3, REFUSAL_SPAN_SECS);
   assert.equal(sent("startBurnClock"), 0, "a transport failure starts nothing");
-  world.simDown = false;
+  world.simDown.clear();
   world.refuse.add("graduateLock");
   await passes(t, s, 2, REFUSAL_SPAN_SECS);
   assert.equal(sent("startBurnClock"), 1);
@@ -169,13 +172,13 @@ test("past the refund deadline: an RPC outage or failed send doesn't open refund
   const refunds: string[] = [];
   const s = service();
   const log = t.mock.method(console, "error", (m: unknown) => { refunds.push(String(m)); });
-  world.simDown = true;
+  world.simDown.add("graduatePool");
   await passes(t, s, 4, REFUSAL_SPAN_SECS);
-  world.simDown = false;
-  world.sendDown = true;
+  world.simDown.clear();
+  world.sendDown.add("graduatePool");
   await passes(t, s, 4, REFUSAL_SPAN_SECS);
   assert.equal(refunds.filter((m) => /; refunding/.test(m)).length, 0);
-  world.sendDown = false;
+  world.sendDown.clear();
   world.refuse.add("graduatePool");
   await passes(t, s, 2, REFUSAL_SPAN_SECS);
   assert.equal(refunds.filter((m) => /; refunding/.test(m)).length, 1, "the same refusal a minute apart");
