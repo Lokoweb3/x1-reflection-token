@@ -12,7 +12,7 @@ let site: Awaited<ReturnType<typeof startSite>>;
 before(async () => { site = await startSite(); });
 after(async () => { await site.stop(); });
 // A test that failed between killing the server and starting it again doesn't take the next ones with it.
-beforeEach(async () => { await site.ensureUp(); });
+beforeEach(async () => { site.rpc.down.clear(); await site.ensureUp(); });
 
 test("killed right after step 1 goes out: the transaction lands, a restart still has the record and key", async () => {
   const res = await site.startLaunch();
@@ -109,22 +109,22 @@ test("requests that change nothing don't drop a creator's cached status, so they
   const creator = Keypair.generate();
   const { mint } = await (await site.startLaunch(creator)).json() as { mint: string };
   const who = creator.publicKey.toBase58();
-  const reader = "198.51.100.20";
   const posts = [
     { path: "/api/launch/not-a-route", body: { creator: who } },
     { path: "/api/launch/pool", body: { mint, creator: who } }, // refused: its token isn't on-chain
     { path: "/api/launch/register", body: { mint, creator: who } }, // refused too
     { path: "/api/curve/create", body: { creator: who } }, // no curves on this site, and invalid
   ];
-  // More rounds than this reader's 30 charged status reads: each answered from the cache.
-  for (let i = 0; i < 36; i++) {
-    const p = posts[i % posts.length];
-    const posted = await site.call(p.path, { ip: `198.51.100.${100 + i}`, body: p.body });
-    assert.ok(posted.status >= 400, `${p.path}: ${posted.status}`);
-    await posted.arrayBuffer();
-    const read = await site.call(`/api/launches?creator=${who}`, { ip: reader });
-    assert.equal(read.status, 200, `round ${i}`);
-    await read.arrayBuffer();
+  // Each kind on its own, for more rounds than one reader's 30 charged status reads: all from the cache.
+  for (const [k, p] of posts.entries()) {
+    for (let i = 0; i < 32; i++) {
+      const posted = await site.call(p.path, { ip: `198.51.${100 + k}.${100 + i}`, body: p.body });
+      assert.ok(posted.status >= 400, `${p.path}: ${posted.status}`);
+      await posted.arrayBuffer();
+      const read = await site.call(`/api/launches?creator=${who}`, { ip: `198.51.100.${20 + k}` });
+      assert.equal(read.status, 200, `${p.path}, round ${i}`);
+      await read.arrayBuffer();
+    }
   }
 });
 
