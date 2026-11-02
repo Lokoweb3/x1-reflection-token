@@ -151,7 +151,7 @@ test("what an earlier run left is reconciled by itself, with no trade or send: m
   const { conn } = fakeConn({ fee: (sig) => (sig === "LANDED" ? 900_000 : null) });
   proofAvailable(conn);
   engineOn(conn, wallet, stateDir, 10n ** 9n);
-  assert.ok(await until(() => feesOf(stateDir, wallet).unsettled(Date.now()).length === 2));
+  assert.ok(await until(() => feesOf(stateDir, wallet).unsettled(Date.now()).length === 2), "two left, with nothing sent to prompt it");
   const fees = feesOf(stateDir, wallet);
   assert.deepEqual(fees.unsettled(Date.now()).map((u) => u.signature), ["NOHEIGHT", "FRESH"], "no block height: no proof; fresh: left to its own send");
   assert.equal(fees.spent(Date.now()), 900_000n + 0n + 2_000_000n + 2_000_000n);
@@ -184,7 +184,7 @@ test("one request that throws costs only its own reservation", async () => {
   const get = conn.getTransaction.bind(conn);
   conn.getTransaction = (async (sig: string, c: unknown) => { if (sig === "BAD") throw new Error("429"); return get(sig, c as never); }) as typeof conn.getTransaction;
   engineOn(conn, wallet, stateDir, 10n ** 9n);
-  assert.ok(await until(() => feesOf(stateDir, wallet).unsettled(Date.now()).length === 1));
+  assert.ok(await until(() => feesOf(stateDir, wallet).unsettled(Date.now()).length === 1), "the other two settled");
   assert.deepEqual(feesOf(stateDir, wallet).unsettled(Date.now()).map((u) => u.signature), ["BAD"]);
 });
 
