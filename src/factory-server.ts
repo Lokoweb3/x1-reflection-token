@@ -26,7 +26,7 @@ import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wal
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch,
-  registeredLaunches, validateParams, flushPendingLaunches, gcLaunchRecords, isPendingLaunch, persistLaunch, sweepPendingLaunches,
+  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, isPendingLaunch, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
 import { readRewardVault, rewardSummary } from "./locker.js";
@@ -37,7 +37,7 @@ import { cpmmOut, snapshot, spotValue } from "./xdex.js";
 import { positions, refreshTrades, savedTrades, tradeSizes, type Position } from "./trades.js";
 import { tokenPools } from "./pools.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
-import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
+import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, chainLinkUses, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
 import { LOGO_ORPHAN_AFTER_MS, ORPHAN_AFTER_MS, pinTracker } from "./factory/pins.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
 import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, getTokenMetadata, getTransferFeeConfig, unpackAccount } from "@solana/spl-token";
@@ -51,7 +51,9 @@ import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
-import { limitKey } from "./factory/limits.js";
+import { isFileError, limitKey } from "./factory/limits.js";
+import { isAddress, planView, type KnownSubjects, type Lane } from "./factory/view-gate.js";
+import { crankRelayBook } from "./factory/crank-relays.js";
 import { explainError, type ProgramKind } from "./program-errors.js";
 import { buildPassesStep, buildVaultStep, isVaultLaunch, minHoldingFor, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
@@ -288,10 +290,11 @@ function limit(name: string, key: string, max: number, windowMs: number, message
 }
 const LIMITS = {
   // name: [per address, site-wide (0: none), window ms]. Plain reads get no site-wide cap
-  // (that would let one client lock everyone out); they're served from caches. `view` counts
-  // only the reads a cache can't answer (each costs chain reads), so it can be site-wide.
+  // (that would let one client lock everyone out); they're served from caches. The last three
+  // count only the reads a cache can't answer (each costs chain reads), so they can be site-wide;
+  // what each covers is in factory/view-gate.ts. Separate, so a flood of one can't stop the others.
   get: [120, 0, 60_000], post: [30, 0, 60_000], send: [20, 300, 60_000], crank: [6, 60, 60_000],
-  view: [30, 300, 60_000],
+  lookup: [30, 300, 60_000], known: [60, 600, 60_000], progress: [30, 600, 60_000],
   // Each upload is a file on the Pinata plan (unused ones are removed later; see factory/pins.ts).
   launch: [10, 60, 3_600_000], upload: [10, 60, 3_600_000], faucet: [5, 200, 3_600_000],
 } as const;
@@ -306,19 +309,20 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, hits] of buckets) if (!hits.some((t) => now - t < 3_600_000)) buckets.delete(id);
   for (const [k, p] of pendingMeta) if (now - p.at > 3_600_000) pendingMeta.delete(k);
-  for (const [k, p] of crankRelays) if (now - p.at > 600_000) crankRelays.delete(k);
+  crankRelays.prune();
 }, 600_000).unref();
 
 /**
  * Files pinned for a transaction not signed yet (metadata, receipts, logos): removed from
  * Pinata later if nothing used them. `tokenUriIs`: whether a Token-2022 mint's metadata
- * link is `uri` now (false if the mint doesn't exist).
+ * link names that file now, however it's spelled (false if the mint doesn't exist, null if
+ * that can't be told).
  */
 const pins = pinTracker(cfg, (line) => console.log(`[pins] ${line}`));
 async function tokenUriIs(mint: string, uri: string) {
   const key = new PublicKey(mint);
   if (!(await conn.getAccountInfo(key, "confirmed"))) return false;
-  return (await getTokenMetadata(conn, key, "confirmed", TOKEN_2022_PROGRAM_ID))?.uri === uri;
+  return chainLinkUses((await getTokenMetadata(conn, key, "confirmed", TOKEN_2022_PROGRAM_ID))?.uri, uri);
 }
 /** Refuse a logo link whose upload was removed as unused. */
 function requireLogo(image: unknown) {
@@ -374,6 +378,7 @@ async function receiptIxs(authority: PublicKey, nftMint: PublicKey, png: unknown
 
 /** Forget the cached launches list of `creator` (it just started or finished a step). */
 function forgetLaunches(creator: unknown) {
+  knownCache = null;
   try { swrForget(`/api/launches?creator=${new PublicKey(String(creator)).toBase58()}`); } catch { /* not an address */ }
 }
 
@@ -427,7 +432,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     if (r.kind === "curve") throw new Error("A curve token's pool is created by the curve when it graduates.");
     const s = await launchStatus(conn, cfg, r);
     if (!s.token) throw new Error("Step 1 (token) hasn't confirmed yet.");
-    // The token is on-chain: its record goes to disk now if it hasn't yet (see sweepPendingLaunches).
+    // The token is on-chain: its record leaves the journal now if it hasn't yet (see sweepPendingLaunches).
     persistLaunch(r.mint);
     if (s.pool) throw new Error("The pool already exists.");
     const pair = pairOf(cfg, r);
@@ -484,7 +489,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const bytes = Buffer.from(String(body.data ?? ""), "base64");
     const logo = await pinLogo(cfg, bytes, String(body.name ?? "logo"));
     // In use once a launch (or a metadata update) points at it; removed after some hours otherwise.
-    pins.track(logo.url, `logo ${logo.cid}`, async () => listLaunches().some((r) => r.image === logo.url) || pins.referenced(logo.url), { after: LOGO_ORPHAN_AFTER_MS });
+    pins.track(logo.url, `logo ${logo.cid}`, async () => pins.logoUsed(listLaunches().map((r) => r.image), logo.url), { after: LOGO_ORPHAN_AFTER_MS });
     return logo;
   }
   if (url === "/api/faucet/fund") {
@@ -569,8 +574,11 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     return { updated: true };
   }
   if (url === "/api/launch/register") {
-    const r = await registerLaunch(conn, cfg, ownLaunch(body));
-    return { registered: !!r.registeredAt };
+    // Forgotten again now it's done: a status read during those chain checks may have cached the state before.
+    try {
+      const r = await registerLaunch(conn, cfg, ownLaunch(body));
+      return { registered: !!r.registeredAt };
+    } finally { forgetLaunches(body.creator); }
   }
   if (url === "/api/launch/claim-reward") {
     const r = readLaunch(String(body.mint));
@@ -632,13 +640,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
  * good), and new plans have their own limit, site-wide as well.
  */
 const crankPlans = new Map<string, { at: number; data: Promise<unknown> }>();
-/**
- * "Run the vault now" transactions: each plan's fee payer and blockhash (what the caller's
- * wallet signs) by token, and the signatures /api/send relayed for them. crank-result only
- * reads those from the chain, so it can't be asked to look up any number of others.
- */
-const crankPlanTxs = new Map<string, { at: number; mint: string }>();
-const crankRelays = new Map<string, { at: number; mint: string }>();
+const crankRelays = crankRelayBook();
 
 /** After /api/send relayed a transaction (`b64`, confirmed): what that transaction affects here. */
 function afterSend(b64: string, signature: string) {
@@ -647,12 +649,11 @@ function afterSend(b64: string, signature: string) {
   const payer = msg.staticAccountKeys[0]?.toBase58();
   // A creator's launch step: its launches list changes.
   forgetLaunches(payer);
-  // Step 1 of a launch (the new mint co-signs it) is on-chain: its record goes to disk.
+  // Step 1 of a launch (the new mint co-signs it) is on-chain: its record leaves the journal.
   for (const k of msg.staticAccountKeys.slice(0, msg.header.numRequiredSignatures)) {
     if (isPendingLaunch(k.toBase58())) persistLaunch(k.toBase58());
   }
-  const plan = crankPlanTxs.get(`${payer} ${msg.recentBlockhash}`);
-  if (plan) crankRelays.set(signature, { at: Date.now(), mint: plan.mint });
+  crankRelays.relayed(b64, signature);
 }
 
 async function vaultPost(url: string, body: Record<string, unknown>, ip: string) {
@@ -668,19 +669,17 @@ async function vaultPost(url: string, body: Record<string, unknown>, ip: string)
     const data = crankTx(v, mint, caller);
     crankPlans.set(key, { at: Date.now(), data });
     data.then((plan) => {
-      for (const t of plan.txs) crankPlanTxs.set(`${caller.toBase58()} ${Transaction.from(Buffer.from(t.tx, "base64")).recentBlockhash}`, { at: Date.now(), mint });
+      for (const t of plan.txs) crankRelays.planned(t.tx, mint);
     }, () => crankPlans.delete(key));
     for (const [k, p] of crankPlans) if (Date.now() - p.at > 10_000) crankPlans.delete(k);
-    for (const [k, p] of crankPlanTxs) if (Date.now() - p.at > 600_000) crankPlanTxs.delete(k);
+    crankRelays.prune();
     return data;
   }
   if (action === "crank-result") {
     // A run just landed: the next click needs a fresh plan.
     for (const k of crankPlans.keys()) if (k.startsWith(`${mint} `)) crankPlans.delete(k);
     // Only this token's plan transactions that /api/send relayed, each looked up once.
-    const sigs = (Array.isArray(body.signatures) ? body.signatures.map(String) : []).filter((sig) => crankRelays.get(sig)?.mint === mint);
-    for (const sig of sigs) crankRelays.delete(sig);
-    return v.crankResult(mint, sigs);
+    return v.crankResult(mint, crankRelays.take(Array.isArray(body.signatures) ? body.signatures.map(String) : [], mint));
   }
   return appointTx(v, mint, body);
 }
@@ -941,33 +940,44 @@ function swr(key: string, freshMs: number, fn: () => Promise<unknown>, admit: ()
 }
 /** Drop a cached view (its data just changed), so the next request reads it afresh. */
 function swrForget(key: string) { swrStore.delete(key); }
-// Read-only views served through swr() (not per-action flows like curves or the faucet), and
-// how long each answer counts as fresh. A creator's launches and a "Distribute now" run are
-// dropped from the cache as they change (forgetLaunches, /api/distribute/run).
-const SWR_ROUTES = /^\/api\/(nft\/|nfts$|token\/|token-list$|analytics$|wallet\/|leaderboard\/|stats$|tokens$|vault\/|launches$|distribute\/status$|payout-token$)/;
-const SWR_FRESH_MS: Record<string, number> = { "/api/launches": 15_000, "/api/distribute/status": 5_000, "/api/payout-token": 60_000 };
-/** Views read back step by step (the launch flow's status, a "Distribute now" run's progress): never older than their freshMs. */
-const SWR_WAIT = new Set(["/api/launches", "/api/distribute/status"]);
-/** A view's cache key: its path and only the parameters it reads, so made-up ones can't bypass the cache. */
-function swrKey(url: URL) {
-  if (url.pathname === "/api/launches") return `/api/launches?creator=${new PublicKey(url.searchParams.get("creator") ?? "").toBase58()}`;
-  const q = ["mint", "wallet"].filter((k) => url.searchParams.has(k)).map((k) => `${k}=${url.searchParams.get(k)}`);
-  return q.length ? `${url.pathname}?${q.join("&")}` : url.pathname;
+/**
+ * What this site knows of, for planView: from its records, kept a few seconds since each view
+ * request asks, and dropped when a launch step changes them (forgetLaunches).
+ */
+let knownCache: { at: number; data: KnownSubjects } | null = null;
+function knownSubjects() {
+  if (knownCache && Date.now() - knownCache.at < 5_000) return knownCache.data;
+  const launches = listLaunches();
+  const tokens = new Set(launches.filter((r) => r.registeredAt).map((r) => r.mint));
+  if (cfg.mint) tokens.add(cfg.mint);
+  const nfts = new Set(launches.flatMap((r) => (r.lockNft ? [r.lockNft] : [])));
+  if (cfg.creatorReward?.nftMint) nfts.add(cfg.creatorReward.nftMint);
+  const data: KnownSubjects = {
+    creators: new Set(launches.map((r) => r.creator)), tokens, nfts,
+    isVaultMint: vaults ? (mint) => !!vaultsFor(mint)?.isVaultMint(mint) : null,
+  };
+  knownCache = { at: Date.now(), data };
+  return data;
 }
 
 /**
- * A GET. `ip` is the visitor's (none for the server's own warm-up): reads no cache can answer
- * count against the `view` limit, which is site-wide too, so a flood of made-up addresses
- * can't tie up the RPC queue everything else (the launch steps, the crank's sends) needs.
+ * A GET. `ip` is the visitor's (none for the server's own warm-up): only requests for something
+ * real, that no cache can answer, are counted; see factory/view-gate.ts. So a flood of made-up
+ * addresses can't tie up the RPC queue everything else (the launch steps, the crank's sends) needs.
  */
 async function get(url: URL, ip?: string) {
-  const admit = () => { if (ip === undefined) return true; try { rateLimit("view", ip, "lookups"); return true; } catch { return false; } };
-  if (SWR_ROUTES.test(url.pathname)) return swr(swrKey(url), SWR_FRESH_MS[url.pathname] ?? 30_000, () => getView(url), admit, SWR_WAIT.has(url.pathname));
+  const admit = (lane: Lane) => () => { if (ip === undefined) return true; try { rateLimit(lane, ip, "lookups"); return true; } catch { return false; } };
+  const plan = planView(url, knownSubjects());
+  if (plan.kind === "notFound") return null;
+  if (plan.kind === "refuse") throw new Error(plan.message);
+  if (plan.kind === "answer") return plan.value;
+  if (plan.kind === "view") return swr(plan.key, plan.freshMs, () => getView(url), admit(plan.lane), plan.wait);
   // A balance not cached yet (one RPC call per made-up address), or a wallet's holder passes
   // (uncached: it reads every claims-mode token's passes).
-  const bal = /^\/api\/balance\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
-  if (((bal && !balanceCache.has(bal[1])) || url.pathname.startsWith("/api/passes/")) && !admit()) {
-    throw new RateLimited("The site is busy looking things up right now; try again in a minute.");
+  const bal = /^\/api\/balance\/([^/]+)$/.exec(url.pathname), passes = /^\/api\/passes\/([^/]+)$/.exec(url.pathname);
+  if (bal || passes) {
+    if (!isAddress((bal ?? passes)![1])) return null;
+    if ((passes || !balanceCache.has(bal![1])) && !admit("lookup")()) throw new RateLimited("The site is busy looking things up right now; try again in a minute.");
   }
   return getView(url);
 }
@@ -1818,7 +1828,7 @@ const server = http.createServer(async (req, res) => {
       error = "The site can't save files to IPFS right now, so nothing was sent to your wallet. Please try again later.";
     }
     // A key or other file the server can't read: its path is for the operator's log only.
-    if (e instanceof KeypairError || /\bE(NOENT|ACCES|PERM|ISDIR|NOTDIR)\b/.test(error)) {
+    if (e instanceof KeypairError || isFileError(e)) {
       console.error(`${new Date().toISOString()} ${url.pathname}: ${error}`);
       error = "Something is wrong on the site's side, so nothing was sent to your wallet. Please try again later.";
     }
@@ -1854,23 +1864,26 @@ async function warmViews() {
 setTimeout(() => warmViews(), 15_000);
 setInterval(() => warmViews(), 300_000).unref();
 
-// New launches: records go to disk once their token is on-chain; ones whose step 1 never
-// landed are tidied away after a day. Unused pinned files are removed from Pinata.
+// New launches: a step 1 is journalled before its transaction leaves this server. Its record
+// moves to the launches once the token is on-chain; ones that never landed are tidied away after
+// a day. Unused pinned files are removed from Pinata.
+try { const n = recoverPendingLaunches(); if (n) console.log(`Pending launches: ${n} back from the journal`); } catch (e) { console.error(`pending launches: ${e instanceof Error ? e.message : e}`); }
+sweepPendingLaunches(conn).catch((e) => console.error(`pending launches: ${e instanceof Error ? e.message : e}`));
 setInterval(() => sweepPendingLaunches(conn).catch((e) => console.error(`pending launches: ${e instanceof Error ? e.message : e}`)), 30_000).unref();
 async function gcLaunches() {
   const removed = await gcLaunchRecords(conn).catch((e) => { console.error(`launch records GC: ${e instanceof Error ? e.message : e}`); return []; });
   if (removed.length) console.log(`Removed ${removed.length} launch record(s) whose token never reached the chain: ${removed.join(", ")}`);
+  await gcJournal();
 }
+async function gcJournal() {
+  const removed = await gcPendingJournal(conn).catch((e) => { console.error(`launch journal GC: ${e instanceof Error ? e.message : e}`); return []; });
+  if (removed.length) console.log(`Removed ${removed.length} launch journal(s) whose token never reached the chain: ${removed.join(", ")}`);
+}
+// At once for the journal: a launch that landed while the server was down is saved now.
+gcJournal();
 setTimeout(() => gcLaunches(), 60_000).unref();
 setInterval(() => gcLaunches(), 6 * 3_600_000).unref();
 setInterval(() => pins.sweep().catch((e) => console.error(`[pins] ${e instanceof Error ? e.message : e}`)), 5 * 60_000).unref();
-// A restart (systemd sends SIGTERM): launches still waiting for step 1 are saved so they can be continued.
-for (const sig of ["SIGTERM", "SIGINT"] as const) {
-  process.once(sig, () => {
-    try { flushPendingLaunches(); } catch (e) { console.error(`saving waiting launches: ${e instanceof Error ? e.message : e}`); }
-    process.exit(0);
-  });
-}
 
 // Keep the Locked NFTs list warm so visitors never wait for its chain reads.
 setTimeout(() => allNfts().catch(() => undefined), 2_000);

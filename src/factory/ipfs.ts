@@ -9,6 +9,7 @@
  * (factory.pinataApiUrl / PINATA_API_URL, factory.ipfsGateway / IPFS_GATEWAY), e.g. at a
  * local stand-in for rehearsals.
  */
+import bs58 from "bs58";
 import { Config } from "../config.js";
 
 /** Pinata's upload API (works with keys that have Files: Write). */
@@ -49,8 +50,8 @@ export const gatewayFor = (g: string, cid: string) => (g.includes("{cid}") ? g.r
 /** Tidy a gateway entry: a base gets its trailing "/", a "{cid}" template is kept as it is. */
 export const normGateway = (g: string) => (g.includes("{cid}") ? g : g.replace(/\/?$/, "/"));
 
-/** Upload one file to public IPFS through Pinata (or a stand-in with the same API); returns its content ID. */
-export async function pinFile(t: PinTarget, blob: Blob, filename: string, label: string) {
+/** Upload one file to public IPFS through Pinata (or a stand-in with the same API). */
+async function postFile(t: PinTarget, blob: Blob, filename: string, label: string) {
   const form = new FormData();
   form.append("file", blob, filename);
   form.append("network", "public"); // public IPFS, so wallets and gateways can fetch it
@@ -63,10 +64,30 @@ export async function pinFile(t: PinTarget, blob: Blob, filename: string, label:
   const data = (JSON.parse(text) as { data?: { cid?: string; id?: string; is_duplicate?: boolean | null } }).data;
   const cid = data?.cid;
   if (!cid) throw new Error("IPFS upload returned no content ID");
+  return { cid, id: data?.id, duplicate: !!data?.is_duplicate };
+}
+
+/**
+ * Upload one file and return its content ID. Identical bytes get the same CID, so an upload
+ * that overlaps a removal of that CID (unpinOrphan) may be answered with a pin about to vanish:
+ * it waits for the removal to finish and uploads again, so the pin exists when the CID is
+ * returned. That CID is never removed by this process after that.
+ */
+export async function pinFile(t: PinTarget, blob: Blob, filename: string, label: string) {
+  const started = ++pinClock;
+  const { cid, id, duplicate } = await postFile(t, blob, filename, label);
+  const racing = unpinning.get(cid);
+  if (racing || (lastUnpin.get(cid) ?? 0) > started) {
+    sharedCids.add(cid);
+    pinIds.delete(cid);
+    if (racing) { racing.waiters++; await racing.done; }
+    await postFile(t, blob, filename, label);
+    return cid;
+  }
   // Remembered so a pin nothing ended up using can be removed (unpinOrphan); a file that was
   // already pinned (the same bytes uploaded twice) may be in use elsewhere, so it never is.
-  if (data?.is_duplicate || pinIds.has(cid)) { sharedCids.add(cid); pinIds.delete(cid); }
-  else if (data?.id) pinIds.set(cid, data.id);
+  if (duplicate || pinIds.has(cid)) { sharedCids.add(cid); pinIds.delete(cid); }
+  else if (id) pinIds.set(cid, id);
   if (pinIds.size > 5_000) pinIds.delete(pinIds.keys().next().value!);
   return cid;
 }
@@ -74,26 +95,117 @@ export async function pinFile(t: PinTarget, blob: Blob, filename: string, label:
 /** Pinata file ids of what this process pinned, by CID; and CIDs uploaded more than once. */
 const pinIds = new Map<string, string>();
 const sharedCids = new Set<string>();
+/** Orders uploads and removals, to tell whether an upload overlapped a removal of its CID. */
+let pinClock = 0;
+/** Removals in flight by CID, with how many uploads wait for each; and when each CID's last one began. */
+const unpinning = new Map<string, { done: Promise<void>; waiters: number }>();
+const lastUnpin = new Map<string, number>();
 /** Pinata's files API (for removing a pin), unless the uploads go to a stand-in without one. */
 const filesUrl = (cfg: Config) => process.env.PINATA_FILES_URL || (uploadUrl(cfg) === PINATA_UPLOAD_URL ? "https://api.pinata.cloud/v3/files/public" : "");
 
 /**
  * Remove a pin this process made that nothing ended up using (its transaction never landed).
- * Only a CID uploaded once, by this process, is removed; returns whether it was.
+ * Only a CID uploaded once, by this process, is removed. Returns whether it's gone: false too
+ * when an upload of the same content overlapped the removal (it is pinned again).
  */
 export async function unpinOrphan(cfg: Config, cid: string) {
   const id = pinIds.get(cid);
   if (!id || sharedCids.has(cid) || !filesUrl(cfg) || !ipfsEnabled(cfg)) return false;
-  const r = await fetch(`${filesUrl(cfg)}/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${jwt(cfg)}` }, signal: AbortSignal.timeout(30_000) });
-  if (!r.ok && r.status !== 404) throw new Error(`unpin ${cid} failed (${r.status}): ${(await r.text()).slice(0, 160)}`);
-  pinIds.delete(cid);
-  return true;
+  let finish = () => {};
+  const entry = { done: new Promise<void>((resolve) => { finish = resolve; }), waiters: 0 };
+  unpinning.set(cid, entry);
+  lastUnpin.set(cid, ++pinClock);
+  if (lastUnpin.size > 5_000) lastUnpin.delete(lastUnpin.keys().next().value!);
+  try {
+    const r = await fetch(`${filesUrl(cfg)}/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${jwt(cfg)}` }, signal: AbortSignal.timeout(30_000) });
+    if (!r.ok && r.status !== 404) throw new Error(`unpin ${cid} failed (${r.status}): ${(await r.text()).slice(0, 160)}`);
+    pinIds.delete(cid);
+    return entry.waiters === 0 && !sharedCids.has(cid);
+  } finally {
+    unpinning.delete(cid);
+    finish();
+  }
 }
 
 /** The CID in a link to this site's gateway, else null. */
 export function cidOfUrl(cfg: Config, url: string) {
   const base = gatewayBase(cfg);
   return url.startsWith(base) && /^[A-Za-z0-9]{46,64}$/.test(url.slice(base.length)) ? url.slice(base.length) : null;
+}
+
+const CID_V0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/;
+const CID_V1_BASE32 = /^[bB][A-Za-z2-7]{20,}$/;
+/** Something in a link shaped like a CID: base58 Qm..., or base32 v1 (raw "bafkrei...", dag-pb "bafybei..."). */
+const CID_IN_TEXT = /(?:^|[^A-Za-z0-9])(Qm[1-9A-HJ-NP-Za-km-z]{44}|[bB][aA][fF][A-Za-z2-7]{50,})(?![A-Za-z0-9])/;
+/** The hash inside a CID: the same file's hash whichever CID version or letter case spells it. Null if it can't be read. */
+function cidHash(token: string): string | null {
+  let bytes: Uint8Array;
+  try {
+    if (CID_V0.test(token)) bytes = bs58.decode(token);
+    else if (CID_V1_BASE32.test(token)) {
+      const out: number[] = [];
+      let bits = 0, acc = 0;
+      for (const ch of token.slice(1).toLowerCase()) {
+        acc = (acc << 5) | "abcdefghijklmnopqrstuvwxyz234567".indexOf(ch);
+        bits += 5;
+        if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 0xff); acc &= (1 << bits) - 1; }
+      }
+      if (out[0] !== 1) return null; // only CID version 1 is spelled this way
+      let at = 1;
+      while (out[at] & 0x80) at++; // the codec, a varint: raw and dag-pb files can share one hash
+      bytes = Uint8Array.from(out.slice(at + 1));
+    } else return null;
+  } catch { return null; }
+  // A multihash is its type, its length, then that many bytes.
+  if (bytes.length < 3 || bytes[0] > 0x7f || bytes[1] !== bytes.length - 2) return null;
+  return Buffer.from(bytes).toString("hex");
+}
+
+/**
+ * What a link says about the content it names:
+ *   hash     it names IPFS content (any gateway, ipfs://, a subdomain gateway, a bare CID)
+ *   web      an ordinary web link, with nothing about IPFS in it
+ *   unclear  it looks like IPFS but the content can't be identified (a mutable ipns name, a CID
+ *            form not read here, an IPFS path with no CID)
+ */
+export type ContentRef = { kind: "hash"; hash: string } | { kind: "web" } | { kind: "unclear" };
+export function contentRef(link: unknown): ContentRef {
+  const text = typeof link === "string" ? link.trim() : "";
+  if (!text) return { kind: "web" };
+  const named = (token: string): ContentRef => { const hash = cidHash(token); return hash ? { kind: "hash", hash } : { kind: "unclear" }; };
+  if (CID_V0.test(text) || CID_V1_BASE32.test(text)) return named(text);
+  if (/^ipns:\/\//i.test(text)) return { kind: "unclear" };
+  const ipfs = /^ipfs:\/\/(?:ipfs\/)?([^/?#]+)/i.exec(text);
+  if (ipfs) return named(ipfs[1]);
+  if (/^ipfs:/i.test(text)) return { kind: "unclear" };
+  let url: URL;
+  try { url = new URL(text); } catch { return { kind: "unclear" }; }
+  if (/(^|\.)ipns\./i.test(url.hostname) || /(^|\/)ipns\//i.test(url.pathname)) return { kind: "unclear" };
+  const sub = /^([^.]+)\.ipfs\./i.exec(url.hostname);
+  if (sub) return named(sub[1]);
+  const inPath = /(?:^|\/)ipfs\/([^/?#]+)/i.exec(url.pathname);
+  if (inPath) return named(decodeURIComponent(inPath[1]));
+  const found = CID_IN_TEXT.exec(`${url.pathname}${url.search}`);
+  if (found) return named(found[1]);
+  return /ipfs/i.test(text) ? { kind: "unclear" } : { kind: "web" };
+}
+/**
+ * Whether a link names the content of `pinned` (a link or CID): true, false, or null when that
+ * can't be established. Compared by content, never by how the link is spelled.
+ */
+export function sameContent(link: unknown, pinned: string): boolean | null {
+  const a = contentRef(link), b = contentRef(pinned);
+  if (b.kind !== "hash") return link === pinned ? true : null;
+  if (a.kind === "hash") return a.hash === b.hash;
+  return a.kind === "web" ? false : null;
+}
+/**
+ * Whether a token's on-chain metadata link still uses the `pinned` file. Null, so the pin stays,
+ * for anything but a link naming IPFS content: a web link could serve that file for all we know.
+ */
+export function chainLinkUses(onChain: unknown, pinned: string): boolean | null {
+  if (contentRef(onChain).kind !== "hash") return null;
+  return sameContent(onChain, pinned);
 }
 
 /**

@@ -1,10 +1,11 @@
 /**
- * New launch records: kept in memory until the token (step 1) is on-chain, then saved with
- * the distributor key; a step 1 that never lands leaves nothing on disk. Old records whose
- * token never reached the chain are removed after a day; anything else is kept. No network:
- * the connection is a stand-in.
+ * New launch records: journalled with the distributor key before step 1's transaction goes out,
+ * moved to the launches once the token is on-chain; a step 1 that never lands leaves only a
+ * journal, removed after a day. Old records whose token never reached the chain are removed
+ * after a day; anything else is kept. No network: the connection is a stand-in. The server's own
+ * hooks and a real kill and restart are in factory-site.test.ts.
  */
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -16,7 +17,7 @@ import type { Config } from "../src/config.js";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pending-launch-test-"));
 process.env.REFLECT_FACTORY_DIR = dir;
 process.env.PINATA_JWT = "";
-const { buildTokenStep, flushPendingLaunches, gcLaunchRecords, isPendingLaunch, listLaunches, persistLaunch, readLaunch, sweepPendingLaunches } = await import("../src/factory/launch.js");
+const { applyMetadataUpdate, buildTokenStep, gcLaunchRecords, gcPendingJournal, isPendingLaunch, listLaunches, persistLaunch, readLaunch, recoverPendingLaunches, sweepPendingLaunches } = await import("../src/factory/launch.js");
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 const feeMint = Keypair.generate().publicKey;
@@ -30,6 +31,8 @@ const params = {
   autoLpBps: 2500, burnBps: 0, poolTokens: "1000000000", poolXnt: "1", lockDays: null, quote: "XNT",
 };
 const file = (mint: string, f: string) => path.join(dir, "launches", mint, f);
+const journal = (mint: string, f = "") => path.join(dir, "pending-launches", mint, f);
+const noSpace = () => { throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC", syscall: "write" }); };
 
 /** The builder's reads (fee token, creator balance), and `onChain` for the sweeps' account reads. */
 function fakeConn(onChain = new Set<string>(), funded = new Set<string>()) {
@@ -46,12 +49,34 @@ function fakeConn(onChain = new Set<string>(), funded = new Set<string>()) {
   } as unknown as Connection;
 }
 
-test("step 1 writes nothing to disk; the record is readable and listed meanwhile", async () => {
+/** The clock for one test, moved by what's returned (one mock: stacking them doesn't restore cleanly). */
+function clock(t: TestContext) {
+  const start = Date.now();
+  let at = start;
+  t.mock.method(Date, "now", () => at);
+  return { start, set: (ms: number) => { at = ms; } };
+}
+
+test("step 1 is journalled with its key before anything else, and stays out of the launches", async () => {
   const { record } = await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1");
   assert.equal(fs.existsSync(path.join(dir, "launches", record.mint)), false);
+  assert.equal(JSON.parse(fs.readFileSync(journal(record.mint, "launch.json"), "utf8")).mint, record.mint);
+  const key = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(journal(record.mint, "distributor.json"), "utf8"))));
+  assert.equal(key.publicKey.toBase58(), record.distributor);
+  assert.equal(fs.statSync(journal(record.mint, "distributor.json")).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(journal(record.mint)).mode & 0o777, 0o700);
+  assert.deepEqual(fs.readdirSync(journal(record.mint)).sort(), ["distributor.json", "launch.json"], "no temp files left");
   assert.equal(readLaunch(record.mint)?.symbol, "PEND");
   assert.ok(listLaunches().some((r) => r.mint === record.mint));
   assert.ok(isPendingLaunch(record.mint));
+});
+
+test("a journal that can't be written fails the step: no record, no key, nothing to sign", async (t) => {
+  const before = fs.existsSync(path.join(dir, "pending-launches")) ? fs.readdirSync(path.join(dir, "pending-launches")).length : 0;
+  const m = t.mock.method(fs, "fsyncSync", noSpace);
+  await assert.rejects(buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1"), /ENOSPC/);
+  m.mock.restore();
+  assert.equal(fs.readdirSync(path.join(dir, "pending-launches")).length, before, "nothing half written stays");
 });
 
 test("once the mint is on-chain the record and its distributor key are saved", async () => {
@@ -63,11 +88,58 @@ test("once the mint is on-chain the record and its distributor key are saved", a
   const key = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(file(record.mint, "distributor.json"), "utf8"))));
   assert.equal(key.publicKey.toBase58(), record.distributor);
   assert.equal(fs.statSync(file(record.mint, "distributor.json")).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(journal(record.mint)), false, "the journal is cleared");
   // Listed once, from disk.
   assert.equal(listLaunches().filter((r) => r.mint === record.mint).length, 1);
 });
 
-test("persistLaunch (the pool step, /api/send) saves at once; a step 1 that never lands is forgotten", async (t) => {
+test("a disk error while saving loses nothing: the entry and journal stay, and the next try saves it", async (t) => {
+  for (const [what, method] of [["the record", "fsyncSync"], ["the directory", "mkdirSync"], ["the key's move", "renameSync"]] as const) {
+    const { record } = await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1");
+    const secret = fs.readFileSync(journal(record.mint, "distributor.json"), "utf8");
+    const m = t.mock.method(fs, method, noSpace);
+    assert.equal(persistLaunch(record.mint), false, `${what}: reported, not thrown`);
+    await sweepPendingLaunches(fakeConn(new Set([record.mint]))); // retried, and fails again
+    m.mock.restore();
+    assert.ok(isPendingLaunch(record.mint), `${what}: still pending`);
+    assert.equal(readLaunch(record.mint)?.mint, record.mint);
+    assert.ok(fs.existsSync(journal(record.mint, "launch.json")), `${what}: journal kept`);
+    assert.ok(!fs.existsSync(file(record.mint, "launch.json")), `${what}: no partial record`);
+    await sweepPendingLaunches(fakeConn(new Set([record.mint])));
+    assert.equal(isPendingLaunch(record.mint), false, `${what}: saved once the disk works`);
+    assert.equal(fs.readFileSync(file(record.mint, "distributor.json"), "utf8"), secret);
+    assert.equal(JSON.parse(fs.readFileSync(file(record.mint, "launch.json"), "utf8")).mint, record.mint);
+  }
+});
+
+test("a saved record is replaced atomically: a failed write leaves the old one, and no temp file", async (t) => {
+  const { record } = await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1");
+  persistLaunch(record.mint);
+  const m = t.mock.method(fs, "renameSync", noSpace);
+  assert.throws(() => applyMetadataUpdate(record, { description: "new" }), /ENOSPC/);
+  m.mock.restore();
+  assert.equal(JSON.parse(fs.readFileSync(file(record.mint, "launch.json"), "utf8")).description, "");
+  assert.deepEqual(fs.readdirSync(path.dirname(file(record.mint, "launch.json"))).sort(), ["distributor.json", "launch.json"]);
+});
+
+test("a sweep's slow chain read doesn't overwrite what another path saved meanwhile", async () => {
+  const { record } = await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1");
+  let answer = () => {};
+  const slow = { getMultipleAccountsInfo: (keys: PublicKey[]) => new Promise((r) => {
+    answer = () => r(keys.map(() => ({ owner: TOKEN_PROGRAM_ID, data: Buffer.alloc(0), lamports: 5, executable: false })));
+  }) } as unknown as Connection;
+  const sweeping = sweepPendingLaunches(slow);
+  // Meanwhile /api/send saves it, and a later step changes it (registration, a metadata update).
+  persistLaunch(record.mint);
+  applyMetadataUpdate(readLaunch(record.mint)!, { description: "updated", registeredAt: "2026-11-02T00:00:00.000Z" });
+  answer();
+  await sweeping;
+  const saved = JSON.parse(fs.readFileSync(file(record.mint, "launch.json"), "utf8"));
+  assert.equal(saved.description, "updated");
+  assert.equal(saved.registeredAt, "2026-11-02T00:00:00.000Z");
+});
+
+test("persistLaunch (the pool step, /api/send) saves at once; a step 1 that never lands stops being listed, its journal stays a day", async (t) => {
   const a = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
   persistLaunch(a.mint);
   assert.ok(fs.existsSync(file(a.mint, "launch.json")) && fs.existsSync(file(a.mint, "distributor.json")));
@@ -75,18 +147,58 @@ test("persistLaunch (the pool step, /api/send) saves at once; a step 1 that neve
   const b = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
   await sweepPendingLaunches(fakeConn());
   assert.ok(isPendingLaunch(b.mint), "still waiting: its blockhash may not have expired yet");
-  const now = Date.now();
-  t.mock.method(Date, "now", () => now + 16 * 60_000);
+  const c = clock(t), now = c.start;
+  c.set(now + 16 * 60_000);
   await sweepPendingLaunches(fakeConn());
   assert.equal(isPendingLaunch(b.mint), false);
   assert.equal(readLaunch(b.mint), null);
   assert.equal(fs.existsSync(path.join(dir, "launches", b.mint)), false);
+  assert.ok(fs.existsSync(journal(b.mint, "distributor.json")), "kept in case that chain read was wrong");
+  // Before the day is up, nothing goes; and if the mint turns out to exist, it's saved.
+  assert.deepEqual(await gcPendingJournal(fakeConn()), []);
+  assert.ok(fs.existsSync(journal(b.mint, "launch.json")));
+  await gcPendingJournal(fakeConn(new Set([b.mint])));
+  assert.ok(fs.existsSync(file(b.mint, "launch.json")) && fs.existsSync(file(b.mint, "distributor.json")));
+  assert.equal(fs.existsSync(journal(b.mint)), false);
 });
 
-test("on shutdown the launches still waiting are saved", async () => {
+test("the journal GC removes only what never reached the chain, after a day", async (t) => {
+  const { createdAt, mint: abandoned } = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  const funded = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  const landed = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  const c = clock(t), later = Date.parse(createdAt) + 25 * 3_600_000;
+  c.set(later);
+  await sweepPendingLaunches(fakeConn()); // past their window: out of memory
+  // A journal with the record unreadable is never removed while its mint exists.
+  const torn = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  fs.writeFileSync(journal(torn.mint, "launch.json"), "{");
+  const t2 = later + 60 * 60_000;
+  c.set(t2);
+  await sweepPendingLaunches(fakeConn());
+  const removed = await gcPendingJournal(fakeConn(new Set([landed.mint, torn.mint]), new Set([funded.distributor])));
+  assert.ok(removed.includes(abandoned));
+  assert.equal(fs.existsSync(journal(abandoned)), false);
+  assert.ok(fs.existsSync(journal(funded.mint, "distributor.json")), "a funded wallet: kept");
+  assert.ok(fs.existsSync(file(landed.mint, "launch.json")), "a mint on-chain: saved");
+  assert.ok(fs.existsSync(journal(torn.mint, "distributor.json")), "unreadable record: kept");
+  fs.rmSync(journal(funded.mint), { recursive: true });
+  fs.rmSync(journal(torn.mint), { recursive: true });
+});
+
+test("recoverPendingLaunches brings back what may still land; past its window the GC decides", async (t) => {
   const { record } = await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1");
-  flushPendingLaunches();
-  assert.ok(fs.existsSync(file(record.mint, "launch.json")) && fs.existsSync(file(record.mint, "distributor.json")));
+  // A fresh process's memory: nothing pending. (The real kill and restart is in factory-site.test.ts.)
+  const { mint } = record;
+  const c = clock(t), now = c.start;
+  c.set(now + 16 * 60_000);
+  await sweepPendingLaunches(fakeConn());
+  assert.equal(isPendingLaunch(mint), false);
+  assert.equal(recoverPendingLaunches(), 0, "past the window: not listed again");
+  c.set(now);
+  assert.ok(recoverPendingLaunches() >= 1);
+  assert.ok(isPendingLaunch(mint));
+  await sweepPendingLaunches(fakeConn(new Set([mint])));
+  assert.ok(fs.existsSync(file(mint, "distributor.json")));
 });
 
 test("GC removes only day-old unregistered records whose token and wallet never reached the chain", async () => {
