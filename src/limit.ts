@@ -12,7 +12,7 @@ import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, g
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
 import { sizeFor } from "./peg.js";
 import { writeFileAtomic } from "./atomic-write.js";
-import { settleIntent, whenSigned, type Intent } from "./send-intent.js";
+import { settleIntent, unresolvedHelp, unresolvedOverdue, whenSigned, type Intent } from "./send-intent.js";
 
 export interface LimitBuySpec {
   /** The token to buy, its USDC.X pool, and the name the log uses. */
@@ -69,6 +69,7 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
   const id = limitId(spec);
   let dec: { tok: number; quote: number; tokProgram: PublicKey; quoteProgram: PublicKey } | null = null;
   let lastNote = "";
+  let alertedIntent: string | undefined;
   const note = (s: string) => { if (s !== lastNote) o.log(`limit ${spec.symbol}: ${s}`); lastNote = s; };
 
   const read = (): Record<string, { spent: string }> => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; } };
@@ -99,8 +100,13 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
   async function settle(): Promise<boolean> {
     const p = pendingOf();
     if (!p) return false;
-    const v = await settleIntent(o.conn, p);
+    const v = await settleIntent(o.conn, p, { wallet: o.owner, stateDir: o.stateDir });
     if (v === "pending") { note(`an earlier buy ${p.signature} is still in flight: waiting for it`); return true; }
+    if (v === "unresolved") {
+      note(`an earlier buy ${p.signature} is unresolved: waiting for proof of what became of it`);
+      if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`limit ${spec.symbol}: ${unresolvedHelp(p.signature!)}`); }
+      return true;
+    }
     if (v === "landed") { landed(p, p.signature!); await o.alert(`limit ${spec.symbol}: an earlier buy landed after all (${p.amountIn} raw USDC.X): ${p.signature}`); }
     else { setPending(undefined); o.log(`limit ${spec.symbol}: an earlier buy didn't land (${p.signature ?? "never sent"}); nothing spent`); }
     return false;

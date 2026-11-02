@@ -14,7 +14,7 @@ import { Connection, PublicKey, type TransactionInstruction } from "@solana/web3
 import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
 import { writeFileAtomic } from "./atomic-write.js";
-import { settleIntent, whenSigned, type Intent } from "./send-intent.js";
+import { settleIntent, unresolvedHelp, unresolvedOverdue, whenSigned, type Intent } from "./send-intent.js";
 
 export interface PegSpec {
   /** The bridged token on X1 (GOOGL.X) and the ticker it tracks. */
@@ -126,6 +126,7 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
   const journal = path.join(o.stateDir, "peg-trades.jsonl");
   let dec: { tok: number; quote: number; tokProgram: PublicKey; quoteProgram: PublicKey } | null = null;
   let lastProblem = "";
+  let alertedIntent: string | undefined;
 
   const nyDay = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
   function used(): number {
@@ -154,8 +155,13 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
   async function settle(): Promise<boolean> {
     const p = pendingOf();
     if (!p) return false;
-    const v = await settleIntent(o.conn, p);
+    const v = await settleIntent(o.conn, p, { wallet: o.owner, stateDir: o.stateDir });
     if (v === "pending") { problem(`an earlier ${p.side} ${p.signature} is still in flight: waiting for it`); return true; }
+    if (v === "unresolved") {
+      problem(`an earlier ${p.side} ${p.signature} is unresolved: waiting for proof of what became of it`);
+      if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`peg ${spec.ticker}: ${unresolvedHelp(p.signature!)}`); }
+      return true;
+    }
     if (v === "landed") { landed(p, p.signature!); await o.alert(`peg ${spec.ticker}: an earlier ${p.side} of ${p.tokens.toFixed(6)} landed after all: ${p.signature}`); }
     else { setPending(undefined); o.log(`peg ${spec.ticker}: an earlier ${p.side} didn't land (${p.signature ?? "never sent"})`); }
     return false;

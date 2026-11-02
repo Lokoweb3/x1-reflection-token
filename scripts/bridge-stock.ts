@@ -16,8 +16,8 @@
  * mint, the fee must be a percentage of at most 0.25% with no flat fee, enough Solana guardians must be
  * healthy, and a simulation must debit exactly the amount. Each transfer is written to
  * state/bridge-stock.json before it is sent; one that hasn't been seen arriving on X1 blocks the next.
- * A transfer whose transaction never shows up is marked failed only once its blockhash has expired and
- * nothing was debited (src/bridge-journal.ts).
+ * A transfer whose transaction never shows up is marked failed only on proof from finalized state
+ * (src/bridge-journal.ts); without it, it stays pending until a person resolves it.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -27,7 +27,8 @@ import {
 import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, unpackAccount } from "@solana/spl-token";
 import bs58 from "bs58";
 import { loadKeypair } from "../src/config.js";
-import { bridgeSendNeverLanded } from "../src/bridge-journal.js";
+import { bridgeSendFate } from "../src/bridge-journal.js";
+import { writeFileDurable } from "../src/factory/durable.js";
 
 const API = "https://api.bridge.mainnet.x1.xyz";
 const PROGRAM = new PublicKey("6JbPTuxVuoTgyQeXFb9MH8C8nUY8NBbLP1Lu4B13JfMD");
@@ -59,8 +60,7 @@ type Entry = { signature: string; wallet: string; symbol: string; x1Mint: string
 const readJournal = (): Entry[] => (fs.existsSync(JOURNAL) ? JSON.parse(fs.readFileSync(JOURNAL, "utf8")).entries : []);
 const writeJournal = (entries: Entry[]) => {
   fs.mkdirSync(path.dirname(JOURNAL), { recursive: true });
-  fs.writeFileSync(`${JOURNAL}.tmp`, JSON.stringify({ entries }, null, 2));
-  fs.renameSync(`${JOURNAL}.tmp`, JOURNAL);
+  writeFileDurable(JOURNAL, JSON.stringify({ entries }, null, 2));
 };
 const shares = (raw: bigint, dec: number) => (Number(raw) / 10 ** dec).toFixed(dec).replace(/\.?0+$/, "");
 
@@ -109,20 +109,20 @@ async function reconcile(entries: Entry[]) {
   for (const e of entries.filter((e) => e.wallet === owner.toBase58())) {
     if (e.status === "pending_solana") {
       const s = (await sol.getSignatureStatuses([e.signature], { searchTransactionHistory: true })).value[0];
-      if (!s || s.confirmationStatus !== "finalized") {
-        // Failed only once it can no longer land (blockhash expired) and the tokens were provably not taken.
-        if (!s) {
-          const blockHeight = await sol.getBlockHeight("confirmed");
-          const debited = e.outgoing ? !!(await sol.getAccountInfo(new PublicKey(e.outgoing), "confirmed")) : true;
-          if (bridgeSendNeverLanded(e, { landed: false, blockHeight, debited })) { e.status = "failed"; writeJournal(entries); console.log(`${e.signature}: never landed on Solana, nothing was sent`); continue; }
-          if (e.lastValidBlockHeight === undefined && Date.now() - Date.parse(e.createdAt) > 5 * 60_000)
-            console.log(`${e.signature}: not seen on Solana, but journaled without its block height: check it by hand before marking it failed in ${JOURNAL}`);
-        }
-        return false;
+      let landed = s?.confirmationStatus === "finalized" ? !s.err : undefined;
+      if (!s) {
+        // Failed only on proof: its blockhash expired on finalized state, and neither its signature nor its outgoing
+        // account is on a node at least that recent. Until then it blocks the next transfer (src/bridge-journal.ts).
+        const f = await bridgeSendFate(sol, e, owner);
+        if (f.kind === "never-landed") { e.status = "failed"; writeJournal(entries); console.log(`${e.signature}: never landed on Solana, nothing was sent`); continue; }
+        if (f.kind === "landed" || f.kind === "failed") landed = f.kind === "landed";
+        else if (Date.now() - Date.parse(e.createdAt) > 5 * 60_000)
+          console.log(`${e.signature}: not seen on Solana and can't be ruled out (${f.reason}). It blocks the next transfer. Check the signature and the wallet's balance by hand; only if it never landed, set its status to "failed" in ${JOURNAL}`);
       }
-      e.status = s.err ? "failed" : "pending_x1";
+      if (landed === undefined) return false;
+      e.status = landed ? "pending_x1" : "failed";
       writeJournal(entries);
-      if (s.err) { console.log(`${e.signature}: failed on Solana, nothing was sent`); continue; }
+      if (!landed) { console.log(`${e.signature}: failed on Solana, nothing was sent`); continue; }
     }
     if (e.status === "pending_x1") {
       const r = await api(`/transactions/${e.signature}`);
