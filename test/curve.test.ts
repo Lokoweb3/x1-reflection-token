@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { Keypair, PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY, Transaction } from "@solana/web3.js";
 import {
-  CURVE_DISC, CURVE_LEN, CurveStatus, DEFAULT_TARGET_XNT, EVENT, FEE_RECEIVER, IX, REFUND_AFTER_SECS, TARGETS_XNT, applyBuy, applySell, authPda, buyIx,
-  completedAt, createCurveIx, curvePda, curveSetup, decodeCurve, deliverIx, graduateLockIx, graduatePoolIx, hasPool, isGraduated, k0Of, parseEvents,
+  CURVE_DISC, CURVE_LEN, CurveStatus, DEFAULT_TARGET_XNT, EVENT, FEE_RECEIVER, IX, LOCKER_PROGRAM_ID, LOCK_AFTER_SECS, REFUND_AFTER_SECS, TARGETS_XNT,
+  applyBuy, applySell, authPda, burnOpensAt, buyIx, closeCurveIx, completedAt, createCurveIx, curvePda, curveSetup, decodeCurve, decodeEvent, deliverIx, startBurnClockIx,
+  curveFromAccount, graduateBurnIx, graduateIxs, graduateLockIx, graduatePoolIx, hasPool, isGraduated, isLpBurned, k0Of, lockNftOf, needsBurnClock, parseEvents,
   parseTarget, poolOpenPrice, positionPda, priceOf, quoteBuy, quoteSell, refundIx, refundOpensAt, refundShare, sellIx, transferFee, xdexIds,
   type Curve, type CurveState,
 } from "../src/curve.js";
@@ -199,8 +200,19 @@ test("instruction data and account order", () => {
   assert.deepEqual(s.data.subarray(0, 8), sha8("global:sell"));
   assert.equal(s.data.readBigUInt64LE(16), 8n);
 
-  assert.equal(graduatePoolIx(program, "testnet", user, mint).keys.length, 22);
+  const gp = graduatePoolIx(program, "testnet", user, mint);
+  assert.equal(gp.keys.length, 23);
+  assert.ok(gp.keys[22].pubkey.equals(LOCKER_PROGRAM_ID) && !gp.keys[22].isWritable, "lp_locker last (graduate_pool checks it's executable)");
   assert.equal(graduateLockIx(program, "testnet", user, mint, user).keys.length, 19);
+
+  const gb = graduateBurnIx(program, "testnet", user, mint);
+  assert.deepEqual(gb.data, sha8("global:graduate_burn"));
+  assert.equal(gb.keys.length, 7);
+  assert.ok(gb.keys[3].pubkey.equals(gp.keys[11].pubkey), "the pool's LP mint");
+  assert.ok(gb.keys[4].pubkey.equals(gp.keys[6].pubkey), "auth's LP account");
+  const cl = closeCurveIx(program, user, mint);
+  assert.deepEqual(cl.data, sha8("global:close_curve"));
+  assert.ok(cl.keys[0].isSigner && cl.keys[1].pubkey.equals(curvePda(program, mint)) && cl.keys[2].pubkey.equals(authPda(program, mint)));
   const d = deliverIx(program, user, mint, Keypair.generate().publicKey, user);
   assert.equal(d.keys.length, 11);
   assert.equal(d.data.length, 8);
@@ -299,4 +311,77 @@ test("the graduation target: default 500, only the allowed values", () => {
   assert.equal(parseTarget("", "testnet"), 500n, "the default stays 500");
   for (const bad of [0, 9, 11, 19, 21, 499]) assert.throws(() => parseTarget(bad, "testnet"), /Graduation target must be 10, 20, 500, 1,000, 3,000, 5,000 or 10,000 XNT/);
   assert.throws(() => parseTarget(10, "mainnet"));
+});
+
+test("BC-M1: graduate_pool + graduate_lock fit one transaction with compute-budget instructions", () => {
+  const program = new PublicKey("CiMeZV1RqSskr9RR7Xj2FDHnMHuuoL7Dc5a4dzD89FTY");
+  for (const network of ["mainnet", "testnet"] as const) {
+    const caller = Keypair.generate().publicKey, mint = Keypair.generate().publicKey, creator = Keypair.generate().publicKey;
+    const tx = new Transaction({ feePayer: caller, recentBlockhash: PublicKey.default.toBase58() }).add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000_000 }),
+      ...graduateIxs(program, network, caller, mint, creator));
+    const size = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).length;
+    assert.ok(size <= 1232, `${network}: ${size} bytes`);
+    assert.ok(size >= 1150, `${network}: ${size} bytes (the measured ~1,178; a big drop means accounts went missing)`);
+  }
+});
+
+test("lock fallback clock, closed curves and burned-LP graduations", () => {
+  const base = { delivered: 0n, createdAt: 1_000 };
+  assert.equal(burnOpensAt({ ...base, status: CurveStatus.Complete }), null);
+  // A pool the old program made has no time on record: never its curve's age, however old.
+  assert.equal(burnOpensAt({ ...base, status: CurveStatus.PoolCreated }), null);
+  assert.equal(needsBurnClock({ ...base, status: CurveStatus.PoolCreated }), true);
+  assert.equal(needsBurnClock({ ...base, status: CurveStatus.PoolCreated, delivered: 5_000n }), false);
+  assert.equal(needsBurnClock({ ...base, status: CurveStatus.Complete }), false);
+  assert.equal(burnOpensAt({ ...base, status: CurveStatus.PoolCreated, delivered: 5_000n }), 5_000 + LOCK_AFTER_SECS);
+  const nft = Keypair.generate().publicKey;
+  assert.ok(lockNftOf({ status: CurveStatus.Graduated, lockNft: nft })?.equals(nft));
+  assert.equal(lockNftOf({ status: CurveStatus.Finished, lockNft: PublicKey.default }), null, "LP burned: no lock NFT");
+  assert.equal(lockNftOf({ status: CurveStatus.PoolCreated, lockNft: nft }), null);
+
+  const [curve, mint, pool] = [0, 1, 2].map(() => Keypair.generate().publicKey);
+  const ev = Buffer.concat([EVENT.LpBurned, curve.toBuffer(), mint.toBuffer(), pool.toBuffer(), Buffer.alloc(16)]);
+  ev.writeBigUInt64LE(77n, 8 + 96); ev.writeBigUInt64LE(500n * XNT, 8 + 104);
+  assert.deepEqual(decodeEvent(ev), { name: "LpBurned", curve: curve.toBase58(), mint: mint.toBase58(), pool: pool.toBase58(), lpAmount: 77n, raisedXnt: 500n * XNT });
+  const cl = Buffer.concat([EVENT.CurveClosed, curve.toBuffer(), mint.toBuffer(), pool.toBuffer(), Buffer.from([3, 0, 0, 0])]);
+  assert.deepEqual(decodeEvent(cl), { name: "CurveClosed", curve: curve.toBase58(), mint: mint.toBase58(), creator: pool.toBase58(), positions: 3 });
+});
+
+test("a burned graduation is told apart from a locked one", () => {
+  const nft = Keypair.generate().publicKey;
+  assert.equal(isLpBurned({ status: CurveStatus.Graduated, lockNft: PublicKey.default }), true);
+  assert.equal(isLpBurned({ status: CurveStatus.Finished, lockNft: PublicKey.default }), true);
+  assert.equal(isLpBurned({ status: CurveStatus.Finished, lockNft: nft }), false);
+  // Before graduation there's no NFT yet either, and nothing has burned.
+  for (const status of [CurveStatus.Trading, CurveStatus.Complete, CurveStatus.PoolCreated, CurveStatus.Refunding]) {
+    assert.equal(isLpBurned({ status, lockNft: PublicKey.default }), false);
+  }
+});
+
+test("curveFromAccount: only this program's curve account counts as a curve", () => {
+  const program = Keypair.generate().publicKey, addr = Keypair.generate().publicKey;
+  const data = Buffer.alloc(CURVE_LEN);
+  CURVE_DISC.copy(data);
+  assert.ok(curveFromAccount(program, addr, { owner: program, data }));
+  assert.equal(curveFromAccount(program, addr, null), null, "no account");
+  // Someone funded the address of a closed curve: an empty, system-owned account.
+  assert.equal(curveFromAccount(program, addr, { owner: new PublicKey("11111111111111111111111111111111"), data: Buffer.alloc(0) }), null);
+  // Curve bytes in an account another program owns aren't a curve.
+  assert.equal(curveFromAccount(program, addr, { owner: Keypair.generate().publicKey, data }), null);
+  // This program's account of another kind, or cut short.
+  assert.equal(curveFromAccount(program, addr, { owner: program, data: Buffer.alloc(CURVE_LEN) }), null);
+  assert.equal(curveFromAccount(program, addr, { owner: program, data: data.subarray(0, 40) }), null);
+});
+
+test("start_burn_clock: discriminator, accounts and event", () => {
+  assert.deepEqual(IX.startBurnClock, sha8("global:start_burn_clock"));
+  const program = Keypair.generate().publicKey, mint = Keypair.generate().publicKey;
+  const ix = startBurnClockIx(program, mint);
+  assert.deepEqual(ix.keys.map((k) => [k.pubkey.toBase58(), k.isSigner, k.isWritable]), [[curvePda(program, mint).toBase58(), false, true]]);
+  const keys = [0, 1, 2].map(() => Keypair.generate().publicKey);
+  const ts = Buffer.alloc(8);
+  ts.writeBigInt64LE(1_800_000_000n);
+  const e = decodeEvent(Buffer.concat([EVENT.BurnClockStarted, ...keys.map((k) => k.toBuffer()), ts]));
+  assert.deepEqual(e, { name: "BurnClockStarted", curve: keys[0].toBase58(), mint: keys[1].toBase58(), pool: keys[2].toBase58(), startedAt: 1_800_000_000 });
 });

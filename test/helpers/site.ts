@@ -21,10 +21,15 @@ export function fakeRpc(feeMint: PublicKey) {
   AccountLayout.encode({ mint: feeMint, owner: PublicKey.default, amount: 5_000_000n, delegateOption: 0, delegate: PublicKey.default, state: 1, isNativeOption: 0, isNative: 0n, delegatedAmount: 0n, closeAuthorityOption: 0, closeAuthority: PublicKey.default }, tokenData);
   const account = (data: Buffer, owner = TOKEN_PROGRAM_ID.toBase58()) => ({ data: [data.toString("base64"), "base64"], executable: false, lamports: 1_000_000, owner, rentEpoch: 0, space: data.length });
   const onChain = new Set<string>();
+  /** Accounts a test set up, by address; and addresses whose reads fail (one launch's RPC trouble). */
+  const accounts = new Map<string, { owner: string; data: Buffer }>();
+  const unreadable = new Set<string>();
   const calls: Record<string, number> = {};
   const held = new Map<string, () => void>();
   const down = new Set<string>();
   const lookup = (k: string) => {
+    const set = accounts.get(k);
+    if (set) return account(set.data, set.owner);
     if (k === feeMint.toBase58()) return account(mintData);
     if (onChain.has(k)) return account(Buffer.alloc(0));
     return null;
@@ -47,6 +52,7 @@ export function fakeRpc(feeMint: PublicKey) {
         case "getBalance": result = value(1_000_000_000_000); break;
         case "getAccountInfo": {
           const k = params[0] as string;
+          if (unreadable.has(k)) { res.statusCode = 500; res.end("down"); return; }
           // Everything else the builder asks of the creator's fee account: a funded token account.
           result = value(lookup(k) ?? (fundedTokenAccounts.has(k) ? account(tokenData) : null));
           break;
@@ -54,6 +60,7 @@ export function fakeRpc(feeMint: PublicKey) {
         case "getMultipleAccounts": result = value((params[0] as string[]).map((k) => lookup(k))); break;
         case "getTokenAccountBalance": result = value({ amount: "5000000", decimals: 6, uiAmount: 5, uiAmountString: "5" }); break;
         case "simulateTransaction": result = value({ err: null, logs: [], unitsConsumed: 1000, accounts: null, returnData: null }); break;
+        case "getTokenLargestAccounts": result = value([]); break;
         case "getProgramAccounts": result = []; break;
         case "getSignaturesForAddress": result = []; break;
         case "getBlockHeight": result = 1; break;
@@ -79,7 +86,7 @@ export function fakeRpc(feeMint: PublicKey) {
   const fundedTokenAccounts = new Set<string>();
   const holdReleases: (() => void)[] = [];
   return {
-    server, onChain, calls, fundedTokenAccounts, down,
+    server, onChain, accounts, unreadable, calls, fundedTokenAccounts, down,
     /** The next call of `method` waits until `release()`; `arrived` resolves when it comes in. */
     hold(method: string) {
       let arrived = () => {};
@@ -96,7 +103,7 @@ const freePort = () => new Promise<number>((resolve) => {
   const s = http.createServer().listen(0, "127.0.0.1", () => { const { port } = s.address() as { port: number }; s.close(() => resolve(port)); });
 });
 
-export async function startSite() {
+export async function startSite(opts: { curveProgram?: string } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factory-site-test-"));
   const factoryDir = path.join(dir, "factory"), stateDir = path.join(dir, "state");
   fs.mkdirSync(factoryDir); fs.mkdirSync(stateDir);
@@ -109,7 +116,7 @@ export async function startSite() {
     network: "testnet", rpcUrl, keypairs: { creator: path.join(dir, "none.json"), distributor: path.join(dir, "none.json") },
     token: { name: "T", symbol: "T", uri: "", decimals: 9, supply: "1000000000", feeBps: 500, launchGrace: true }, mint: "",
     locker: { programId: Keypair.generate().publicKey.toBase58(), nftUri: "" },
-    factory: { feeReceiver: feeReceiver.toBase58(), feeUsdc: "1", gasXnt: "0.05", port, publicUrl: origin, hosts: [], feeToken: { mint: feeMint.toBase58(), symbol: "TST", amount: "1" } },
+    factory: { feeReceiver: feeReceiver.toBase58(), feeUsdc: "1", gasXnt: "0.05", port, publicUrl: origin, hosts: [], feeToken: { mint: feeMint.toBase58(), symbol: "TST", amount: "1" }, ...(opts.curveProgram ? { curve: { programId: opts.curveProgram } } : {}) },
     xdex: { programId: "7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf", pool: "" },
     distribution: { minHoldingTokens: "1000", excludeOwners: [], excludeOffCurveOwners: true, operatingReserveXnt: "0.05", minGasXnt: "0.005", minPayoutXnt: "0.001", minCycleXnt: "0.01", maxSellTokensPerCycle: "", maxPriceImpactBps: 300, slippageBps: 100, autoLpBps: 4000, transfersPerTx: 18, priorityMicroLamports: 10000 },
   };

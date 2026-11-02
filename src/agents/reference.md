@@ -18,7 +18,7 @@ Transactions come back base64-encoded and unsigned by the creator. Some already 
 | Request | Returns |
 |---|---|
 | `GET /api/info` | `network`, `explorer`, the launch fee (`feeAmount`, `feeSymbol`, `feeMint`), `poolCreateFeeXnt`, `gasXnt`, `creatorBps`, `lockForeverOnly`, `launchesPaused`, `quoteTokens` (pairs besides XNT), `taxVault` |
-| `GET /api/launches?creator=<wallet>` | this wallet's launches (newest 20), each with `mint`, `symbol` and `status`: `{token, pool, lock, lockNft, taxVault, vault, registered}` |
+| `GET /api/launches?creator=<wallet>` | this wallet's launches (newest 20), each with `mint`, `symbol` and `status`: `{token, pool, lock, lockNft, taxVault, vault, registered}`, plus `lpBurned` and `curveClosed` on a curve token; `{unavailable: true}` when that launch couldn't be read just now |
 | `GET /api/tokens` | every registered token on the site |
 
 ## Launch

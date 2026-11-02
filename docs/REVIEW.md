@@ -94,6 +94,8 @@ the 3.x `solana-test-validator`, as 2.1 rejects `program extend`):
 
 | Script | What it proves |
 |---|---|
+| `scripts/local-curve-upgrade-test.ts` | Upgrading `bonding_curve` from the source testnet runs: a pool the old program made seconds before can't burn on its curve's age, gets the full wait from `start_burn_clock`, and buyers still get their tokens; and the new client on the deployed binary |
+| `scripts/local-locker-upgrade-test.ts` | Upgrading `lp_locker` from the source mainnet runs: locks and reward vaults made before work after (unlock, fees, claims, the reward-mint rule), and TEST's live lock simulated on both binaries |
 | `scripts/local-vault-v3-test.ts` | v3 program alone: v1/v2 → v3 upgrades, CIDs, `set_publisher` / `appoint_publisher` timing and refusals, `pay_fallback` amounts, attack cases |
 | `scripts/vault-v3-rehearsal.ts` | The "operator dies" drill with the real site: stop the site, a stranger's wallet pays from IPFS, fallback, appointed publisher |
 | `scripts/local-curve-targets-test.ts` | Curve program upgrade under a part-bought old curve, 500 and 10,000 XNT curves, graduation and delivery |
@@ -163,7 +165,11 @@ the "for now" upgradeability note and each vault's publisher).
 - Known rounding: with the largest target and the smallest supply a full curve can raise
   up to ~143 lamports less than the target; the graduation deposit covers it and the pool
   still gets exactly the target.
-- Anti-snipe (first 2 minutes: max 1% of supply per buy), creator can't buy, delivery.
+- Anti-snipe (first 2 minutes: no single wallet above 1% of supply, all buyers together
+  10%), the creator's own wallet can't buy (other wallets of theirs can), delivery.
+- Graduation: `graduate_pool` + `graduate_lock` in one transaction (the crank does so);
+  `graduate_pool` checks `lp_locker` is executable; `graduate_burn` after 7 days in
+  PoolCreated (a pool the old program made: 7 days from `start_burn_clock`); `close_curve` (nothing sold); the last refund closes the curve.
 
 `lp_locker`
 - `lock` / `lock_timed` / `unlock`, fee collection without touching the principal, the
