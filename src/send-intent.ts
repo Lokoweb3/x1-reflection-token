@@ -84,6 +84,44 @@ export function writeIntentState(stateDir: string, file: string, text: string) {
   writeFileDurable(file, text);
 }
 
+export interface IntentRow<P> { pending?: P; counted?: string[] }
+const COUNTED_KEPT = 200;
+
+/**
+ * The one intent a peg or limit order may have out, with each step atomic, so two live processes on one state directory
+ * (it has happened: a hand-started bot beside the watchdog's) can't double-count a trade or overwrite each other's intent.
+ * `change` runs its function on the order's row under a lock and writes the result; a throw writes nothing.
+ *
+ *   claim   take the slot before trading; false if another process's intent is in it
+ *   sign    add the signature before the broadcast; throws, stopping the broadcast, if the intent was taken away
+ *   count   count a landed trade exactly once per signature, whoever sees it first; false if already counted
+ *   drop    clear this intent, and nothing newer
+ */
+export function intentSlot<P extends Intent & { token?: string }, R extends IntentRow<P>>(change: <T>(fn: (row: R) => T) => T, countIt: (row: R, p: P) => void) {
+  const isThis = (row: R, p: P) => !!row.pending && (p.signature ? row.pending.signature === p.signature : row.pending.token === p.token);
+  return {
+    claim: (p: P) => change((row) => {
+      if (row.pending && row.pending.token !== p.token) return false;
+      row.pending = p;
+      return true;
+    }),
+    sign: (p: P, signature: string, lastValidBlockHeight: number) => change((row) => {
+      if (row.pending?.token !== p.token) throw new Error("another process took this order's intent: not sent");
+      row.pending = { ...p, signature, lastValidBlockHeight };
+    }),
+    count: (p: P, signature: string) => change((row) => {
+      const first = !row.counted?.includes(signature);
+      if (first) {
+        countIt(row, p);
+        row.counted = [...(row.counted ?? []), signature].slice(-COUNTED_KEPT);
+      }
+      if (row.pending?.signature === signature || (p.token && row.pending?.token === p.token)) delete row.pending;
+      return first;
+    }),
+    drop: (p: P) => change((row) => { if (isThis(row, p)) delete row.pending; }),
+  };
+}
+
 /** How long an unresolved intent stays quiet: most clear by themselves within a check or two. */
 export const UNRESOLVED_ALERT_MS = 15 * 60_000;
 export const unresolvedOverdue = (i: Intent, now: number) => !i.at || !(now - Date.parse(i.at) < UNRESOLVED_ALERT_MS);

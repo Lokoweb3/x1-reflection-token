@@ -6,9 +6,11 @@
  *   npx tsx scripts/resolve-intent.ts <signature> dropped --wallet <address>   # it never landed, or it failed: forget it
  *
  * It refuses unless the signature is a journaled intent, its blockhash has expired on finalized state (so it can't land
- * from here on), and the chain doesn't already answer the question, or answer it the other way. The decision goes in
+ * from here on), and the chain doesn't answer the other way or isn't final yet. The decision goes in
  * state/intent-resolutions.json (REFLECT_STATE_DIR moves state/; REFLECT_RPC_URL picks the RPC, if the default can't
- * answer). A running bot acts on it at its next check; no restart. Sends nothing and needs no key.
+ * answer: a node with full history can settle what the bot's own RPC can't, and the decision reaches the bot this way).
+ * A running bot acts on it at its next check; no restart. The bot still prefers its own chain evidence, once it has any.
+ * Sends nothing and needs no key.
  */
 import path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -37,8 +39,8 @@ if (f.fate === "unknown" && !f.expired) refuse(`can't confirm its blockhash has 
 if (f.fate === "landed" || f.fate === "failed" || f.fate === "never-landed") {
   const chain = f.fate === "landed" ? "landed" : "dropped";
   if (chain !== verdict) refuse(`the chain says ${f.fate}, which is "${chain}", not "${verdict}"`);
-  console.log(`the chain says ${f.fate}: the bot settles this by itself at its next check, so nothing to record`);
-  process.exit(0);
+  if (f.fate !== "never-landed" && !f.finalized) refuse(`the chain says ${f.fate}, but not finalized yet; try again shortly`);
+  console.log(`this RPC's finalized evidence agrees: ${f.fate}`);
 }
 recordResolution(stateDir, signature, verdict);
 console.log(`recorded: ${signature} ${verdict}. The bot acts on it at its next check.`);

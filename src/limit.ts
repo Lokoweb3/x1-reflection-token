@@ -5,13 +5,15 @@
  * `budget` USDC.X is spent (or, without a budget, until the wallet's USDC.X runs out). What it has spent is kept
  * in state/limit-orders.json, so a restart doesn't spend the budget again.
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Connection, PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
 import { sizeFor } from "./peg.js";
-import { settleIntent, unresolvedHelp, writeIntentState, unresolvedOverdue, whenSigned, type Intent } from "./send-intent.js";
+import { withFileLock } from "./arb-guard.js";
+import { intentSlot, settleIntent, unresolvedHelp, writeIntentState, unresolvedOverdue, whenSigned, type Intent, type IntentRow } from "./send-intent.js";
 
 export interface LimitBuySpec {
   /** The token to buy, its USDC.X pool, and the name the log uses. */
@@ -34,6 +36,8 @@ export interface LimitOptions {
   alert: (s: string) => Promise<void>;
   stateDir: string;
   execute: boolean;
+  /** Reads the pool (tests replace it). */
+  snapshot?: typeof snapshot;
   /** Slippage allowed on each buy, percent (default 0.5). */
   slippagePct?: number;
 }
@@ -61,6 +65,23 @@ export function limitBuySize(sQ: Snapshot, d: { tok: number; quote: number }, pr
   return { action: "buy", poolPrice, amountIn, out };
 }
 
+type Pending = Intent & { token?: string; at: string; amountIn: string; minOut: string; tokens: number; poolPrice: number };
+type Row = IntentRow<Pending> & { spent: string };
+const readOrders = (file: string): Record<string, Row> => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; } };
+
+/** One order's intent slot in state/limit-orders.json, the file being shared with other orders and processes. */
+export function limitSlot(stateDir: string, id: string) {
+  const file = path.join(stateDir, "limit-orders.json");
+  const change = <T>(fn: (row: Row) => T): T => withFileLock(file, () => {
+    const all = readOrders(file), row = all[id] ?? { spent: "0" };
+    const out = fn(row);
+    all[id] = row;
+    writeIntentState(stateDir, file, JSON.stringify(all, null, 2) + "\n");
+    return out;
+  });
+  return intentSlot<Pending, Row>(change, (row, p) => { row.spent = (BigInt(row.spent) + BigInt(p.amountIn)).toString(); });
+}
+
 export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
   const slip = (o.slippagePct ?? 0.5) / 100;
   const file = path.join(o.stateDir, "limit-orders.json");
@@ -71,32 +92,26 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
   let alertedIntent: string | undefined;
   const note = (s: string) => { if (s !== lastNote) o.log(`limit ${spec.symbol}: ${s}`); lastNote = s; };
 
-  const read = (): Record<string, { spent: string }> => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; } };
+  const slot = limitSlot(o.stateDir, id);
+  const read = () => readOrders(file);
   const spent = () => BigInt(read()[id]?.spent ?? "0");
-  /** Count a buy that landed; the same write clears its journaled intent, so a restart can't count it twice. */
-  function addSpent(n: bigint) {
-    const all = read();
-    all[id] = { spent: (spent() + n).toString() };
-    writeIntentState(o.stateDir, file, JSON.stringify(all, null, 2) + "\n");
-  }
   // A buy is journaled (with its signature, once signed) before it is sent, and settled by the next check if
   // this one didn't see it through (a crash, or a confirmation that timed out): src/send-intent.ts.
-  type Pending = Intent & { at: string; amountIn: string; minOut: string; tokens: number; poolPrice: number };
-  const pendingOf = () => (read() as Record<string, { spent: string; pending?: Pending }>)[id]?.pending;
-  function setPending(p: Pending | undefined) {
-    const all = read() as Record<string, { spent: string; pending?: Pending }>;
-    all[id] = { spent: spent().toString(), ...(p ? { pending: p } : {}) };
-    writeIntentState(o.stateDir, file, JSON.stringify(all, null, 2) + "\n");
-  }
+  const pendingOf = () => read()[id]?.pending;
+  /** Count a buy that landed, once whoever sees it first; the same write clears its journaled intent. */
   function landed(p: Pending, signature: string) {
-    addSpent(BigInt(p.amountIn));
+    const first = slot.count(p, signature);
+    if (!first) return false;
     fs.appendFileSync(journal, JSON.stringify({ at: p.at, order: id, pool: spec.pool.toBase58(), poolPrice: p.poolPrice,
       limit: spec.price, amountIn: p.amountIn, minOut: p.minOut, tokens: p.tokens, signature }) + "\n");
+    return true;
   }
   /** Settle a buy an earlier check journaled; true while it is still in flight (no new buy until it settles). */
   async function settle(): Promise<boolean> {
     const p = pendingOf();
     if (!p) return false;
+    // A dry run may share the live bot's state: it only looks. The live bot settles this, and no new buy happens until it does.
+    if (!o.execute) { note(`[dry run] an earlier buy (${p.signature ?? "not yet signed"}) is unsettled: a live run settles it; nothing changed`); return true; }
     const v = await settleIntent(o.conn, p, { wallet: o.owner, stateDir: o.stateDir });
     if (v === "pending") { note(`an earlier buy ${p.signature} is still in flight: waiting for it`); return true; }
     if (v === "unresolved") {
@@ -104,14 +119,14 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
       if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`limit ${spec.symbol}: ${unresolvedHelp(p.signature!, o.owner)}`); }
       return true;
     }
-    if (v === "landed") { landed(p, p.signature!); await o.alert(`limit ${spec.symbol}: an earlier buy landed after all (${p.amountIn} raw USDC.X): ${p.signature}`); }
-    else { setPending(undefined); o.log(`limit ${spec.symbol}: an earlier buy didn't land (${p.signature ?? "never sent"}); nothing spent`); }
+    if (v === "landed") { if (landed(p, p.signature!)) await o.alert(`limit ${spec.symbol}: an earlier buy landed after all (${p.amountIn} raw USDC.X): ${p.signature}`); }
+    else { slot.drop(p); o.log(`limit ${spec.symbol}: an earlier buy didn't land (${p.signature ?? "never sent"}); nothing spent`); }
     return false;
   }
 
   async function check(): Promise<string> {
     if (await settle()) return "pending";
-    const sQ = await snapshot(o.conn, o.xdex, spec.pool, spec.quoteMint, spec.mint);
+    const sQ = await (o.snapshot ?? snapshot)(o.conn, o.xdex, spec.pool, spec.quoteMint, spec.mint);
     if (!dec) {
       const [mq, mt] = await Promise.all([getMint(o.conn, spec.quoteMint, "confirmed", sQ.pool.programs[sQ.side]),
         getMint(o.conn, spec.mint, "confirmed", sQ.pool.programs[1 - sQ.side])]);
@@ -136,9 +151,9 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
     const what = `buy ~${tokens.toFixed(6)} ${spec.symbol} for ${paid.toFixed(4)} USDC.X (~$${(paid / tokens).toFixed(2)} each)`;
     if (!o.execute) { o.log(`limit ${spec.symbol}: ${at}: [dry run] would ${what}`); return "dry run"; }
     const dest = getAssociatedTokenAddressSync(spec.mint, o.owner, false, d.tokProgram);
-    const pending: Pending = { at: new Date().toISOString(), amountIn: r.amountIn.toString(), minOut: minOut.toString(), tokens, poolPrice: r.poolPrice };
-    setPending(pending);
-    const sig = await whenSigned((signature, lastValidBlockHeight) => setPending({ ...pending, signature, lastValidBlockHeight }),
+    const pending: Pending = { token: crypto.randomUUID(), at: new Date().toISOString(), amountIn: r.amountIn.toString(), minOut: minOut.toString(), tokens, poolPrice: r.poolPrice };
+    if (!slot.claim(pending)) { note("another process has a buy out on this order: waiting for it"); return "pending"; }
+    const sig = await whenSigned((signature, lastValidBlockHeight) => slot.sign(pending, signature, lastValidBlockHeight),
       () => o.send([createAssociatedTokenAccountIdempotentInstruction(o.owner, dest, o.owner, spec.mint, d.tokProgram),
         swapIx(o.xdex, o.owner, { pool: sQ.pool, side: sQ.side, amountIn: r.amountIn, minimumOut: minOut }, ata, dest)]));
     landed(pending, sig);

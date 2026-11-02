@@ -118,6 +118,22 @@ test("scripts/resolve-intent.ts records only a journaled, expired, chain-unanswe
   d = journaled(); r = await run({}, good, d);
   assert.equal(r.code, 0, r.text);
   assert.deepEqual(decisions(d), { [signature]: "dropped" });
+
+  // A node with full history answers what the bot's RPC can't: that has to reach the bot.
+  const status = (confirmationStatus: string, err: unknown = null) => ({ getSignatureStatuses: () => ctx([{ slot: 1, confirmations: null, err, confirmationStatus }]) });
+  d = journaled(); r = await run(status("finalized"), [signature, "landed", "--wallet", walletText], d);
+  assert.equal(r.code, 0, r.text);
+  assert.deepEqual(decisions(d), { [signature]: "landed" }, "finalized landed");
+  d = journaled(); r = await run(status("finalized", { InstructionError: [0, "x"] }), good, d);
+  assert.equal(r.code, 0, r.text);
+  assert.deepEqual(decisions(d), { [signature]: "dropped" }, "finalized failed");
+  d = journaled(); r = await run({ getSignaturesForAddress: () => [{ signature: bs58.encode(Buffer.alloc(64, 4)), slot: 1, blockTime: 1_000, err: null, memo: null, confirmationStatus: "finalized" }] }, good, d);
+  assert.equal(r.code, 0, r.text);
+  assert.deepEqual(decisions(d), { [signature]: "dropped" }, "proven never landed");
+  d = journaled(); r = await run(status("confirmed"), [signature, "landed", "--wallet", walletText], d);
+  assert.equal(r.code, 1, r.text);
+  assert.match(r.text, /not finalized/);
+  assert.equal(decisions(d), null, "confirmed isn't enough");
 });
 
 test("an unresolved intent stays quiet briefly, then the alert says how to get out", () => {
