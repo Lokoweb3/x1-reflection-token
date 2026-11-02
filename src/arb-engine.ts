@@ -36,7 +36,6 @@ import {
   NATIVE_MINT, TOKEN_PROGRAM_ID, TransferFeeConfig, calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction,
   createSyncNativeInstruction, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
-import bs58 from "bs58";
 import { confirmByPolling } from "./tx.js";
 import { FeeCap, ROUTE_FAILURE_BUDGET, RouteFailures, maxTxFee } from "./arb-guard.js";
 import { signed } from "./send-intent.js";
