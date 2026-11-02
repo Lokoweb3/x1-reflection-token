@@ -52,7 +52,12 @@ this file first and say so.
   is no lock NFT, and the curve goes on to Graduated so buyers get their tokens. Such a
   token has no fee NFT, no creator reward and can't start a Tax Vault (`init_vault` needs an
   lp_locker lock); its tax stays withheld. It's the last resort, for when the alternative is
-  buyers never getting their tokens.
+  buyers never getting their tokens. A pool the old program made has no creation time on
+  record (`delivered == 0`): its wait starts with `start_burn_clock`, never from the curve's
+  age. The site's crank starts or burns only after a simulation against fresh state has been
+  refused by a program the same way more than once, 60 s or more apart (a failed send isn't
+  enough; `src/factory/curve-fallback.ts`). On-chain the deadline is the only gate: past it,
+  anyone can burn, whether or not the lock would have worked.
 - A creator may `close_curve` a Trading curve with `tokens_sold == 0`: with no positions it
   closes now (graduation deposit and rent back to the creator); positions emptied by
   selling still hold their token-account deposits, so it moves to Refunding instead and the
@@ -231,6 +236,8 @@ Account lists in this exact order (w = writable, s = signer).
    associated_token_program, system_program, rent, locker_program [== LOCKER_PROGRAM_ID].
    Refuses (`LockerUnavailable`) unless locker_program is executable. Sets `delivered` to
    the pool's creation time (for graduate_burn); graduate_lock / graduate_burn reset it to 0.
+   The program before this field held a time set `delivered = 0` here, so a pool it made reads 0
+   (see start_burn_clock).
    Clients send it with graduate_lock in one transaction (measured: 1,178 bytes with two
    compute-budget instructions, under the 1,232 limit, and 400k CU together, measured on a
    local validator by scripts/local-curve-graduate-test.ts; test/curve.test.ts checks the size).
@@ -263,9 +270,13 @@ Account lists in this exact order (w = writable, s = signer).
    run before the status check, so calling this before graduate_pool fails with
    `WrongAccount` (pool != curve.pool) rather than `WrongStatus`.
 
-5a. `graduate_burn()` — status PoolCreated → Graduated, once `now ≥ pool creation time
-   (delivered; created_at on curves whose pool predates it) + LOCK_AFTER_SECS`
-   (`BurnNotOpen` before).
+5a. `start_burn_clock()` — anyone, status PoolCreated with `delivered == 0` (a pool the old
+   program made): sets `delivered = now`, so that pool waits LOCK_AFTER_SECS from now. Moves
+   no funds; `BurnClockAlreadyStarted` if a time is already on record. graduate_lock stays open.
+
+5b. `graduate_burn()` — status PoolCreated → Graduated, once `now ≥ delivered + LOCK_AFTER_SECS`
+   (`BurnNotOpen` before; `BurnClockNotStarted` with `delivered == 0`: the curve's own age never
+   stands in, since a pool can be seconds old on an old curve and the burn can't be undone).
    caller(w,s), curve(w), auth(w), lp_mint(w) [== PDA(["pool_lp_mint", curve.pool], XDEX)],
    auth_lp(w) [ATA(auth, lp_mint, SPL Token)], token_program, system_program.
    Burns all of auth_lp (auth signs), closes auth_lp to auth, pays GRADUATE_REWARD to the
@@ -345,6 +356,6 @@ CurveClosed { curve, mint, creator, positions: u32 }
 TooBigEarly, InsufficientBalance, WrongStatus, WrongAccount, MathOverflow,
 InsufficientReserve, BadTarget, EarlyWindowFull, OneBuyPerTransaction,
 BadWithdrawAuthority, XdexClosed, RefundNotOpen, LockerUnavailable, BurnNotOpen,
-CurveNotEmpty` (codes 6000.. in this order; `InsufficientReserve` = 6012
+CurveNotEmpty, BurnClockNotStarted, BurnClockAlreadyStarted` (codes 6000.. in this order; `InsufficientReserve` = 6012
 was added by the implementation, see graduate_pool; `BadTarget` = 6013 came with
 selectable targets, see create_curve).

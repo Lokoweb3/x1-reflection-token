@@ -59,12 +59,20 @@ export const refundOpensAt = (c: Pick<Curve, "status" | "delivered" | "createdAt
   const at = completedAt(c);
   return at === null ? null : at + REFUND_AFTER_SECS;
 };
-/** When anyone may burn a PoolCreated curve's LP (graduate_burn; `delivered` holds the pool's creation time), or null. */
-export const burnOpensAt = (c: Pick<Curve, "status" | "delivered" | "createdAt">) =>
-  c.status === CurveStatus.PoolCreated ? (c.delivered > 0n ? Number(c.delivered) : c.createdAt) + LOCK_AFTER_SECS : null;
+/**
+ * When anyone may burn a PoolCreated curve's LP (graduate_burn; `delivered` holds when its wait
+ * began), or null: not PoolCreated, or a pool the old program made whose wait hasn't been started
+ * (needsBurnClock), which can't burn however old the curve is.
+ */
+export const burnOpensAt = (c: Pick<Curve, "status" | "delivered">) =>
+  c.status === CurveStatus.PoolCreated && c.delivered > 0n ? Number(c.delivered) + LOCK_AFTER_SECS : null;
+/** A pool the old program created: no time on record, so start_burn_clock comes before any burn. */
+export const needsBurnClock = (c: Pick<Curve, "status" | "delivered">) => c.status === CurveStatus.PoolCreated && c.delivered === 0n;
 /** The lock NFT of a graduated curve; null before graduation and for one whose LP was burned (graduate_burn). */
 export const lockNftOf = (c: Pick<Curve, "status" | "lockNft">) =>
   isGraduated(c.status) && !c.lockNft.equals(PublicKey.default) ? c.lockNft : null;
+/** Graduated with its LP burned (graduate_burn): no lock NFT, so no tax vault, creator reward or registration. */
+export const isLpBurned = (c: Pick<Curve, "status" | "lockNft">) => isGraduated(c.status) && c.lockNft.equals(PublicKey.default);
 /** A position's refund (the program's refund_share): its share of the raised XNT, rounded down; the last takes the rest. */
 export function refundShare(raised: bigint, sold: bigint, balance: bigint) {
   if (balance === 0n || sold === 0n) return 0n;
@@ -86,6 +94,7 @@ export const IX = {
   sell: disc("global:sell"),
   graduatePool: disc("global:graduate_pool"),
   graduateLock: disc("global:graduate_lock"),
+  startBurnClock: disc("global:start_burn_clock"),
   graduateBurn: disc("global:graduate_burn"),
   closeCurve: disc("global:close_curve"),
   deliver: disc("global:deliver"),
@@ -99,6 +108,7 @@ export const EVENT = {
   Graduated: disc("event:Graduated"),
   Delivered: disc("event:Delivered"),
   Refunded: disc("event:Refunded"),
+  BurnClockStarted: disc("event:BurnClockStarted"),
   LpBurned: disc("event:LpBurned"),
   CurveClosed: disc("event:CurveClosed"),
 };
@@ -137,6 +147,16 @@ export interface Curve {
 }
 /** Bytes the fields take (Anchor may allocate more; the rest is ignored). */
 export const CURVE_LEN = 8 + 32 * 2 + 8 * 9 + 8 + 1 + 4 + 8 + 32 * 2 + 2 + 1 + 1;
+
+/**
+ * The curve in this account, or null if it holds none: no account, or one that isn't this
+ * program's curve. A closed curve's address can be funded by anyone, which leaves an empty
+ * system-owned account there, so existing isn't enough.
+ */
+export function curveFromAccount(program: PublicKey, address: PublicKey, info: { owner: PublicKey; data: Buffer } | null): Curve | null {
+  if (!info || !info.owner.equals(program)) return null;
+  try { return decodeCurve(address, info.data); } catch { return null; }
+}
 
 export function decodeCurve(address: PublicKey, d: Buffer): Curve {
   if (d.length < CURVE_LEN || !d.subarray(0, 8).equals(CURVE_DISC)) throw new Error("Not a curve account");
@@ -360,6 +380,11 @@ export function graduateBurnIx(programId: PublicKey, network: "mainnet" | "testn
   });
 }
 
+/** Start the burn wait of a pool the old program created (anyone; moves no funds). */
+export function startBurnClockIx(programId: PublicKey, mint: PublicKey) {
+  return new TransactionInstruction({ programId, data: Buffer.from(IX.startBurnClock), keys: [m(curvePda(programId, mint), false, true)] });
+}
+
 /** The creator closes a trading curve with nothing sold (Refunding first if emptied positions still hold deposits). */
 export function closeCurveIx(programId: PublicKey, creator: PublicKey, mint: PublicKey) {
   return new TransactionInstruction({
@@ -425,6 +450,7 @@ export type CurveEvent =
   | { name: "Graduated"; curve: string; mint: string; pool: string; lockNft: string; raisedXnt: bigint }
   | { name: "Delivered"; curve: string; owner: string; tokens: bigint }
   | { name: "Refunded"; curve: string; owner: string; tokens: bigint; xnt: bigint }
+  | { name: "BurnClockStarted"; curve: string; mint: string; pool: string; startedAt: number }
   | { name: "LpBurned"; curve: string; mint: string; pool: string; lpAmount: bigint; raisedXnt: bigint }
   | { name: "CurveClosed"; curve: string; mint: string; creator: string; positions: number };
 
@@ -449,6 +475,7 @@ export function decodeEvent(d: Buffer): CurveEvent | null {
     if (tag.equals(EVENT.Graduated)) return { name: "Graduated", curve: key(), mint: key(), pool: key(), lockNft: key(), raisedXnt: u64() };
     if (tag.equals(EVENT.Delivered)) return { name: "Delivered", curve: key(), owner: key(), tokens: u64() };
     if (tag.equals(EVENT.Refunded)) return { name: "Refunded", curve: key(), owner: key(), tokens: u64(), xnt: u64() };
+    if (tag.equals(EVENT.BurnClockStarted)) return { name: "BurnClockStarted", curve: key(), mint: key(), pool: key(), startedAt: Number(d.readBigInt64LE(o)) };
     if (tag.equals(EVENT.LpBurned)) return { name: "LpBurned", curve: key(), mint: key(), pool: key(), lpAmount: u64(), raisedXnt: u64() };
     if (tag.equals(EVENT.CurveClosed)) return { name: "CurveClosed", curve: key(), mint: key(), creator: key(), positions: d.readUInt32LE(o) };
   } catch { /* truncated: not ours */ }

@@ -336,7 +336,12 @@ curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of 
   run unless `lp_locker` is deployed. A pool that still sits without its lock 7 days later
   (status 2, PoolCreated: lp_locker failing) can have its LP **burned** instead
   (`graduate_burn`, anyone; the liquidity stays locked forever, with no lock NFT) so buyers
-  still get their tokens.
+  still get their tokens. A pool an older program version made has no creation time on
+  record, so its 7 days only start with `start_burn_clock` (anyone; moves nothing), however
+  old its curve is. The crank starts or burns only after the chain itself has refused the
+  step the same way more than once, never because a send failed. Such a token has no
+  lock NFT, so it gets no creator reward, its tax vault can't start and it isn't registered;
+  the site says so on its curve page.
 - A creator can **close** a trading curve that has nothing sold (`close_curve`): the
   graduation deposit and the curve's rent come back (any emptied positions get their
   deposits back first, through refunds).

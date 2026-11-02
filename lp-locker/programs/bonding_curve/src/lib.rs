@@ -14,7 +14,8 @@
 //!   one transaction, so the pool never exists without its lock.
 //! * `graduate_burn`: a curve stuck in PoolCreated for LOCK_AFTER_SECS (lp_locker keeps
 //!   failing) burns all of auth's LP instead (the liquidity is still locked forever, with
-//!   no lock NFT) and moves on to Graduated, so buyers still get their tokens.
+//!   no lock NFT) and moves on to Graduated, so buyers still get their tokens. A pool made
+//!   before the program recorded that time starts its wait with `start_burn_clock` first.
 //! * `deliver` mints each buyer's tokens to their wallet; after the last one the mint
 //!   authority is revoked and what is left in `auth` goes to the creator.
 //!
@@ -589,14 +590,25 @@ pub mod bonding_curve {
         check_reserve(&ctx.accounts.auth.to_account_info(), ctx.accounts.curve.positions)
     }
 
+    /// A pool the old program created has no creation time on record (`delivered` is 0), so
+    /// its burn deadline can't be worked out: nothing burns until anyone (the crank, a buyer)
+    /// starts its wait here. It then gets the full LOCK_AFTER_SECS from now, and graduate_lock
+    /// keeps working all that time. Moves no funds and can only be done once.
+    pub fn start_burn_clock(ctx: Context<StartBurnClock>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let c = &mut ctx.accounts.curve;
+        stamp_burn_clock(c, now)?;
+        emit!(BurnClockStarted { curve: c.key(), mint: c.mint, pool: c.pool, started_at: now });
+        Ok(())
+    }
+
     /// PoolCreated for LOCK_AFTER_SECS (graduate_lock keeps failing, e.g. lp_locker is gone)
     /// -> Graduated: burn all of auth's LP, so the liquidity stays locked forever without a
     /// lock NFT, pay the caller GRADUATE_REWARD and let deliveries start.
     pub fn graduate_burn(ctx: Context<GraduateBurn>) -> Result<()> {
         let a = &ctx.accounts;
         require!(a.curve.status == STATUS_POOL_CREATED, CurveError::WrongStatus);
-        let now = Clock::get()?.unix_timestamp;
-        require!(now >= pool_created_at(&a.curve).saturating_add(LOCK_AFTER_SECS), CurveError::BurnNotOpen);
+        check_burn_open(&a.curve, Clock::get()?.unix_timestamp)?;
         let mint = a.curve.mint;
         let auth_seeds: &[&[u8]] = &[b"auth", mint.as_ref(), &[a.curve.auth_bump]];
         let auth = a.auth.to_account_info();
@@ -859,10 +871,22 @@ pub fn completed_at(c: &Curve) -> i64 {
     if c.delivered > 0 { c.delivered as i64 } else { c.created_at }
 }
 
-/// When a PoolCreated curve's pool was created: kept in `delivered` until it graduates (0 on
-/// curves whose pool was created before this was recorded: their creation time stands in).
-pub fn pool_created_at(c: &Curve) -> i64 {
-    if c.delivered > 0 { c.delivered as i64 } else { c.created_at }
+/// Whether a PoolCreated curve's LP may burn at `now`. `delivered` holds when its wait began:
+/// the pool's creation, or for a pool the old program made (0 on record) `start_burn_clock`.
+/// There is no fallback to the curve's own age: a curve can be weeks old and its pool seconds
+/// old, and the burn can't be undone.
+pub fn check_burn_open(c: &Curve, now: i64) -> Result<()> {
+    require!(c.delivered > 0, CurveError::BurnClockNotStarted);
+    require!(now >= (c.delivered as i64).saturating_add(LOCK_AFTER_SECS), CurveError::BurnNotOpen);
+    Ok(())
+}
+
+/// Start a pool's burn wait, only where none is on record (see `start_burn_clock`).
+pub fn stamp_burn_clock(c: &mut Curve, now: i64) -> Result<()> {
+    require!(c.status == STATUS_POOL_CREATED, CurveError::WrongStatus);
+    require!(c.delivered == 0, CurveError::BurnClockAlreadyStarted);
+    c.delivered = u64::try_from(now).unwrap_or(1).max(1);
+    Ok(())
 }
 
 /// The XDEX LP mint of `pool`: PDA(["pool_lp_mint", pool], XDEX).
@@ -1343,6 +1367,12 @@ pub struct GraduateBurn<'info> {
 }
 
 #[derive(Accounts)]
+pub struct StartBurnClock<'info> {
+    #[account(mut, seeds = [b"curve", curve.mint.as_ref()], bump = curve.bump)]
+    pub curve: Box<Account<'info, Curve>>,
+}
+
+#[derive(Accounts)]
 pub struct CloseCurve<'info> {
     #[account(mut, address = curve.creator @ CurveError::WrongAccount)]
     pub creator: Signer<'info>,
@@ -1455,6 +1485,15 @@ pub struct LpBurned {
     pub raised_xnt: u64,
 }
 
+/// start_burn_clock: a pool the old program created starts its LOCK_AFTER_SECS wait.
+#[event]
+pub struct BurnClockStarted {
+    pub curve: Pubkey,
+    pub mint: Pubkey,
+    pub pool: Pubkey,
+    pub started_at: i64,
+}
+
 /// close_curve: closed now (positions 0) or Refunding until its empty positions are refunded.
 #[event]
 pub struct CurveClosed {
@@ -1525,15 +1564,19 @@ pub enum CurveError {
     BurnNotOpen,
     #[msg("Only a curve with nothing sold can be closed")]
     CurveNotEmpty,
+    #[msg("This pool has no burn wait on record yet; start it with start_burn_clock, then wait 7 days")]
+    BurnClockNotStarted,
+    #[msg("This pool's burn wait is already running")]
+    BurnClockAlreadyStarted,
 }
 
 #[cfg(test)]
 mod tests {
     use super::math::{buy, ceil_div, sell, setup, Setup};
     use super::{
-        check_amm_config, check_curve_mint, completed_at, early_limits, is_vault_auth, one_early_buy, pool_amounts, pool_created_at,
-        refund_share, target_lamports, Curve, CurveError, EARLY_TOTAL_BPS, FEE_BPS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE, SNIPE_MAX_BPS,
-        STATUS_COMPLETE, STATUS_POOL_CREATED, STATUS_TRADING, TARGETS_XNT_WHOLE, VAULT_PROGRAMS, XDEX_CONFIG_DISC, XDEX_PROGRAM_ID,
+        check_amm_config, check_burn_open, check_curve_mint, completed_at, early_limits, is_vault_auth, one_early_buy, pool_amounts,
+        refund_share, stamp_burn_clock, target_lamports, Curve, CurveError, EARLY_TOTAL_BPS, FEE_BPS, LOCK_AFTER_SECS, MAX_SUPPLY_WHOLE, MIN_SUPPLY_WHOLE,
+        SNIPE_MAX_BPS, STATUS_COMPLETE, STATUS_GRADUATED, STATUS_POOL_CREATED, STATUS_TRADING, TARGETS_XNT_WHOLE, VAULT_PROGRAMS, XDEX_CONFIG_DISC, XDEX_PROGRAM_ID,
     };
     use anchor_lang::prelude::*;
     use anchor_lang::{AccountDeserialize, AccountSerialize};
@@ -1594,6 +1637,8 @@ mod tests {
         assert_eq!(u32::from(CurveError::LockerUnavailable), 6019);
         assert_eq!(u32::from(CurveError::BurnNotOpen), 6020);
         assert_eq!(u32::from(CurveError::CurveNotEmpty), 6021);
+        assert_eq!(u32::from(CurveError::BurnClockNotStarted), 6022);
+        assert_eq!(u32::from(CurveError::BurnClockAlreadyStarted), 6023);
     }
 
     #[test]
@@ -1902,19 +1947,61 @@ mod tests {
         assert_eq!(completed_at(&c), 1_800_000_000);
     }
 
-    /// BC-M1: graduate_burn counts from the pool's creation time, kept in `delivered` while
-    /// PoolCreated; a curve whose pool was made before that was recorded uses its creation time.
-    #[test]
-    fn burn_clock_is_the_pool_creation_time() {
-        let mut c = Curve {
+    fn pool_created_curve(created_at: i64, delivered: u64) -> Curve {
+        Curve {
             mint: Pubkey::new_unique(), creator: Pubkey::new_unique(), supply: 0, curve_tokens: 0, pool_tokens_gross: 0,
             pool_tokens_net: 0, target_xnt: 0, virtual_xnt: 0, virtual_tokens: 0, tokens_sold: 0, raised_xnt: 0,
-            created_at: 1_700_000_000, status: STATUS_POOL_CREATED, positions: 3, delivered: 0, pool: Pubkey::new_unique(),
+            created_at, status: STATUS_POOL_CREATED, positions: 3, delivered, pool: Pubkey::new_unique(),
             lock_nft: Pubkey::default(), tax_bps: 500, bump: 0, auth_bump: 0,
-        };
-        assert_eq!(pool_created_at(&c), 1_700_000_000);
-        c.delivered = 1_800_000_000;
-        assert_eq!(pool_created_at(&c), 1_800_000_000);
-        assert_eq!(super::LOCK_AFTER_SECS, if cfg!(feature = "short-windows") { 10 } else { 7 * 24 * 3600 });
+        }
+    }
+
+    /// BC-M1: graduate_burn counts from the pool's creation time, kept in `delivered` while PoolCreated.
+    #[test]
+    fn burn_opens_after_the_wait_from_the_pool_creation_time() {
+        let at = 1_800_000_000i64;
+        let c = pool_created_curve(1_700_000_000, at as u64);
+        assert_eq!(code(check_burn_open(&c, at).unwrap_err()), u32::from(CurveError::BurnNotOpen));
+        assert_eq!(code(check_burn_open(&c, at + LOCK_AFTER_SECS - 1).unwrap_err()), u32::from(CurveError::BurnNotOpen));
+        assert!(check_burn_open(&c, at + LOCK_AFTER_SECS).is_ok());
+        assert_eq!(LOCK_AFTER_SECS, if cfg!(feature = "short-windows") { 10 } else { 7 * 24 * 3600 });
+    }
+
+    /// The upgrade case: a curve created long ago whose pool the OLD program created seconds
+    /// before the upgrade reads `delivered == 0` (the old graduate_pool reset it). However old
+    /// the curve, nothing burns until its wait has been started and has run in full, and the
+    /// wait can't be restarted or back-dated.
+    #[test]
+    fn a_legacy_pool_never_burns_early() {
+        let upgrade = 1_800_000_000i64;
+        let days = 24 * 3600i64;
+        for age in [8 * days, 30 * days, 365 * days] {
+            let mut c = pool_created_curve(upgrade - age, 0);
+            for now in [upgrade, upgrade + LOCK_AFTER_SECS, upgrade + 400 * days] {
+                assert_eq!(code(check_burn_open(&c, now).unwrap_err()), u32::from(CurveError::BurnClockNotStarted), "age {age}, now {now}");
+            }
+            stamp_burn_clock(&mut c, upgrade).unwrap();
+            assert_eq!(c.delivered, upgrade as u64);
+            assert_eq!(code(check_burn_open(&c, upgrade).unwrap_err()), u32::from(CurveError::BurnNotOpen));
+            assert_eq!(code(check_burn_open(&c, upgrade + LOCK_AFTER_SECS - 1).unwrap_err()), u32::from(CurveError::BurnNotOpen));
+            assert!(check_burn_open(&c, upgrade + LOCK_AFTER_SECS).is_ok(), "the route to the buyers' tokens stays open");
+            // A second stamp can't move the deadline, later or earlier.
+            assert_eq!(code(stamp_burn_clock(&mut c, upgrade + days).unwrap_err()), u32::from(CurveError::BurnClockAlreadyStarted));
+            assert_eq!(c.delivered, upgrade as u64);
+        }
+    }
+
+    /// A curve the new program brought to PoolCreated already has its time, and only a
+    /// PoolCreated curve can be stamped (in any other status `delivered` means something else).
+    #[test]
+    fn only_a_legacy_pool_can_be_stamped() {
+        let mut fresh = pool_created_curve(1_700_000_000, 1_800_000_000);
+        assert_eq!(code(stamp_burn_clock(&mut fresh, 1_800_000_001).unwrap_err()), u32::from(CurveError::BurnClockAlreadyStarted));
+        for status in [STATUS_TRADING, STATUS_COMPLETE, STATUS_GRADUATED] {
+            let mut c = pool_created_curve(1_700_000_000, 0);
+            c.status = status;
+            assert_eq!(code(stamp_burn_clock(&mut c, 1_800_000_000).unwrap_err()), u32::from(CurveError::WrongStatus));
+            assert_eq!(c.delivered, 0);
+        }
     }
 }

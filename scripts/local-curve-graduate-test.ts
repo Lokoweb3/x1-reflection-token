@@ -11,6 +11,8 @@
  *   D. close_curve with a position emptied by selling: Refunding, the refund returns the
  *      deposit and closes the curve.
  *   E. A full curve that never graduates: the last refund closes the curve.
+ *   F. graduate_pool's lp_locker account: only the real program's address, and an older
+ *      client that leaves it out is refused before anything moves.
  *
  *   solana-test-validator --reset --ledger <scratch>/grad-ledger --rpc-port 8999 \
  *     --faucet-port 9990 --gossip-port 8990 --dynamic-port-range 8991-9020 \
@@ -41,8 +43,8 @@ import {
 import { createInitializeInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
 import bs58 from "bs58";
 import {
-  FEE_RECEIVER, GRADUATION_DEPOSIT, POSITION_DISC, authPda, buyIx, closeCurveIx, createCurveIx, curvePda, decodeCurve, decodePosition,
-  deliverIx, graduateBurnIx, graduateIxs, graduateLockIx, graduatePoolIx, nftMintPda, refundIx, sellIx, type Curve,
+  FEE_RECEIVER, GRADUATION_DEPOSIT, POSITION_DISC, authPda, buyIx, closeCurveIx, createCurveIx, curveFromAccount, curvePda, decodeCurve, decodePosition,
+  deliverIx, graduateBurnIx, graduateIxs, graduateLockIx, graduatePoolIx, nftMintPda, refundIx, sellIx, startBurnClockIx, type Curve,
 } from "../src/curve.js";
 import { lockPda } from "../src/locker.js";
 import { poolAddresses } from "../src/xdex.js";
@@ -185,6 +187,7 @@ console.log("B. A pool left without its lock: graduate_burn");
   assert.equal(p.status, 2);
   assert.ok(p.delivered > 0n, "delivered holds the pool's creation time");
   await fails("graduate_burn before LOCK_AFTER_SECS", send([graduateBurnIx(PROGRAM, "testnet", crank.publicKey, mint)], [crank], 200_000), /BurnNotOpen/);
+  await fails("start_burn_clock on a pool with its time on record", send([startBurnClockIx(PROGRAM, mint)], [crank], 50_000), /BurnClockAlreadyStarted/);
   await sleep(SHORT_DELAY_MS);
   const { lpMint } = poolAddresses(XDEX, AMM_CONFIG, mint);
   const authLp = getAssociatedTokenAddressSync(lpMint, authPda(PROGRAM, mint), true, TOKEN_PROGRAM_ID);
@@ -219,6 +222,13 @@ console.log("C. close_curve with nothing sold");
   assert.equal(await bal(authPda(PROGRAM, mint)), 0n, "auth emptied");
   assert.equal((await bal(creator.publicKey)) - before + fee, GRADUATION_DEPOSIT + curveRent, "deposit and rent back");
   ok(`closed: ${xnt(GRADUATION_DEPOSIT + curveRent)} XNT back to the creator (deposit + curve rent)`);
+  assert.equal((await getMint(conn, mint, "confirmed", TOKEN_2022_PROGRAM_ID)).supply, 0n, "no tokens exist");
+  // Anyone can fund the closed address: readers see no curve, and it doesn't block a new one.
+  await fund(curvePda(PROGRAM, mint), 1);
+  const funded = await conn.getAccountInfo(curvePda(PROGRAM, mint), "confirmed");
+  assert.ok(funded?.owner.equals(SystemProgram.programId), "an empty, system-owned account");
+  assert.equal(curveFromAccount(PROGRAM, curvePda(PROGRAM, mint), funded), null);
+  await fund(authPda(PROGRAM, mint), 1);
   await newCurve(creator, mintKp);
   assert.equal((await readCurve(mint)).status, 0);
   ok("the mint (supply 0, mint authority still auth) takes a new curve");
@@ -249,13 +259,46 @@ console.log("E. A full curve that never graduates: the last refund closes it");
   const c = await fill(mint, buyers);
   await sleep(SHORT_DELAY_MS);
   const positions = await positionsOf(c.address);
+  const ownersBefore = await Promise.all(positions.map((p) => bal(p.owner)));
+  const creatorBefore = await bal(creator.publicKey);
+  const authBefore = await bal(authPda(PROGRAM, mint));
+  const curveRent = await bal(curvePda(PROGRAM, mint));
+  const positionRent = await Promise.all(positions.map((p) => bal(p.address)));
   for (const [i, p] of positions.entries()) {
     await send([refundIx(PROGRAM, crank.publicKey, mint, p.owner, creator.publicKey)], [crank]);
     if (i < positions.length - 1) assert.equal((await readCurve(mint)).status, 5);
   }
   assert.equal(await findCurve(mint), null, "curve closed after the last refund");
   assert.equal(await bal(authPda(PROGRAM, mint)), 0n);
-  ok(`${positions.length} positions refunded, the curve closed`);
+  assert.equal(await bal(curvePda(PROGRAM, mint)), 0n);
+  assert.equal((await getMint(conn, mint, "confirmed", TOKEN_2022_PROGRAM_ID)).supply, 0n, "no tokens exist");
+  assert.equal((await positionsOf(c.address)).length, 0, "no position left behind");
+  // Every lamport of the curve went to a buyer or the creator; the crank paid only its fees.
+  const paid = (await Promise.all(positions.map(async (p, i) => (await bal(p.owner)) - ownersBefore[i]))).reduce((a, b) => a + b, 0n);
+  const toCreator = (await bal(creator.publicKey)) - creatorBefore;
+  assert.equal(paid + toCreator, authBefore + curveRent + positionRent.reduce((a, b) => a + b, 0n), "nothing lost, nothing left");
+  assert.equal(paid - positionRent.reduce((a, b) => a + b, 0n) - positions.reduce((a, p) => a + p.deposit, 0n), c.raisedXnt, "the buyers got all the XNT raised and their deposits");
+  ok(`${positions.length} positions refunded, the curve closed, nothing left behind`);
+}
+
+console.log("F. graduate_pool's lp_locker account");
+{
+  const mint = await newCurve(creator);
+  await fill(mint, buyers);
+  const ix = graduatePoolIx(PROGRAM, "testnet", crank.publicKey, mint);
+  assert.ok(ix.keys[ix.keys.length - 1].pubkey.equals(LOCKER), "it comes last");
+  // Another account that is just as executable: only the address decides.
+  const withOther = new TransactionInstruction({ programId: ix.programId, data: ix.data,
+    keys: [...ix.keys.slice(0, -1), { pubkey: XDEX, isSigner: false, isWritable: false }] });
+  assert.ok((await conn.getAccountInfo(XDEX, "confirmed"))?.executable, "XDEX is executable");
+  await fails("graduate_pool with another executable as lp_locker", send([withOther], [crank], 1_000_000), /WrongAccount/);
+  const older = new TransactionInstruction({ programId: ix.programId, data: ix.data, keys: ix.keys.slice(0, -1) });
+  await fails("graduate_pool from a client without the account", send([older], [crank], 1_000_000), /AccountNotEnoughKeys|NotEnoughAccountKeys|0xbbc/);
+  assert.equal((await readCurve(mint)).status, 1, "still Complete");
+  assert.equal(await conn.getAccountInfo(poolAddresses(XDEX, AMM_CONFIG, mint).pool, "confirmed"), null, "no pool");
+  await send(graduateIxs(PROGRAM, "testnet", crank.publicKey, mint, creator.publicKey), [crank], 1_000_000);
+  assert.equal((await readCurve(mint)).status, 3, "and the curve graduates normally");
+  ok("the address binds it, and an older client's request moves nothing");
 }
 
 console.log("\nAll graduation and close checks passed.");

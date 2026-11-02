@@ -86,6 +86,8 @@ export const PROGRAM_ERRORS: Record<ProgramKind, readonly (readonly [string, str
     ["LockerUnavailable", "The LP locker program isn't deployed (not executable); the pool waits until it is"],
     ["BurnNotOpen", "The LP can be burned only after the pool has waited 7 days for its lock"],
     ["CurveNotEmpty", "Only a curve with nothing sold can be closed"],
+    ["BurnClockNotStarted", "This pool has no burn wait on record yet; start it with start_burn_clock, then wait 7 days"],
+    ["BurnClockAlreadyStarted", "This pool's burn wait is already running"],
   ],
   locker: [
     ["ZeroAmount", "Amount must be greater than zero"],
