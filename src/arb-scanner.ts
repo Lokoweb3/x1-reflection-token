@@ -27,7 +27,7 @@ import {
 } from "@solana/spl-token";
 import { ACCOUNT_RENT, routesFor, type Engine, type Route } from "./arb-engine.js";
 import { symbolOf } from "./pools.js";
-import { decodePool, snapshotMany, type Pool, type Snapshot, type SnapshotSpec } from "./xdex.js";
+import { CONFIG_DISC, decodePool, snapshotMany, type Pool, type Snapshot, type SnapshotSpec } from "./xdex.js";
 
 export interface ScannerOptions {
   conn: Connection;
@@ -108,7 +108,9 @@ export function createScanner(o: ScannerOptions) {
     const mintKeys = [...new Map(decoded.flatMap((p) => p.mints).map((m) => [m.toBase58(), m])).values()];
     const [vaultInfo, cfgInfo, mintInfo, ep] = await Promise.all([many(decoded.flatMap((p) => p.vaults)), many(cfgKeys), many(mintKeys), conn.getEpochInfo("confirmed")]);
     epoch = BigInt(ep.epoch);
-    const rate = new Map(cfgKeys.map((c, i) => [c.toBase58(), cfgInfo[i]?.data.readBigUInt64LE(12) ?? 1_000_000n]));
+    // A fee config that isn't XDEX's AmmConfig reads as a 100% fee, so its pools never trade.
+    const isCfg = (a: (typeof cfgInfo)[number]) => !!a && a.owner.equals(xdex) && a.data.length === 236 && a.data.subarray(0, 8).equals(CONFIG_DISC);
+    const rate = new Map(cfgKeys.map((c, i) => [c.toBase58(), isCfg(cfgInfo[i]) ? cfgInfo[i]!.data.readBigUInt64LE(12) : 1_000_000n]));
     const nextTax = new Map<string, TransferFeeConfig>(), bad = new Map<string, string>();
     mintKeys.forEach((m, i) => {
       const a = mintInfo[i];

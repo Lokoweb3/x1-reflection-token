@@ -204,11 +204,36 @@ export function saveConfigField(key: "mint", value: string) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + "\n");
 }
 
+/** A keypair file that can't be read. Its message names the file: for the operator's log, not for visitors. */
+export class KeypairError extends Error {}
+
 export function loadKeypair(file: string): Keypair {
   const resolved = file.startsWith("~") ? path.join(os.homedir(), file.slice(1)) : path.resolve(ROOT, file);
-  const secret = JSON.parse(fs.readFileSync(resolved, "utf8"));
-  return Keypair.fromSecretKey(Uint8Array.from(secret));
+  try {
+    const secret = JSON.parse(fs.readFileSync(resolved, "utf8"));
+    return Keypair.fromSecretKey(Uint8Array.from(secret));
+  } catch (e) {
+    throw new KeypairError(`can't read keypair ${file}: ${e instanceof Error ? e.message : e}`);
+  }
 }
+
+/**
+ * Keypairs a long-running server uses, read once (the first call, made at start-up) and
+ * kept (an unreadable one is remembered as such): request handlers never touch the key
+ * files, so a missing or unreadable file shows at start and visitors never see its path.
+ */
+const keyCache = new Map<string, Keypair | KeypairError>();
+export function cachedKeypair(file: string): Keypair {
+  let k = keyCache.get(file);
+  if (!k) {
+    try { k = loadKeypair(file); } catch (e) { k = e instanceof KeypairError ? e : new KeypairError(String(e)); }
+    keyCache.set(file, k);
+  }
+  if (k instanceof KeypairError) throw k;
+  return k;
+}
+/** The public key of a keypair file (see cachedKeypair). */
+export const keypairPublicKey = (file: string): PublicKey => cachedKeypair(file).publicKey;
 
 /**
  * RPC connection that is gentle with rate-limited public endpoints: requests from this
@@ -219,19 +244,30 @@ export function loadKeypair(file: string): Keypair {
 export function connection(cfg: Config) {
   return new Connection(process.env.REFLECT_RPC_URL ?? cfg.rpcUrl, { commitment: "confirmed", fetch: patientFetch, disableRetryOnRateLimit: true });
 }
+/**
+ * The same, with its own queue: its requests don't wait behind the shared one's (a server's
+ * crank behind a burst of page views). A 429 still makes both back off.
+ */
+export function ownConnection(cfg: Config) {
+  const queue = { next: 0 };
+  return new Connection(process.env.REFLECT_RPC_URL ?? cfg.rpcUrl, { commitment: "confirmed", fetch: (i, o) => queuedFetch(queue, i, o), disableRetryOnRateLimit: true });
+}
 const RPC_GAP_MS = Number(process.env.REFLECT_RPC_GAP_MS ?? 150);
-let nextSlot = 0;
-async function patientFetch(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
+const shared = { next: 0 };
+/** Until when a 429 holds every queue in this process. */
+let backoffUntil = 0;
+const patientFetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => queuedFetch(shared, input, init);
+async function queuedFetch(queue: { next: number }, input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   for (let attempt = 0; ; attempt++) {
-    const now = Date.now(), at = Math.max(now, nextSlot);
-    nextSlot = at + RPC_GAP_MS;
+    const now = Date.now(), at = Math.max(now, queue.next, backoffUntil);
+    queue.next = at + RPC_GAP_MS;
     if (at > now) await sleep(at - now);
     const res = await fetch(input, init);
     if (res.status !== 429 || attempt >= 5) return res;
     const hint = Number(res.headers.get("retry-after"));
     const wait = Number.isFinite(hint) && hint > 0 ? Math.min(hint * 1000, 30_000) : 1500 * 2 ** attempt;
-    nextSlot = Math.max(nextSlot, Date.now() + wait); // everyone in this process backs off together
+    backoffUntil = Math.max(backoffUntil, Date.now() + wait); // everyone in this process backs off together
     await sleep(wait);
   }
 }

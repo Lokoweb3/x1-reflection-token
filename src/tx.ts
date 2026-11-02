@@ -87,19 +87,35 @@ export async function sendAndConfirm(conn: Connection, s: Signed | { tx: Version
 /**
  * Wait for `signature` by polling its status over HTTP (public RPCs often refuse the
  * websocket that confirmTransaction relies on), re-sending the transaction now and then
- * until it confirms, fails, or its blockhash expires.
+ * until it confirms, fails, or its blockhash expires. It gives up after `deadlineMs`
+ * (120 s) even if the RPC never reports the blockhash expired (a stalled or lagging node),
+ * so a caller never hangs; the transaction may still land, so callers that care check
+ * `outcome` later.
  */
-export async function confirmByPolling(conn: Connection, raw: Buffer | Uint8Array, signature: string, lastValidBlockHeight: number) {
+export async function confirmByPolling(conn: Connection, raw: Buffer | Uint8Array, signature: string, lastValidBlockHeight: number, deadlineMs = 120_000) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  for (let i = 0; ; i++) {
-    await sleep(1500);
-    const st = (await conn.getSignatureStatuses([signature])).value[0];
-    if (st?.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(st.err)}`);
-    if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return;
-    if (i % 4 === 3) {
-      if ((await conn.getBlockHeight("confirmed")) > lastValidBlockHeight) throw new Error(`Transaction ${signature} expired before it confirmed`);
-      await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => undefined);
+  let stopped = false, timer: ReturnType<typeof setTimeout> | undefined;
+  const poll = async () => {
+    for (let i = 0; !stopped; i++) {
+      await sleep(1500);
+      const st = (await conn.getSignatureStatuses([signature])).value[0];
+      if (st?.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(st.err)}`);
+      if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return;
+      if (i % 4 === 3) {
+        if ((await conn.getBlockHeight("confirmed")) > lastValidBlockHeight) throw new Error(`Transaction ${signature} expired before it confirmed`);
+        if (!stopped) await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => undefined);
+      }
     }
+  };
+  // The deadline also covers an RPC call that never answers.
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Transaction ${signature} not confirmed within ${Math.round(deadlineMs / 1000)}s (it may still land)`)), deadlineMs);
+  });
+  try {
+    await Promise.race([poll(), deadline]);
+  } finally {
+    stopped = true;
+    clearTimeout(timer);
   }
 }
 
