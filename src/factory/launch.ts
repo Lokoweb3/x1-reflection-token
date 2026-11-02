@@ -50,7 +50,7 @@ import { mkdirDurable, writeFileDurable } from "./durable.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
-  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, authPda, createCurveIx, curvePda, curveSetup, decodeCurve, hasPool, isGraduated, lockNftOf, parseTarget,
+  CurveStatus, LOCKER_PROGRAM_ID, SUPPLY_MAX as CURVE_SUPPLY_MAX, authPda, createCurveIx, curveFromAccount, curvePda, curveSetup, hasPool, isGraduated, isLpBurned, lockNftOf, parseTarget,
 } from "../curve.js";
 
 const U64_MAX = 2n ** 64n - 1n;
@@ -718,14 +718,17 @@ export async function buildLockStep(conn: Connection, cfg: Config, r: LaunchReco
     { pool: new PublicKey(r.pool), mint: new PublicKey(r.mint), symbol: r.symbol });
 }
 
-/** A curve launch's curve account, or null (not created yet, or the curve feature is off). */
+/** A curve launch's curve account, or null (not created yet, closed, or the curve feature is off). */
 export async function readCurveOf(conn: Connection, cfg: Config, r: LaunchRecord) {
   const id = cfg.factory?.curve?.programId;
   if (r.kind !== "curve" || !id) return null;
-  const addr = curvePda(new PublicKey(id), new PublicKey(r.mint));
-  const info = await conn.getAccountInfo(addr, "confirmed");
-  return info ? decodeCurve(addr, info.data) : null;
+  const program = new PublicKey(id);
+  const addr = curvePda(program, new PublicKey(r.mint));
+  return curveFromAccount(program, addr, await conn.getAccountInfo(addr, "confirmed"));
 }
+
+/** Why a curve token whose LP was burned at graduation (graduate_burn) can't go on like the others. */
+export const LP_BURNED_ERROR = "This token's LP was burned at graduation because its lock couldn't be made, so it has no lock NFT: its tax vault can't start and it can't be registered.";
 
 /** Whether a vault launch's vault account exists (the creator started it). */
 async function vaultStarted(conn: Connection, cfg: Config, r: LaunchRecord) {
@@ -750,8 +753,11 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
     const graduated = !!c && isGraduated(c.status);
     // A curve whose LP was burned (graduate_burn, lp_locker failing) graduated without a lock NFT.
     const nft = c ? lockNftOf(c) : null;
+    // No curve but the mint exists: it was closed (the mint and the curve are created together).
+    const closed = !c && !!cfg.factory?.curve?.programId && !!(await conn.getAccountInfo(new PublicKey(r.mint), "confirmed"));
     const out = { token: !!c, pool: !!c && hasPool(c.status), lock: !!nft,
-      lockNft: nft?.toBase58() ?? null, registered: !!r.registeredAt, curveStatus: c?.status ?? null };
+      lockNft: nft?.toBase58() ?? null, registered: !!r.registeredAt, curveStatus: c?.status ?? null,
+      lpBurned: !!c && isLpBurned(c), curveClosed: closed };
     // A vault curve token: the creator starts the vault once it has graduated (and turns passes on, for a holder-passes one).
     if (!r.taxVault) return out;
     const vault = graduated && (await vaultStarted(conn, cfg, r));
@@ -798,6 +804,7 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   const creator = new PublicKey(r.creator);
   const c = r.kind === "curve" ? await readCurveOf(conn, cfg, r) : null;
   if (r.kind === "curve" && (!c || !isGraduated(c.status))) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
+  if (c && isLpBurned(c)) throw new Error(LP_BURNED_ERROR);
   const pool = c ? c.pool : new PublicKey(r.pool);
   const base = { payer: creator, mint, pool, creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator };
   if (r.payoutMint) {
@@ -947,6 +954,7 @@ async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
   const mintKey = new PublicKey(r.mint);
   const c = await readCurveOf(conn, cfg, r);
   if (!c || !isGraduated(c.status)) throw new Error("This curve hasn't graduated yet.");
+  if (isLpBurned(c)) throw new Error(LP_BURNED_ERROR);
   const auth = authPda(program, mintKey);
   const locks = await listLocks(conn, LOCKER_PROGRAM_ID, c.pool);
   const lock = locks.find((l) => l.nftMint.equals(c.lockNft) && l.locker.equals(auth));

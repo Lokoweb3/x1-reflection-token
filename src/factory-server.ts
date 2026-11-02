@@ -25,7 +25,7 @@ import { payoutToken, payoutTokenJson, payoutTokensOn } from "./factory/payout.j
 import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
-  readLaunch, registerLaunch,
+  readLaunch, registerLaunch, LP_BURNED_ERROR,
   registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, isPendingLaunch, onLaunchSaved, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
@@ -462,6 +462,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     // Tax Vault launches, after the lock (a curve token: after graduation): the creator starts the vault (init_vault).
     const r = ownLaunch(body);
     const s = await launchStatus(conn, cfg, r);
+    if ("lpBurned" in s && s.lpBurned) throw new Error(LP_BURNED_ERROR);
     if (!s.lock || !s.lockNft) throw new Error(r.kind === "curve" ? "The curve hasn't graduated yet; the tax vault starts after graduation." : "Step 3 (LP lock) hasn't confirmed yet.");
     const ixs = await buildVaultStep(conn, cfg, r, s.lockNft);
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], { ...opts, units: 200_000 }) };
@@ -1037,7 +1038,7 @@ async function getView(url: URL) {
   if (url.pathname === "/api/launches") {
     const creator = new PublicKey(url.searchParams.get("creator") ?? "").toBase58();
     const mine = listLaunches().filter((r) => r.creator === creator && !(r as { hidden?: boolean }).hidden).slice(0, 20);
-    return Promise.all(mine.map(async (r) => {
+    const rows = await Promise.allSettled(mine.map(async (r) => {
       const status = await launchStatus(conn, cfg, r);
       const nft = r.lockNft ?? status.lockNft;
       const nftMeta = nft ? await getTokenMetadata(conn, new PublicKey(nft), "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null) : null;
@@ -1053,6 +1054,15 @@ async function getView(url: URL) {
       }
       return { ...publicView(r), status, lockNft: nft, receipt: nftMeta ? (await nftArt(cfg, nftMeta.uri))?.image ?? null : null, rewards: await creatorRewards(nft, r.mint), fees, nftHolder: nftHolderAddr };
     }));
+    // One launch that can't be read doesn't take the creator's other launches with it. If none
+    // can be, the chain itself isn't answering: fail, so a cached answer is served instead.
+    if (rows.length && rows.every((x) => x.status === "rejected")) throw (rows[0] as PromiseRejectedResult).reason;
+    return rows.map((x, i) => {
+      if (x.status === "fulfilled") return x.value;
+      console.error(`launch status ${mine[i].mint}: ${x.reason instanceof Error ? x.reason.message : x.reason}`);
+      // Nothing is claimed about its steps: the page must not offer them again from this row.
+      return { ...publicView(mine[i]), status: { unavailable: true }, lockNft: mine[i].lockNft ?? null, receipt: null, rewards: null, fees: null, nftHolder: null };
+    });
   }
   if (url.pathname === "/api/tokens") return registeredLaunches().map((r) => ({ ...publicView(r), paid: tokenPayouts(r.mint) }));
   if (url.pathname === "/api/stats") return stats();

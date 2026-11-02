@@ -19,9 +19,10 @@ import { sendAndConfirm, sign, simulate, withPriority } from "../tx.js";
 import {
   CURVE_BPS, CURVE_DISC, CurveStatus, DECIMALS, EARLY_TOTAL_BPS, FEE_BPS, GRADUATE_REWARD, GRADUATION_DEPOSIT, POSITION_DISC, POSITION_LEN, REFUND_AFTER_SECS,
   SNIPE_MAX_BPS, SNIPE_WINDOW_SECS, DEFAULT_TARGET_XNT, STATUS_NAMES, SUPPLY_MAX, SUPPLY_MIN, targetsFor, buyIx, curvePda, decodeCurve, decodePosition,
-  burnOpensAt, deliverIx, graduateBurnIx, graduateIxs, graduateLockIx, hasPool, isGraduated, lockNftOf, marketCapOf, parseEvents, positionPda, priceOf, progressOf, quoteBuy, quoteSell,
-  refundIx, refundOpensAt, refundShare, sellIx, x0Of, y0Of, type Curve, type Position,
+  burnOpensAt, curveFromAccount, deliverIx, graduateBurnIx, graduateIxs, graduateLockIx, hasPool, isGraduated, isLpBurned, lockNftOf, marketCapOf, needsBurnClock, parseEvents, positionPda, priceOf, progressOf, quoteBuy, quoteSell,
+  refundIx, refundOpensAt, refundShare, sellIx, startBurnClockIx, x0Of, y0Of, type Curve, type Position,
 } from "../curve.js";
+import { RefusalWatch, chainRefusal } from "./curve-fallback.js";
 import { readLaunch, registerLaunch } from "./launch.js";
 
 const s = (v: bigint) => v.toString();
@@ -57,8 +58,7 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
   /** The curve, or null when there is none (never made, or closed: the last refund and close_curve close it). */
   async function findCurve(mint: PublicKey) {
     const addr = curvePda(program, mint);
-    const info = await conn.getAccountInfo(addr, "confirmed");
-    return info && info.owner.equals(program) ? decodeCurve(addr, info.data) : null;
+    return curveFromAccount(program, addr, await conn.getAccountInfo(addr, "confirmed"));
   }
   async function readCurve(mint: PublicKey) {
     const c = await findCurve(mint);
@@ -92,6 +92,8 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
       supply: s(c.supply), taxBps: c.taxBps, createdAt: c.createdAt, positions: c.positions,
       pool: hasPool(c.status) ? c.pool.toBase58() : null,
       lockNft: lockNftOf(c)?.toBase58() ?? null,
+      // Graduated with its LP burned: no lock NFT, so no tax vault or creator reward (see curve.html).
+      lpBurned: isLpBurned(c),
       // A full curve still waiting for its pool: when anyone may start refunds (unix seconds).
       refundOpensAt: refundOpensAt(c),
     };
@@ -310,6 +312,18 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
     console.log(`[curve crank] ${label}: ${signed.signature}`);
   }
 
+  /**
+   * Whether a step's failure is proven (see curve-fallback.ts): a simulation now, refused the same
+   * way as before. An RPC error here throws, so the caller leaves the curve for the next pass.
+   */
+  const refusals = new RefusalWatch();
+  async function keepsRefusing(key: string, ixs: TransactionInstruction[], units: number) {
+    const signed = await sign(conn, withPriority(ixs, opts.microLamports, units), crank!);
+    const sim = await conn.simulateTransaction(signed.tx);
+    if (!sim.value.err) { refusals.clear(key); return false; }
+    return refusals.note(key, chainRefusal(sim.value.err, sim.value.logs, program), nowSecs());
+  }
+
   /** Fits in one transaction? (Size only; the compute limit is covered by MAX_DELIVERS_PER_TX.) */
   function fits(ixs: TransactionInstruction[]) {
     const tx = new Transaction({ feePayer: crank!.publicKey, recentBlockhash: PublicKey.default.toBase58() }).add(...withPriority(ixs, opts.microLamports, 1_400_000));
@@ -350,15 +364,21 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
         const mint = listed.mint.toBase58();
         try {
           if (crank && c.status === CurveStatus.Complete) {
+            const ixs = graduateIxs(program, cfg.network, crank.publicKey, c.mint, c.creator);
             try {
               // Pool and lock in one transaction, so a pool never waits without its lock.
-              await send(`graduate ${mint}`, graduateIxs(program, cfg.network, crank.publicKey, c.mint, c.creator), 1_000_000);
+              await send(`graduate ${mint}`, ixs, 1_000_000);
             } catch (e) {
-              // Pool creation still failing after REFUND_AFTER_SECS: refund everyone instead.
-              const opens = refundOpensAt(c);
-              if (opens === null || nowSecs() < opens) throw e;
-              console.error(`[curve crank] ${mint}: graduation still failing (${e instanceof Error ? e.message : e}); refunding`);
-              await refundAll(c);
+              // It may have landed all the same, or someone else moved the curve on: decide on the chain's state.
+              const fresh = await findCurve(listed.mint);
+              if (fresh?.status === CurveStatus.Complete) {
+                // Pool creation still refused after REFUND_AFTER_SECS: refund everyone instead.
+                const opens = refundOpensAt(fresh);
+                if (opens === null || nowSecs() < opens) throw e;
+                if (!(await keepsRefusing(`graduate ${mint}`, ixs, 1_000_000))) throw e;
+                console.error(`[curve crank] ${mint}: graduation keeps being refused (${e instanceof Error ? e.message : e}); refunding`);
+                await refundAll(fresh);
+              }
             }
             c = await findCurve(listed.mint);
           }
@@ -369,14 +389,25 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
           if (!c) { invalidate(mint); continue; }
           if (crank && c.status === CurveStatus.PoolCreated) {
             // A pool created on its own (by an older client, or anyone): lock it; if the lock
-            // still fails after LOCK_AFTER_SECS, burn the LP so the buyers get their tokens.
+            // keeps being refused after LOCK_AFTER_SECS, burn the LP so the buyers get their tokens.
+            const ixs = [graduateLockIx(program, cfg.network, crank.publicKey, c.mint, c.creator)];
             try {
-              await send(`graduate_lock ${mint}`, [graduateLockIx(program, cfg.network, crank.publicKey, c.mint, c.creator)], 1_000_000);
+              await send(`graduate_lock ${mint}`, ixs, 1_000_000);
             } catch (e) {
-              const opens = burnOpensAt(c);
-              if (opens === null || nowSecs() < opens) throw e;
-              console.error(`[curve crank] ${mint}: lock still failing (${e instanceof Error ? e.message : e}); burning the LP instead`);
-              await send(`graduate_burn ${mint}`, [graduateBurnIx(program, cfg.network, crank.publicKey, c.mint)], 200_000);
+              // It may have landed all the same, or someone else moved the curve on: decide on the chain's state.
+              const fresh = await readCurve(c.mint);
+              if (fresh.status === CurveStatus.PoolCreated) {
+                const opens = burnOpensAt(fresh);
+                if (opens !== null && nowSecs() < opens) throw e;
+                if (!(await keepsRefusing(`lock ${mint}`, ixs, 1_000_000))) throw e;
+                if (needsBurnClock(fresh)) {
+                  // The old program's pool: start its wait, which moves nothing; the lock can still land any time.
+                  await send(`start_burn_clock ${mint}`, [startBurnClockIx(program, c.mint)], 50_000);
+                  throw e;
+                }
+                console.error(`[curve crank] ${mint}: lock keeps being refused (${e instanceof Error ? e.message : e}); burning the LP instead`);
+                await send(`graduate_burn ${mint}`, [graduateBurnIx(program, cfg.network, crank.publicKey, c.mint)], 200_000);
+              }
             }
             c = await readCurve(c.mint);
           }
@@ -386,8 +417,9 @@ export function curveService(conn: Connection, cfg: Config, opts: { microLamport
           }
           // Start paying holders once the token trades on XDEX (the lock NFT keys the creator's reward).
           // A vault token waits for its creator to start the vault; the vault crank serves it from then on.
+          // A burned graduation has no lock NFT to key either, so it's never registered.
           const r = readLaunch(mint);
-          if (r && !r.registeredAt && isGraduated(c.status)) {
+          if (r && !r.registeredAt && isGraduated(c.status) && !isLpBurned(c)) {
             await registerLaunch(conn, cfg, r);
             console.log(r.taxVault
               ? `[curve crank] registered ${r.symbol} (${mint}) as a Tax Vault token; the creator starts its vault`

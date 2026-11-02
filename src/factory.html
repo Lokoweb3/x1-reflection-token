@@ -650,11 +650,15 @@ async function receiptPng(svgUrl) {
 }
 async function statusOf(mint) {
   const mine = await api(`/api/launches?creator=${W.state.address}`);
-  return mine.find((l) => l.mint === mint)?.status ?? {};
+  const status = mine.find((l) => l.mint === mint)?.status ?? {};
+  // Unread isn't "not done": the steps must not be offered again on it.
+  if (status.unavailable) throw new Error(tr("Couldn't read this launch's status right now; try again shortly."));
+  return status;
 }
 async function continueLaunch(mint) {
   const creator = W.state.address;
-  let status = await statusOf(mint);
+  let status;
+  try { status = await statusOf(mint); } catch (e) { toast("error", e.message || String(e)); return; }
   let step = "pool";
   try {
     if (!status.pool) { step = "pool"; setSteps(status, "pool"); await signAndSend(tr("Create pool"), () => api("/api/launch/pool", { mint, creator })); status = { ...status, pool: true }; }
@@ -848,7 +852,9 @@ function launchCard(l) {
   const rows = [];
 
   // Launch progress (and the next step if it isn't finished).
-  if (l.kind === "curve") {
+  if (s.unavailable) {
+    rows.push(row(tr("Status"), tr("Couldn't read this launch's status right now; try again shortly.")));
+  } else if (l.kind === "curve") {
     // Curve tokens graduate on their own (the curve creates the pool and the lock); nothing to continue here.
     const curveStatus = [tr("On the curve"), tr("Graduating"), tr("Graduating"), tr("Delivering tokens"), tr("Live")][s.curveStatus ?? -1] ?? tr("Not started (the create transaction was not sent)");
     const open = el("a", { class: "btn small", href: `/curve/${l.mint}`, text: tr("Open curve") });
@@ -859,7 +865,9 @@ function launchCard(l) {
       ? btn(passesLeft ? tr("Turn on holder passes") : s.holderPasses ? tr("Start the tax vault and holder passes") : tr("Start the tax vault"), "primary", () => startCurveVault(l.mint, s), false,
         passesLeft ? tr("Sign init_passes: holders can then register a pass and be paid in rounds") : tr("Sign init_vault: the Tax Vault program then holds and pays out the tax"))
       : null;
-    rows.push(row(tr("Status"), startVault ? (passesLeft ? tr("Graduated: turn on holder passes (the holders' share waits safely until then)") : tr("Graduated: start the tax vault (the tax waits safely until then)")) : s.registered ? tr("Live") : curveStatus, s.token ? open : null, startVault));
+    const curveLabel = s.lpBurned ? tr("Graduated with its LP burned: no lock NFT, so no tax vault or creator reward")
+      : s.curveClosed ? tr("Closed: the curve was refunded or closed by its creator") : curveStatus;
+    rows.push(row(tr("Status"), startVault ? (passesLeft ? tr("Graduated: turn on holder passes (the holders' share waits safely until then)") : tr("Graduated: start the tax vault (the tax waits safely until then)")) : s.registered ? tr("Live") : curveLabel, s.token ? open : null, startVault));
   } else {
     const cont = s.token && !s.registered
       ? btn(tr("Continue"), "primary", () => { if (!running) { running = true; renderWallet(); continueLaunch(l.mint).finally(() => { running = false; renderWallet(); }); } })

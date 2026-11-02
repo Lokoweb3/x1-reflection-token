@@ -356,8 +356,11 @@ components:
         status:
           type: object
           additionalProperties: true
-          description: Which steps have confirmed; run the ones still false, in order.
+          description: Which steps have confirmed; run the ones still false, in order. With `unavailable` the launch couldn't be read just now and nothing is known about its steps; read it again before acting.
           properties:
+            unavailable: { type: boolean, description: "The chain read for this launch failed; the other fields are absent." }
+            lpBurned: { type: boolean, description: "A curve token graduated with its LP burned: no lock NFT, so no tax vault or registration." }
+            curveClosed: { type: boolean, description: "A curve token whose curve was refunded or closed." }
             token: { type: boolean }
             pool: { type: boolean }
             lock: { type: boolean }

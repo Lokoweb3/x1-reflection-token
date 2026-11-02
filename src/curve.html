@@ -519,6 +519,15 @@ function banner(v) {
     const opens = v.statusCode === 1 && v.refundOpensAt ? tr(" If the pool still can't be created by {date}, anyone can start refunds.", { date: new Date(v.refundOpensAt * 1000).toLocaleString() }) : "";
     return el("div", { class: "banner" }, el("b", { text: tr("Graduating…") }), tr("The curve is full. Its XDEX pool and the forever LP lock are being created; buyers' tokens are delivered right after.") + opens, links(pool));
   }
+  // Graduated with the LP burned (the lock couldn't be made): no lock NFT, so none of what follows from one.
+  const burned = v.lpBurned ? tr("The pool's LP tokens were burned because its lock couldn't be made: the liquidity can never be withdrawn, but there is no lock NFT. Without one, this token has no creator reward, its tax vault can't start, and its tax stays withheld in holders' token accounts, so holders aren't paid.") : null;
+  if (v.statusCode === 3 && burned) {
+    return el("div", { class: "banner live" }, el("b", { text: tr("Delivering tokens…") }), tr("The pool is live. Buyers' tokens are being sent to their wallets ({positions} left).", { positions: v.state.positions }), " ", burned, links(pool));
+  }
+  if (burned) {
+    return el("div", { class: "banner live" }, el("b", { text: tr("Graduated, LP burned") }), tr("Every buyer has their tokens and it trades on XDEX."), " ", burned,
+      links(pool, el("a", { href: "/tokens", text: tr("All tokens") })));
+  }
   if (v.statusCode === 3) {
     return el("div", { class: "banner live" }, el("b", { text: tr("Delivering tokens…") }), tr("The pool is live and its liquidity locked forever. Buyers' tokens are being sent to their wallets ({positions} left).", { positions: v.state.positions }), links(pool, nft));
   }
@@ -536,7 +545,7 @@ let vaultBusy = false;
 function vaultStart(v) {
   // A holder-passes token also waits for its passes to be turned on (pass book and rules).
   const passesOff = !!v.vault?.holderPasses && !v.vault.holderPasses.on;
-  if (!v.vault || (v.vault.exists && !passesOff) || v.statusCode < 3) return null;
+  if (v.lpBurned || !v.vault || (v.vault.exists && !passesOff) || v.statusCode < 3) return null;
   if (!W.state.address || W.state.address !== v.creator) {
     return el("div", { class: "banner" }, el("b", { text: v.vault.exists ? tr("Holder passes not on yet") : tr("Tax vault not started yet") }),
       v.vault.exists ? tr("Waiting for the creator to turn the holder passes on — the holders' share waits safely until then.") : tr("Waiting for the creator to start the tax vault — the tax waits safely until then."));
