@@ -696,6 +696,16 @@ cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
 
+Node 22 or later (`engines` in `package.json`; `deploy/setup.sh` installs 22, and
+`@types/node` is on 22 to match). `package.json` overrides `jayson`, the JSON-RPC client
+inside `@solana/web3.js` (which asks for `^4.3.0`), to **5.0.0**: 5.0.0 drops the vulnerable
+`uuid` and `stream-json` dependencies, which took `npm audit` from 11 findings to 4 (commit
+`983ea23`). The 4 left are one issue, `bigint-buffer` and the packages above it
+(`@solana/buffer-layout-utils`, `@solana/spl-token`, `@sqds/multisig`); it has no fixed
+release, and its flaw is in the optional native addon, so an install that skips its build
+script uses the plain JS path. Drop the override once `@solana/web3.js` asks for jayson 5
+itself.
+
 Full rehearsals on a local validator loaded with copies of the real chain (see each
 script's header for the validator command):
 
