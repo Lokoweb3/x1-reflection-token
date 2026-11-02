@@ -8,11 +8,14 @@
  * pool (pool too high) or buys it with USDC.X (pool too low), sized to land the pool on the reference price,
  * at most `maxTrade` tokens a trade and `maxDay` tokens a day (New York days), out of the wallet's own inventory.
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Connection, PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
+import { withFileLock } from "./arb-guard.js";
+import { intentSlot, settleIntent, unresolvedHelp, writeIntentState, unresolvedOverdue, whenSigned, type Intent, type IntentRow } from "./send-intent.js";
 
 export interface PegSpec {
   /** The bridged token on X1 (GOOGL.X) and the ticker it tracks. */
@@ -47,6 +50,8 @@ export interface PegOptions {
   /** Tokens (whole units) per trade and per New York day, both directions together (defaults 0.02 and 0.1). */
   maxTrade?: number;
   maxDay?: number;
+  /** Reads the pool (tests replace it). */
+  snapshot?: typeof snapshot;
   /** Slippage allowed on each peg trade, percent (default 0.5). */
   slippagePct?: number;
   /** Reference price sources; injectable for tests. */
@@ -117,6 +122,23 @@ export function pegAction(off: number, o: { bandPct?: number; buyBelowPct?: numb
 /** What's left of the day's limit; under a millionth of a token is none (the day's total is a sum of floats). */
 export const dayLeft = (maxDay: number, used: number) => (maxDay - used < 1e-6 ? 0 : maxDay - used);
 
+const nyDay = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+type Pending = Intent & { token?: string; at: string; day: string; side: "sell" | "buy"; amountIn: string; minOut: string; tokens: number; poolPrice: number; refPrice: number };
+type PegRow = IntentRow<Pending> & { day?: string; used?: number };
+const readPeg = (file: string): PegRow => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; } };
+
+/** A peg's intent slot in its state file. Yesterday's used count falls away; a trade counts only against its own day. */
+export function pegSlot(stateDir: string, file: string) {
+  const change = <T>(fn: (row: PegRow) => T): T => withFileLock(file, () => {
+    const row = readPeg(file);
+    if (row.day !== nyDay()) { row.day = nyDay(); row.used = 0; }
+    const out = fn(row);
+    writeIntentState(stateDir, file, JSON.stringify(row) + "\n");
+    return out;
+  });
+  return intentSlot<Pending, PegRow>(change, (row, p) => { if (p.day === row.day) row.used = (row.used ?? 0) + p.tokens; });
+}
+
 export function createPeg(spec: PegSpec, o: PegOptions) {
   const band = (o.bandPct ?? 1.5) / 100, slip = (o.slippagePct ?? 0.5) / 100;
   const fetchPrice = o.fetchPrice ?? referencePrice;
@@ -124,14 +146,37 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
   const journal = path.join(o.stateDir, "peg-trades.jsonl");
   let dec: { tok: number; quote: number; tokProgram: PublicKey; quoteProgram: PublicKey } | null = null;
   let lastProblem = "";
+  let alertedIntent: string | undefined;
 
-  const nyDay = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
-  function used(): number {
-    try { const s = JSON.parse(fs.readFileSync(file, "utf8")) as { day: string; used: number }; return s.day === nyDay() ? s.used : 0; } catch { return 0; }
-  }
-  function addUsed(n: number) {
+  const slot = pegSlot(o.stateDir, file);
+  const used = () => { const s = readPeg(file); return s.day === nyDay() ? s.used ?? 0 : 0; };
+  // A trade is journaled (with its signature, once signed) before it is sent, and settled by the next check if
+  // this one didn't see it through (a crash, or a confirmation that timed out): src/send-intent.ts.
+  const pendingOf = (): Pending | undefined => readPeg(file).pending;
+  /** Count a trade that landed, once whoever sees it first; the same write clears its journaled intent. */
+  function landed(p: Pending, signature: string) {
+    if (!slot.count(p, signature)) return false;
     fs.mkdirSync(o.stateDir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ day: nyDay(), used: used() + n }) + "\n");
+    fs.appendFileSync(journal, JSON.stringify({ at: p.at, ticker: spec.ticker, pool: spec.pool.toBase58(), poolPrice: p.poolPrice, refPrice: p.refPrice,
+      side: p.side, amountIn: p.amountIn, minOut: p.minOut, tokens: p.tokens, signature }) + "\n");
+    return true;
+  }
+  /** Settle a trade an earlier check journaled; true while it is still in flight (no new trade until it settles). */
+  async function settle(): Promise<boolean> {
+    const p = pendingOf();
+    if (!p) return false;
+    // A dry run may share the live bot's state: it only looks. The live bot settles this, and no new trade happens until it does.
+    if (!o.execute) { problem(`[dry run] an earlier ${p.side} (${p.signature ?? "not yet signed"}) is unsettled: a live run settles it; nothing changed`); return true; }
+    const v = await settleIntent(o.conn, p, { wallet: o.owner, stateDir: o.stateDir });
+    if (v === "pending") { problem(`an earlier ${p.side} ${p.signature} is still in flight: waiting for it`); return true; }
+    if (v === "unresolved") {
+      problem(`an earlier ${p.side} ${p.signature} is unresolved: waiting for proof of what became of it`);
+      if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`peg ${spec.ticker}: ${unresolvedHelp(p.signature!, o.owner)}`); }
+      return true;
+    }
+    if (v === "landed") { if (landed(p, p.signature!)) await o.alert(`peg ${spec.ticker}: an earlier ${p.side} of ${p.tokens.toFixed(6)} landed after all: ${p.signature}`); }
+    else { slot.drop(p); o.log(`peg ${spec.ticker}: an earlier ${p.side} didn't land (${p.signature ?? "never sent"})`); }
+    return false;
   }
   async function balance(mint: PublicKey, program: PublicKey) {
     const ata = getAssociatedTokenAddressSync(mint, o.owner, false, program);
@@ -143,10 +188,11 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
 
   /** One check: compare, and trade when the pool is outside the band. Returns what it did, for the log. */
   async function check(): Promise<string> {
+    if (await settle()) return "pending";
     const ref = await fetchPrice(spec);
     if ("error" in ref) { problem(`no trade, reference price unavailable (${ref.error})`); return "no reference"; }
     // Token side and quote side of the pool, as each direction's swap sees it.
-    const sTok = await snapshot(o.conn, o.xdex, spec.pool, spec.mint, spec.quoteMint);
+    const sTok = await (o.snapshot ?? snapshot)(o.conn, o.xdex, spec.pool, spec.mint, spec.quoteMint);
     if (!dec) {
       const [mt, mq] = await Promise.all([getMint(o.conn, spec.mint, "confirmed", sTok.pool.programs[sTok.side]),
         getMint(o.conn, spec.quoteMint, "confirmed", sTok.pool.programs[1 - sTok.side])]);
@@ -189,7 +235,7 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
       what = `sell ${tokens.toFixed(6)} ${spec.ticker}.X for ~${(Number(out) / 10 ** d.quote).toFixed(4)} USDC.X`;
     } else {
       // Pool too low: buy the token with USDC.X until its price is up to the target.
-      const sQ = await snapshot(o.conn, o.xdex, spec.pool, spec.quoteMint, spec.mint);
+      const sQ = await (o.snapshot ?? snapshot)(o.conn, o.xdex, spec.pool, spec.quoteMint, spec.mint);
       const { ata, raw } = await balance(spec.quoteMint, d.quoteProgram);
       const want = sizeFor(sQ, (rIn, rOut) => (Number(rIn) / 10 ** d.quote) / (Number(rOut) / 10 ** d.tok) >= target);
       const capQuote = BigInt(Math.floor(capTok * target * 10 ** d.quote));
@@ -206,12 +252,12 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
     }
     const head = `peg ${spec.ticker}: pool $${pool.toFixed(2)} is ${(off * 100).toFixed(2)}% ${off > 0 ? "above" : "below"} $${target.toFixed(2)} (${ref.sources})`;
     if (!o.execute) { o.log(`${head}: [dry run] would ${what}`); return "dry run"; }
-    const sig = await o.send(ixs);
-    addUsed(tokens);
+    const pending: Pending = { token: crypto.randomUUID(), at: new Date().toISOString(), day: nyDay(), side: off > 0 ? "sell" : "buy", amountIn: amountIn.toString(), minOut: minOut.toString(),
+      tokens, poolPrice: pool, refPrice: target };
+    if (!slot.claim(pending)) { problem("another process has a trade out: waiting for it"); return "pending"; }
+    const sig = await whenSigned((signature, lastValidBlockHeight) => slot.sign(pending, signature, lastValidBlockHeight), () => o.send(ixs));
+    landed(pending, sig);
     lastProblem = "";
-    fs.mkdirSync(o.stateDir, { recursive: true });
-    fs.appendFileSync(journal, JSON.stringify({ at: new Date().toISOString(), ticker: spec.ticker, pool: spec.pool.toBase58(), poolPrice: pool, refPrice: target,
-      side: off > 0 ? "sell" : "buy", amountIn: amountIn.toString(), minOut: minOut.toString(), tokens, signature: sig }) + "\n");
     await o.alert(`${head}: ${what}. ${sig}`);
     return "traded";
   }
