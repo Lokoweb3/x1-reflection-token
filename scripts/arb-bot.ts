@@ -14,12 +14,12 @@
  *     [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]]
  *     [--limit-buy <mint>@<price>[:<USDC.X budget>],...]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
- *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
+ *     [env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (open the token accounts and lookup table)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep [--execute]
  *       (sell the leftovers: every token the wallet holds besides XNT, through its deepest XNT pool)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --close-dust [--keep <mint,...>] [--execute]
- *       (burn token balances worth under 0.001 XNT, too small to sell, and close their accounts to get
+ *       (burn token balances worth under 0.001 XNT (and tiny in raw terms, src/arb-guard.ts), too small to sell, and close their accounts to get
  *        the ~0.002 XNT rent each back; empty accounts and --keep tokens are left open for the routes)
  *   npx tsx scripts/arb-bot.ts --keypair <wallet.json> --unwrap   (wrapped XNT back to plain XNT)
  *
@@ -77,6 +77,8 @@ import { deepestXntPool, poolsWith, symbolOf } from "../src/pools.js";
 import { cpmmOut, snapshot, snapshotMany, swapIx, type Snapshot, type SnapshotSpec } from "../src/xdex.js";
 import { USDC_X, XSTOCKS, createPeg } from "../src/peg.js";
 import { createLimitBuy } from "../src/limit.js";
+import { dustVerdict } from "../src/arb-guard.js";
+import { writeFileAtomic } from "../src/atomic-write.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
@@ -88,11 +90,12 @@ function usage(problem?: string): never {
     + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>] [--sweep-after <minutes>]\n"
     + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--limit-buy <mint>@<price>[:<budget>],...] [--keep <mint,...>]\n"
     + "         [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]\n"
-    + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
+    + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] (Telegram: env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
   process.exit(problem ? 1 : 0);
 }
 if (has("help") || has("h")) usage();
+if (has("telegram-token") || has("telegram-chat")) usage("Telegram settings come from the environment only (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID): a token on the command line shows in ps and the journal");
 const num = (name: string, d: number) => { const x = flag(name); if (x === undefined) return d; const n = Number(x); if (!Number.isFinite(n) || n < 0) usage(`--${name} takes a number`); return n; };
 const lamports = (x: number) => BigInt(Math.round(x * 1e9));
 
@@ -118,10 +121,9 @@ const own = (flag("own") ?? "").split(",").filter(Boolean).map((w) => new Public
 const ownMinProfit = flag("own-min-profit") !== undefined ? lamports(num("own-min-profit", 0)) : undefined;
 const pairs = !has("no-pairs");
 const webhook = flag("webhook");
-if (!!flag("telegram-token") !== !!flag("telegram-chat")) usage("Telegram needs both --telegram-token and --telegram-chat");
 const envTg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
-const tgToken = flag("telegram-token") ?? (envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined);
-const tgChat = flag("telegram-chat") ?? (envTg ? process.env.TELEGRAM_CHAT_ID : undefined);
+const tgToken = envTg ? process.env.TELEGRAM_BOT_TOKEN : undefined;
+const tgChat = envTg ? process.env.TELEGRAM_CHAT_ID : undefined;
 const instant = !has("no-instant");
 const verbose = has("verbose");
 const cleanEveryMs = num("clean-every", 6) * 3_600_000;
@@ -168,7 +170,11 @@ async function alert(text: string) {
   for (const r of await Promise.allSettled(posts)) if (r.status === "rejected") log(`alert delivery failed: ${msg(r.reason)}`);
 }
 
-const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, racePriority, stateDir, log, alert });
+// --max-fees-day <XNT> (default 0.5, 0 = no cap): once the last 24 hours' fees reach it, --execute sends nothing
+// more (trades, sweeps, peg and limit buys) until they age out; a route whose sends fail 5 times in a row within
+// 10 minutes is skipped for an hour (src/arb-guard.ts). Both alert.
+const maxFeesPerDay = lamports(num("max-fees-day", 0.5));
+const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, racePriority, stateDir, log, alert, maxFeesPerDay, backgroundFeeWrites: execute });
 const { wxntAta, balanceOf, send } = engine;
 
 if (has("unwrap")) {
@@ -386,8 +392,22 @@ async function sweep() {
   log(`sweep ${execute ? "done" : "(dry run)"}: ~${xnt(total)} XNT into the wrapped trading balance`);
 }
 
+/** What selling `amount` of a token with no XNT pool would bring in XNT, through its deepest USDC.X pool and USDC.X's XNT pool; null when it has neither. */
+async function valueViaUsdc(mint: PublicKey, amount: bigint): Promise<bigint | null> {
+  let best: Snapshot | null = null;
+  for (const p of await poolsWith(conn, xdex, mint, USDC_X)) {
+    const sn = await snapshot(conn, xdex, p.address, mint, USDC_X).catch(() => null);
+    if (sn && (!best || sn.reserveQuote > best.reserveQuote)) best = sn;
+  }
+  const usdcXnt = best && await deepestXntPool(conn, xdex, USDC_X);
+  if (!best || !usdcXnt) return null;
+  const usdc = sellQuote(best, amount).out;
+  return usdc > 0n ? sellQuote(await snapshot(conn, xdex, usdcXnt.address, USDC_X), usdc).out : 0n;
+}
+
 /**
- * Token accounts holding dust worth under 0.001 XNT (or a token with no XNT pool at all): burn the
+ * Token accounts holding dust worth under 0.001 XNT (valued through its XNT pool, or its USDC.X pool when it has
+ * none; with neither it is unpriced) and no more than a hard raw cap (src/arb-guard.ts dustVerdict): burn the
  * dust, move any transfer tax withheld in the account to its mint (Token-2022 won't close an account
  * that still holds some), and close the account, which returns its rent (~0.002 XNT) to the wallet.
  * Empty accounts stay open (the bot keeps those for its routes), and so do --keep tokens and wrapped
@@ -406,10 +426,10 @@ async function closeDust(extraKeep: Set<string> = new Set()) {
     if (m.equals(NATIVE_MINT) || amount === 0n || keep.has(info.mint)) continue;
     const sym = await symbolOf(conn, m);
     const pool = await deepestXntPool(conn, xdex, m);
-    if (pool) {
-      const out = sellQuote(await snapshot(conn, xdex, pool.address, m), amount).out;
-      if (out >= MIN_OUT) { log(`close-dust: ${sym} is worth ~${xnt(out)} XNT, kept (--sweep sells it)`); continue; }
-    }
+    const value = pool ? sellQuote(await snapshot(conn, xdex, pool.address, m), amount).out : await valueViaUsdc(m, amount);
+    const verdict = dustVerdict(amount, info.tokenAmount.decimals, value, MIN_OUT);
+    if (verdict === "worth selling") { log(`close-dust: ${sym} is worth ~${xnt(value!)} XNT, kept (${pool ? "--sweep sells it" : "sell it through its USDC.X pool"})`); continue; }
+    if (verdict === "too much to burn") { log(`close-dust: ${sym} ${info.tokenAmount.amount} raw is more than close-dust burns${value === null ? " (no pool prices it)" : ""}, kept`); continue; }
     const ixs = [createBurnCheckedInstruction(a.pubkey, m, wallet.publicKey, amount, info.tokenAmount.decimals, [], a.programId)];
     const withheld = info.extensions?.find((e) => e.extension === "transferFeeAmount")?.state.withheldAmount;
     if (withheld && BigInt(withheld) > 0n) ixs.push(createHarvestWithheldTokensToMintInstruction(m, [a.pubkey], a.programId));
@@ -495,7 +515,7 @@ async function main() {
   // What the sweep must keep, for runs without --peg / --limit-buy (empty when this bot has neither).
   const keepNow = [...pegs.map((p) => p.spec.mint.toBase58()), ...limits.map((l) => l.spec.mint.toBase58())];
   fs.mkdirSync(path.dirname(pegKeepFile), { recursive: true });
-  fs.writeFileSync(pegKeepFile, JSON.stringify({ mints: keepNow.length ? [...new Set(keepNow), USDC_X.toBase58()] : [] }) + "\n");
+  writeFileAtomic(pegKeepFile, JSON.stringify({ mints: keepNow.length ? [...new Set(keepNow), USDC_X.toBase58()] : [] }) + "\n");
   let lastClean = Date.now(), lastCap = 0, streak = 0, sweptAt = 0, lastPeg = 0;
   for (;;) {
     let traded = false;

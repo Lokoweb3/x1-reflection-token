@@ -40,12 +40,13 @@ import {
   getTokenMetadata, getTransferFeeConfig, unpackMint,
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
-import { Config, FACTORY_DIR, ROOT, fromBaseUnits, loadKeypair, toBaseUnits } from "../config.js";
+import { Config, FACTORY_DIR, ROOT, fromBaseUnits, keypairPublicKey, toBaseUnits } from "../config.js";
 import { decodeVault, initVaultIx, initVaultPayoutIx, paysInToken, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
 import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passes.js";
 import { payoutToken } from "./payout.js";
 import { buildCreatePool, decodePool, poolAddresses, snapshot, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
+import { mkdirDurable, writeFileDurable } from "./durable.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
@@ -290,8 +291,9 @@ export function validateParams(raw: Record<string, unknown>, quoteSymbols: strin
 
 const launchDir = (mint: string) => path.join(FACTORY_DIR, "launches", mint);
 export const readLaunch = (mint: string): LaunchRecord | null => {
-  const f = path.join(launchDir(new PublicKey(mint).toBase58()), "launch.json");
-  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : null;
+  const key = new PublicKey(mint).toBase58();
+  const f = path.join(launchDir(key), "launch.json");
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : pendingLaunches.get(key)?.record ?? null;
 };
 /**
  * Change a launched token's logo, description and social links: pin new metadata to IPFS
@@ -325,14 +327,32 @@ export function applyMetadataUpdate(r: LaunchRecord, next: Partial<LaunchRecord>
   writeLaunch({ ...r, ...next });
 }
 
+/** Told after a launch's record is on disk: what a cached view of it shows may have changed. */
+let launchSaved: (r: LaunchRecord) => void = () => undefined;
+export const onLaunchSaved = (fn: (r: LaunchRecord) => void) => { launchSaved = fn; };
+
+/**
+ * Save a launch's record. A launch still in the journal is copied to launches/<mint>/, key first
+ * and record last, each flushed with every directory above it; only then does the journal go. It
+ * stays a pending launch until both are on disk, so if a write fails, or the power goes, the
+ * journal still holds them and the save is tried again later.
+ */
 function writeLaunch(r: LaunchRecord) {
-  fs.mkdirSync(launchDir(r.mint), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(launchDir(r.mint), "launch.json"), JSON.stringify(r, null, 2) + "\n", { mode: 0o600 });
+  const dir = launchDir(r.mint), journal = pendingDir(r.mint);
+  mkdirDurable(dir, FACTORY_DIR);
+  const key = path.join(journal, "distributor.json");
+  if (fs.existsSync(key)) writeFileDurable(path.join(dir, "distributor.json"), fs.readFileSync(key, "utf8"));
+  writeFileDurable(path.join(dir, "launch.json"), JSON.stringify(r, null, 2) + "\n");
+  pendingLaunches.delete(r.mint);
+  // Saved. A leftover journal is only clutter: the GC clears it.
+  try { fs.rmSync(journal, { recursive: true, force: true }); } catch (e) { console.error(`launch journal ${r.mint}: ${errText(e)}`); }
+  launchSaved(r);
 }
 export function listLaunches(): LaunchRecord[] {
   const dir = path.join(FACTORY_DIR, "launches");
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).map((m) => readLaunch(m)).filter((r): r is LaunchRecord => !!r)
+  const saved = fs.existsSync(dir) ? fs.readdirSync(dir).map((m) => readLaunch(m)).filter((r): r is LaunchRecord => !!r) : [];
+  const onDisk = new Set(saved.map((r) => r.mint));
+  return [...saved, ...[...pendingLaunches.values()].map((p) => p.record).filter((r) => !onDisk.has(r.mint))]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 export const registeredLaunches = () => listLaunches().filter((r) => r.registeredAt);
@@ -406,13 +426,198 @@ async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, pu
     createTransferCheckedInstruction(fromUsdc, usdc, toUsdc, creator, fee, usdcMint.decimals, [], usdcProgram),
     ...(distributor ? [SystemProgram.transfer({ fromPubkey: creator, toPubkey: distributor.publicKey, lamports: toBaseUnits(f.gasXnt ?? "0.05", 9) })] : []),
   ];
-  return { ixs, mintKp, distributor, withdrawAuthority };
+  return { ixs, mintKp, distributor, withdrawAuthority, uri };
 }
 
-/** Save a new launch record and its distributor key (factory/launches/<mint>/); vault launches have none. */
+/**
+ * New launches whose first transaction (it creates the mint) hasn't been seen on-chain yet.
+ * The record and distributor key (vault launches have none) are written to a journal,
+ * factory/pending-launches/<mint>/, before the transaction leaves this server: once the creator
+ * holds it, it can land and charge the fee whatever happens here. Only once the mint is on-chain
+ * do they move to factory/launches/<mint>/ (persistLaunch, sweepPendingLaunches), so a step 1
+ * that's never signed doesn't clutter the launches. Readable meanwhile like any record
+ * (readLaunch, listLaunches), so the next steps and the status work as before.
+ */
+const pendingLaunches = new Map<string, { record: LaunchRecord; at: number }>();
+/** A step 1 transaction can't land once its blockhash expires (about a minute): well past that, it stops being listed. */
+const PENDING_LAUNCH_MS = 15 * 60_000;
+/** A journal stays this long after its launch stopped being listed, in case the chain read that dropped it was wrong. */
+const PENDING_JOURNAL_MS = 86_400_000;
+const pendingRoot = () => path.join(FACTORY_DIR, "pending-launches");
+const pendingDir = (mint: string) => path.join(pendingRoot(), mint);
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** Throws if the journal can't be written: no journal, no transaction. */
 function saveNewLaunch(record: LaunchRecord, distributor: Keypair | null) {
-  writeLaunch(record);
-  if (distributor) fs.writeFileSync(path.join(launchDir(record.mint), "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)), { mode: 0o600 });
+  const dir = pendingDir(record.mint);
+  try {
+    mkdirDurable(dir, FACTORY_DIR);
+    if (distributor) writeFileDurable(path.join(dir, "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)));
+    writeFileDurable(path.join(dir, "launch.json"), JSON.stringify(record, null, 2) + "\n");
+  } catch (e) {
+    fs.rmSync(dir, { recursive: true, force: true }); // never handed out, so nothing can land
+    throw e;
+  }
+  // Few at a time: starts are limited site-wide (rateLimit "launch") and each goes within minutes.
+  pendingLaunches.set(record.mint, { record, at: Date.now() });
+}
+/** Whether `mint` is a new launch still waiting for its first transaction. */
+export const isPendingLaunch = (mint: string) => pendingLaunches.has(mint);
+/**
+ * Save a waiting launch's record (its mint is on-chain now). Whether it's saved: a disk error
+ * is logged, not thrown, since the journal still holds it and the sweep tries again.
+ */
+export function persistLaunch(mint: string) {
+  const p = pendingLaunches.get(mint);
+  if (!p) return true;
+  try { writeLaunch(p.record); return true; } catch (e) { console.error(`saving launch ${mint}: ${errText(e)}`); return false; }
+}
+
+const LAUNCH_READ_BATCH = 100;
+let sweeping: Promise<boolean> | null = null;
+/**
+ * Save the waiting launches whose mint is on-chain now and stop listing those whose step 1 can
+ * no longer land (their journal stays for gcPendingJournal). Only a chain read that answered
+ * decides anything: a failed one affects its own batch, which stays as it was. One sweep at a
+ * time. Whether everything was read and saved; if not, the caller should try again soon.
+ */
+export function sweepPendingLaunches(conn: Connection) {
+  return (sweeping ??= sweepOnce(conn).finally(() => { sweeping = null; }));
+}
+async function sweepOnce(conn: Connection) {
+  const list = [...pendingLaunches.keys()];
+  let ok = true;
+  for (let i = 0; i < list.length; i += LAUNCH_READ_BATCH) {
+    const chunk = list.slice(i, i + LAUNCH_READ_BATCH);
+    let infos;
+    try { infos = await conn.getMultipleAccountsInfo(chunk.map((m) => new PublicKey(m)), "confirmed"); }
+    catch (e) { ok = false; console.error(`pending launches: ${errText(e)}`); continue; }
+    chunk.forEach((mint, j) => {
+      // Looked up afresh: while the chain read ran, another path may have saved it and moved on.
+      const p = pendingLaunches.get(mint);
+      if (!p) return;
+      if (infos[j]) { if (!persistLaunch(mint)) ok = false; }
+      else if (Date.now() - p.at > PENDING_LAUNCH_MS) pendingLaunches.delete(mint);
+    });
+  }
+  return ok;
+}
+
+/**
+ * After a restart: every journalled launch back into memory, however long the server was down,
+ * so it's readable at once and the sweep settles it against the chain, retrying until the chain
+ * answers. Returns how many.
+ */
+export function recoverPendingLaunches() {
+  const root = pendingRoot();
+  if (!fs.existsSync(root)) return 0;
+  let n = 0;
+  for (const name of fs.readdirSync(root)) {
+    const r = readJournal(name);
+    if (!r || fs.existsSync(path.join(launchDir(name), "launch.json"))) continue; // the GC tidies these
+    const at = Date.parse(r.createdAt);
+    pendingLaunches.set(name, { record: r, at: Number.isFinite(at) ? at : Date.now() });
+    n++;
+  }
+  return n;
+}
+function readJournal(name: string): LaunchRecord | null {
+  try {
+    const r = JSON.parse(fs.readFileSync(path.join(pendingDir(name), "launch.json"), "utf8")) as LaunchRecord;
+    return r.mint === name ? r : null;
+  } catch { return null; }
+}
+
+/** A journal whose launch is already saved: its key if that's all that's left to move, then the journal. */
+function tidySavedJournal(name: string) {
+  const key = path.join(pendingDir(name), "distributor.json"), dest = path.join(launchDir(name), "distributor.json");
+  if (fs.existsSync(key)) {
+    const secret = fs.readFileSync(key, "utf8");
+    if (!fs.existsSync(dest)) writeFileDurable(dest, secret);
+    else if (fs.readFileSync(dest, "utf8") !== secret) { console.error(`launch journal ${name}: a different key is already saved; kept`); return; }
+  }
+  fs.rmSync(pendingDir(name), { recursive: true, force: true });
+}
+
+const JOURNAL_READ_BATCH = 50; // each is the mint and the distributor wallet
+let journalGc: Promise<string[]> | null = null;
+/**
+ * The journals of launches no longer in memory (past their window). A mint on-chain: saved.
+ * Removed only when over a day old with no mint on-chain and nothing in the distributor wallet;
+ * anything unclear stays. Calls during a run share it, and a failed read affects its own batch.
+ * Returns the mints removed.
+ */
+export function gcPendingJournal(conn: Connection) {
+  return (journalGc ??= gcJournalOnce(conn).finally(() => { journalGc = null; }));
+}
+async function gcJournalOnce(conn: Connection) {
+  const root = pendingRoot();
+  if (!fs.existsSync(root)) return [];
+  const removed: string[] = [];
+  const saved = (name: string) => fs.existsSync(path.join(launchDir(name), "launch.json"));
+  const waiting: { name: string; mint: PublicKey; wallet: PublicKey | null }[] = [];
+  for (const name of fs.readdirSync(root)) {
+    if (pendingLaunches.has(name)) continue;
+    let mint: PublicKey;
+    try { mint = new PublicKey(name); } catch { continue; }
+    try {
+      if (saved(name)) { tidySavedJournal(name); continue; }
+      const keyFile = path.join(pendingDir(name), "distributor.json");
+      // Without the record, the key file is where the wallet's address comes from.
+      const wallet = fs.existsSync(keyFile) ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(keyFile, "utf8")))).publicKey : null;
+      waiting.push({ name, mint, wallet });
+    } catch (e) { console.error(`launch journal ${name}: ${e instanceof SyntaxError ? "unreadable key file" : errText(e)}; kept`); }
+  }
+  for (let i = 0; i < waiting.length; i += JOURNAL_READ_BATCH) {
+    const chunk = waiting.slice(i, i + JOURNAL_READ_BATCH);
+    let infos;
+    try { infos = await conn.getMultipleAccountsInfo(chunk.flatMap((j) => [j.mint, j.wallet ?? j.mint]), "confirmed"); }
+    catch (e) { console.error(`launch journal GC: ${errText(e)}`); continue; }
+    chunk.forEach(({ name, wallet }, k) => {
+      const mintInfo = infos[2 * k], walletInfo = wallet ? infos[2 * k + 1] : null;
+      try {
+        // Decided on what's there now: during that read the launch may have been saved and moved on.
+        const dir = pendingDir(name);
+        if (pendingLaunches.has(name) || !fs.existsSync(dir)) return;
+        if (saved(name)) { tidySavedJournal(name); return; }
+        const r = readJournal(name);
+        if (mintInfo) {
+          if (r) writeLaunch(r);
+          else console.error(`launch journal ${name}: the mint is on-chain but the record is missing or unreadable; kept`);
+          return;
+        }
+        const at = r ? Date.parse(r.createdAt) : fs.statSync(dir).mtimeMs;
+        if (!(Date.now() - at > PENDING_JOURNAL_MS) || (walletInfo && walletInfo.lamports > 0)) return;
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed.push(name);
+      } catch (e) { console.error(`launch journal ${name}: ${errText(e)}`); }
+    });
+  }
+  return removed;
+}
+
+/**
+ * Remove launch records left by a step 1 that never landed: unregistered, over a day old,
+ * no mint on-chain and (with a distributor wallet) nothing in that wallet. Anything else,
+ * including every launch whose token exists, is kept.
+ */
+export async function gcLaunchRecords(conn: Connection) {
+  const dir = path.join(FACTORY_DIR, "launches");
+  if (!fs.existsSync(dir)) return [];
+  const removed: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    const f = path.join(dir, name, "launch.json");
+    if (!fs.existsSync(f)) continue;
+    let r: LaunchRecord;
+    try { r = JSON.parse(fs.readFileSync(f, "utf8")); } catch { continue; }
+    if (r.registeredAt || r.mint !== name || !(Date.now() - Date.parse(r.createdAt) > 86_400_000)) continue;
+    // Only the record and its distributor key: a token config or state means it got further.
+    if (fs.readdirSync(path.join(dir, name)).some((x) => x !== "launch.json" && x !== "distributor.json")) continue;
+    const [mintInfo, distInfo] = await conn.getMultipleAccountsInfo([new PublicKey(r.mint), new PublicKey(r.distributor)], "confirmed");
+    if (mintInfo || (fs.existsSync(path.join(dir, name, "distributor.json")) && distInfo && distInfo.lamports > 0)) continue;
+    fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    removed.push(r.mint);
+  }
+  return removed;
 }
 
 /** Mark a token as vault-managed in its launch record and per-launch config (the migration script). */
@@ -435,7 +640,7 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
   const vault = isVaultLaunch(cfg, pair);
   if (passesProgram && !vault) throw new Error("Holder passes need a Tax Vault launch paired with XNT.");
   const program = vault ? passesProgram ?? vaultProgramOf(cfg) : null;
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, () => null, program);
+  const { ixs, mintKp, distributor, withdrawAuthority, uri } = await buildMintSetup(conn, cfg, p, publicUrl, () => null, program);
   const mint = mintKp.publicKey;
   const pool = poolAddresses(new PublicKey(cfg.xdex.programId), new PublicKey(XDEX_CREATE[cfg.network].ammConfig), mint, pair.mint).pool;
   const record: LaunchRecord = {
@@ -444,7 +649,7 @@ export async function buildTokenStep(conn: Connection, cfg: Config, p: LaunchPar
     ...(vault ? { taxVault: true } : {}), ...(passesProgram ? { vaultProgram: passesProgram.toBase58() } : {}),
   };
   saveNewLaunch(record, distributor);
-  return { ixs, signers: [mintKp], record };
+  return { ixs, signers: [mintKp], record, uri };
 }
 
 /**
@@ -475,7 +680,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
   if (passesProgram && !vault) throw new Error("Holder passes need a Tax Vault launch.");
   // The curve program only takes a token whose tax a tax vault program withdraws (no wallet can).
   if (!vault) throw new Error("Curve launches need the Tax Vault, which isn't set up on this site right now.");
-  const { ixs, mintKp, distributor, withdrawAuthority } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? passesProgram ?? vaultProgramOf(cfg) : null);
+  const { ixs, mintKp, distributor, withdrawAuthority, uri } = await buildMintSetup(conn, cfg, p, publicUrl, (mint) => authPda(curveProgram, mint), vault ? passesProgram ?? vaultProgramOf(cfg) : null);
   const mint = mintKp.publicKey;
   const target = parseTarget(p.poolXnt, cfg.network); // validateCurveParams put the target there
   ixs.push(createCurveIx(curveProgram, cfg.network, new PublicKey(p.creator), mint, BigInt(p.supply), target));
@@ -489,7 +694,7 @@ export async function buildCurveStep(conn: Connection, cfg: Config, p: LaunchPar
     ...(vault ? { taxVault: true } : {}), ...(passesProgram ? { vaultProgram: passesProgram.toBase58() } : {}),
   };
   saveNewLaunch(record, distributor);
-  return { ixs, signers: [mintKp], record };
+  return { ixs, signers: [mintKp], record, uri };
 }
 
 /** Step 2: create the XDEX pool with the creator's tokens and XNT (or their pair token, e.g. JACK). */
@@ -589,7 +794,7 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   if (await conn.getAccountInfo(vaultPda(program, mint), "confirmed")) throw new Error("The tax vault is already started.");
   const burnBps = r.burnBps ?? 0, lpBps = r.autoLpBps;
   if (!validSplit(burnBps, lpBps)) throw new Error(`The tax vault can't take this split (burn ${burnBps / 100}%, liquidity ${lpBps / 100}%).`);
-  const publisher = loadKeypair(tv.publisherKeypair).publicKey;
+  const publisher = keypairPublicKey(tv.publisherKeypair);
   const creator = new PublicKey(r.creator);
   const c = r.kind === "curve" ? await readCurveOf(conn, cfg, r) : null;
   if (r.kind === "curve" && (!c || !isGraduated(c.status))) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
@@ -644,7 +849,7 @@ async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
   const info = await conn.getAccountInfo(addr, "confirmed");
   if (!info || !info.owner.equals(program)) throw new Error("Start the tax vault first (the step after the LP lock).");
   const v = decodeVault(addr, info.data);
-  const publisher = tv?.publisherKeypair ? loadKeypair(tv.publisherKeypair).publicKey : null;
+  const publisher = tv?.publisherKeypair ? keypairPublicKey(tv.publisherKeypair) : null;
   if (!v.mint.equals(new PublicKey(r.mint)) || !v.guardian.equals(new PublicKey(r.creator)) || (publisher && !v.publisher.equals(publisher))
       || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps) {
     throw new Error("This token's tax vault doesn't match the launch (publisher, guardian or split differ).");
@@ -759,6 +964,8 @@ async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
 /** The token's own distributor config (factory/launches/<mint>/config.json); marks the launch registered. */
 function writeTokenConfig(cfg: Config, r: LaunchRecord, lockNft: string) {
   const dir = launchDir(r.mint);
+  // A launch not yet moved out of the journal gets its directory and key first.
+  if (isPendingLaunch(r.mint)) writeLaunch(r);
   const pair = pairOf(cfg, r);
   const tokenCfg: Config = {
     ...cfg,

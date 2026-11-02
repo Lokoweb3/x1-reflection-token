@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
-import { CONFIG_PATH, Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, ROOT, STATE_DIR, loadKeypair, toBaseUnits } from "../config.js";
+import { CONFIG_PATH, Config, DEFAULT_MIN_HARVEST_XNT, FACTORY_DIR, ROOT, STATE_DIR, keypairPublicKey, toBaseUnits } from "../config.js";
 import { BURN_OWNERS, eligibleBalances, scanTokenAccounts } from "../holders.js";
 import { poolAuthority } from "../xdex.js";
 import { snapshot, spotValue } from "../xdex.js";
@@ -40,7 +40,7 @@ export function targets(cfg: Config): Target[] {
   if (cfg.mint && cfg.xdex.pool) {
     out.push({
       mint: cfg.mint, symbol: cfg.token.symbol, name: cfg.token.name, pool: cfg.xdex.pool,
-      distributor: loadKeypair(cfg.keypairs.distributor).publicKey.toBase58(), configPath: CONFIG_PATH, stateDir: STATE_DIR,
+      distributor: keypairPublicKey(cfg.keypairs.distributor).toBase58(), configPath: CONFIG_PATH, stateDir: STATE_DIR,
       ...(cfg.xdex.quoteMint ? { quote: { symbol: cfg.xdex.quoteSymbol ?? "pair", mint: cfg.xdex.quoteMint, xntPool: cfg.xdex.quoteXntPool! } } : {}),
     });
   }

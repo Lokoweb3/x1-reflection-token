@@ -2,14 +2,20 @@
 
 A starting point for reviewing 99 + Tax: what's in scope, what's deployed where (and how
 to check that the chain runs this source), how to run the tests, the trust assumptions,
-and the places most worth a careful look. State as of 30 Sep 2026.
+and the places most worth a careful look. Written 30 Sep 2026; mainnet facts (programs, upgrade
+authority, Test's vault) re-checked against the chain on 26–27 Oct 2026 (see
+[audits/upgrades/2026-10-26](../audits/upgrades/2026-10-26/README.md)); the testnet rows and
+the review log are as of their own dates.
 
 ## Scope
 
+Line counts are of `main` on 27 Oct 2026; the deployed mainnet `tax_vault` is the v3 source
+at `7f2097d` (2,608 lines), not `main` (see below).
+
 | Program | Source | Lines | Job |
 |---|---|---|---|
-| `tax_vault` | `lp-locker/programs/tax_vault/src/lib.rs` | ~2,600 | Holds each token's transfer tax (its withdraw-withheld authority is a PDA of this program) and runs the cycle: collect, burn, sell, add liquidity, creator reward, Merkle-list payouts, fallback payouts, publisher rotation. Spec: [tax-vault-spec.md](tax-vault-spec.md) (v1, v2, v3 sections plus "changes from the draft" notes). |
-| `bonding_curve` | `lp-locker/programs/bonding_curve/src/lib.rs` | ~1,400 | Curve launches: buys and sells on a constant-product curve, graduation into an XDEX pool, LP locked through `lp_locker`, delivery of buyers' tokens. Spec: [bonding-curve-spec.md](bonding-curve-spec.md). |
+| `tax_vault` | `lp-locker/programs/tax_vault/src/lib.rs` | ~4,100 | Holds each token's transfer tax (its withdraw-withheld authority is a PDA of this program) and runs the cycle: collect, burn, sell, add liquidity, creator reward, Merkle-list payouts, fallback payouts, publisher rotation. Spec: [tax-vault-spec.md](tax-vault-spec.md) (v1, v2, v3 sections plus "changes from the draft" notes). |
+| `bonding_curve` | `lp-locker/programs/bonding_curve/src/lib.rs` | ~1,750 | Curve launches: buys and sells on a constant-product curve, graduation into an XDEX pool, LP locked through `lp_locker`, delivery of buyers' tokens. Spec: [bonding-curve-spec.md](bonding-curve-spec.md). |
 | `lp_locker` | `lp-locker/programs/lp_locker/src/lib.rs` | ~1,200 | Locks a pool's LP behind a 1-of-1 NFT (forever or timed), lets the NFT holder collect trading fees, and holds the creator reward's 7-day vesting vaults. |
 
 Off-chain (TypeScript, `src/`): the site and its crank. The pieces that decide money:
@@ -26,7 +32,11 @@ instructions), `src/list-verify.ts` (the co-signer's checks), `scripts/cosigner.
 ## Deployed programs
 
 All upgradeable; upgrade authority `53fTZRZmMMbgWLxkLMtxgECNXcd1iXbVw8aNKrT7RxKy` (one key).
-Hashes are sha256 of `solana program dump`, taken 30 Sep 2026.
+Hashes are sha256 of `solana program dump`, taken 30 Sep 2026. The two mainnet rows were
+checked again on 26 Oct 2026 (`scripts/audit-upgrades.ts`: same bytes and hashes, reproduced
+from `7f2097d`, one deployment each) and on 27 Oct 2026 (`getAccountInfo`: authority still
+`53fT…`, last deployed at slot 82790170 / 82022808, i.e. no upgrade since). The testnet rows
+were not re-checked for this update.
 
 | Network | Program | Address | Bytes | sha256 | Source commit · build flags |
 |---|---|---|---|---|---|
@@ -75,7 +85,7 @@ is never deployed.
 
 ```bash
 cd lp-locker && cargo test -p tax_vault && cargo test -p bonding_curve && cargo test -p lp_locker
-cd .. && npm install && npx tsc --noEmit -p . && npm test      # 103 TypeScript tests
+cd .. && npm install && npx tsc --noEmit -p . && npm test      # 159 TypeScript tests (27 Oct 2026)
 ```
 
 End-to-end scripts run against a **local validator** that clones the real testnet XDEX,
@@ -115,9 +125,18 @@ the "for now" upgradeability note and each vault's publisher).
 4. **External programs.** XDEX (upgradeable by its team) for swaps, deposits and pool
    reads; Token-2022; Squads if used. A breaking XDEX change would stop sales and
    auto-liquidity (payouts of XNT already in a vault still work).
-5. **Mainnet today** runs its one token ("Test") on the older distributor path: a hot
-   wallet on the server holds that token's withdraw authority. New mainnet launches are
-   paused until the vault is audited and deployed there.
+5. **Mainnet today** (27 Oct 2026) runs `tax_vault` **v3** (`7f2097d`) as an unaudited beta,
+   deployed 1 Oct 2026. Its one token, "Test", moved onto it from the old hot-wallet
+   distributor that day: Test's withdraw-withheld authority is the vault's auth PDA
+   `CWRTWvYT…` (checked on-chain 27 Oct), the vault is v3, its publisher is the site's key
+   `8TAJ…dGkb` and its guardian `DWBm…` (vault account read 27 Oct,
+   [audits/payouts/2026-10-27-epoch-755](../audits/payouts/2026-10-27-epoch-755/vault.json)).
+   So no server key can move Test's tax any more, but the publisher key decides its lists
+   (assumption 2) and `53fT…` can still upgrade the program (assumption 1). New mainnet
+   launches are still paused (per the README on 27 Oct; the server's config wasn't
+   checked), the bonding curve isn't on mainnet (no account at `CiMe…`, 27 Oct) and v4
+   (payout tokens, holder passes) is testnet only. Runbook and status:
+   [MAINNET-ROLLOUT.md](MAINNET-ROLLOUT.md).
 
 ## Worth a careful look
 

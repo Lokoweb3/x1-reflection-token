@@ -17,16 +17,16 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { NATIVE_MINT, calculateEpochFee } from "@solana/spl-token";
-import { FACTORY_DIR, ROOT, connection, loadConfig } from "./config.js";
+import { FACTORY_DIR, KeypairError, ROOT, connection, keypairPublicKey, loadConfig, ownConnection } from "./config.js";
 import { pinnedRecoveryFile, recoveryUrl } from "./recovery/pinned.js";
 import { payoutToken, payoutTokenJson, payoutTokensOn } from "./factory/payout.js";
 import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wallet-tx.js";
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch,
-  registeredLaunches, validateParams,
+  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, isPendingLaunch, onLaunchSaved, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
 import { readRewardVault, rewardSummary } from "./locker.js";
@@ -37,7 +37,8 @@ import { cpmmOut, snapshot, spotValue } from "./xdex.js";
 import { positions, refreshTrades, savedTrades, tradeSizes, type Position } from "./trades.js";
 import { tokenPools } from "./pools.js";
 import { checkCaptcha, faucetClaim, faucetFundIxs, faucetStatus } from "./factory/faucet.js";
-import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
+import { MAX_LOGO_BYTES, MAX_RECEIPT_PNG_BYTES, chainLinkUses, ipfsEnabled, pinLogo } from "./factory/ipfs.js";
+import { LOGO_ORPHAN_AFTER_MS, ORPHAN_AFTER_MS, pinTracker } from "./factory/pins.js";
 import { buildMintPass, buildTree, claimPassIx, decodePass, listPasses, passPda, readHolderPool } from "./holder-pass.js";
 import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, getTokenMetadata, getTransferFeeConfig, unpackAccount } from "@solana/spl-token";
 import { findTarget, readiness, runCycle, targets, tipInstruction, verifyTip } from "./factory/trigger.js";
@@ -50,7 +51,10 @@ import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
-import { limitKey } from "./factory/limits.js";
+import { isFileError, limitKey } from "./factory/limits.js";
+import { isAddress, planView, type KnownSubjects, type Lane } from "./factory/view-gate.js";
+import { crankRelayBook } from "./factory/crank-relays.js";
+import { freshCache } from "./factory/fresh-cache.js";
 import { explainError, type ProgramKind } from "./program-errors.js";
 import { buildPassesStep, buildVaultStep, isVaultLaunch, minHoldingFor, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
@@ -58,6 +62,8 @@ import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
 const cfg = loadConfig();
 const conn = connection(cfg);
+/** The Tax Vault crank's own connection: its passes don't queue behind visitors' page views. */
+const crankConn = ownConnection(cfg);
 const f = cfg.factory;
 if (cfg.network === "mainnet" && f?.feeToken) {
   console.warn(`factory.feeToken (${f.feeToken.symbol}) is testnet-only and is ignored on mainnet; the launch fee is ${f.feeUsdc} USDC.`);
@@ -116,15 +122,26 @@ const I18N_JS = path.join(ROOT, "src", "web", "i18n.js");
 const WEB3_BUNDLE = path.join(ROOT, "node_modules", "@solana", "web3.js", "lib", "index.iife.min.js");
 const opts = { microLamports: cfg.distribution.priorityMicroLamports };
 /** Tax Vault: on only when factory.taxVault.programId is set (the crank also needs publisherKeypair). */
-const vaults = f.taxVault?.programId ? vaultService(conn, cfg, opts) : null;
+const vaults = f.taxVault?.programId ? vaultService(conn, cfg, opts, undefined, crankConn) : null;
 if (vaults) allowRelayProgram(vaults.program.toBase58());
 /**
  * Holder passes under their own program (testnet trial, factory.taxVault.passesProgramId), run
  * next to the regular vaults: its own crank pass over the launches recorded under it.
  */
 const passProgram = passesProgram(cfg);
-const passVaults = vaults && passProgram ? vaultService(conn, cfg, opts, passProgram) : null;
+const passVaults = vaults && passProgram ? vaultService(conn, cfg, opts, passProgram, crankConn) : null;
 if (passVaults) allowRelayProgram(passVaults.program.toBase58());
+/**
+ * Key files are read once, here: request handlers only use the public keys (and the faucet
+ * its keypair) from memory, and an unreadable file is reported now, in the log.
+ */
+for (const [what, file] of [
+  ["distributor", cfg.mint && cfg.xdex.pool ? cfg.keypairs.distributor : null],
+  ["Tax Vault publisher", f.taxVault?.publisherKeypair],
+  ["faucet", cfg.network === "testnet" && f.faucet ? (path.isAbsolute(f.faucet.keypair) ? f.faucet.keypair : path.join(ROOT, f.faucet.keypair)) : null],
+] as const) {
+  if (file) try { keypairPublicKey(file); } catch (e) { console.error(`${what} key: ${e instanceof Error ? e.message : e}`); }
+}
 /** Every vault service this server runs, and the one that handles a given token. */
 const vaultServices = [vaults, passVaults].filter((v): v is NonNullable<typeof v> => !!v);
 const vaultsFor = (mint: string) => (passVaults?.isVaultMint(mint) ? passVaults : vaults);
@@ -274,21 +291,44 @@ function limit(name: string, key: string, max: number, windowMs: number, message
 }
 const LIMITS = {
   // name: [per address, site-wide (0: none), window ms]. Plain reads get no site-wide cap
-  // (that would let one client lock everyone out); they're served from caches.
+  // (that would let one client lock everyone out); they're served from caches. The last three
+  // count only the reads a cache can't answer (each costs chain reads), so they can be site-wide;
+  // what each covers is in factory/view-gate.ts. Separate, so a flood of one can't stop the others.
   get: [120, 0, 60_000], post: [30, 0, 60_000], send: [20, 300, 60_000], crank: [6, 60, 60_000],
-  launch: [10, 60, 3_600_000], upload: [20, 200, 3_600_000], faucet: [5, 200, 3_600_000],
+  lookup: [30, 300, 60_000], known: [60, 600, 60_000], progress: [30, 600, 60_000],
+  // Each upload is a file on the Pinata plan (unused ones are removed later; see factory/pins.ts).
+  launch: [10, 60, 3_600_000], upload: [10, 60, 3_600_000], faucet: [5, 200, 3_600_000],
 } as const;
-function rateLimit(kind: keyof typeof LIMITS, ip: string, what = "requests") {
+/** `scope`: count the address's limit, the site-wide one, or both. */
+function rateLimit(kind: keyof typeof LIMITS, ip: string, what = "requests", scope: "ip" | "site" | "both" = "both") {
   if (ip === "127.0.0.1" || ip === "::1") return; // this machine, not through the proxy (local use)
   const [perIp, total, windowMs] = LIMITS[kind];
-  limit(kind, limitKey(ip), perIp, windowMs, `Too many ${what} from this address; try again later.`);
-  if (total) limit(kind, "*", total, windowMs, `The site is getting too many ${what} right now; try again in a few minutes.`);
+  if (scope !== "site") limit(kind, limitKey(ip), perIp, windowMs, `Too many ${what} from this address; try again later.`);
+  if (total && scope !== "ip") limit(kind, "*", total, windowMs, `The site is getting too many ${what} right now; try again in a few minutes.`);
 }
 setInterval(() => {
   const now = Date.now();
   for (const [id, hits] of buckets) if (!hits.some((t) => now - t < 3_600_000)) buckets.delete(id);
   for (const [k, p] of pendingMeta) if (now - p.at > 3_600_000) pendingMeta.delete(k);
+  crankRelays.prune();
 }, 600_000).unref();
+
+/**
+ * Files pinned for a transaction not signed yet (metadata, receipts, logos): removed from
+ * Pinata later if nothing used them. `tokenUriIs`: whether a Token-2022 mint's metadata
+ * link names that file now, however it's spelled (false if the mint doesn't exist, null if
+ * that can't be told).
+ */
+const pins = pinTracker(cfg, (line) => console.log(`[pins] ${line}`));
+async function tokenUriIs(mint: string, uri: string) {
+  const key = new PublicKey(mint);
+  if (!(await conn.getAccountInfo(key, "confirmed"))) return false;
+  return chainLinkUses((await getTokenMetadata(conn, key, "confirmed", TOKEN_2022_PROGRAM_ID))?.uri, uri);
+}
+/** Refuse a logo link whose upload was removed as unused. */
+function requireLogo(image: unknown) {
+  if (pins.wasRemoved(image)) throw new Error("That uploaded logo has expired (it went unused for hours); upload it again.");
+}
 
 function readJson(req: http.IncomingMessage, max = 64_000): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -324,19 +364,40 @@ function ownLaunch(body: Record<string, unknown>) {
 }
 
 /** Receipt printing: to IPFS when a PNG came with the request and uploads are on, else on-chain. */
-function receiptIxs(authority: PublicKey, nftMint: PublicKey, png: unknown, ip: string) {
+async function receiptIxs(authority: PublicKey, nftMint: PublicKey, png: unknown, ip: string) {
   if (typeof png === "string" && png && ipfsEnabled(cfg)) {
     rateLimit("upload", ip, "receipt uploads");
-    return buildReceiptIpfs(conn, cfg, authority, nftMint, Buffer.from(png, "base64"), `${publicUrl.replace(/\/$/, "")}/nft/${nftMint.toBase58()}`);
+    const out = await buildReceiptIpfs(conn, cfg, authority, nftMint, Buffer.from(png, "base64"), `${publicUrl.replace(/\/$/, "")}/nft/${nftMint.toBase58()}`);
+    // Kept once the NFT's link is the new metadata; its image goes with it.
+    const nft = nftMint.toBase58();
+    pins.track(out.uri, `receipt ${nft}`, () => tokenUriIs(nft, out.uri), { refs: [out.image] });
+    pins.track(out.image, `receipt image ${nft}`, async () => pins.referenced(out.image), { after: ORPHAN_AFTER_MS + 60_000 });
+    return out;
   }
   return buildReceipt(conn, cfg, authority, nftMint);
 }
+
+/** Forget the cached launches list of `creator` (it just started or finished a step). */
+function forgetLaunches(creator: unknown) {
+  knownCache = null;
+  try { swrForget(`/api/launches?creator=${new PublicKey(String(creator)).toBase58()}`); } catch { /* not an address */ }
+}
+
+// A creator's cached list is only dropped on a real change, here and where a launch starts or a
+// signed transaction was relayed (afterSend): anyone can post anything naming a creator, and
+// each drop means a chain read charged to the status budget.
+onLaunchSaved((r) => forgetLaunches(r.creator));
 
 async function post(url: string, body: Record<string, unknown>, ip: string) {
   if (url === "/api/launch/token") {
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
     const p = validateParams(body, quoteTokens.map((q) => q.symbol));
     if (f!.lockForeverOnly && p.lockDays !== null) throw new Error("Launches on this site lock their liquidity forever.");
+    requireLogo(p.image);
+    // This address's allowance is counted before the chain reads below; the site-wide one only
+    // for a request that checks out (a wallet that can pay for the launch), so junk can't use
+    // it up and block real launches.
+    rateLimit("launch", ip, "launches started", "ip");
     // Check the wallet can afford the whole launch before step 1 charges the fee: otherwise
     // a creator pays the launch fee and then gets stuck at the pool step.
     const pair = pairOf(cfg, p);
@@ -364,10 +425,10 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
       if (!passVaults) throw new Error("Holder passes aren't offered on this site.");
       if (p.payoutMint) throw new Error("Holder passes pay in XNT; leave the payout token empty.");
     }
-    // Counted only now, for a request that checks out (a wallet that can pay for the launch):
-    // junk can't use up the site-wide allowance and block real launches.
-    rateLimit("launch", ip, "launches started");
-    const { ixs, signers, record } = await buildTokenStep(conn, cfg, p, publicUrl, passes ? passVaults!.program : null);
+    rateLimit("launch", ip, "launches started", "site");
+    const { ixs, signers, record, uri } = await buildTokenStep(conn, cfg, p, publicUrl, passes ? passVaults!.program : null);
+    pins.track(uri, `metadata ${record.symbol} ${record.mint}`, () => tokenUriIs(record.mint, uri), { refs: [p.image] });
+    forgetLaunches(p.creator);
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
   if (url === "/api/launch/pool") {
@@ -375,6 +436,8 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     if (r.kind === "curve") throw new Error("A curve token's pool is created by the curve when it graduates.");
     const s = await launchStatus(conn, cfg, r);
     if (!s.token) throw new Error("Step 1 (token) hasn't confirmed yet.");
+    // The token is on-chain: its record leaves the journal now if it hasn't yet (see sweepPendingLaunches).
+    persistLaunch(r.mint);
     if (s.pool) throw new Error("The pool already exists.");
     const pair = pairOf(cfg, r);
     if (!pair.xntPool) {
@@ -428,7 +491,10 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     // Straight through to IPFS; nothing is kept here. Limited per IP to protect the Pinata quota.
     rateLimit("upload", ip, "logo uploads");
     const bytes = Buffer.from(String(body.data ?? ""), "base64");
-    return pinLogo(cfg, bytes, String(body.name ?? "logo"));
+    const logo = await pinLogo(cfg, bytes, String(body.name ?? "logo"));
+    // In use once a launch (or a metadata update) points at it; removed after some hours otherwise.
+    pins.track(logo.url, `logo ${logo.cid}`, async () => pins.logoUsed(listLaunches().map((r) => r.image), logo.url), { after: LOGO_ORPHAN_AFTER_MS });
+    return logo;
   }
   if (url === "/api/faucet/fund") {
     const from = new PublicKey(String(body.wallet));
@@ -489,7 +555,9 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     // like logo uploads, so it can't use up the Pinata plan.
     rateLimit("upload", ip, "metadata updates");
     const r = ownLaunch(body);
+    requireLogo(body.image);
     const { ixs, uri, next } = await buildMetadataUpdate(conn, cfg, r, body, publicUrl);
+    pins.track(uri, `metadata update ${r.symbol} ${r.mint}`, () => tokenUriIs(r.mint, uri), { refs: [String(next.image ?? "")] });
     // Keyed by the new link too, so a stranger's request can't replace the creator's pending one.
     pendingMeta.set(`${r.mint} ${uri}`, { uri, next, at: Date.now() });
     return { tx: await unsignedTx(conn, new PublicKey(r.creator), ixs, [], opts), uri };
@@ -538,6 +606,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     if (r.reason && !/Not enough tax/.test(r.reason)) throw new Error(`${r.reason} Your tip was added to this token's gas.`);
     runCycle(t, clicker);
     readinessCache.delete(t.mint);
+    swrForget(`/api/distribute/status?mint=${t.mint}`);
     return { started: true };
   }
   if (url.startsWith("/api/vault/")) return vaults ? vaultPost(url, body, ip) : null;
@@ -547,6 +616,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     // Counted once the transaction is fully signed and only calls this site's programs, so
     // junk ("AA==") can't use up the site-wide allowance every wallet action relays through.
     const signature = await sendSigned(conn, String(body.tx), () => rateLimit("send", ip, "transactions"));
+    afterSend(String(body.tx), signature);
     // A curve trade: show it on the next page load instead of after the cache expires.
     if (curves && typeof body.curveMint === "string") { try { curves.invalidate(new PublicKey(body.curveMint).toBase58()); } catch { /* ignore */ } }
     // A creator just started a tax vault: the pages show it at once.
@@ -570,6 +640,22 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
  * good), and new plans have their own limit, site-wide as well.
  */
 const crankPlans = new Map<string, { at: number; data: Promise<unknown> }>();
+const crankRelays = crankRelayBook();
+
+/** After /api/send relayed a transaction (`b64`, confirmed): what that transaction affects here. */
+function afterSend(b64: string, signature: string) {
+  let msg;
+  try { msg = VersionedTransaction.deserialize(Buffer.from(b64, "base64")).message; } catch { return; }
+  const payer = msg.staticAccountKeys[0]?.toBase58();
+  // A creator's launch step: its launches list changes.
+  forgetLaunches(payer);
+  // Step 1 of a launch (the new mint co-signs it) is on-chain: its record leaves the journal.
+  for (const k of msg.staticAccountKeys.slice(0, msg.header.numRequiredSignatures)) {
+    if (isPendingLaunch(k.toBase58())) persistLaunch(k.toBase58());
+  }
+  crankRelays.relayed(b64, signature);
+}
+
 async function vaultPost(url: string, body: Record<string, unknown>, ip: string) {
   const m = /^\/api\/vault\/([1-9A-HJ-NP-Za-km-z]{32,44})\/(crank-tx|crank-result|appoint-tx)$/.exec(url);
   if (!m) return null;
@@ -582,15 +668,18 @@ async function vaultPost(url: string, body: Record<string, unknown>, ip: string)
     rateLimit("crank", ip, "vault runs");
     const data = crankTx(v, mint, caller);
     crankPlans.set(key, { at: Date.now(), data });
-    data.catch(() => crankPlans.delete(key));
+    data.then((plan) => {
+      for (const t of plan.txs) crankRelays.planned(t.tx, mint);
+    }, () => crankPlans.delete(key));
     for (const [k, p] of crankPlans) if (Date.now() - p.at > 10_000) crankPlans.delete(k);
+    crankRelays.prune();
     return data;
   }
   if (action === "crank-result") {
     // A run just landed: the next click needs a fresh plan.
     for (const k of crankPlans.keys()) if (k.startsWith(`${mint} `)) crankPlans.delete(k);
-    const sigs = Array.isArray(body.signatures) ? body.signatures.map(String) : [];
-    return v.crankResult(mint, sigs);
+    // Only this token's plan transactions that /api/send relayed, each looked up once.
+    return v.crankResult(mint, crankRelays.take(Array.isArray(body.signatures) ? body.signatures.map(String) : [], mint));
   }
   return appointTx(v, mint, body);
 }
@@ -626,6 +715,8 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
   if (url === "/api/curve/create") {
     if (f!.launchesPaused) throw new Error(f!.launchesPaused.message ?? "New launches are paused for a short while. Launches already started can still be finished.");
     const p = validateCurveParams(body, cfg.network);
+    requireLogo(p.image);
+    rateLimit("launch", ip, "launches started", "ip"); // before the chain reads; site-wide after the checks, as for launches
     // A payout token: checked now (pool, freeze authority, extensions); the creator's vault uses it after graduation.
     if (p.payoutMint) {
       if (!isVaultLaunch(cfg, XNT_PAIR)) throw new Error("Paying holders in another token needs a Tax Vault launch.");
@@ -637,8 +728,10 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
       if (!passVaults) throw new Error("Holder passes aren't offered on this site.");
       if (p.payoutMint) throw new Error("Holder passes pay in XNT; leave the payout token empty.");
     }
-    rateLimit("launch", ip, "launches started"); // after the checks, as for launches
-    const { ixs, signers, record } = await buildCurveStep(conn, cfg, p, publicUrl, c.program, passes ? passVaults!.program : null);
+    rateLimit("launch", ip, "launches started", "site");
+    const { ixs, signers, record, uri } = await buildCurveStep(conn, cfg, p, publicUrl, c.program, passes ? passVaults!.program : null);
+    pins.track(uri, `metadata ${record.symbol} ${record.mint}`, () => tokenUriIs(record.mint, uri), { refs: [p.image] });
+    forgetLaunches(p.creator);
     c.invalidate();
     return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
   }
@@ -801,7 +894,7 @@ const poolCreateFee = sticky<number | null>(async () => {
   return Number(a.data.readBigUInt64LE(36)) / 1e9;
 }, null);
 
-const balanceCache = new Map<string, { at: number; data: { network: string; xnt: number } }>();
+const balances = freshCache<{ network: string; xnt: number }>(30_000, 5_000);
 /**
  * Stale-while-revalidate for read-only views. Public RPCs rate-limit (mainnet's hard), so
  * a view that answered once keeps its last good answer: after `freshMs` it's refreshed in
@@ -811,7 +904,13 @@ const balanceCache = new Map<string, { at: number; data: { network: string; xnt:
 const swrStore = new Map<string, { at: number; val: unknown; pending: Promise<unknown> | null; startedAt: number; gen: number }>();
 /** A refresh still running after this long is abandoned, so one hung chain read can't freeze a view for good. */
 const SWR_STUCK_MS = 120_000;
-function swr(key: string, freshMs: number, fn: () => Promise<unknown>): Promise<unknown> {
+/**
+ * `admit`: asked before a refresh that runs for a visitor (it costs chain reads). Refused,
+ * a view that has an answer serves it as it is; one that has none is refused (429).
+ * `wait`: past `freshMs`, wait for the refresh instead of answering with the old copy (a
+ * view a step-by-step flow reads back), still falling back on it if the refresh fails.
+ */
+function swr(key: string, freshMs: number, fn: () => Promise<unknown>, admit: () => boolean = () => true, wait = false): Promise<unknown> {
   let e = swrStore.get(key);
   if (!e) { if (swrStore.size > 3_000) swrStore.clear(); e = { at: 0, val: undefined, pending: null, startedAt: 0, gen: 0 }; swrStore.set(key, e); }
   const entry = e;
@@ -829,16 +928,62 @@ function swr(key: string, freshMs: number, fn: () => Promise<unknown>): Promise<
       .finally(() => { if (gen === entry.gen) entry.pending = null; }));
   };
   if (entry.val !== undefined) {
-    if (Date.now() - entry.at > freshMs) refresh().catch((err) => console.error(`refresh ${key}: ${err instanceof Error ? err.message.slice(0, 120) : err}`));
+    if (Date.now() - entry.at > freshMs && (entry.pending || admit())) {
+      const old = entry.val;
+      const next = refresh().catch((err) => { console.error(`refresh ${key}: ${err instanceof Error ? err.message.slice(0, 120) : err}`); return old; });
+      if (wait) return next;
+    }
     return Promise.resolve(entry.val);
   }
+  if (!entry.pending && !admit()) return Promise.reject(new RateLimited("The site is busy looking things up right now; try again in a minute."));
   return refresh();
 }
-// Read-only views served through swr() (not per-action flows like launches, curves or the faucet).
-const SWR_ROUTES = /^\/api\/(nft\/|nfts$|token\/|token-list$|analytics$|wallet\/|leaderboard\/|stats$|tokens$|vault\/)/;
+/** Drop a cached view (its data just changed), so the next request reads it afresh. */
+function swrForget(key: string) { swrStore.delete(key); }
+/**
+ * What this site knows of, for planView: from its records, kept a few seconds since each view
+ * request asks, and dropped when a launch step changes them (forgetLaunches).
+ */
+let knownCache: { at: number; data: KnownSubjects } | null = null;
+function knownSubjects() {
+  if (knownCache && Date.now() - knownCache.at < 5_000) return knownCache.data;
+  const launches = listLaunches();
+  const tokens = new Set(launches.filter((r) => r.registeredAt).map((r) => r.mint));
+  if (cfg.mint) tokens.add(cfg.mint);
+  const nfts = new Set(launches.flatMap((r) => (r.lockNft ? [r.lockNft] : [])));
+  if (cfg.creatorReward?.nftMint) nfts.add(cfg.creatorReward.nftMint);
+  const data: KnownSubjects = {
+    creators: new Set(launches.map((r) => r.creator)), tokens, nfts,
+    isVaultMint: vaults ? (mint) => !!vaultsFor(mint)?.isVaultMint(mint) : null,
+  };
+  knownCache = { at: Date.now(), data };
+  return data;
+}
 
-async function get(url: URL) {
-  if (SWR_ROUTES.test(url.pathname)) return swr(url.pathname + url.search, 30_000, () => getView(url));
+/**
+ * A GET. `ip` is the visitor's (none for the server's own warm-up): only requests for something
+ * real, that no cache can answer, are counted; see factory/view-gate.ts. So a flood of made-up
+ * addresses can't tie up the RPC queue everything else (the launch steps, the crank's sends) needs.
+ */
+async function get(url: URL, ip?: string) {
+  const admit = (lane: Lane) => () => { if (ip === undefined) return true; try { rateLimit(lane, ip, "lookups"); return true; } catch { return false; } };
+  const plan = planView(url, knownSubjects());
+  if (plan.kind === "notFound") return null;
+  if (plan.kind === "refuse") throw new Error(plan.message);
+  if (plan.kind === "answer") return plan.value;
+  if (plan.kind === "view") return swr(plan.key, plan.freshMs, () => getView(url), admit(plan.lane), plan.wait);
+  // A balance not cached yet (one RPC call per made-up address), or a wallet's holder passes
+  // (uncached: it reads every claims-mode token's passes).
+  const bal = /^\/api\/balance\/([^/]+)$/.exec(url.pathname), passes = /^\/api\/passes\/([^/]+)$/.exec(url.pathname);
+  const busy = () => new RateLimited("The site is busy looking things up right now; try again in a minute.");
+  if (bal) {
+    if (!isAddress(bal[1])) return null;
+    return balances.get(bal[1], admit("lookup"), busy, async () => ({ network: cfg.network, xnt: (await conn.getBalance(new PublicKey(bal[1]))) / 1e9 }));
+  }
+  if (passes) {
+    if (!isAddress(passes[1])) return null;
+    if (!admit("lookup")()) throw busy();
+  }
   return getView(url);
 }
 async function getView(url: URL) {
@@ -915,16 +1060,6 @@ async function getView(url: URL) {
   const lb = /^\/api\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (lb) return leaderboard(lb[1]);
   if (url.pathname === "/api/faucet") return faucetStatus(conn, cfg, url.searchParams.get("wallet") ?? undefined);
-  // A wallet's XNT on this site's network (the wrong-network hint in wallet.js). Cached 30 s.
-  const bal = /^\/api\/balance\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
-  if (bal) {
-    const hit = balanceCache.get(bal[1]);
-    if (hit && Date.now() - hit.at < 30_000) return hit.data;
-    const data = { network: cfg.network, xnt: (await conn.getBalance(new PublicKey(bal[1]))) / 1e9 };
-    balanceCache.set(bal[1], { at: Date.now(), data });
-    if (balanceCache.size > 5_000) balanceCache.clear();
-    return data;
-  }
   const wp = /^\/api\/passes\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (wp) return walletPasses(new PublicKey(wp[1]).toBase58());
   const wv = /^\/api\/wallet\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
@@ -1554,7 +1689,7 @@ function clientIp(req: http.IncomingMessage) {
   if ((peer === "127.0.0.1" || peer === "::1") && typeof fwd === "string" && fwd) {
     const ip = fwd.split(",")[0].trim();
     // Only a request from this machine itself skips the rate limits: a forwarded "127.0.0.1"
-    // was written by the client (Caddy in Vercel mode trusts the header from anyone).
+    // was written by the client (in Vercel mode Caddy passes on what Vercel, or anyone else holding the secrets, sent).
     return ip === "127.0.0.1" || ip === "::1" ? `forwarded ${ip}` : ip;
   }
   return peer;
@@ -1677,7 +1812,7 @@ const server = http.createServer(async (req, res) => {
         .end(JSON.stringify(tokenMetadataJson(r, publicUrl)));
       return;
     }
-    const out = await get(url);
+    const out = await get(url, ip);
     if (!out) { res.writeHead(404).end("Not found"); return; }
     send(res, 200, out);
   } catch (e) {
@@ -1686,6 +1821,11 @@ const server = http.createServer(async (req, res) => {
     if (/^IPFS upload (was refused|failed)/.test(error)) {
       console.error(`${new Date().toISOString()} ${url.pathname}: ${error}`);
       error = "The site can't save files to IPFS right now, so nothing was sent to your wallet. Please try again later.";
+    }
+    // A key or other file the server can't read: its path is for the operator's log only.
+    if (e instanceof KeypairError || isFileError(e)) {
+      console.error(`${new Date().toISOString()} ${url.pathname}: ${error}`);
+      error = "Something is wrong on the site's side, so nothing was sent to your wallet. Please try again later.";
     }
     send(res, e instanceof RateLimited ? 429 : 400, { error: explainError(error, programKinds) });
   }
@@ -1718,6 +1858,32 @@ async function warmViews() {
 }
 setTimeout(() => warmViews(), 15_000);
 setInterval(() => warmViews(), 300_000).unref();
+
+// New launches: a step 1 is journalled before its transaction leaves this server. Its record
+// moves to the launches once the token is on-chain; ones that never landed are tidied away after
+// a day. Unused pinned files are removed from Pinata.
+try { const n = recoverPendingLaunches(); if (n) console.log(`Pending launches: ${n} back from the journal`); } catch (e) { console.error(`pending launches: ${e instanceof Error ? e.message : e}`); }
+// Every half minute; soon again after a failed chain read, since the launches that landed while
+// the server was down wait on it.
+let sweepRetryMs = 5_000;
+async function sweepLoop() {
+  const ok = await sweepPendingLaunches(conn).catch((e) => { console.error(`pending launches: ${e instanceof Error ? e.message : e}`); return false; });
+  setTimeout(() => sweepLoop(), ok ? 30_000 : sweepRetryMs).unref();
+  sweepRetryMs = ok ? 5_000 : Math.min(sweepRetryMs * 2, 30_000);
+}
+sweepLoop();
+async function gcLaunches() {
+  const removed = await gcLaunchRecords(conn).catch((e) => { console.error(`launch records GC: ${e instanceof Error ? e.message : e}`); return []; });
+  if (removed.length) console.log(`Removed ${removed.length} launch record(s) whose token never reached the chain: ${removed.join(", ")}`);
+  await gcJournal();
+}
+async function gcJournal() {
+  const removed: string[] = await gcPendingJournal(conn).catch((e) => { console.error(`launch journal GC: ${e instanceof Error ? e.message : e}`); return []; });
+  if (removed.length) console.log(`Removed ${removed.length} launch journal(s) whose token never reached the chain: ${removed.join(", ")}`);
+}
+setTimeout(() => gcLaunches(), 60_000).unref();
+setInterval(() => gcLaunches(), 6 * 3_600_000).unref();
+setInterval(() => pins.sweep().catch((e) => console.error(`[pins] ${e instanceof Error ? e.message : e}`)), 5 * 60_000).unref();
 
 // Keep the Locked NFTs list warm so visitors never wait for its chain reads.
 setTimeout(() => allNfts().catch(() => undefined), 2_000);

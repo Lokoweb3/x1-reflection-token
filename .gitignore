@@ -1,8 +1,15 @@
 node_modules/
 config.json
 state/
-# Token factory: per-token distributor keys and state (secret)
-/factory/
+# Token factory: per-token distributor keys and state (secret), at the root, under mainnet/,
+# or any copy of it (rehearsal work dirs). src/factory/ is source code, so it's put back.
+**/factory/
+!/src/factory/
+**/launches/**/distributor.json
+# Launches still in progress: distributor keys, under any factory dir (REFLECT_FACTORY_DIR can be anywhere).
+**/pending-launches/
+# The mainnet site's config, launches and keys on the server.
+/mainnet/
 *.keypair.json
 *-keypair.json
 

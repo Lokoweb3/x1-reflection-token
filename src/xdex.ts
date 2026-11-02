@@ -25,8 +25,8 @@ const NO_TRANSFER_FEE: TransferFeeConfig = {
 };
 
 const disc = (s: string) => crypto.createHash("sha256").update(s).digest().subarray(0, 8);
-const POOL_DISC = disc("account:PoolState");
-const CONFIG_DISC = disc("account:AmmConfig");
+export const POOL_DISC = disc("account:PoolState");
+export const CONFIG_DISC = disc("account:AmmConfig");
 const SWAP_BASE_INPUT = disc("global:swap_base_input");
 const DEPOSIT = disc("global:deposit");
 const TEMP_SEED = "reflect-xnt-out-v1";

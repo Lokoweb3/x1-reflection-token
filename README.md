@@ -632,12 +632,12 @@ config.json (optional `labels` name the members on the page) and restart it.
 fees) and an RPC; run it on another machine than the site, by someone else:
 
 ```bash
-npx tsx scripts/cosigner.ts --rpc https://rpc.testnet.x1.xyz --keypair <co-signer.json> --multisig <address> \
-  [--webhook <url>] [--pinata-jwt <own key>] [--ipfs-gateway <url>,...] [--loop 20]
+[PINATA_JWT=<own key>] npx tsx scripts/cosigner.ts --rpc https://rpc.testnet.x1.xyz --keypair <co-signer.json> --multisig <address> \
+  [--webhook <url>] [--ipfs-gateway <url>,...] [--loop 20]
 ```
 
 It checks every pending proposal, approves or rejects it, executes approved lists if the
-site doesn't, and with `--pinata-jwt` pins a second copy of every approved list file.
+site doesn't, and with `PINATA_JWT` set pins a second copy of every approved list file.
 `--dry-run` only reports; `--strict` also rejects flagged lists (balances moved since the
 snapshot, a large share for a new wallet, an old snapshot); `--allow-rule-change` /
 `--allow-rebuild` accept a change of eligibility rules / a list that doesn't build on the
@@ -691,12 +691,17 @@ restart on crash and boot, HTTPS via Caddy (or a Vercel front door), a firewall,
 encrypted backups. The live setup runs both networks on one server: the testnet site and
 distributors from the app folder, and the mainnet site (`reflect-mainnet-factory`) from
 `mainnet/` with its own config, launches and keys; each Vercel project forwards to its site
-over a secret path, **over HTTPS all the way** (since 24 Oct 2026): the server answers the
+over a secret path plus an `X-Origin-Auth` header secret Caddy checks, **over HTTPS all the way** (since 24 Oct 2026): the server answers the
 secret path only over HTTPS as its own name (`ORIGIN_HOST`, by default `<IP with
 dashes>.sslip.io`) with a certificate Caddy renews itself, and `vercel-deploy.sh` refuses an
 `http://` backend. The testnet services can't read the mainnet folder (systemd
 `InaccessiblePaths`), although every service runs as the same user. Both sites run the Tax Vault crank; the distributor services on both
 networks are disabled (their tokens moved to the vault).
+
+## Commit hook
+
+Once per clone, `git config core.hooksPath .githooks`: the pre-commit hook then refuses any
+staged file holding a JSON array of 64 bytes (a Solana secret key, whatever the file is called).
 
 ## Tests
 
@@ -706,6 +711,16 @@ cargo test -p bonding_curve --manifest-path lp-locker/Cargo.toml
 cargo test -p tax_vault --manifest-path lp-locker/Cargo.toml
 npm run typecheck
 ```
+
+Node 22 or later (`engines` in `package.json`; `deploy/setup.sh` installs 22, and
+`@types/node` is on 22 to match). `package.json` overrides `jayson`, the JSON-RPC client
+inside `@solana/web3.js` (which asks for `^4.3.0`), to **5.0.0**: 5.0.0 drops the vulnerable
+`uuid` and `stream-json` dependencies, which took `npm audit` from 11 findings to 4 (commit
+`983ea23`). The 4 left are one issue, `bigint-buffer` and the packages above it
+(`@solana/buffer-layout-utils`, `@solana/spl-token`, `@sqds/multisig`); it has no fixed
+release, and its flaw is in the optional native addon, so an install that skips its build
+script uses the plain JS path. Drop the override once `@solana/web3.js` asks for jayson 5
+itself.
 
 Full rehearsals on a local validator loaded with copies of the real chain (see each
 script's header for the validator command):

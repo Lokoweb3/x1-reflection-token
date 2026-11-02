@@ -17,7 +17,8 @@
  * must debit exactly the amount. Each transfer is written to state/bridge-usdc.json before it is sent; one
  * that hasn't been seen arriving on Solana blocks the next, so a transfer is never sent twice. After
  * sending, this waits for X1 finality and the Solana receipt (usually a minute or two); if it gives up
- * waiting, run --status later.
+ * waiting, run --status later. A transfer whose transaction never shows up is marked failed only on proof from
+ * finalized state (src/bridge-journal.ts); without it, it stays pending until a person resolves it.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -28,6 +29,8 @@ import {
 import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, unpackAccount } from "@solana/spl-token";
 import bs58 from "bs58";
 import { loadKeypair } from "../src/config.js";
+import { bridgeSendFate } from "../src/bridge-journal.js";
+import { writeFileDurable } from "../src/factory/durable.js";
 
 const API = "https://api.bridge.mainnet.x1.xyz";
 const PROGRAM = new PublicKey("6JbPTuxVuoTgyQeXFb9MH8C8nUY8NBbLP1Lu4B13JfMD");
@@ -64,12 +67,11 @@ const owner = wallet.publicKey;
 const ata = getAssociatedTokenAddressSync(USDCX, owner, false, TOKEN_2022_PROGRAM_ID);
 
 type Entry = { signature: string; wallet: string; amountRaw: string; feeRaw: string; status: "pending_x1" | "pending_solana" | "completed" | "failed";
-  createdAt: string; solanaSignature?: string };
+  createdAt: string; lastValidBlockHeight?: number; outgoing?: string; solanaSignature?: string };
 const readJournal = (): Entry[] => (fs.existsSync(JOURNAL) ? JSON.parse(fs.readFileSync(JOURNAL, "utf8")).entries : []);
 const writeJournal = (entries: Entry[]) => {
   fs.mkdirSync(path.dirname(JOURNAL), { recursive: true });
-  fs.writeFileSync(`${JOURNAL}.tmp`, JSON.stringify({ entries }, null, 2));
-  fs.renameSync(`${JOURNAL}.tmp`, JOURNAL);
+  writeFileDurable(JOURNAL, JSON.stringify({ entries }, null, 2));
 };
 
 async function api(p: string) {
@@ -121,13 +123,20 @@ async function reconcile(entries: Entry[]) {
   for (const e of entries.filter((e) => e.wallet === owner.toBase58())) {
     if (e.status === "pending_x1") {
       const s = (await conn.getSignatureStatuses([e.signature], { searchTransactionHistory: true })).value[0];
-      if (!s || s.confirmationStatus !== "finalized") {
-        if (!s && Date.now() - Date.parse(e.createdAt) > 5 * 60_000) { e.status = "failed"; writeJournal(entries); console.log(`${e.signature}: never landed on X1, nothing was sent`); continue; }
-        return false;
+      let landed = s?.confirmationStatus === "finalized" ? !s.err : undefined;
+      if (!s) {
+        // Failed only on proof: its blockhash expired on finalized state, and neither its signature nor its outgoing
+        // account is on a node at least that recent. Until then it blocks the next transfer (src/bridge-journal.ts).
+        const f = await bridgeSendFate(conn, e, owner);
+        if (f.kind === "never-landed") { e.status = "failed"; writeJournal(entries); console.log(`${e.signature}: never landed on X1, nothing was sent`); continue; }
+        if (f.kind === "landed" || f.kind === "failed") landed = f.kind === "landed";
+        else if (Date.now() - Date.parse(e.createdAt) > 5 * 60_000)
+          console.log(`${e.signature}: not seen on X1 and can't be ruled out (${f.reason}). It blocks the next transfer. Check the signature and the wallet's balance by hand; only if it never landed, set its status to "failed" in ${JOURNAL}`);
       }
-      e.status = s.err ? "failed" : "pending_solana";
+      if (landed === undefined) return false;
+      e.status = landed ? "pending_solana" : "failed";
       writeJournal(entries);
-      if (s.err) { console.log(`${e.signature}: failed on X1, nothing was sent`); continue; }
+      if (!landed) { console.log(`${e.signature}: failed on X1, nothing was sent`); continue; }
     }
     if (e.status === "pending_solana") {
       const r = await api(`/transactions/${e.signature}`);
@@ -157,7 +166,7 @@ function bridgeOut(amount: bigint, slot: number, blockhash: string, feeCollector
     data: Buffer.concat([Buffer.from([27, 194, 57, 119, 215, 165, 247, 150]), u64(seq), u64(amount)]) });
   const message = new TransactionMessage({ payerKey: owner, recentBlockhash: blockhash,
     instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 }), ix] }).compileToV0Message();
-  return new VersionedTransaction(message);
+  return { tx: new VersionedTransaction(message), outgoing };
 }
 
 async function waitForArrival(entries: Entry[]) {
@@ -193,9 +202,9 @@ if (want > max || want > cap) fail(`the bridge takes at most ${usdc(max < cap ? 
 const xnt = await conn.getBalance(owner);
 if (xnt < MIN_XNT) fail("the wallet needs at least 0.01 XNT for the transaction fee");
 
-const { blockhash } = await conn.getLatestBlockhash("confirmed");
+const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
 const slot = await conn.getSlot("confirmed");
-const tx = bridgeOut(want, slot, blockhash, cfg.feeCollector, cfg.feeCollectorAta);
+const { tx, outgoing } = bridgeOut(want, slot, blockhash, cfg.feeCollector, cfg.feeCollectorAta);
 const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: false, accounts: { encoding: "base64", addresses: [ata.toBase58()] } });
 if (sim.value.err) fail(`the simulation failed: ${JSON.stringify(sim.value.err)}\n${(sim.value.logs ?? []).slice(-6).join("\n")}`);
 const after = unpackAccount(ata, { ...(await conn.getAccountInfo(ata))!, data: Buffer.from(sim.value.accounts![0]!.data[0], "base64") }, TOKEN_2022_PROGRAM_ID).amount;
@@ -208,7 +217,8 @@ if (!has("live")) { console.log("dry run: nothing sent (add --live to send)"); p
 
 tx.sign([wallet]);
 const signature = bs58.encode(tx.signatures[0]);
-entries.push({ signature, wallet: owner.toBase58(), amountRaw: want.toString(), feeRaw: fee.toString(), status: "pending_x1", createdAt: new Date().toISOString() });
+entries.push({ signature, wallet: owner.toBase58(), amountRaw: want.toString(), feeRaw: fee.toString(), status: "pending_x1", createdAt: new Date().toISOString(),
+  lastValidBlockHeight, outgoing: outgoing.toBase58() });
 writeJournal(entries);
 const sent = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 0, minContextSlot: sim.context.slot });
 if (sent !== signature) fail(`the RPC returned signature ${sent}, expected ${signature}; the journal keeps the transfer reserved`);
