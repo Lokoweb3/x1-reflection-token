@@ -23,6 +23,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import bs58 from "bs58";
 import {
   AddressLookupTableAccount, AddressLookupTableProgram, ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram,
   TransactionInstruction, TransactionMessage, VersionedTransaction,
@@ -66,6 +67,8 @@ export interface EngineOptions {
 }
 
 const LOCKER_8N4E = new PublicKey("8N4E3ZHBiYRMia8Hs27J6f3b9QM8wiTYcMXukSq96Ejf");
+/** The first 8 bytes of every 8N4E… lock account (as in `src/pools.ts`), base58 for a memcmp filter. */
+const LOCK_8N4E_DISC = bs58.encode(Buffer.from("08ff24cad2163989", "hex"));
 const xnt = (l: bigint) => (Number(l) / 1e9).toFixed(4);
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const MAX_TX = 1232;
@@ -137,7 +140,7 @@ export function createEngine(o: EngineOptions) {
     let mine = 0n;
     for (const w of own) {
       for (const a of (await conn.getParsedTokenAccountsByOwner(w, { mint: lp }, "confirmed")).value) mine += BigInt(a.account.data.parsed.info.tokenAmount.amount);
-      for (const { account } of await conn.getProgramAccounts(LOCKER_8N4E, { commitment: "confirmed", filters: [{ dataSize: 186 }, { memcmp: { offset: 104, bytes: w.toBase58() } }, { memcmp: { offset: 72, bytes: lp.toBase58() } }] }))
+      for (const { account } of await conn.getProgramAccounts(LOCKER_8N4E, { commitment: "confirmed", filters: [{ dataSize: 186 }, { memcmp: { offset: 0, bytes: LOCK_8N4E_DISC } }, { memcmp: { offset: 104, bytes: w.toBase58() } }, { memcmp: { offset: 72, bytes: lp.toBase58() } }] }))
         mine += account.data.readBigUInt64LE(136);
     }
     const share = issued > 0n ? Math.min(1, Number(mine) / Number(issued)) : 0;
