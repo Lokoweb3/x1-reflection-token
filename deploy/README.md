@@ -94,6 +94,9 @@ can be undone on its own. Do it on a quiet moment, with the Vercel CLI logged in
    `/etc/caddy/reflect-origin.env` and Caddy's drop-in (the secrets from the env file; a check of
    them before each start and reload; no `--environ`, which would print them to the journal) and
    saves today's config as `/etc/caddy/Caddyfile.pre-origin-auth`. Caddy keeps running as it is.
+   Then `systemctl reload caddy`: same config, but it proves the drop-in's check runs as Caddy's
+   user. If that fails, the old config is still serving; fix it before going on, because a Caddy
+   restart with the same fault would stay down. (`rm` the drop-in and `systemctl daemon-reload` undoes it.)
 2. **Observe.** Write the observe config and apply it:
    - One front door: `deploy/origin-gate.sh render observe "$(cat /root/.reflect-vercel-secret)"
      <project>.vercel.app "$(cat /root/.reflect-origin-host)" > /root/Caddyfile.observe`.
