@@ -2,7 +2,7 @@
 //   race <file> <cap> <fee> <tries> <startAt>   reserve as fast as it can from <startAt> on; prints how many it got
 //   die-holding-lock <file>                     takes the lock and dies without releasing it
 //   hold-lock <file> <ms>                       takes the lock and holds it
-//   slot-race <dir> <n> <startAt>               counts signatures 0..n-1 on one limit order and one peg, racing another worker
+//   slot-race <dir> <n> <startAt> <limit|peg>   counts signatures 0..n-1 on one limit order or one peg, racing another worker
 //   pause-before-commit <file> <cap> <fee> <ms> reserves, pausing after the cap check and before the journal's rename; prints the result
 import fs from "node:fs";
 import path from "node:path";
@@ -32,15 +32,15 @@ if (mode === "race") {
   console.log(new FeeCap(BigInt(a), file).reserve(BigInt(b), Date.now()));
 }
 if (mode === "slot-race") {
-  const [dir, n, startAt] = [file, Number(a), Number(b)];
+  const [dir, n, startAt, which] = [file, Number(a), Number(b), c];
   const day = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
   const limit = limitSlot(dir, "order"), peg = pegSlot(dir, path.join(dir, "peg-t.json"));
   while (Date.now() < startAt) { /* start together */ }
   let got = 0;
   for (let i = 0; i < n; i++) {
     const signature = `sig${i}`;
-    if (limit.count({ signature, at: "", amountIn: "10", minOut: "1", tokens: 1, poolPrice: 1 }, signature)) got++;
-    peg.count({ signature, at: "", day, side: "buy", amountIn: "1", minOut: "1", tokens: 1, poolPrice: 1, refPrice: 1 }, signature);
+    if (which === "limit" ? limit.count({ signature, at: "", amountIn: "10", minOut: "1", tokens: 1, poolPrice: 1 }, signature)
+      : peg.count({ signature, at: "", day, side: "buy", amountIn: "1", minOut: "1", tokens: 1, poolPrice: 1, refPrice: 1 }, signature)) got++;
   }
   console.log(got);
 }

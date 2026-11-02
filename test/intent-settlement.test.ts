@@ -273,18 +273,27 @@ test("peg: a trade from an earlier day clears without counting today, and counts
   assert.deepEqual(s.counted, ["SIG"]);
 });
 
-test("two real processes counting the same signatures: each exactly once, on a limit order and on a peg", async () => {
-  const dir = tmp("slot-race"), N = 40;
+const raceCounts = async (which: "limit" | "peg", N: number) => {
+  const dir = tmp(`slot-race-${which}`);
   const worker = path.join(import.meta.dirname, "helpers", "fee-cap-worker.ts");
   const startAt = Date.now() + 2_500;
-  const runs = [0, 1].map(() => new Promise<number>((resolve, reject) => {
-    const c = spawn(process.execPath, ["--import", "tsx", worker, "slot-race", dir, String(N), String(startAt)], { stdio: ["ignore", "pipe", "inherit"] });
+  const firsts = await Promise.all([0, 1].map(() => new Promise<number>((resolve, reject) => {
+    const c = spawn(process.execPath, ["--import", "tsx", worker, "slot-race", dir, String(N), String(startAt), which], { stdio: ["ignore", "pipe", "inherit"] });
     let out = "";
     c.stdout.on("data", (d) => { out += d; });
     c.on("exit", (code) => (code === 0 ? resolve(Number(out.trim())) : reject(new Error(`worker exited ${code}`))));
-  }));
-  const [a, b] = await Promise.all(runs);
-  assert.equal(a + b, N, `first counts: ${a} and ${b}`);
+  })));
+  return { dir, firsts };
+};
+
+test("two real processes counting the same signatures on a limit order: each exactly once", async () => {
+  const N = 40, { dir, firsts } = await raceCounts("limit", N);
+  assert.equal(firsts[0] + firsts[1], N, `first counts: ${firsts}`);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "limit-orders.json"), "utf8")).order.spent, String(N * 10));
+});
+
+test("two real processes counting the same signatures on a peg: each exactly once", async () => {
+  const N = 40, { dir, firsts } = await raceCounts("peg", N);
+  assert.equal(firsts[0] + firsts[1], N, `first counts: ${firsts}`);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "peg-t.json"), "utf8")).used, N);
 });
