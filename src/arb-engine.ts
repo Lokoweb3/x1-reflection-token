@@ -18,8 +18,10 @@
  * no pool can be sent at once.
  *
  * Brakes (src/arb-guard.ts): a route whose sent trades fail 5 times in a row within 10 minutes is skipped for an
- * hour (with an alert), and with `maxFeesPerDay` the engine sends nothing once the fees of the last 24 hours reach it
- * (state/arb-fees-<wallet>.json; an alert says so), which pauses every trade, sweep and top-up until the window rolls on.
+ * hour (with an alert), and with `maxFeesPerDay` the engine sends nothing that would take the fees of the last 24 hours
+ * past it (state/arb-fees-<wallet>.json, shared by every process on the wallet; an alert says so), which pauses every
+ * trade, sweep and top-up until the window rolls on. Each send reserves its fee before broadcast; transaction metadata
+ * then replaces the estimate. A fee journal that can't be read stops sending, with an alert, until someone fixes it.
  *
  * Ownership: with `own` wallets, each route's mispriced pools (the side pools) are checked for how
  * much of their liquidity those wallets provide (LP held, or locked in the 8N4E… locker); a route
@@ -37,7 +39,8 @@ import {
   createSyncNativeInstruction, getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { confirmByPolling } from "./tx.js";
-import { FeeCap, ROUTE_FAILURE_BUDGET, RouteFailures, maxTxFee } from "./arb-guard.js";
+import { FeeCap, FeeCapReached, FeeJournalError, ROUTE_FAILURE_BUDGET, RouteFailures, x1FeeReservation } from "./arb-guard.js";
+import { fateOfSend } from "./send-fate.js";
 import { signed } from "./send-intent.js";
 import { cpmmOut, poolAuthority, swapIx, type Snapshot } from "./xdex.js";
 
@@ -80,6 +83,11 @@ const LOCK_8N4E_DISC = bs58.encode(Buffer.from("08ff24cad2163989", "hex"));
 const xnt = (l: bigint) => (Number(l) / 1e9).toFixed(4);
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const MAX_TX = 1232;
+const FEE_SETTLE_RETRY_MS = 1_500;
+const FEE_RECONCILE_EVERY_MS = 60_000;
+/** Reservations younger than this are left to the send that made them. */
+const FEE_RECONCILE_AFTER_MS = 3 * 60_000;
+const FEE_RECONCILE_MAX = 5;
 
 /** Rent of one new token account (about 0.0021 XNT): a route that needs accounts opened must earn it on top of its minimum. */
 export const ACCOUNT_RENT = 2_100_000n;
@@ -272,16 +280,67 @@ export function createEngine(o: EngineOptions) {
 
   // ---------- brakes ----------
   const failures = new RouteFailures();
-  const feeCap = o.maxFeesPerDay ? new FeeCap(o.maxFeesPerDay, path.join(o.stateDir, `arb-fees-${owner.toBase58()}.json`)) : null;
-  let capAlerted = false;
-  /** True (and one alert per pause) when the day's fees have reached the cap. */
-  function feeCapReached() {
-    if (!feeCap?.reached(Date.now())) { capAlerted = false; return false; }
+  const feeCap = new FeeCap(o.maxFeesPerDay ?? 0n, path.join(o.stateDir, `arb-fees-${owner.toBase58()}.json`));
+  let capAlerted = false, journalAlerted = false, journalProblem: unknown = null;
+  const capPaused = (now: number) => {
     if (!capAlerted) {
       capAlerted = true;
-      void o.alert(`paused: ${xnt(feeCap.spent(Date.now()))} XNT of fees in the last 24 h reached the ${xnt(feeCap.cap)} XNT daily cap; nothing is sent until older fees age out`);
+      void o.alert(`paused: ${xnt(feeCap.spent(now))} XNT of fees in the last 24 h leaves no room under the ${xnt(feeCap.cap)} XNT daily cap; nothing is sent until older fees age out`);
     }
+  };
+  /** A journal or lock that can't be trusted stops all sending: one alert saying so. */
+  const journalTrouble = (e: unknown) => {
+    journalProblem = e;
+    if (!journalAlerted) { journalAlerted = true; void o.alert(`not sending: ${msg(e)}`); }
+  };
+  /** True (and one alert per pause) when nothing may be sent: the day's fees reached the cap, or they can't be read. */
+  function feeCapReached() {
+    const now = Date.now();
+    try {
+      journalProblem = null;
+      if (!feeCap.reached(now)) return false;
+      capPaused(now);
+    } catch (e) { journalTrouble(e); }
     return true;
+  }
+  /** Check the cap and record this transaction's most likely fee, as one step shared with every process on this wallet. */
+  function reserveFee(fee: bigint, tx: { signature: string; lastValidBlockHeight: number }) {
+    const now = Date.now();
+    let ok: boolean;
+    try { ok = feeCap.reserve(fee, now, tx); } catch (e) { journalTrouble(e); throw e; }
+    journalAlerted = false;
+    if (!ok) { capPaused(now); throw new FeeCapReached("the daily fee cap has no room for this transaction, not sent"); }
+    capAlerted = false;
+  }
+  /** Replace a reservation with what the chain charged, if the chain has it. */
+  async function settleFee(signature: string): Promise<boolean> {
+    const t = await conn.getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    if (!t?.meta) return false;
+    feeCap.settle(signature, BigInt(t.meta.fee), Date.now());
+    return true;
+  }
+  /** After a send: settle while the transaction is fresh; reconcileFees picks up any this misses. Never throws. */
+  async function settleSoon(signature: string) {
+    for (let i = 0; i < 4; i++) {
+      if (await settleFee(signature).catch(() => false)) return;
+      await new Promise((r) => setTimeout(r, FEE_SETTLE_RETRY_MS).unref?.());
+    }
+  }
+  let reconciledAt = 0;
+  /**
+   * Settle what earlier sends and earlier runs left at their estimate. One whose transaction is proven never to have
+   * landed cost nothing; without that proof the estimate stands, which can only pause sending early.
+   */
+  async function reconcileFees() {
+    const now = Date.now();
+    if (now - reconciledAt < FEE_RECONCILE_EVERY_MS) return;
+    reconciledAt = now;
+    const old = feeCap.unsettled(now).filter((u) => now - u.at > FEE_RECONCILE_AFTER_MS).slice(0, FEE_RECONCILE_MAX);
+    for (const u of old) {
+      if (await settleFee(u.signature)) continue;
+      const f = await fateOfSend(conn, { signature: u.signature, lastValidBlockHeight: u.lastValidBlockHeight, wallet: owner, sentAt: u.at });
+      if (f.fate === "never-landed") feeCap.settle(u.signature, 0n, Date.now());
+    }
   }
   const routeKey = (p: Plan) => p.route.hops.map((h) => h.snap.pool.address.toBase58()).join(">");
 
@@ -333,20 +392,26 @@ export function createEngine(o: EngineOptions) {
     }
     const units = !used ? 600_000 : Math.min(1_400_000, Math.ceil(used * 1.2) + 3_000);
     const price = opt.priority ?? o.priority;
-    if (feeCapReached()) throw new Error("the daily fee cap is reached, not sent");
+    if (feeCapReached()) throw journalProblem ?? new FeeCapReached("the daily fee cap is reached, not sent");
     const all = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: price }), ComputeBudgetProgram.setComputeUnitLimit({ units }), ...ixs];
     const { blockhash: recent, lastValidBlockHeight } = await blockhash();
     const tx = await compile(all, useAlt, recent);
     tx.sign([wallet]);
     const raw = tx.serialize();
     if (raw.length > MAX_TX) throw new Error(`transaction is ${raw.length} bytes (max ${MAX_TX})`);
+    const journaled = bs58.encode(tx.signatures[0]);
+    // Recorded before it is broadcast, in one step with the cap check, at what it should cost (X1 charges for the
+    // compute requested); what it really cost replaces this once the chain has it.
+    reserveFee(x1FeeReservation(tx.message.header.numRequiredSignatures, units, price), { signature: journaled, lastValidBlockHeight });
     // A peg or limit trade journals its signature before it goes out (src/send-intent.ts).
-    signed(bs58.encode(tx.signatures[0]), lastValidBlockHeight);
-    // Counted as paid once broadcast, at the most it can cost (X1 charges for the compute requested).
-    feeCap?.add(maxTxFee(tx.message.header.numRequiredSignatures, units, price), Date.now());
-    const signature = await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 3 });
-    await confirmByPolling(conn, raw, signature, lastValidBlockHeight);
-    return signature;
+    signed(journaled, lastValidBlockHeight);
+    try {
+      const signature = await conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 3 });
+      await confirmByPolling(conn, raw, signature, lastValidBlockHeight);
+      return signature;
+    } finally {
+      void settleSoon(journaled);
+    }
   }
 
   // Pools another trader is racing for: a route through one that just failed or vanished between pricing
@@ -400,6 +465,7 @@ export function createEngine(o: EngineOptions) {
   }
 
   async function executeNow(found: { plan: Plan; ownShare: number }[], meta: (p: Plan) => Record<string, unknown>) {
+    void reconcileFees().catch((e) => o.log(`fee reconcile: ${msg(e).split("\n")[0]}`)); // in the background: trades don't wait on it
     if (feeCapReached()) return 0;
     const chosen: typeof found = [];
     const used = new Set<string>();
@@ -449,6 +515,7 @@ export function createEngine(o: EngineOptions) {
       } catch (e) {
         markContested(p);
         o.log(`${describe(p)}: didn't go through${racing ? " (at race priority)" : ""} (nothing traded; only the fee if it landed): ${msg(e).split("\n")[0]}`);
+        if (e instanceof FeeCapReached || e instanceof FeeJournalError) return; // refused before it went out: not the route's fault
         if (!feeCapReached() && failures.fail(routeKey(p), Date.now()))
           await o.alert(`${describe(p)}: ${ROUTE_FAILURE_BUDGET.failures} failed sends in a row within ${ROUTE_FAILURE_BUDGET.windowMs / 60_000} min: skipping this route for ${ROUTE_FAILURE_BUDGET.skipMs / 3_600_000} h`);
       }
