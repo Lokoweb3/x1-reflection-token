@@ -1267,4 +1267,124 @@ mod tests {
         assert_eq!(u32::from(LockerError::PoolUnderfunded), 6020);
         assert_eq!(bad, 6021);
     }
+
+    // ---------- Against accounts captured from the chain (testdata/README.md) ----------
+
+    fn hex(file: &str) -> Vec<u8> {
+        let s = match file {
+            "lock" => include_str!("../testdata/mainnet-test-lock.hex"),
+            "vault" => include_str!("../testdata/mainnet-reward-vault.hex"),
+            "schedule" => include_str!("../testdata/testnet-lock-schedule.hex"),
+            "pool" => include_str!("../testdata/mainnet-test-pool.hex"),
+            "vault0" => include_str!("../testdata/mainnet-test-vault0.hex"),
+            "vault1" => include_str!("../testdata/mainnet-test-vault1.hex"),
+            "usdc" => include_str!("../testdata/mint-usdc-x.hex"),
+            "xnm" => include_str!("../testdata/mint-xnm-testnet.hex"),
+            "wxnt" => include_str!("../testdata/mint-wxnt.hex"),
+            other => panic!("{other}"),
+        };
+        let s = s.trim();
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    fn roundtrip<T: AccountSerialize + AccountDeserialize>(data: &[u8]) -> T {
+        let v = T::try_deserialize(&mut &data[..]).unwrap();
+        let mut out = Vec::new();
+        v.try_serialize(&mut out).unwrap();
+        assert_eq!(&out[..], &data[..out.len()], "every field reads back where it was");
+        assert!(data[out.len()..].iter().all(|b| *b == 0));
+        v
+    }
+
+    /// The accounts the live program wrote read correctly with these structs, discriminators
+    /// included: an upgrade can't misread them. Fixed sizes pin the layouts.
+    #[test]
+    fn live_accounts_decode() {
+        assert_eq!(8 + Lock::INIT_SPACE, 178);
+        assert_eq!(8 + RewardVault::INIT_SPACE, 258);
+        assert_eq!(8 + LockSchedule::INIT_SPACE, 49);
+
+        let d = hex("lock");
+        assert_eq!(d.len(), 178);
+        let l: Lock = roundtrip(&d);
+        assert_eq!(l.pool.to_string(), "6FszF7uwrujG8vdmxUCyLLAoQMRCUNgoWuebhuzZ6sVn");
+        assert_eq!(l.locker.to_string(), "DWBmisEKJ8kqXJe9GvwZEsggpPG5yZPABq2DAiac5W7n");
+        assert_eq!(l.lp_mint.to_string(), "ExH45uLbit6wFUZHKH26sBS9sTL2DSGHL6vPchJoQ3sq");
+        assert_eq!(l.locked_lp, 97_467_943_447_989);
+        assert_eq!(l.fee_lp_collected, 0);
+        // Its PDAs still derive from what's read (the program's own seeds constraints).
+        let (lock_key, bump) = Pubkey::find_program_address(&[b"lock", l.nft_mint.as_ref()], &crate::ID);
+        assert_eq!(lock_key.to_string(), "fzTp5jCHmXaVKiAUwNzX2U9YR5ydiiwyL7zJYFmhTXf");
+        assert_eq!(bump, l.bump);
+        assert_eq!(Pubkey::find_program_address(&[b"vault", lock_key.as_ref()], &crate::ID).1, l.vault_bump);
+
+        let d = hex("vault");
+        assert_eq!(d.len(), 258);
+        let v: RewardVault = roundtrip(&d);
+        assert_eq!(v.nft_mint, l.nft_mint, "the reward vault of that lock's NFT");
+        assert_eq!(v.reward_mint.to_string(), "B69chRzqzDCmdB5WYB8NRu5Yv5ZA95ABiZcdzCgGm9Tq");
+        assert!(v.total_deposited >= v.total_claimed);
+        assert_eq!(Pubkey::find_program_address(&[b"reward", v.nft_mint.as_ref(), v.reward_mint.as_ref()], &crate::ID).1, v.bump);
+
+        let s: LockSchedule = roundtrip(&hex("schedule"));
+        assert!(s.unlock_at > 1_600_000_000, "a time");
+        assert_eq!(Pubkey::find_program_address(&[b"schedule", s.lock.as_ref()], &crate::ID).1, s.bump);
+    }
+
+    /// Every error the live program can return keeps its number: the new one comes last.
+    #[test]
+    fn live_error_codes_stay() {
+        assert_eq!(u32::from(LockerError::ZeroAmount), 6000);
+        assert_eq!(u32::from(LockerError::NotNftHolder), 6004);
+        assert_eq!(u32::from(LockerError::MathOverflow), 6008);
+    }
+
+    /// The reward tokens in use pass the new rule, and existing vaults never meet it again:
+    /// only init_reward_vault checks it.
+    #[test]
+    fn live_reward_mints_pass_the_rule() {
+        for m in ["usdc", "xnm", "wxnt"] {
+            assert!(reward_mint_ok(&hex(m)).is_ok(), "{m}");
+        }
+    }
+
+    fn token_acc<'a>(key: &'a Pubkey, owner: &'a Pubkey, lamports: &'a mut u64, data: &'a mut [u8]) -> AccountInfo<'a> {
+        AccountInfo::new(key, false, false, lamports, data, owner, false, 0)
+    }
+
+    /// checked_add on the fees: TEST's real pool and vaults read as before, and fees are
+    /// nowhere near where the sum could overflow. An overflowing sum is an error exactly where
+    /// the old expression aborted (release builds have overflow-checks on), and a pool can only
+    /// get there with fees above its vault's balance, which fails the next line either way.
+    #[test]
+    fn fee_sum_only_refuses_what_could_never_work() {
+        let xdex = XDEX_PROGRAM_ID;
+        let (p_key, v0_key, v1_key) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
+        let spl = anchor_spl::token::ID;
+        let (mut pool_data, mut v0, mut v1) = (hex("pool"), hex("vault0"), hex("vault1"));
+        // Mainnet's XDEX id is the one this build checks unless built with `testnet`.
+        let mut lamports = [1u64, 1u64, 1u64];
+        let [a, b, c] = &mut lamports;
+        let info = AccountInfo::new(&p_key, false, false, a, &mut pool_data, &xdex, false, 0);
+        let mut pool = PoolView::read(&info).unwrap();
+        pool.vault0 = v0_key;
+        pool.vault1 = v1_key;
+        let (a0, a1) = (token_acc(&v0_key, &spl, b, &mut v0), token_acc(&v1_key, &spl, c, &mut v1));
+        let (sqrt_k, supply) = pool.liquidity(&a0, &a1).unwrap();
+        assert!(sqrt_k > 0 && supply > 0);
+        for i in 0..2 {
+            let sum = pool.protocol_fees[i] as u128 + pool.fund_fees[i] as u128;
+            assert!(sum * 1000 < u64::MAX as u128, "TEST's fees are far from overflowing");
+        }
+        let code = |r: Result<(u128, u128)>| match r { Err(anchor_lang::error::Error::AnchorError(e)) => e.error_code_number, other => panic!("{other:?}") };
+        let (saved_p, saved_f) = (pool.protocol_fees, pool.fund_fees);
+        pool.protocol_fees[0] = u64::MAX;
+        pool.fund_fees[0] = 1;
+        assert_eq!(code(pool.liquidity(&a0, &a1)), u32::from(LockerError::MathOverflow), "an error, not an abort");
+        pool.protocol_fees = saved_p;
+        pool.fund_fees = saved_f;
+        pool.protocol_fees[1] = 0;
+        pool.fund_fees[1] = u64::MAX;
+        assert_eq!(code(pool.liquidity(&a0, &a1)), u32::from(LockerError::MathOverflow), "fees above the vault's balance fail with or without the sum check");
+    }
 }
