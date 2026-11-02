@@ -60,48 +60,77 @@ const isAlive = (pid: number) => {
 export interface LockOptions {
   /** How long to wait for another process before giving up (a refusal to send, never permission to). */
   waitMs?: number;
-  /** A lock is only ever held for one read and one write: past this age it's stale even if its pid is in use (a reused pid). */
-  staleMs?: number;
+}
+
+const readText = (file: string) => { try { return fs.readFileSync(file, "utf8").trim(); } catch { return null; } };
+/** This Linux process's state and start time, from /proc (field 3 and 22 of stat); null elsewhere, or if it has gone. */
+function procStat(pid: number) {
+  const text = readText(`/proc/${pid}/stat`);
+  if (!text) return null;
+  const rest = text.slice(text.lastIndexOf(")") + 2).split(" ");
+  return { state: rest[0], start: rest[19] };
+}
+const pidNamespace = () => { try { return fs.readlinkSync("/proc/self/ns/pid"); } catch { return null; } };
+const bootId = () => readText("/proc/sys/kernel/random/boot_id");
+
+interface LockHolder { pid?: number; host?: string; start?: string | null; boot?: string | null; pidNs?: string | null }
+/**
+ * Is this lock's holder certainly gone, so it can never commit? Only then may its lock be removed. A holder that's merely
+ * old may just be paused, and would write over whoever took its lock when it woke, so age never counts. Whatever can't be
+ * judged (another machine, another pid namespace, a lock that names nobody) is treated as alive, and a person decides.
+ */
+function holderIsGone(h: LockHolder | null) {
+  if (!h || typeof h.pid !== "number" || h.host !== os.hostname()) return false;
+  const boot = bootId();
+  if (h.boot && boot && h.boot !== boot) return true; // the machine restarted since
+  const ns = pidNamespace();
+  if (h.pidNs && ns && h.pidNs !== ns) return false; // its pid means something else here
+  if (!isAlive(h.pid)) return true;
+  const st = procStat(h.pid);
+  if (!st) return false;
+  if (st.state === "Z" || st.state === "X") return true; // died; its parent hasn't reaped it
+  return !!h.start && st.start !== h.start; // the pid has been reused
 }
 
 /**
- * Run `fn` holding `<file>.lock`, a lock shared by every process on this machine. The lock file is created exclusively
- * and names its holder. A lock whose holder is dead (or which is older than `staleMs`) is removed, one remover at a
- * time, by way of `<file>.lock.break`; that file is only held for one read and one delete, so it is left for a person
- * if a crash ever strands it. Anything else that stops the lock being taken throws FeeJournalError.
+ * Run `fn` holding `<file>.lock`, a lock shared by every process on this machine. The lock file is linked into place
+ * complete, so it always names its holder (pid, the process's start time, boot and pid namespace). Only a holder that's
+ * certainly gone loses its lock, so a holder that's only paused still holds it when it wakes and commits: everyone else
+ * waits, then refuses. Removal goes one remover at a time by way of `<file>.lock.break`, which is only held for one read
+ * and one delete, so a crash stranding it is left for a person. Everything that stops the lock being taken throws
+ * FeeJournalError, naming what's in the way.
  */
 export function withFileLock<T>(file: string, fn: (stillHeld: () => boolean) => T, opts: LockOptions = {}): T {
   const lock = `${file}.lock`, breaker = `${lock}.break`;
-  const waitMs = opts.waitMs ?? 5_000, staleMs = opts.staleMs ?? 60_000;
-  const me = JSON.stringify({ pid: process.pid, host: os.hostname(), token: crypto.randomUUID(), at: Date.now() });
-  const ownedBy = (text: string) => { try { return JSON.parse(text) as { pid?: number; host?: string; at?: number }; } catch { return null; } };
-  const stale = (text: string, mtime: number) => {
-    const h = ownedBy(text);
-    if (h && h.host === os.hostname() && typeof h.pid === "number" && !isAlive(h.pid)) return true;
-    return Date.now() - mtime > staleMs;
-  };
-  /** Remove the lock if it is still the stale one, with no other process doing the same at the same moment. */
-  const breakStale = () => {
+  const waitMs = opts.waitMs ?? 5_000;
+  const me = JSON.stringify({ pid: process.pid, host: os.hostname(), start: procStat(process.pid)?.start ?? null, boot: bootId(), pidNs: pidNamespace(), token: crypto.randomUUID() });
+  const holderOf = (text: string): LockHolder | null => { try { return JSON.parse(text) as LockHolder; } catch { return null; } };
+  /** Remove the lock if its holder is still the gone one, with no other process doing the same at the same moment. */
+  const removeIfGone = () => {
     try { fs.writeFileSync(breaker, me, { flag: "wx" }); } catch (e) { if (errno(e) === "EEXIST") return; throw e; }
     try {
-      const st = fs.statSync(lock), text = fs.readFileSync(lock, "utf8");
-      if (stale(text, st.mtimeMs)) fs.unlinkSync(lock);
+      if (holderIsGone(holderOf(fs.readFileSync(lock, "utf8")))) fs.unlinkSync(lock);
     } catch (e) { if (errno(e) !== "ENOENT") throw e; } finally { fs.rmSync(breaker, { force: true }); }
   };
   const deadline = Date.now() + waitMs;
-  try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch (e) { throw new FeeJournalError(`can't create ${path.dirname(file)}: ${(e as Error).message}`); }
-  for (;;) {
-    try { fs.writeFileSync(lock, me, { flag: "wx" }); break; } catch (e) {
-      if (errno(e) !== "EEXIST") throw new FeeJournalError(`can't take the lock ${lock}: ${(e as Error).message}`);
+  const mine = `${lock}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const fd = fs.openSync(mine, "wx", 0o600);
+    try { fs.writeFileSync(fd, me); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    for (;;) {
+      try { fs.linkSync(mine, lock); break; } catch (e) { if (errno(e) !== "EEXIST") throw e; }
+      try { if (holderIsGone(holderOf(fs.readFileSync(lock, "utf8")))) removeIfGone(); } catch (e) { if (errno(e) !== "ENOENT") throw e; }
+      if (Date.now() >= deadline) {
+        const named = readText(lock);
+        throw new FeeJournalError(`the lock ${lock} is still held after ${waitMs} ms (${named || "it names nobody"}); if that process has hung, stop it; if no arb process is running, delete the lock${fs.existsSync(breaker) ? ` and ${breaker}` : ""}`);
+      }
+      sleepSync(5 + Math.random() * 20);
     }
-    try {
-      const st = fs.statSync(lock);
-      if (stale(fs.readFileSync(lock, "utf8"), st.mtimeMs)) breakStale();
-    } catch (e) { if (errno(e) !== "ENOENT") throw new FeeJournalError(`can't check the lock ${lock}: ${(e as Error).message}`); }
-    if (Date.now() >= deadline)
-      throw new FeeJournalError(`the lock ${lock} is still held after ${waitMs} ms; if no arb process is running, delete it${fs.existsSync(breaker) ? ` and ${breaker}` : ""}`);
-    sleepSync(5 + Math.random() * 20);
-  }
+  } catch (e) {
+    if (e instanceof FeeJournalError) throw e;
+    throw new FeeJournalError(`can't take the lock ${lock}: ${(e as Error).message}`);
+  } finally { fs.rmSync(mine, { force: true }); }
   const stillHeld = () => { try { return fs.readFileSync(lock, "utf8") === me; } catch { return false; } };
   try { return fn(stillHeld); } finally { if (stillHeld()) fs.rmSync(lock, { force: true }); }
 }
@@ -136,8 +165,8 @@ export class FeeCap {
     }).filter((p) => now - p.at < DAY);
   }
   private write(stillHeld: () => boolean, paid: FeeEntry[]) {
-    // Held for milliseconds: losing it means this process was frozen for a minute, and another may have written since.
-    if (!stillHeld()) throw new FeeJournalError(`lost the lock on ${this.file} (this process was paused?); not writing, not sending`);
+    // Only a person can take a live holder's lock away: if one did, another process may have written since.
+    if (!stillHeld()) throw new FeeJournalError(`lost the lock on ${this.file} (someone deleted it?); not writing, not sending`);
     try {
       writeFileDurable(this.file, JSON.stringify({ paid: paid.map((p) => ({ ...p, fee: p.fee.toString() })) }) + "\n");
     } catch (e) { throw new FeeJournalError(`can't write the fee journal ${this.file}: ${(e as Error).message}`); }
@@ -156,6 +185,8 @@ export class FeeCap {
    */
   reserve(fee: bigint, now: number, tx: { signature?: string; lastValidBlockHeight?: number } = {}): boolean {
     return this.update(now, (paid, stillHeld) => {
+      // The same signature is one transaction, charged once however often it's sent: already counted.
+      if (tx.signature && paid.some((p) => p.signature === tx.signature)) return true;
       if (this.cap > 0n && paid.reduce((t, p) => t + p.fee, 0n) + fee > this.cap) return false;
       this.write(stillHeld, [...paid, { at: now, fee, ...tx }]);
       return true;
@@ -168,13 +199,34 @@ export class FeeCap {
       if (!e) return false;
       e.fee = fee;
       e.settled = true;
-      this.write(stillHeld, paid);
+      this.write(stillHeld, paid.filter((p) => p === e || p.signature !== signature)); // an older journal may hold it twice
       return true;
     });
   }
   /** Reservations still at their estimate, oldest first. */
   unsettled(now: number) {
     return this.read(now).filter((p) => p.signature && !p.settled).map((p) => ({ signature: p.signature!, lastValidBlockHeight: p.lastValidBlockHeight, at: p.at }));
+  }
+}
+
+/**
+ * Which unsettled reservations to look at next, so a few that can't be settled don't hide the rest: those tried least
+ * recently come first, and one that didn't settle backs off (1, 2, 4... minutes, up to an hour) unless the caller is in
+ * a hurry. Kept per process, in memory: a restart just looks at everything again.
+ */
+export class RetryQueue {
+  private state = new Map<string, { tries: number; nextAt: number; lastAt: number }>();
+  pick<T extends { signature: string; at: number }>(items: T[], now: number, max: number, hurry = false): T[] {
+    const present = new Set(items.map((i) => i.signature));
+    for (const k of this.state.keys()) if (!present.has(k)) this.state.delete(k);
+    const lastAt = (i: T) => this.state.get(i.signature)?.lastAt ?? 0;
+    return items.filter((i) => hurry || (this.state.get(i.signature)?.nextAt ?? 0) <= now)
+      .sort((a, b) => lastAt(a) - lastAt(b) || a.at - b.at).slice(0, max);
+  }
+  /** It didn't settle: try the others first. */
+  failed(signature: string, now: number) {
+    const tries = (this.state.get(signature)?.tries ?? 0) + 1;
+    this.state.set(signature, { tries, lastAt: now, nextAt: now + Math.min(60_000 * 2 ** (tries - 1), 3_600_000) });
   }
 }
 

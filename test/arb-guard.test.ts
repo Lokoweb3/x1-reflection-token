@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BURN_MAX_RAW, FeeCap, FeeJournalError, RouteFailures, dustVerdict, withFileLock, x1FeeReservation, x1MaxTxFee } from "../src/arb-guard.js";
+import { BURN_MAX_RAW, FeeCap, FeeJournalError, RetryQueue, RouteFailures, dustVerdict, withFileLock, x1FeeReservation, x1MaxTxFee } from "../src/arb-guard.js";
 
 const MIN = 60_000;
 
@@ -117,14 +117,91 @@ test("a lock held by a live process is waited for, then refused: never skipped",
   } finally { c.kill("SIGKILL"); }
 });
 
-test("an old lock whose pid is in use (a reused pid) goes stale by age", () => {
+const holderOf = (o: object) => JSON.stringify({ pid: process.pid, host: os.hostname(), ...o });
+const realStart = () => fs.readFileSync(`/proc/${process.pid}/stat`, "utf8").split(") ")[1].split(" ")[19];
+
+test("age alone never takes a live holder's lock: a paused holder still holds it when it wakes", () => {
   const file = feesFile();
-  fs.writeFileSync(`${file}.lock`, JSON.stringify({ pid: process.pid, host: os.hostname(), at: 0 }));
-  const cap = new FeeCap(1_000n, file, { waitMs: 200 });
-  assert.throws(() => cap.reserve(1n, 0), FeeJournalError, "fresh: a live pid's lock is respected");
-  const old = new Date(Date.now() - 120_000);
-  fs.utimesSync(`${file}.lock`, old, old);
-  assert.equal(cap.reserve(1n, 0), true);
+  fs.writeFileSync(`${file}.lock`, holderOf({ start: realStart() }));
+  const year = new Date(Date.now() - 365 * 86_400_000);
+  fs.utimesSync(`${file}.lock`, year, year);
+  const cap = new FeeCap(1_000n, file, { waitMs: 100 });
+  assert.throws(() => cap.reserve(1n, 0), (e: Error) => e instanceof FeeJournalError && e.message.includes(String(process.pid)), "the error names the holder");
+  assert.ok(fs.existsSync(`${file}.lock`));
+});
+
+test("a holder that's certainly gone loses its lock: a reused pid, or a restarted machine", () => {
+  const reused = feesFile();
+  fs.writeFileSync(`${reused}.lock`, holderOf({ start: "1" }));
+  assert.equal(new FeeCap(1_000n, reused, { waitMs: 200 }).reserve(1n, 0), true);
+  const rebooted = feesFile();
+  fs.writeFileSync(`${rebooted}.lock`, holderOf({ start: realStart(), boot: "some-earlier-boot" }));
+  assert.equal(new FeeCap(1_000n, rebooted, { waitMs: 200 }).reserve(1n, 0), true);
+});
+
+test("a lock that can't be judged is left for a person: another machine, another pid namespace, or a lock naming nobody", () => {
+  for (const text of [JSON.stringify({ pid: 2 ** 22 + 1, host: "another-machine" }), holderOf({ pid: 2 ** 22 + 1, pidNs: "pid:[1]" }), "", "{ torn"]) {
+    const file = feesFile();
+    fs.writeFileSync(`${file}.lock`, text);
+    assert.throws(() => new FeeCap(1_000n, file, { waitMs: 50 }).reserve(1n, 0), FeeJournalError, text);
+  }
+});
+
+test("a holder paused between its cap check and its commit: one reservation, nothing overwritten", async () => {
+  const file = feesFile(), PAUSE = 2_500;
+  let out = "";
+  const a = spawn(process.execPath, workerArgs("pause-before-commit", file, 100, 60, PAUSE), { stdio: ["ignore", "pipe", "inherit"] });
+  a.stdout.on("data", (d) => { out += d; });
+  const done = new Promise((r) => a.on("exit", r));
+  for (let i = 0; i < 400 && !fs.existsSync(`${file}.holding`); i++) await new Promise((r) => setTimeout(r, 25));
+  assert.ok(fs.existsSync(`${file}.holding`), "the worker has checked the cap and paused before its rename");
+  // A short wait while it's paused: refused, not stolen.
+  assert.throws(() => new FeeCap(100n, file, { waitMs: 100 }).reserve(60n, Date.now()), FeeJournalError);
+  // A long one, outlasting the pause: it sees the committed 60, and 60 more won't fit under 100.
+  const second = new FeeCap(100n, file, { waitMs: PAUSE + 8_000 }).reserve(60n, Date.now());
+  await done;
+  assert.equal(out.trim(), "true", "the paused holder's reservation stands");
+  assert.equal(second, false);
+  assert.equal(new FeeCap(100n, file).spent(Date.now()), 60n);
+});
+
+test("the same signature is one reservation, also across handles, and doesn't re-check the cap", () => {
+  const file = feesFile();
+  const a = new FeeCap(100n, file), b = new FeeCap(100n, file);
+  assert.equal(a.reserve(60n, 0, { signature: "s" }), true);
+  assert.equal(b.reserve(60n, 1, { signature: "s" }), true, "already counted");
+  assert.equal(a.spent(2), 60n);
+  assert.equal(a.reserve(60n, 3, { signature: "t" }), false, "another transaction doesn't fit");
+  assert.equal(a.reserve(10n, 4), true);
+  assert.equal(a.reserve(10n, 5), true, "unsigned entries aren't the same transaction");
+  assert.equal(a.spent(6), 80n);
+});
+
+test("settling consolidates a journal that already holds a signature twice", () => {
+  const file = feesFile();
+  fs.writeFileSync(file, JSON.stringify({ paid: [{ at: 1, fee: "60", signature: "s" }, { at: 2, fee: "50", signature: "other" }, { at: 3, fee: "60", signature: "s" }] }));
+  const cap = new FeeCap(1_000n, file);
+  assert.equal(cap.settle("s", 40n, 4), true);
+  assert.equal(cap.spent(5), 90n);
+  assert.deepEqual(cap.unsettled(5).map((u) => u.signature), ["other"]);
+});
+
+test("the retry queue gets to everything: what didn't settle backs off and goes to the back", () => {
+  const q = new RetryQueue();
+  const items = ["a", "b", "c", "d"].map((signature, i) => ({ signature, at: i }));
+  const pick = (now: number, hurry = false) => q.pick(items, now, 2, hurry).map((i) => i.signature);
+  assert.deepEqual(pick(0), ["a", "b"], "oldest first");
+  q.failed("a", 0); q.failed("b", 0);
+  assert.deepEqual(pick(1), ["c", "d"], "the unsettled two don't hide the rest");
+  q.failed("c", 1); q.failed("d", 1);
+  assert.deepEqual(pick(2), [], "all backing off");
+  assert.deepEqual(pick(2, true), ["a", "b"], "in a hurry: least recently tried, regardless");
+  assert.deepEqual(pick(60_000), ["a", "b"], "after a minute");
+  q.failed("a", 60_000);
+  assert.deepEqual(q.pick(items, 60_001 + 60_000, 4).map((i) => i.signature).includes("a"), false, "twice failed: two minutes");
+  assert.deepEqual(q.pick(items, 60_000 + 120_000, 4).map((i) => i.signature).includes("a"), true);
+  for (let i = 0; i < 20; i++) q.failed("b", 0);
+  assert.equal(q.pick(items, 3_600_000, 4).some((i) => i.signature === "b"), true, "never more than an hour");
 });
 
 test("a stranded lock-break file stops sending and the error names what to delete", () => {
