@@ -11,8 +11,7 @@ import { Connection, PublicKey, type TransactionInstruction } from "@solana/web3
 import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
 import { sizeFor } from "./peg.js";
-import { writeFileAtomic } from "./atomic-write.js";
-import { settleIntent, unresolvedHelp, unresolvedOverdue, whenSigned, type Intent } from "./send-intent.js";
+import { settleIntent, unresolvedHelp, writeIntentState, unresolvedOverdue, whenSigned, type Intent } from "./send-intent.js";
 
 export interface LimitBuySpec {
   /** The token to buy, its USDC.X pool, and the name the log uses. */
@@ -78,8 +77,7 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
   function addSpent(n: bigint) {
     const all = read();
     all[id] = { spent: (spent() + n).toString() };
-    fs.mkdirSync(o.stateDir, { recursive: true });
-    writeFileAtomic(file, JSON.stringify(all, null, 2) + "\n");
+    writeIntentState(o.stateDir, file, JSON.stringify(all, null, 2) + "\n");
   }
   // A buy is journaled (with its signature, once signed) before it is sent, and settled by the next check if
   // this one didn't see it through (a crash, or a confirmation that timed out): src/send-intent.ts.
@@ -88,8 +86,7 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
   function setPending(p: Pending | undefined) {
     const all = read() as Record<string, { spent: string; pending?: Pending }>;
     all[id] = { spent: spent().toString(), ...(p ? { pending: p } : {}) };
-    fs.mkdirSync(o.stateDir, { recursive: true });
-    writeFileAtomic(file, JSON.stringify(all, null, 2) + "\n");
+    writeIntentState(o.stateDir, file, JSON.stringify(all, null, 2) + "\n");
   }
   function landed(p: Pending, signature: string) {
     addSpent(BigInt(p.amountIn));
@@ -104,7 +101,7 @@ export function createLimitBuy(spec: LimitBuySpec, o: LimitOptions) {
     if (v === "pending") { note(`an earlier buy ${p.signature} is still in flight: waiting for it`); return true; }
     if (v === "unresolved") {
       note(`an earlier buy ${p.signature} is unresolved: waiting for proof of what became of it`);
-      if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`limit ${spec.symbol}: ${unresolvedHelp(p.signature!)}`); }
+      if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`limit ${spec.symbol}: ${unresolvedHelp(p.signature!, o.owner)}`); }
       return true;
     }
     if (v === "landed") { landed(p, p.signature!); await o.alert(`limit ${spec.symbol}: an earlier buy landed after all (${p.amountIn} raw USDC.X): ${p.signature}`); }

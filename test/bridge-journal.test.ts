@@ -13,7 +13,7 @@ function chain(over: Record<string, unknown> = {}) {
   return {
     getSignatureStatuses: async () => ({ context: { slot: 510 }, value: [null] }),
     getSlot: async () => 500,
-    getBlockHeight: async () => 200,
+    getBlock: async () => ({ blockHeight: 200 }),
     getSignaturesForAddress: async () => covering,
     getAccountInfoAndContext: async () => ({ context: { slot: 505 }, value: null }),
     ...over,
@@ -35,7 +35,7 @@ test("moved funds on a load-balanced RPC stay pending: each stale answer alone h
     ["outgoing account exists", chain({ getAccountInfoAndContext: async () => ({ context: { slot: 505 }, value: { lamports: 1 } }) })],
     ["history from a node behind", chain({ getSignaturesForAddress: behind })],
     ["history that doesn't reach the send", chain({ getSignaturesForAddress: async () => [] })],
-    ["not expired on finalized state, though a newer node says so", chain({ getBlockHeight: async () => 100 })],
+    ["anchor block still within the blockhash, though a newer node says otherwise", chain({ getBlock: async () => ({ blockHeight: 100 }), getBlockHeight: async () => 200 })],
     ["status from a node behind", chain({ getSignatureStatuses: async () => ({ context: { slot: 400 }, value: [null] }) })],
   ];
   for (const [name, conn] of stale) assert.equal((await bridgeSendFate(conn, e, wallet)).kind, "wait", name);

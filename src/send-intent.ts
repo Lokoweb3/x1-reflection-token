@@ -8,13 +8,14 @@
  * hook can add the signature to the journaled intent. A later check settles a leftover intent with `settleIntent`.
  *
  * An intent is forgotten only on proof (src/send-fate.ts). Without proof it stays and blocks new trades ("unresolved"):
- * the caller alerts with `unresolvedHelp`, and `scripts/resolve-intent.ts` records a person's decision.
+ * the caller alerts with `unresolvedHelp`, and `scripts/resolve-intent.ts` records a person's decision. The chain's
+ * word beats a decision, and a decision counts only once the intent's blockhash has expired.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import type { Connection, PublicKey } from "@solana/web3.js";
-import { writeFileDurable } from "./factory/durable.js";
+import { mkdirDurable, writeFileDurable } from "./factory/durable.js";
 import { fateOfSend, type SendFate } from "./send-fate.js";
 
 type Hook = (signature: string, lastValidBlockHeight: number) => void;
@@ -55,14 +56,36 @@ export function recordResolution(stateDir: string, signature: string, verdict: "
 
 export async function settleIntent(conn: Connection, i: Intent, ctx: { wallet: PublicKey; stateDir: string }): Promise<IntentVerdict> {
   if (!i.signature || i.lastValidBlockHeight === undefined) return intentVerdict(i, null);
-  const decided = readResolutions(ctx.stateDir)[i.signature];
-  if (decided === "landed" || decided === "dropped") return decided;
   const f = await fateOfSend(conn, { signature: i.signature, lastValidBlockHeight: i.lastValidBlockHeight, wallet: ctx.wallet, sentAt: i.at ? Date.parse(i.at) : NaN });
+  if (f.fate === "unknown" && f.expired) {
+    const decided = readResolutions(ctx.stateDir)[i.signature];
+    if (decided === "landed" || decided === "dropped") return decided;
+  }
   return intentVerdict(i, f.fate);
+}
+
+/** The peg or limit intent journaled with `signature`, if any (the state files scripts/resolve-intent.ts must find it in). */
+export function findPendingIntent(stateDir: string, signature: string): Intent | undefined {
+  const pendingIn = (j: any): Intent[] => (j?.pending ? [j.pending] : []);
+  const read = (f: string) => { try { return JSON.parse(fs.readFileSync(path.join(stateDir, f), "utf8")); } catch { return null; } };
+  let names: string[];
+  try { names = fs.readdirSync(stateDir); } catch { return undefined; }
+  const peg = names.filter((f) => /^peg-.*\.json$/.test(f)).flatMap((f) => pendingIn(read(f)));
+  const limit = Object.values(read("limit-orders.json") ?? {}).flatMap(pendingIn);
+  return [...peg, ...limit].find((i) => i.signature === signature);
+}
+
+/**
+ * Write a peg or limit state file so it survives a power cut as well as a crash. It holds the intent that says a trade
+ * may have gone out, so it must be on disk before the broadcast (src/factory/durable.ts).
+ */
+export function writeIntentState(stateDir: string, file: string, text: string) {
+  mkdirDurable(stateDir, stateDir);
+  writeFileDurable(file, text);
 }
 
 /** How long an unresolved intent stays quiet: most clear by themselves within a check or two. */
 export const UNRESOLVED_ALERT_MS = 15 * 60_000;
 export const unresolvedOverdue = (i: Intent, now: number) => !i.at || !(now - Date.parse(i.at) < UNRESOLVED_ALERT_MS);
-export const unresolvedHelp = (signature: string) =>
-  `can't prove whether ${signature} landed, so no new trade until that's settled. Check it (https://explorer.x1.xyz/tx/${signature}), then run: npx tsx scripts/resolve-intent.ts ${signature} landed|dropped`;
+export const unresolvedHelp = (signature: string, wallet: PublicKey) =>
+  `can't prove whether ${signature} landed, so no new trade until that's settled. Check it (https://explorer.x1.xyz/tx/${signature}), then run: npx tsx scripts/resolve-intent.ts ${signature} landed|dropped --wallet ${wallet.toBase58()}`;

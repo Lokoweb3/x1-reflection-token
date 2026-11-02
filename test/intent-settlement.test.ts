@@ -11,7 +11,7 @@ import { createLimitBuy, limitId } from "../src/limit.js";
 import { createPeg, type PegSpec } from "../src/peg.js";
 import { recordResolution } from "../src/send-intent.js";
 
-const noHistory = { getSignatureStatuses: async () => ({ context: { slot: 510 }, value: [null] }), getSlot: async () => 500, getBlockHeight: async () => 200, getSignaturesForAddress: async () => [] } as unknown as Connection;
+const noHistory = { getSignatureStatuses: async () => ({ context: { slot: 510 }, value: [null] }), getSlot: async () => 500, getBlock: async () => ({ blockHeight: 200 }), getSignaturesForAddress: async () => [] } as unknown as Connection;
 const covered = { ...noHistory, getSignaturesForAddress: async () => [{ signature: "OLD", blockTime: 1_000, err: null }] } as unknown as Connection;
 const hourAgo = () => new Date(Date.now() - 3_600_000).toISOString();
 const nyDay = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
@@ -67,6 +67,41 @@ function pegCase(conn: Connection) {
   return { stateDir, alerts, sends, keeper, files, seed };
 }
 const PEG_FILE = "peg-t.json";
+
+/** The writes `work` makes: each state file's contents must be flushed before it gets its final name. */
+async function flushedBeforeRename(work: () => Promise<unknown>) {
+  const events: string[] = [];
+  const { fsyncSync, renameSync } = fs;
+  fs.fsyncSync = (fd) => { events.push("fsync"); return fsyncSync(fd); };
+  fs.renameSync = (a, b) => { events.push(`rename ${path.basename(String(b))}`); return renameSync(a, b); };
+  try { await work(); } finally { fs.fsyncSync = fsyncSync; fs.renameSync = renameSync; }
+  return events;
+}
+const assertDurable = (events: string[], file: string) => {
+  const at = events.indexOf(`rename ${file}`);
+  assert.ok(at > 0, `${file} was written: ${events.join(", ")}`);
+  assert.equal(events[at - 1], "fsync", "its contents flushed first");
+  assert.equal(events[at + 1], "fsync", "its name flushed after");
+};
+
+// setPending is also what journals the signature before a broadcast: the dropped case reaches that same writer.
+test("limit: the intent and the budget are written durably", async () => {
+  const dropped = limitCase(noHistory);
+  recordResolution(dropped.stateDir, "SIG", "dropped");
+  assertDurable(await flushedBeforeRename(() => dropped.order.check().catch(() => undefined)), "limit-orders.json");
+  const landed = limitCase(noHistory);
+  recordResolution(landed.stateDir, "SIG", "landed");
+  assertDurable(await flushedBeforeRename(() => landed.order.check().catch(() => undefined)), "limit-orders.json");
+});
+
+test("peg: the intent and the day's count are written durably", async () => {
+  for (const verdict of ["dropped", "landed"] as const) {
+    const c = pegCase(noHistory);
+    c.seed(PEG_FILE);
+    recordResolution(c.stateDir, "SIG", verdict);
+    assertDurable(await flushedBeforeRename(() => c.keeper.check().catch(() => undefined)), PEG_FILE);
+  }
+});
 
 test("peg: unprovable trade blocks new trades and stays journaled, alerts once with the way out, and a person's decision counts it", async () => {
   const c = pegCase(noHistory);

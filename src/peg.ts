@@ -13,8 +13,7 @@ import path from "node:path";
 import { Connection, PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import { calculateEpochFee, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
 import { cpmmOut, snapshot, swapIx, type Snapshot } from "./xdex.js";
-import { writeFileAtomic } from "./atomic-write.js";
-import { settleIntent, unresolvedHelp, unresolvedOverdue, whenSigned, type Intent } from "./send-intent.js";
+import { settleIntent, unresolvedHelp, writeIntentState, unresolvedOverdue, whenSigned, type Intent } from "./send-intent.js";
 
 export interface PegSpec {
   /** The bridged token on X1 (GOOGL.X) and the ticker it tracks. */
@@ -134,16 +133,14 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
   }
   /** Count a trade that landed; the same write clears its journaled intent, so a restart can't count it twice. */
   function addUsed(n: number) {
-    fs.mkdirSync(o.stateDir, { recursive: true });
-    writeFileAtomic(file, JSON.stringify({ day: nyDay(), used: used() + n }) + "\n");
+    writeIntentState(o.stateDir, file, JSON.stringify({ day: nyDay(), used: used() + n }) + "\n");
   }
   // A trade is journaled (with its signature, once signed) before it is sent, and settled by the next check if
   // this one didn't see it through (a crash, or a confirmation that timed out): src/send-intent.ts.
   type Pending = Intent & { at: string; day: string; side: "sell" | "buy"; amountIn: string; minOut: string; tokens: number; poolPrice: number; refPrice: number };
   const pendingOf = (): Pending | undefined => { try { return JSON.parse(fs.readFileSync(file, "utf8")).pending; } catch { return undefined; } };
   function setPending(p: Pending | undefined) {
-    fs.mkdirSync(o.stateDir, { recursive: true });
-    writeFileAtomic(file, JSON.stringify({ day: nyDay(), used: used(), ...(p ? { pending: p } : {}) }) + "\n");
+    writeIntentState(o.stateDir, file, JSON.stringify({ day: nyDay(), used: used(), ...(p ? { pending: p } : {}) }) + "\n");
   }
   function landed(p: Pending, signature: string) {
     if (p.day === nyDay()) addUsed(p.tokens); else setPending(undefined); // an earlier day's trade no longer counts against today
@@ -159,7 +156,7 @@ export function createPeg(spec: PegSpec, o: PegOptions) {
     if (v === "pending") { problem(`an earlier ${p.side} ${p.signature} is still in flight: waiting for it`); return true; }
     if (v === "unresolved") {
       problem(`an earlier ${p.side} ${p.signature} is unresolved: waiting for proof of what became of it`);
-      if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`peg ${spec.ticker}: ${unresolvedHelp(p.signature!)}`); }
+      if (p.signature !== alertedIntent && unresolvedOverdue(p, Date.now())) { alertedIntent = p.signature; await o.alert(`peg ${spec.ticker}: ${unresolvedHelp(p.signature!, o.owner)}`); }
       return true;
     }
     if (v === "landed") { landed(p, p.signature!); await o.alert(`peg ${spec.ticker}: an earlier ${p.side} of ${p.tokens.toFixed(6)} landed after all: ${p.signature}`); }

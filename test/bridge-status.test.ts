@@ -20,7 +20,7 @@ function chain(over: Record<string, () => unknown> = {}): RpcHandler {
   const base: Record<string, () => unknown> = {
     getSignatureStatuses: () => ctx(510, [null]),
     getSlot: () => 500,
-    getBlockHeight: () => 200,
+    getBlock: () => ({ blockhash: "x", previousBlockhash: "y", parentSlot: 499, blockTime: sentAtSec, blockHeight: 200 }),
     getSignaturesForAddress: () => [{ signature: bs58.encode(Buffer.alloc(64, 4)), slot: 1, blockTime: sentAtSec - 3600, err: null, memo: null, confirmationStatus: "finalized" }],
     getAccountInfo: () => ctx(505, null),
   };

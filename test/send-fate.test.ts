@@ -10,12 +10,12 @@ const sent = { signature: "SIG", lastValidBlockHeight: 100, wallet, sentAt: NOW 
 const older = { signature: "OLD", blockTime: (NOW - CLOCK_SKEW_MS - 1_000) / 1000, err: null };
 const newer = { signature: "NEW", blockTime: (NOW + 60_000) / 1000, err: null };
 
-/** A node at finalized slot 500, height 200, with the wallet's history reaching back past the send and no sign of it. */
+/** A node at finalized slot 500, whose block has height 200, with the wallet's history reaching back past the send and no sign of it. */
 function chain(over: Record<string, unknown> = {}) {
   return {
     getSignatureStatuses: async () => ({ context: { slot: 510 }, value: [null] }),
     getSlot: async () => 500,
-    getBlockHeight: async () => 200,
+    getBlock: async () => ({ blockHeight: 200 }),
     getSignaturesForAddress: async () => [newer, older],
     ...over,
   } as unknown as Connection;
@@ -35,23 +35,42 @@ test("a status decides it, without any proof needed", async () => {
 });
 
 test("not expired on finalized state: can still land", async () => {
-  assert.equal((await fateOfSend(chain({ getBlockHeight: async () => 100 }), sent)).fate, "in-flight");
+  assert.equal((await fateOfSend(chain({ getBlock: async () => ({ blockHeight: 100 }) }), sent)).fate, "in-flight");
+});
+
+test("a newer node's height doesn't prove expiry at the anchor block: it may land after that block, where a laggard can't see it", async () => {
+  // Finalized block 500 is still within the blockhash. A newer node says the height is past it, and everything from a node
+  // at exactly 500 shows nothing, because the transaction landed at 600. That must not read as never landed.
+  const conn = chain({ getBlock: async () => ({ blockHeight: 95 }), getBlockHeight: async () => 200 });
+  assert.equal((await fateOfSend(conn, sent)).fate, "in-flight");
+});
+
+test("the anchor is the block at the finalized slot, at finalized commitment; no block or no height there proves nothing", async () => {
+  const asked: unknown[] = [];
+  await fateOfSend(chain({ getBlock: async (slot: number, c: { commitment: string; transactionDetails: string }) => { asked.push([slot, c.commitment, c.transactionDetails]); return { blockHeight: 200 }; } }), sent);
+  assert.deepEqual(asked, [[500, "finalized", "none"]]);
+  for (const [name, getBlock] of [["no block", async () => null], ["no height", async () => ({ blockHeight: null })], ["not available", behind]] as const)
+    assert.deepEqual(await fateOfSend(chain({ getBlock }), sent).then((f) => [f.fate, (f as { expired?: boolean }).expired]), ["unknown", false], name);
+});
+
+test("unknown says whether the blockhash was shown expired", async () => {
+  assert.equal(((await fateOfSend(chain({ getSignaturesForAddress: async () => [] }), sent)) as { expired: boolean }).expired, true);
+  assert.equal(((await fateOfSend(chain({ getSlot: behind }), sent)) as { expired: boolean }).expired, false);
 });
 
 test("the reads require a context at least as recent as the expiry", async () => {
   const seen: unknown[] = [];
   await fateOfSend(chain({
-    getBlockHeight: async (c: { commitment: string; minContextSlot: number }) => { seen.push(c); return 200; },
     getSignaturesForAddress: async (_: unknown, c: { minContextSlot: number }, commitment: string) => { seen.push([c.minContextSlot, commitment]); return [newer, older]; },
   }), sent);
-  assert.deepEqual(seen, [{ commitment: "finalized", minContextSlot: 500 }, [500, "finalized"]]);
+  assert.deepEqual(seen, [[500, "finalized"]]);
 });
 
 test("a landed transaction, a lagging or history-limited node: never proof that it didn't", async () => {
   const cases: [string, Connection][] = [
     ["status from a node behind the expiry", chain({ getSignatureStatuses: async () => ({ context: { slot: 499 }, value: [null] }) })],
     ["history from a node behind the expiry", chain({ getSignaturesForAddress: behind })],
-    ["height from a node behind", chain({ getBlockHeight: behind })],
+    ["anchor block from a node behind", chain({ getBlock: behind })],
     ["history empty", chain({ getSignaturesForAddress: async () => [] })],
     ["history stops after the send", chain({ getSignaturesForAddress: async () => [newer] })],
     ["history reaches only just before the send: the clock might be off", chain({ getSignaturesForAddress: async () => [{ ...older, blockTime: (NOW - 1_000) / 1000 }] })],
