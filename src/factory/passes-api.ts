@@ -8,7 +8,7 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getTransferFeeConfig, unpackMint } from "@solana/spl-token";
 import { fromBaseUnits, loadKeypair, toBaseUnits, type Config } from "../config.js";
-import { LISTED_VAULT, PASS_MIN_INTERVAL_SECS, PASS_MIN_POT_XNT, registeredLaunches } from "./launch.js";
+import { LISTED_VAULT, PASS_MIN_INTERVAL_SECS, PASS_MIN_POT_XNT, readLaunch, registeredLaunches, vaultBinding } from "./launch.js";
 import { decodeVault, poolAccountsFrom, vaultPda } from "../taxvault.js";
 import { decodePool } from "../xdex.js";
 import { unsignedTx } from "../web/wallet-tx.js";
@@ -169,6 +169,8 @@ export function passesApi(conn: Connection, cfg: Config, program: PublicKey, opt
     const caller = new PublicKey(String(body.wallet));
     if (action === "round-tx") {
       if (!a.book.count) throw new Error("Nobody has registered a pass yet.");
+      const record = readLaunch(mint.toBase58());
+      if (record && vaultBinding(record, a.v).poolWrong) throw new Error("This vault's pool isn't the launch's, so this site doesn't run its rounds.");
       const poolInfo = await conn.getAccountInfo(a.v.pool, "confirmed");
       const pool = poolAccountsFrom(xdex, decodePool(a.v.pool, poolInfo, xdex), mint);
       const txs = [];

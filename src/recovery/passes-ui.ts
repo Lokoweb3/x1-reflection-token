@@ -14,6 +14,7 @@ import { fromBaseUnits, toBaseUnits } from "../config.js";
 import { errorOf, poolAccountsFrom, type Vault } from "../taxvault.js";
 import { decodePool } from "../xdex.js";
 import { confirmByPolling } from "../tx.js";
+import { vaultOnLaunchPool } from "../vault-crank.js";
 import {
   MAX_BATCH_SLOTS, MAX_PASSES, PAY_BATCH_LUT, SNAPSHOT_BATCH_LUT, closeRoundIx, decodePassBook, holderTokenAccount, passBookPda, passModeOn,
   indexPlan, passPot, passTablesFor, passUnits, payBatches, payPassesIx, registerMinimum, registerPassIx, snapshotBatchIx, snapshotBatches, sponsorHoldersIx,
@@ -21,7 +22,7 @@ import {
 } from "../passes.js";
 
 interface Ctx {
-  conn: Connection; program: PublicKey; explorer: string; mint: PublicKey; v: Vault; xdex: PublicKey; decimals: number;
+  conn: Connection; program: PublicKey; explorer: string; mint: PublicKey; v: Vault; xdex: PublicKey; network: "mainnet" | "testnet"; decimals: number;
   wallet: () => string | null;
   signAll: (list: Uint8Array[]) => Promise<Uint8Array[]>;
   log: (text: string, kind?: "" | "good" | "bad", href?: string) => void;
@@ -146,6 +147,7 @@ export async function passesPanel(c: Ctx): Promise<HTMLElement | null> {
   row.append(btn(roundText, () => void act("Run a round", async () => {
     const fresh = (await readBook(c.conn, c.program, c.v.address))!;
     const tables = await tablesFor(fresh);
+    if (!vaultOnLaunchPool(c.xdex, c.network, c.v)) throw new Error("this vault's pool isn't the one a launch makes, so rounds aren't run from here");
     const pool = poolAccountsFrom(c.xdex, decodePool(c.v.pool, await c.conn.getAccountInfo(c.v.pool, "confirmed"), c.xdex), c.mint);
     const caller = new PublicKey(me!);
     const steps = snapshotBatches(fresh, tables.length ? SNAPSHOT_BATCH_LUT : undefined).map((b) => ({

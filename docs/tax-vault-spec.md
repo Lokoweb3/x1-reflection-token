@@ -285,7 +285,10 @@ this order).
   auth)` + `init_vault` in one transaction signed by that key (same as a migration).
   publisher = the crank key, guardian = the creator. Those tokens are skipped by the
   hot-wallet distributor. The mint must have no maximum transfer fee (`u64::MAX`, as the
-  factory does) and no freeze authority.
+  factory does) and no freeze authority. The program accepts any pool of the mint and any
+  lock naming it, so the site holds the vault to the launch: registration requires the launch's
+  pool and that the creator NFT's own lock holds the launch's LP, and the crank compares
+  `pool` and `creator_nft` with the record each pass before selling (`vaultBinding`).
 - Migration of an existing token: its distributor key signs Token-2022
   `SetAuthority(WithdrawWithheldTokens → auth)` and `init_vault` in one transaction, after
   a last normal payout cycle.

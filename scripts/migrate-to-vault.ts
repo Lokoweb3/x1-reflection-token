@@ -72,8 +72,11 @@ if (!fee.transferFeeConfigAuthority.equals(PublicKey.default)) refuse("the tax c
 
 // The pool must be TOKEN/wXNT (snapshot checks the pair).
 const pool = new PublicKey(tokenCfg.xdex.pool || r.pool);
+// The vault fixes both for good, and the crank stops selling for a vault off its record.
+if (pool.toBase58() !== r.pool) refuse(`the config's pool ${pool.toBase58()} isn't the launch record's ${r.pool}`);
 const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), pool, mint).catch((e) => refuse(`pool ${pool.toBase58()}: ${e instanceof Error ? e.message : e}`));
 const lockNft = tokenCfg.creatorReward?.nftMint ?? r.lockNft ?? refuse("no lock NFT recorded for the creator reward");
+if (r.lockNft && r.lockNft !== lockNft) refuse(`the config's lock NFT ${lockNft} isn't the launch record's ${r.lockNft}`);
 
 const burnBps = tokenCfg.distribution.burnBps ?? 0, lpBps = tokenCfg.distribution.autoLpBps ?? 0;
 if (!validSplit(burnBps, lpBps)) refuse(`the vault can't take this split (burn ${burnBps / 100}%, liquidity ${lpBps / 100}%)`);

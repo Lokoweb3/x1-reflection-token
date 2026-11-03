@@ -249,7 +249,22 @@ from there. (A site without the Tax Vault gives each token its own distributor w
 - **Registration checks the pool and the lock:** the pool's reserves must hold at least 98%
   of (1 − tax) × supply × pool amount (trading only grows it, so a pool seeded with a sliver
   of the supply or emptied before the lock falls short), and the creator's locks must hold
-  at least 99% of the pool's starting LP. A launch that fails isn't listed.
+  at least 99% of the pool's starting LP. On a vault launch the vault must also sit on the
+  launch's pool, and its creator NFT must be the creator's own lock of that pool holding that
+  LP by itself: the program takes any pool of the mint and any lock naming it, so a second
+  thin pool or a 1-raw-LP lock is refused here. A launch that fails isn't listed.
+- **The crank holds a listed vault to its record** on every pass: a vault on another pool
+  than the record's gets no collect, sell, add liquidity or holder round from the site (nor
+  those steps on "Run the vault now"), while tax already sold and allocated passes still
+  pay out; a creator NFT
+  other than the record's stops only the creator reward. The panel, the page and the log
+  (`VAULT NOT ON ITS LAUNCH`) say so. A record with no pool or lock NFT isn't compared on that
+  field. `scripts/check-vault-bindings.ts` lists them, read-only: exit 0 means every vault
+  token matched on both fields, 1 that one differs, 2 that one couldn't be verified (a field not
+  in its record, no vault, an unreadable account or record, nothing registered). With `--mint
+  <mint>` it answers YES or NO for one token, and only YES exits 0.
+- **Starting the vault asks the same of the lock first:** the site names the creator's lock
+  holding the most LP and refuses, before anything is signed, unless it passes that check alone.
 - A launch record without its own `config.json` falls back to the site's settings, and a
   token that still can't be read is left out of `/tokens` instead of breaking the list.
 - The tax starts with the first transfer, so seeding the pool pays it once. That
@@ -354,7 +369,8 @@ curve **graduates**: it creates the XDEX pool with that XNT and the last 20% of 
   others up front. At graduation the crank registers it as a vault token; the
   creator then signs one transaction, **Start the tax vault** (on the curve page, the lock
   NFT's page or "Your launches"), and the vault crank takes over. Until then the tax waits
-  in the token accounts, where nobody can move it.
+  in the token accounts, where nobody can move it. The program doesn't start the vault
+  itself, so the crank compares it with the curve's recorded pool and lock before selling.
 - **Holder passes on a curve** (testnet trial): the curve form has the same "Holder passes
   (testnet trial)" checkbox. After graduation the creator's button starts the vault and turns
   the passes on (two approvals) on the curve page, "Your launches" and the lock NFT page.
@@ -552,6 +568,10 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
   `git checkout 5d162a7 && npx tsx scripts/build-recovery.ts --network testnet` prints the
   same sha256 (`src/recovery/pinned.ts` records each pinned copy). Save a copy: it works
   opened from disk too.
+  **The pages above are built from those commits, so a change to `src/recovery` doesn't reach
+  them, `/recovery` or IPFS until someone rebuilds and re-pins, which is the owner's decision.**
+  In particular, the check that leaves sale steps out for a vault off the pool a launch makes
+  (the source has it) isn't in today's pinned pages: they still offer those steps.
 - **Always, with no one's permission:** collecting the tax, burning, selling, adding
   liquidity, the creator reward and paying holders from a published list are program
   instructions anyone can send; whoever sends a sale earns the crank reward (1% of the
@@ -569,7 +589,9 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
 
   It finds every vault of the program (`--program`, default the testnet `tax_vault`),
   reads the rules the site pinned with each list, and runs collect, sell, add liquidity,
-  creator reward and payouts (`pay`, or `pay_fallback` in fallback).
+  creator reward and payouts (`pay`, or `pay_fallback` in fallback). With no launch records, it
+  won't collect or sell for a vault off the pool a launch makes (the network's main XNT fee
+  tier) unless given `--allow-other-pool`.
 - **New lists need a publisher.** If the publisher has published nothing for 7 days, the
   token's creator (its guardian) can appoint a new one, on the NFT page ("Appoint a new
   publisher", if a copy of the site is up) or without any site:

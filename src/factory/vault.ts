@@ -23,6 +23,8 @@
  *   5. pay       once the list is active, every wallet whose total is at least
  *                minPayoutXnt above what it was paid (several pays per transaction); in
  *                fallback (v3: no list published for 30 days) pay_fallback instead
+ * A vault whose pool or creator NFT differs from its launch record skips what depends on it
+ * (bindingNotes): the program doesn't tie a vault to its launch, and it can't be started again.
  * Each confirmed transaction's program events are appended to the token's events.jsonl in
  * the shapes the hot-wallet distributor writes, so the site's stats keep working (steps a
  * visitor runs with "Run the vault now" are added from the chain afterwards).
@@ -61,7 +63,7 @@ import {
   SQUADS_PROGRAM_IDS, closeIx, executeIx, memberOf, proposalVotes, proposeIxs, quorumJson, readProposal, readQuorum, rejectIx, squadsVaultPda,
   type ProposalStatus as SquadsProposalStatus, type Quorum,
 } from "../squads.js";
-import { DECIMALS, type LaunchRecord, pairOf, passesStarted, readLaunch, registeredLaunches, vaultManaged, vaultProgramOf } from "./launch.js";
+import { DECIMALS, type LaunchRecord, pairOf, passesStarted, readLaunch, registeredLaunches, vaultBinding, vaultManaged, vaultProgramOf } from "./launch.js";
 
 /** Crank pass interval; TAX_VAULT_PASS_SECS shortens it for local rehearsals (short-windows builds). */
 /** Warn when the crank wallet has less XNT than this for fees (factory.taxVault.crankLowXnt). */
@@ -363,7 +365,10 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const creator = r?.creator ?? null;
     // A creator who builds their own init_vault (a curve token's vault is started after it's
     // listed) could pick other settings than the launch shows: say so on every page.
-    const mismatch = v && r && (!v.guardian.equals(new PublicKey(r.creator)) || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps)
+    const bound = v && r ? vaultBinding(r, v) : null;
+    const mismatch = bound?.poolWrong ? "This vault sells through a different pool than the launch's, so this site doesn't sell its tax."
+      : bound?.nftWrong ? "This vault's creator NFT isn't the launch's LP lock, so this site doesn't pay its creator reward."
+      : v && r && (!v.guardian.equals(new PublicKey(r.creator)) || v.burnBps !== (r.burnBps ?? 0) || v.lpBps !== r.autoLpBps)
       ? "This vault's settings differ from the launch (guardian or tax split)." : null;
     return {
       programId: program.toBase58(), vault: addrOf(mint).toBase58(), auth: authOf(mint).toBase58(), exists: !!v, creator, mismatch,
@@ -889,6 +894,27 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     await core!.pay(t, v, list, fallback ? "fallback" : "pay", notes);
   }
 
+  /**
+   * What this pass won't do for a vault off its launch, said in the panel's notes and loudly in the
+   * log (hourly per token). init_vault can't be re-run, so only the operator can settle it.
+   */
+  const bindingLoggedAt = new Map<string, number>();
+  function bindingNotes(r: LaunchRecord, v: Vault, notes: string[]) {
+    const b = vaultBinding(r, v);
+    const lines = [
+      ...(b.poolWrong ? [`NOT SELLING: the vault's pool ${v.pool.toBase58()} isn't the launch's ${r.pool}; collect, sell, add_liquidity and holder rounds are off, and tax already sold and allocated passes still pay out`] : []),
+      ...(b.nftWrong ? [`NOT PAYING THE CREATOR REWARD: the vault's creator NFT ${v.creatorNft.toBase58()} isn't the launch's ${r.lockNft}`] : []),
+    ];
+    notes.push(...lines);
+    if (b.unverified.length) notes.push(`can't check the vault's ${b.unverified.join(" or ")}: not in the launch record`);
+    const last = bindingLoggedAt.get(r.mint) ?? 0;
+    if (lines.length && Date.now() - last > 3_600_000) {
+      bindingLoggedAt.set(r.mint, Date.now());
+      for (const l of lines) console.error(`[vault crank] VAULT NOT ON ITS LAUNCH: ${r.symbol} (${r.mint}): ${l}`);
+    }
+    return b;
+  }
+
   /** One token's pass. Each step is on its own: a failed sale doesn't stop payouts. */
   async function crankToken(r: LaunchRecord) {
     const c = core!;
@@ -906,26 +932,29 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const v = await crankRead(t.mint);
     if (!v) { status.set(r.mint, { at: new Date().toISOString(), ok, notes: ["no vault yet (the creator starts it after the LP lock or the curve's graduation)"] }); return; }
     seen.add(r.mint);
+    const bound = bindingNotes(r, v, notes);
     // Other crankers' transactions into the log first (a failed read only delays it to the next pass).
     await indexChain(r.mint, v).catch((e) => console.error(`[vault crank] ${r.symbol} index: ${msg(e)}`));
     await backfillSenders(r.mint).catch((e) => console.error(`[vault crank] ${r.symbol} senders: ${msg(e)}`));
     let vault = v;
     await step("upgrade_vault", async () => { vault = await c.upgrade(t, v, notes); });
     let pool: Awaited<ReturnType<typeof c.poolOf>> | null = null;
-    await step("pool", async () => { pool = await c.poolOf(vault); });
-    await step("collect", () => c.collect(t, vault, notes));
+    if (!bound.poolWrong) {
+      await step("pool", async () => { pool = await c.poolOf(vault); });
+      await step("collect", () => c.collect(t, vault, notes));
+    }
     if (pool) {
       await step("sell", () => c.sell(t, pool!, notes));
       await step("add_liquidity", () => c.liquidity(t, pool!, notes));
     }
-    await step("fund_creator", () => c.creator(t, notes));
+    if (!bound.nftWrong) await step("fund_creator", () => c.creator(t, notes));
     await step("fund_holders", () => c.holders(t, notes));
     // Holder passes (v4): the program splits the holders' share itself; no list to build.
     const passes = await c.readPassBook(vault).catch(() => null);
     if (passes) {
       await step("holder passes", async () => {
         const now = (await crankRead(t.mint)) ?? vault;
-        if (pool) await c.passRound(t, now, pool, notes);
+        await c.passRound(t, now, pool, notes);
       });
       viewCache.delete(r.mint);
       status.set(r.mint, { at: new Date().toISOString(), ok, notes });
@@ -1007,7 +1036,11 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     const t = tokenOf(r);
     const file = readListFile(mint) ?? { version: 1 as const, mint, vault: v.address.toBase58(), active: null, next: null, history: [] };
     const list = await payList(v, file).catch(() => null);
-    return planForCaller(conn, { program, xdex, network: cfg.network }, v, t, caller, list, { maxPays: 4, minPayout: t.rules.minPayout });
+    const bound = vaultBinding(r, v);
+    const plan = await planForCaller(conn, { program, xdex, network: cfg.network }, v, t, caller, list, { maxPays: 4, minPayout: t.rules.minPayout, noSales: bound.poolWrong, noCreatorReward: bound.nftWrong });
+    if (bound.poolWrong) plan.notes.push("This vault sells through a different pool than the launch's, so its sale steps aren't offered.");
+    if (bound.nftWrong) plan.notes.push("This vault's creator NFT isn't the launch's LP lock, so the creator reward step isn't offered.");
+    return plan;
   }
 
   /**

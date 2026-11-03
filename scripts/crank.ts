@@ -20,6 +20,8 @@
  *   --ipfs-gateway where list files are read (default Pinata's gateway, then trustless-gateway.link,
  *                  then ipfs.io); an entry may be a base URL or a template with {cid}
  *   --network     only needed if it can't be told from the pool's XDEX program
+ *   --allow-other-pool  also collect and sell through a vault whose pool isn't the one a launch
+ *                 makes (see below); use it only for a vault you know is meant to be on that pool
  * Env TAX_VAULT_SHORT_WINDOWS=1 matches a program built with `short-windows` (local tests).
  *
  * Each pass, per vault: upgrade_vault (v1/v2), collect, sell, add_liquidity, fund_creator,
@@ -28,6 +30,11 @@
  * `pay_fallback` once no list was published for 30 days. Same rules and limits as the site
  * (src/vault-crank.ts). Every transaction is simulated first; nothing is sent for a step
  * that isn't due.
+ *
+ * init_vault takes any pool of the mint, and this crank has no launch record to compare it with.
+ * A vault off the pool a launch makes (XNT pair, the network's main fee tier) could be selling
+ * through a thin second pool: it logs "NOT SELLING", skips collect, sell and add_liquidity, and
+ * still pays what was already sold.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -40,7 +47,7 @@ import {
   TAX_VAULT_PROGRAM_ID, VAULT_DISC, VAULT_VERSION, appointAllowedAt, cidFromBytes, decodeVault, effectiveList, fallbackAt, type Vault, type VaultEvent,
 } from "../src/taxvault.js";
 import {
-  ACTIVATION_MARGIN_SECS, type CrankToken, type PayList, defaultRules, inFallback, listFileText, nowSecs, parseListFile, rulesFromJson, rulesJson, vaultCrank,
+  ACTIVATION_MARGIN_SECS, type CrankToken, type PayList, defaultRules, inFallback, listFileText, nowSecs, parseListFile, rulesFromJson, rulesJson, vaultCrank, vaultOnLaunchPool,
 } from "../src/vault-crank.js";
 
 // ---------- arguments ----------
@@ -50,7 +57,7 @@ const has = (name: string) => argv.includes(`--${name}`);
 function usage(problem?: string): never {
   if (problem) console.error(`crank: ${problem}\n`);
   console.error("Usage: npx tsx scripts/crank.ts --rpc <url> --keypair <file> (--mint <mint>[,<mint>...] | --all) [--publisher <keypair>]\n"
-    + "         [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]] [env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet]");
+    + "         [--loop <seconds>] [--ipfs-gateway <url>[,<url>...]] [env PINATA_JWT] [--pinata-api <url>] [--program <id>] [--network testnet|mainnet] [--allow-other-pool]");
   process.exit(2);
 }
 if (has("help") || has("h")) usage();
@@ -165,8 +172,12 @@ async function crankVault(mint: PublicKey) {
 
   await step("upgrade_vault", async () => { v = await c.upgrade(t, v!, notes); });
   let pool: Awaited<ReturnType<typeof c.poolOf>> | null = null;
-  await step("pool", async () => { pool = await c.poolOf(v!); });
-  await step("collect", () => c.collect(t, v!, notes));
+  if (has("allow-other-pool") || vaultOnLaunchPool(xdex, network, v)) {
+    await step("pool", async () => { pool = await c.poolOf(v!); });
+    await step("collect", () => c.collect(t, v!, notes));
+  } else {
+    log(`  NOT SELLING: the vault's pool ${v.pool.toBase58()} isn't the one a launch makes; collect, sell and add_liquidity are off (--allow-other-pool overrides)`);
+  }
   if (pool) {
     await step("sell", () => c.sell(t, pool!, notes));
     await step("add_liquidity", () => c.liquidity(t, pool!, notes));

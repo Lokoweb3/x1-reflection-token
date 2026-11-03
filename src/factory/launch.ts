@@ -41,7 +41,7 @@ import {
 } from "@solana/spl-token";
 import { createInitializeInstruction, createUpdateFieldInstruction, pack, type TokenMetadata } from "@solana/spl-token-metadata";
 import { Config, FACTORY_DIR, ROOT, fromBaseUnits, keypairPublicKey, toBaseUnits } from "../config.js";
-import { decodeVault, initVaultIx, initVaultPayoutIx, paysInToken, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
+import { type Vault, decodeVault, initVaultIx, initVaultPayoutIx, paysInToken, validSplit, vaultAuthPda, vaultPda } from "../taxvault.js";
 import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passes.js";
 import { payoutToken } from "./payout.js";
 import { buildCreatePool, decodePool, poolAddresses, snapshot, XDEX_CREATE } from "../xdex.js";
@@ -770,7 +770,10 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
   let lock = false, lockNft: string | null = null;
   if (pool && cfg.locker?.programId) {
     const locks = await listLocks(conn, new PublicKey(cfg.locker.programId), new PublicKey(r.pool));
-    const mine = locks.find((l) => l.locker.toBase58() === r.creator);
+    const creators = locks.filter((l) => l.locker.toBase58() === r.creator);
+    // Before registration, the lock the launch will go on with: the one holding the most LP (if any
+    // holds enough alone, this one does). Listed tokens keep the oldest, what an old record without lockNft used.
+    const mine = r.registeredAt ? creators[0] : creators.reduce<(typeof creators)[number] | undefined>((best, l) => (!best || lpTakenIn(l) > lpTakenIn(best) ? l : best), undefined);
     lock = !!mine;
     lockNft = mine?.nftMint.toBase58() ?? null;
   }
@@ -806,6 +809,14 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   if (r.kind === "curve" && (!c || !isGraduated(c.status))) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
   if (c && isLpBurned(c)) throw new Error(LP_BURNED_ERROR);
   const pool = c ? c.pool : new PublicKey(r.pool);
+  // The vault fixes its lock for good, so what registration will ask of it is asked now. (A curve's
+  // lock is the one the program made, of all the pool's LP; the status names it, not the creator's.)
+  if (!c) {
+    const tax = getTransferFeeConfig(unpackMint(mint, await conn.getAccountInfo(mint, "confirmed"), TOKEN_2022_PROGRAM_ID));
+    if (!tax) throw new Error("Token does not match the factory launch (no tax).");
+    const problem = await poolLockProblemOf(conn, cfg, r, tax.newerTransferFee.transferFeeBasisPoints, new PublicKey(lockNft));
+    if (problem) throw new Error(`The tax vault can't start yet, and nothing was signed: starting it fixes its lock for good. ${problem}${/whole LP/.test(problem) ? LOCK_MORE : ""}`);
+  }
   const base = { payer: creator, mint, pool, creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator };
   if (r.payoutMint) {
     // Checked again now: the vault fixes the payout pool for good.
@@ -848,7 +859,30 @@ export async function refuseListedVault(conn: Connection, program: PublicKey, mi
 }
 export const LISTED_VAULT = "This vault has already had a payout list, so holder passes can't be turned on for it: the list's fallback payouts would come out of the pass holders' share.";
 
-/** A vault launch's vault must exist with this site's publisher, the creator as guardian and the recorded split. */
+/**
+ * Where a started vault differs from the launch it was registered as: the launch's pool (all
+ * the crank's sales go through v.pool) and the lock NFT recorded at registration (the creator
+ * reward's key). Read from the record alone, because a listed token's lock can honestly change
+ * later: a timed lock closes when it's unlocked, and LP added elsewhere shrinks its share.
+ * A field the record lacks reads as `unverified`, not wrong: no site path lists a token without
+ * either, so only an old or hand-made record lacks one, and a creator can't cause it.
+ */
+export function vaultBinding(r: Pick<LaunchRecord, "pool" | "lockNft">, v: Pick<Vault, "pool" | "creatorNft">) {
+  return {
+    poolWrong: !!r.pool && r.pool !== v.pool.toBase58(),
+    nftWrong: !!r.lockNft && r.lockNft !== v.creatorNft.toBase58(),
+    unverified: [...(r.pool ? [] : ["pool"]), ...(r.lockNft ? [] : ["creator NFT"])],
+  };
+}
+const VAULT_POOL_WRONG = "This token's tax vault doesn't match the launch (it sells through a different pool than the launch's).";
+const VAULT_NFT_WRONG = "This token's tax vault doesn't match the launch (its creator NFT isn't the launch's LP lock).";
+
+/**
+ * A vault launch's vault must exist with this site's publisher, the creator as guardian, the
+ * recorded split and payout token, on the launch's pool. The program only asks for some pool
+ * of this mint and a lock naming it, so these are the site's to check. Returns the vault: the
+ * first registration also checks that its creator NFT holds the launch's LP (checkPoolAndLock).
+ */
 async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
   const tv = cfg.factory?.taxVault;
   const program = vaultProgramOf(cfg, r);
@@ -867,6 +901,10 @@ async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
     const p = decodePool(v.payoutPool, await conn.getAccountInfo(v.payoutPool, "confirmed"), new PublicKey(cfg.xdex.programId));
     if (!p.mints.some((x) => x.toBase58() === r.payoutMint)) throw new Error("This token's tax vault pays in a different token than the launch chose.");
   }
+  const bound = vaultBinding(r, v);
+  if (bound.poolWrong) throw new Error(VAULT_POOL_WRONG);
+  if (bound.nftWrong) throw new Error(VAULT_NFT_WRONG);
+  return v;
 }
 
 /**
@@ -875,6 +913,7 @@ async function checkVault(conn: Connection, cfg: Config, r: LaunchRecord) {
  */
 export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRecord) {
   if (r.kind === "curve") return registerCurve(conn, cfg, r);
+  if (!r.pool) throw new Error("This launch's record has no pool, so it can't be checked.");
   const s = await launchStatus(conn, cfg, r);
   if (!s.token || !s.pool || !s.lock) throw new Error("Launch is not complete yet (token, pool and LP lock are all required).");
   const mint = unpackMint(new PublicKey(r.mint), await conn.getAccountInfo(new PublicKey(r.mint), "confirmed"), TOKEN_2022_PROGRAM_ID);
@@ -884,10 +923,11 @@ export async function registerLaunch(conn: Connection, cfg: Config, r: LaunchRec
     throw new Error("Token does not match the factory launch (fee authorities or mint authority differ).");
   }
   // The creator starts the vault (its own step); registering only checks it, so it can be retried.
-  if (r.taxVault) await checkVault(conn, cfg, r);
+  const vault = r.taxVault ? await checkVault(conn, cfg, r) : null;
   if (r.registeredAt) return r;
-  await checkPoolAndLock(conn, cfg, r, getTransferFeeConfig(mint)!.newerTransferFee.transferFeeBasisPoints);
-  return writeTokenConfig(cfg, r, s.lockNft!);
+  await checkPoolAndLock(conn, cfg, r, getTransferFeeConfig(mint)!.newerTransferFee.transferFeeBasisPoints, vault?.creatorNft);
+  // The vault's own lock: it's what pays the creator, even if the creator made another lock first.
+  return writeTokenConfig(cfg, r, vault?.creatorNft.toBase58() ?? s.lockNft!);
 }
 
 /** Floor square root of a bigint. */
@@ -916,19 +956,28 @@ export function poolLockProblem(p: { poolTokens: bigint; poolQuote: bigint; taxB
   return null;
 }
 
-async function checkPoolAndLock(conn: Connection, cfg: Config, r: LaunchRecord, taxBps: number) {
+/** LP a lock took in: what it holds plus the fee LP already collected from it. */
+const lpTakenIn = (l: { lockedLp: bigint; feeLpCollected: bigint }) => l.lockedLp + l.feeLpCollected;
+const LOCK_MORE = " One lock must hold at least 99% of the pool's starting LP: lock the LP you still hold in a single lock, then start the vault. LP already in a smaller lock can't be moved into it, so if too much is in smaller locks, this launch can't be listed.";
+
+/** `vaultNft`: a vault launch's creator NFT. That one lock must hold the LP alone, so a thin lock on the right pool can't stand in. */
+async function poolLockProblemOf(conn: Connection, cfg: Config, r: LaunchRecord, taxBps: number, vaultNft?: PublicKey) {
   const pair = pairOf(cfg, r);
   const quoteInfo = pair.xntPool ? await conn.getAccountInfo(pair.mint, "confirmed") : null;
   const quoteDecimals = quoteInfo ? unpackMint(pair.mint, quoteInfo, quoteInfo.owner).decimals : 9;
   const mint = new PublicKey(r.mint), creator = new PublicKey(r.creator);
   const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(r.pool), mint, pair.mint);
-  const locks = (await listLocks(conn, new PublicKey(cfg.locker!.programId), new PublicKey(r.pool))).filter((l) => l.locker.equals(creator));
-  const problem = poolLockProblem({
+  const locks = (await listLocks(conn, new PublicKey(cfg.locker!.programId), new PublicKey(r.pool))).filter((l) => l.locker.equals(creator) && (!vaultNft || l.nftMint.equals(vaultNft)));
+  if (vaultNft && !locks.length) return VAULT_NFT_WRONG;
+  return poolLockProblem({
     poolTokens: toBaseUnits(r.poolTokens, DECIMALS), poolQuote: toBaseUnits(r.poolXnt, quoteDecimals), taxBps,
     reserveToken: snap.reserveToken, reserveQuote: snap.reserveQuote,
-    // LP the lock took in: what it holds plus the fee LP already collected from it.
-    lockedLp: locks.reduce((t, l) => t + l.lockedLp + l.feeLpCollected, 0n),
+    lockedLp: locks.reduce((t, l) => t + lpTakenIn(l), 0n),
   });
+}
+
+async function checkPoolAndLock(conn: Connection, cfg: Config, r: LaunchRecord, taxBps: number, vaultNft?: PublicKey) {
+  const problem = await poolLockProblemOf(conn, cfg, r, taxBps, vaultNft);
   if (problem) throw new Error(`This launch can't be listed: ${problem}`);
 }
 
@@ -945,7 +994,8 @@ function withdrawAuthorityOf(cfg: Config, r: LaunchRecord) {
  * stays with the auth PDA until the last buyer's tokens are delivered (the program then
  * removes it). A vault curve token is registered before its vault exists: the creator
  * starts it after graduation, and the vault crank waits for it (the distributor never
- * serves it).
+ * serves it). The program doesn't tie that vault to the curve's pool and lock, so the crank
+ * compares them with this record each pass (vaultBinding) before it sells.
  */
 async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
   const id = cfg.factory?.curve?.programId;
@@ -966,7 +1016,18 @@ async function registerCurve(conn: Connection, cfg: Config, r: LaunchRecord) {
     throw new Error("Token does not match the curve launch (fee authorities or mint authority differ).");
   }
   if (r.registeredAt) return r;
-  return writeTokenConfig(cfg, { ...r, pool: c.pool.toBase58() }, c.lockNft.toBase58());
+  const listed = { ...r, pool: c.pool.toBase58(), lockNft: c.lockNft.toBase58() };
+  if (r.taxVault) {
+    // The creator may have started the vault already, and could name another pool or lock (the program doesn't stop them).
+    const addr = vaultPda(vaultProgramOf(cfg, r), mintKey);
+    const info = await conn.getAccountInfo(addr, "confirmed");
+    if (info) {
+      const bound = vaultBinding(listed, decodeVault(addr, info.data));
+      if (bound.poolWrong) throw new Error(VAULT_POOL_WRONG);
+      if (bound.nftWrong) throw new Error(VAULT_NFT_WRONG);
+    }
+  }
+  return writeTokenConfig(cfg, listed, c.lockNft.toBase58());
 }
 
 /** The token's own distributor config (factory/launches/<mint>/config.json); marks the launch registered. */
