@@ -25,7 +25,10 @@
  *   --allow-unknown     approve or execute something that is neither of the two known shapes
  *                 (exactly one memo, or exactly one set_publisher, signed by the vault PDA).
  *                 Prints a loud warning. A rewards list counts as unknown here: this tool
- *                 doesn't check lists. `scripts/cosigner.ts --once` with this key does
+ *                 doesn't check lists. `scripts/cosigner.ts --once --dry-run` with this key does.
+ *                 Run without --dry-run that script acts on the whole multisig: it rejects every
+ *                 other open proposal this key hasn't voted on, and it EXECUTES, unchecked, any
+ *                 Approved proposal this key approved. Clear those first
  *   --allow-off-curve   a new publisher that is off-curve and isn't a vault PDA of this multisig
  *   --allow-local-rpc   a validator on this machine (its genesis is neither network's). Only
  *                 with it: --squads-program <id>. --network still routes the Squads program

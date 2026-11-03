@@ -435,9 +435,11 @@ try {
     ok("staleTransactionIndex is still 0: executing a vault transaction doesn't stale the others (only config changes do)");
   }
   // A vote flip, and the guardian's route (simulated only).
+  let flipIndex: bigint;
   {
     const out = await qa("site proposes memo (flip)", "propose-memo", F.site, ["--text", "flip", "--execute"], { quiet: true });
     const i = indexIn(out);
+    flipIndex = i;
     await qa("backup rejects", "reject", F.backup, ["--index", i.toString(), "--execute"], { quiet: true });
     assert.equal((await prop(i))!.status, "Active");
     await qa("backup changes to approve", "approve", F.backup, ["--index", i.toString(), "--execute"], { quiet: true });
@@ -452,20 +454,32 @@ try {
     ok("guardian route: appoint_publisher simulates OK after the window (not sent, not relied on)");
   }
 
-  // The co-signer offline: the backup's key can run the co-signer's own checks once, instead of --allow-unknown.
+  // The co-signer offline: the backup's key can run the co-signer's own checks instead of --allow-unknown.
+  // A list built while the traders were trading can fail the 1% moved limit: then the site rebuilds it.
   {
     await trade(mint, t1.pool, 2);
-    await waitFor("the site proposed another list", async () => listFile(mint).next?.proposal?.status === "Active", 300_000);
-    const n = listFile(mint).next;
-    const r = await script("scripts/cosigner.ts", ["--rpc", RPC, "--keypair", F.backup, "--multisig", MS.toBase58(), "--network", DEPLOY, "--program", PROGRAM.toBase58(),
-      "--ipfs-gateway", `${IPFS}/ipfs/`, "--once", "--max-moved-bps", "100"], { expectCode: 0, quiet: true });
-    assert.match(r.out, new RegExp(`#${n.proposal.index}: PASS`), r.out);
-    await waitFor(`scripts/cosigner.ts --once with the backup's key checked list ${n.epoch}, and it was published`, async () => {
+    let passed = false, epoch = 0n;
+    for (let i = 0; i < 4 && !passed; i++) {
+      await waitFor("the site proposed another list", async () => listFile(mint).next?.proposal?.status === "Active", 300_000);
+      const n = listFile(mint).next;
+      epoch = BigInt(n.epoch);
+      const r = await script("scripts/cosigner.ts", ["--rpc", RPC, "--keypair", F.backup, "--multisig", MS.toBase58(), "--network", DEPLOY, "--program", PROGRAM.toBase58(),
+        "--ipfs-gateway", `${IPFS}/ipfs/`, "--once", "--max-moved-bps", "100"], { expectCode: 0, quiet: true });
+      passed = new RegExp(`#${n.proposal.index}: PASS`).test(r.out);
+      if (!passed) {
+        ok(`the backup's checked run rejected list ${epoch}: ${(/REJECT #\d+ .*?: (.*)/.exec(r.out)?.[1] ?? "see the log").slice(0, 100)}`);
+        await waitFor("the site dropped it", async () => listFile(mint).next?.epoch !== n.epoch || listFile(mint).next?.proposal?.index !== n.proposal.index, 60_000);
+      }
+    }
+    assert.ok(passed, "a list built on still balances passes the checks");
+    await waitFor(`scripts/cosigner.ts --once with the backup's key checked list ${epoch}, and it was published`, async () => {
       const v = await readVault(mint);
-      return v.pendingEpoch === BigInt(n.epoch) || v.listEpoch === BigInt(n.epoch);
+      return v.pendingEpoch === epoch || v.listEpoch === epoch;
     }, 60_000);
     assert.equal((await prop(keepIndex))!.status, "Active");
-    ok(`the backup's checked run left set_publisher #${keepIndex}, which it had already voted on, alone`);
+    ok(`it left set_publisher #${keepIndex}, which the backup had already voted on, alone`);
+    assert.equal((await prop(flipIndex))!.status, "Executed");
+    ok(`but it EXECUTED memo #${flipIndex}, Approved with the backup's approval, with no shape check: scripts/cosigner.ts runs whatever its key approved`);
   }
 
   console.log("\nC. Refusals against the real program (site and co-signer stopped, so the index and every balance can be compared)");

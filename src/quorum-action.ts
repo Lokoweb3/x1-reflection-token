@@ -213,7 +213,7 @@ export function expectationProblem(shape: Shape, e: Expectations, vaultMint: Pub
   if (e.newPublisher || e.memoHash || e.mint) return `an --expect flag was given, but this proposal is ${shape.kind === "publish-list" ? "a publish_list" : "neither a memo nor a set_publisher"}`;
   if (e.allowUnknown) return null;
   return shape.kind === "publish-list"
-    ? "this is a rewards list (publish_list), which this tool doesn't check. scripts/cosigner.ts --once with this key checks a list before approving it; --allow-unknown approves it unchecked"
+    ? "this is a rewards list (publish_list), which this tool doesn't check. scripts/cosigner.ts --once --dry-run with this key checks it, but without --dry-run that script also rejects every other open proposal this key hasn't voted on and executes whatever this key approved (see this script's header). --allow-unknown approves it unchecked"
     : `this isn't one of the two known shapes: it ${shape.reason}. --allow-unknown overrides that`;
 }
 
