@@ -1419,7 +1419,7 @@ test("undecodable: a stored transaction that doesn't decode: status says so; app
   for (const args of [["approve", "--index", "1"], ["execute", "--index", "2"]]) for (const extra of [[], ["--allow-unknown", "--execute"]]) {
     w.out.length = 0;
     assert.equal(await w.run(args[0], ...base(w), "--keypair", backup, ...args.slice(1), ...extra), 1, w.text());
-    assert.match(w.text(), /REFUSED: .*doesn't decode/);
+    assert.match(w.text(), /REFUSED: #\d can't be approved or executed, even with --allow-unknown: the stored transaction doesn't decode/);
     fine(w);
   }
   assert.equal(w.net.sends, 0);
