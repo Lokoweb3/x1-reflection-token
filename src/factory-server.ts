@@ -26,7 +26,7 @@ import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wal
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch, LP_BURNED_ERROR,
-  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, isPendingLaunch, onLaunchSaved, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
+  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, handOutLaunchStep, isPendingLaunch, onLaunchSaved, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
 import { readRewardVault, rewardSummary } from "./locker.js";
@@ -51,7 +51,7 @@ import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
-import { isFileError, limitKey } from "./factory/limits.js";
+import { isFileError, limitKey, visitorAddress } from "./factory/limits.js";
 import { isAddress, planView, type KnownSubjects, type Lane } from "./factory/view-gate.js";
 import { crankRelayBook } from "./factory/crank-relays.js";
 import { freshCache } from "./factory/fresh-cache.js";
@@ -74,7 +74,8 @@ const port = f.port ?? 8124;
 const bind = f.bind ?? "127.0.0.1";
 const publicUrl = f.publicUrl ?? `http://127.0.0.1:${port}`;
 const explorer = `https://explorer.${cfg.network}.x1.xyz`;
-const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, ...(f.hosts ?? [])]);
+const localHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+const allowedHosts = new Set([...localHosts, ...(f.hosts ?? [])]);
 for (const id of [cfg.xdex.programId, cfg.locker?.programId]) if (id) allowRelayProgram(id);
 const LANDING = path.join(ROOT, "src", "landing.html");
 const PAGE = path.join(ROOT, "src", "factory.html");
@@ -429,7 +430,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const { ixs, signers, record, uri } = await buildTokenStep(conn, cfg, p, publicUrl, passes ? passVaults!.program : null);
     pins.track(uri, `metadata ${record.symbol} ${record.mint}`, () => tokenUriIs(record.mint, uri), { refs: [p.image] });
     forgetLaunches(p.creator);
-    return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
+    return { tx: await handOutLaunchStep(record.mint, (built) => unsignedTx(conn, new PublicKey(p.creator), ixs, signers, { ...opts, built })), mint: record.mint };
   }
   if (url === "/api/launch/pool") {
     const r = ownLaunch(body);
@@ -734,7 +735,7 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
     pins.track(uri, `metadata ${record.symbol} ${record.mint}`, () => tokenUriIs(record.mint, uri), { refs: [p.image] });
     forgetLaunches(p.creator);
     c.invalidate();
-    return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
+    return { tx: await handOutLaunchStep(record.mint, (built) => unsignedTx(conn, new PublicKey(p.creator), ixs, signers, { ...opts, built })), mint: record.mint };
   }
   if (url === "/api/curve/refund") {
     const { ixs, payer } = await c.buildRefund(body);
@@ -1688,22 +1689,7 @@ function publicView(r: ReturnType<typeof listLaunches>[number]) {
 const send = (res: http.ServerResponse, code: number, body: unknown, type = "application/json") =>
   res.writeHead(code, { "content-type": type, "cache-control": "no-store" }).end(type === "application/json" ? JSON.stringify(body) : body as string);
 
-/**
- * The visitor's address. X-Forwarded-For is only believed when the request comes from this
- * machine (the local Caddy, which sets it: it replaces a client's own value, or in Vercel
- * mode passes on the one Vercel sets). Anyone else could write any address into it.
- */
-function clientIp(req: http.IncomingMessage) {
-  const peer = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
-  const fwd = req.headers["x-forwarded-for"];
-  if ((peer === "127.0.0.1" || peer === "::1") && typeof fwd === "string" && fwd) {
-    const ip = fwd.split(",")[0].trim();
-    // Only a request from this machine itself skips the rate limits: a forwarded "127.0.0.1"
-    // was written by the client (in Vercel mode Caddy passes on what Vercel, or anyone else holding the secrets, sent).
-    return ip === "127.0.0.1" || ip === "::1" ? `forwarded ${ip}` : ip;
-  }
-  return peer;
-}
+const clientIp = (req: http.IncomingMessage) => visitorAddress(req.socket.remoteAddress ?? "", req.headers, localHosts);
 
 /**
  * Sent with every response. frame-ancestors/X-Frame-Options stop other sites framing the
@@ -1870,8 +1856,8 @@ setTimeout(() => warmViews(), 15_000);
 setInterval(() => warmViews(), 300_000).unref();
 
 // New launches: a step 1 is journalled before its transaction leaves this server. Its record
-// moves to the launches once the token is on-chain; ones that never landed are tidied away after
-// a day. Unused pinned files are removed from Pinata.
+// moves to the launches once the token is on-chain; ones proven from the chain never to have landed
+// are tidied away after a day. Unused pinned files are removed from Pinata.
 try { const n = recoverPendingLaunches(); if (n) console.log(`Pending launches: ${n} back from the journal`); } catch (e) { console.error(`pending launches: ${e instanceof Error ? e.message : e}`); }
 // Every half minute; soon again after a failed chain read, since the launches that landed while
 // the server was down wait on it.

@@ -103,7 +103,7 @@ const freePort = () => new Promise<number>((resolve) => {
   const s = http.createServer().listen(0, "127.0.0.1", () => { const { port } = s.address() as { port: number }; s.close(() => resolve(port)); });
 });
 
-export async function startSite(opts: { curveProgram?: string } = {}) {
+export async function startSite(opts: { curveProgram?: string; hosts?: string[] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factory-site-test-"));
   const factoryDir = path.join(dir, "factory"), stateDir = path.join(dir, "state");
   fs.mkdirSync(factoryDir); fs.mkdirSync(stateDir);
@@ -116,7 +116,7 @@ export async function startSite(opts: { curveProgram?: string } = {}) {
     network: "testnet", rpcUrl, keypairs: { creator: path.join(dir, "none.json"), distributor: path.join(dir, "none.json") },
     token: { name: "T", symbol: "T", uri: "", decimals: 9, supply: "1000000000", feeBps: 500, launchGrace: true }, mint: "",
     locker: { programId: Keypair.generate().publicKey.toBase58(), nftUri: "" },
-    factory: { feeReceiver: feeReceiver.toBase58(), feeUsdc: "1", gasXnt: "0.05", port, publicUrl: origin, hosts: [], feeToken: { mint: feeMint.toBase58(), symbol: "TST", amount: "1" }, ...(opts.curveProgram ? { curve: { programId: opts.curveProgram } } : {}) },
+    factory: { feeReceiver: feeReceiver.toBase58(), feeUsdc: "1", gasXnt: "0.05", port, publicUrl: origin, hosts: opts.hosts ?? [], feeToken: { mint: feeMint.toBase58(), symbol: "TST", amount: "1" }, ...(opts.curveProgram ? { curve: { programId: opts.curveProgram } } : {}) },
     xdex: { programId: "7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf", pool: "" },
     distribution: { minHoldingTokens: "1000", excludeOwners: [], excludeOffCurveOwners: true, operatingReserveXnt: "0.05", minGasXnt: "0.005", minPayoutXnt: "0.001", minCycleXnt: "0.01", maxSellTokensPerCycle: "", maxPriceImpactBps: 300, slippageBps: 100, autoLpBps: 4000, transfersPerTx: 18, priorityMicroLamports: 10000 },
   };

@@ -39,6 +39,17 @@ test("killed right after step 1 goes out: the transaction lands, a restart still
   assert.ok(mine.some((r) => r.mint === mint), "and the creator can continue it");
 });
 
+test("step 1 records when it stops being able to land before it's returned; a build that fails leaves no journal", async () => {
+  const { mint } = await (await site.startLaunch()).json() as { mint: string };
+  assert.deepEqual(JSON.parse(fs.readFileSync(site.journalFile(mint, "step.json"), "utf8")), { lastValidBlockHeight: 1_000_000 }, "the stand-in RPC's");
+  site.rpc.down.add("simulateTransaction");
+  const res = await site.startLaunch();
+  site.rpc.down.clear();
+  assert.notEqual(res.status, 200);
+  const left = fs.readdirSync(`${site.factoryDir}/pending-launches`).filter((m) => m !== mint && !fs.existsSync(site.journalFile(m, "step.json")));
+  assert.deepEqual(left, [], "no transaction went out: nothing to keep");
+});
+
 test("killed before it lands: after the restart the launch is still readable, not yet in the launches", async () => {
   const { mint } = await (await site.startLaunch()).json() as { mint: string };
   await site.kill();

@@ -29,6 +29,10 @@ __ORIGIN_HOST__ {
 	}
 	handle @site {
 		uri strip_prefix /__SECRET__
+		# Vercel always sets it. Without one (or blank), the caller is whoever connected: never an
+		# empty header below, which replaces Caddy's value and leaves the app no address to limit.
+		@noVisitor not header_regexp X-Forwarded-For \S
+		request_header @noVisitor X-Forwarded-For {remote_host}
 		reverse_proxy 127.0.0.1:8124 {
 			header_up Host __PUBLIC_HOST__
 			header_up -X-Origin-Auth

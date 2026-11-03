@@ -46,7 +46,7 @@ import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passe
 import { payoutToken } from "./payout.js";
 import { buildCreatePool, decodePool, poolAddresses, snapshot, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
-import { mkdirDurable, writeFileDurable } from "./durable.js";
+import { mkdirDurable, syncFile, writeFileDurable } from "./durable.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
@@ -332,8 +332,9 @@ let launchSaved: (r: LaunchRecord) => void = () => undefined;
 export const onLaunchSaved = (fn: (r: LaunchRecord) => void) => { launchSaved = fn; };
 
 /**
- * Save a launch's record. A launch still in the journal is copied to launches/<mint>/, key first
- * and record last, each flushed with every directory above it; only then does the journal go. It
+ * Save a launch's record. A launch still in the journal is copied to launches/<mint>/, key first,
+ * then step.json (what gcLaunchRecords needs later, kept beside the record and not in it, which
+ * the site serves) and record last, each flushed with every directory above it; only then does the journal go. It
  * stays a pending launch until both are on disk, so if a write fails, or the power goes, the
  * journal still holds them and the save is tried again later.
  */
@@ -342,6 +343,7 @@ function writeLaunch(r: LaunchRecord) {
   mkdirDurable(dir, FACTORY_DIR);
   const key = path.join(journal, "distributor.json");
   if (fs.existsSync(key)) writeFileDurable(path.join(dir, "distributor.json"), fs.readFileSync(key, "utf8"));
+  if (fs.existsSync(stepFile(r.mint))) writeFileDurable(savedStepFile(r.mint), fs.readFileSync(stepFile(r.mint), "utf8"));
   writeFileDurable(path.join(dir, "launch.json"), JSON.stringify(r, null, 2) + "\n");
   pendingLaunches.delete(r.mint);
   // Saved. A leftover journal is only clutter: the GC clears it.
@@ -441,7 +443,7 @@ async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, pu
 const pendingLaunches = new Map<string, { record: LaunchRecord; at: number }>();
 /** A step 1 transaction can't land once its blockhash expires (about a minute): well past that, it stops being listed. */
 const PENDING_LAUNCH_MS = 15 * 60_000;
-/** A journal stays this long after its launch stopped being listed, in case the chain read that dropped it was wrong. */
+/** A journal stays at least this long after its launch stopped being listed; removing it also takes proof from the chain (provenNeverLanded). */
 const PENDING_JOURNAL_MS = 86_400_000;
 const pendingRoot = () => path.join(FACTORY_DIR, "pending-launches");
 const pendingDir = (mint: string) => path.join(pendingRoot(), mint);
@@ -460,6 +462,31 @@ function saveNewLaunch(record: LaunchRecord, distributor: Keypair | null) {
   // Few at a time: starts are limited site-wide (rateLimit "launch") and each goes within minutes.
   pendingLaunches.set(record.mint, { record, at: Date.now() });
 }
+/** What the removal proof needs from step 1: the block height past which it can't land. Saving a launch copies it along. */
+const stepFile = (mint: string) => path.join(pendingDir(mint), "step.json");
+const savedStepFile = (mint: string) => path.join(launchDir(mint), "step.json");
+/**
+ * Build the transaction of a just-journalled step 1, which `build` makes and returns. It calls the
+ * function it's given with the transaction's last valid block height, recorded before the bytes can
+ * leave this server (a failure stops them). If the build fails nothing left, its mint key is gone
+ * and no transaction can ever land, so the journal goes too; left behind, it could never be removed.
+ */
+export async function handOutLaunchStep<T>(mint: string, build: (built: (lastValidBlockHeight: number) => void) => Promise<T>) {
+  try {
+    return await build((lastValidBlockHeight) => writeFileDurable(stepFile(mint), JSON.stringify({ lastValidBlockHeight }) + "\n"));
+  } catch (e) {
+    pendingLaunches.delete(mint);
+    try { fs.rmSync(pendingDir(mint), { recursive: true, force: true }); } catch (rm) { console.error(`launch journal ${mint}: ${errText(rm)}`); }
+    throw e;
+  }
+}
+function stepExpiry(file: string) {
+  try {
+    const h = JSON.parse(fs.readFileSync(file, "utf8")).lastValidBlockHeight;
+    return Number.isSafeInteger(h) && h > 0 ? h as number : null;
+  } catch { return null; }
+}
+
 /** Whether `mint` is a new launch still waiting for its first transaction. */
 export const isPendingLaunch = (mint: string) => pendingLaunches.has(mint);
 /**
@@ -527,23 +554,65 @@ function readJournal(name: string): LaunchRecord | null {
   } catch { return null; }
 }
 
-/** A journal whose launch is already saved: its key if that's all that's left to move, then the journal. */
+/**
+ * A journal whose launch is already saved: its key and step 1's validity if that's all that's
+ * left to move, then the journal. The save may have stopped at a flush after its renames, and a restart doesn't know, so
+ * nothing is taken as durable for being there: the journal goes only once both files check out
+ * and they and every directory above them are flushed. Otherwise it stays for the next GC.
+ */
 function tidySavedJournal(name: string) {
-  const key = path.join(pendingDir(name), "distributor.json"), dest = path.join(launchDir(name), "distributor.json");
+  const dir = launchDir(name), record = path.join(dir, "launch.json");
+  const key = path.join(pendingDir(name), "distributor.json"), dest = path.join(dir, "distributor.json");
   if (fs.existsSync(key)) {
     const secret = fs.readFileSync(key, "utf8");
     if (!fs.existsSync(dest)) writeFileDurable(dest, secret);
     else if (fs.readFileSync(dest, "utf8") !== secret) { console.error(`launch journal ${name}: a different key is already saved; kept`); return; }
   }
+  if (fs.existsSync(stepFile(name)) && !fs.existsSync(savedStepFile(name))) writeFileDurable(savedStepFile(name), fs.readFileSync(stepFile(name), "utf8"));
+  let saved: LaunchRecord | null = null;
+  try { saved = JSON.parse(fs.readFileSync(record, "utf8")); } catch { /* said below */ }
+  if (saved?.mint !== name) { console.error(`launch journal ${name}: the saved record is unreadable or another token's; kept`); return; }
+  syncFile(record);
+  if (fs.existsSync(dest)) syncFile(dest);
+  if (fs.existsSync(savedStepFile(name))) syncFile(savedStepFile(name));
+  mkdirDurable(dir, FACTORY_DIR);
   fs.rmSync(pendingDir(name), { recursive: true, force: true });
 }
 
 const JOURNAL_READ_BATCH = 50; // each is the mint and the distributor wallet
 let journalGc: Promise<string[]> | null = null;
+/** A launch the proof can be asked about: `expiry` is step 1's recorded last valid block height. */
+type Provable = { name: string; mint: PublicKey; wallet: PublicKey | null; expiry: number };
+/** The wallet of a distributor key file, or null without one. Its errors can go to a log (keyFileError). */
+const walletOfKeyFile = (file: string) => (fs.existsSync(file) ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(file, "utf8")))).publicKey : null);
+/** JSON's own errors quote what they read. */
+const keyFileError = (e: unknown) => (e instanceof SyntaxError ? "unreadable key file" : errText(e));
+/**
+ * Which of these launches are proven to have nothing on-chain, ever. A plain read can come from a
+ * lagging node, so a null there proves nothing. The proof: the finalized tip (slot and block height
+ * from one answer) is past the height where step 1 stopped being able to land, and one finalized
+ * answer, read at that slot or later, has neither the mint nor anything in the wallet. Step 1 can't
+ * land after that, and had it landed the read would show it. Without the recorded height (a launch
+ * from before it was kept, or a damaged one) the caller has nothing to ask; without such an answer
+ * there's no proof. Only an answer that's whole and says "no account" counts for either address.
+ */
+async function provenNeverLanded(conn: Connection, list: Provable[]) {
+  if (!list.length) return [];
+  const { absoluteSlot: slot, blockHeight: height } = await conn.getEpochInfo("finalized");
+  if (typeof height !== "number" || typeof slot !== "number") throw new Error("the node gave no block height or slot");
+  const expired = list.filter((j) => height > j.expiry);
+  if (!expired.length) return [];
+  const keys = expired.flatMap((j) => [j.mint, j.wallet ?? j.mint]);
+  const { context, value } = await conn.getMultipleAccountsInfoAndContext(keys, { commitment: "finalized", minContextSlot: slot });
+  if (!(context.slot >= slot)) throw new Error(`the node read is behind (slot ${context.slot} < ${slot})`);
+  if (value.length !== keys.length) throw new Error(`the node answered for ${value.length} of ${keys.length} accounts`);
+  return expired.filter((_, k) => value[2 * k] === null && value[2 * k + 1] === null).map((j) => j.name);
+}
+
 /**
  * The journals of launches no longer in memory (past their window). A mint on-chain: saved.
- * Removed only when over a day old with no mint on-chain and nothing in the distributor wallet;
- * anything unclear stays. Calls during a run share it, and a failed read affects its own batch.
+ * Removed only when over a day old and proven never to have landed (provenNeverLanded); anything
+ * unclear stays. Calls during a run share it, and a failed read affects its own batch.
  * Returns the mints removed.
  */
 export function gcPendingJournal(conn: Connection) {
@@ -561,17 +630,16 @@ async function gcJournalOnce(conn: Connection) {
     try { mint = new PublicKey(name); } catch { continue; }
     try {
       if (saved(name)) { tidySavedJournal(name); continue; }
-      const keyFile = path.join(pendingDir(name), "distributor.json");
       // Without the record, the key file is where the wallet's address comes from.
-      const wallet = fs.existsSync(keyFile) ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(keyFile, "utf8")))).publicKey : null;
-      waiting.push({ name, mint, wallet });
-    } catch (e) { console.error(`launch journal ${name}: ${e instanceof SyntaxError ? "unreadable key file" : errText(e)}; kept`); }
+      waiting.push({ name, mint, wallet: walletOfKeyFile(path.join(pendingDir(name), "distributor.json")) });
+    } catch (e) { console.error(`launch journal ${name}: ${keyFileError(e)}; kept`); }
   }
   for (let i = 0; i < waiting.length; i += JOURNAL_READ_BATCH) {
     const chunk = waiting.slice(i, i + JOURNAL_READ_BATCH);
     let infos;
     try { infos = await conn.getMultipleAccountsInfo(chunk.flatMap((j) => [j.mint, j.wallet ?? j.mint]), "confirmed"); }
     catch (e) { console.error(`launch journal GC: ${errText(e)}`); continue; }
+    const due: Provable[] = [];
     chunk.forEach(({ name, wallet }, k) => {
       const mintInfo = infos[2 * k], walletInfo = wallet ? infos[2 * k + 1] : null;
       try {
@@ -587,35 +655,84 @@ async function gcJournalOnce(conn: Connection) {
         }
         const at = r ? Date.parse(r.createdAt) : fs.statSync(dir).mtimeMs;
         if (!(Date.now() - at > PENDING_JOURNAL_MS) || (walletInfo && walletInfo.lamports > 0)) return;
-        fs.rmSync(dir, { recursive: true, force: true });
-        removed.push(name);
+        const expiry = stepExpiry(stepFile(name));
+        if (expiry === null) console.error(`launch journal ${name}: no record of when its step 1 stops being able to land; kept`);
+        else due.push({ ...chunk[k], expiry });
       } catch (e) { console.error(`launch journal ${name}: ${errText(e)}`); }
     });
+    let proven: string[] = [];
+    try { proven = await provenNeverLanded(conn, due); }
+    catch (e) { console.error(`launch journal GC: no proof, ${due.length} kept: ${errText(e)}`); }
+    for (const name of proven) {
+      try {
+        // Decided on what's there now, as above.
+        if (pendingLaunches.has(name) || saved(name) || !fs.existsSync(pendingDir(name))) continue;
+        fs.rmSync(pendingDir(name), { recursive: true, force: true });
+        removed.push(name);
+      } catch (e) { console.error(`launch journal ${name}: ${errText(e)}`); }
+    }
   }
   return removed;
 }
 
+/** Beside a record that can be removed: a token config or state means it got further. */
+const RECORD_FILES = new Set(["launch.json", "distributor.json", "step.json"]);
+/** The saved record of launches/<name>/ if it's one that could still be removed: unregistered, its own, over a day old, nothing else beside it. */
+function unfinishedRecord(name: string) {
+  const dir = launchDir(name);
+  try {
+    const r = JSON.parse(fs.readFileSync(path.join(dir, "launch.json"), "utf8")) as LaunchRecord;
+    if (r.registeredAt || r.mint !== name || !(Date.now() - Date.parse(r.createdAt) > PENDING_JOURNAL_MS)) return null;
+    return fs.readdirSync(dir).every((x) => RECORD_FILES.has(x)) ? r : null;
+  } catch { return null; }
+}
+/** Records only a person can settle: said once per server run, not on every pass of a GC that runs for good. */
+const saidKept = new Set<string>();
+function keptForGood(name: string, why: string) {
+  if (saidKept.has(name)) return;
+  saidKept.add(name);
+  console.error(`launch record ${name}: ${why}; kept, and it stays until a person checks the chain and decides (its token may well exist)`);
+}
+
 /**
- * Remove launch records left by a step 1 that never landed: unregistered, over a day old,
- * no mint on-chain and (with a distributor wallet) nothing in that wallet. Anything else,
- * including every launch whose token exists, is kept.
+ * Remove launch records left by a step 1 that never landed (saved on a read that a dropped fork or
+ * a bad node gave, or from before the journal). The record holds a token's only distributor key, so
+ * this takes the proof the journals do (provenNeverLanded), from the step.json saved beside it. A
+ * record without one, however old, has nothing to prove against: kept, for a person to decide. So
+ * is every launch whose token exists, and anything a failed or lagging read leaves unclear; that
+ * read only affects its batch.
+ * Returns the mints removed.
  */
 export async function gcLaunchRecords(conn: Connection) {
   const dir = path.join(FACTORY_DIR, "launches");
   if (!fs.existsSync(dir)) return [];
-  const removed: string[] = [];
+  const due: Provable[] = [];
   for (const name of fs.readdirSync(dir)) {
-    const f = path.join(dir, name, "launch.json");
-    if (!fs.existsSync(f)) continue;
-    let r: LaunchRecord;
-    try { r = JSON.parse(fs.readFileSync(f, "utf8")); } catch { continue; }
-    if (r.registeredAt || r.mint !== name || !(Date.now() - Date.parse(r.createdAt) > 86_400_000)) continue;
-    // Only the record and its distributor key: a token config or state means it got further.
-    if (fs.readdirSync(path.join(dir, name)).some((x) => x !== "launch.json" && x !== "distributor.json")) continue;
-    const [mintInfo, distInfo] = await conn.getMultipleAccountsInfo([new PublicKey(r.mint), new PublicKey(r.distributor)], "confirmed");
-    if (mintInfo || (fs.existsSync(path.join(dir, name, "distributor.json")) && distInfo && distInfo.lamports > 0)) continue;
-    fs.rmSync(path.join(dir, name), { recursive: true, force: true });
-    removed.push(r.mint);
+    const r = unfinishedRecord(name);
+    if (!r) continue;
+    try {
+      const mint = new PublicKey(name), expiry = stepExpiry(savedStepFile(name));
+      if (expiry === null) { keptForGood(name, "no record of when its step 1 stops being able to land"); continue; }
+      // Vault launches have no key file, so nothing to look at but the mint.
+      const wallet = walletOfKeyFile(path.join(launchDir(name), "distributor.json"));
+      if (wallet && wallet.toBase58() !== r.distributor) { keptForGood(name, "its key file isn't the recorded distributor's"); continue; }
+      due.push({ name, mint, wallet, expiry });
+    } catch (e) { keptForGood(name, keyFileError(e)); }
+  }
+  const removed: string[] = [];
+  for (let i = 0; i < due.length; i += JOURNAL_READ_BATCH) {
+    const chunk = due.slice(i, i + JOURNAL_READ_BATCH);
+    let proven: string[] = [];
+    try { proven = await provenNeverLanded(conn, chunk); }
+    catch (e) { console.error(`launch records GC: no proof, ${chunk.length} kept: ${errText(e)}`); }
+    for (const name of proven) {
+      try {
+        // Decided on what's there now: during that read it may have moved on.
+        if (!unfinishedRecord(name)) continue;
+        fs.rmSync(launchDir(name), { recursive: true, force: true });
+        removed.push(name);
+      } catch (e) { console.error(`launch record ${name}: ${errText(e)}`); }
+    }
   }
   return removed;
 }

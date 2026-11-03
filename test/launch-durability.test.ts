@@ -5,6 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,7 +17,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "launch-durability-test-"));
 const factory = path.join(root, "nest", "factory");
 process.env.REFLECT_FACTORY_DIR = factory;
 process.env.PINATA_JWT = "";
-const { applyMetadataUpdate, buildTokenStep, gcPendingJournal, isPendingLaunch, onLaunchSaved, persistLaunch, readLaunch, recoverPendingLaunches, sweepPendingLaunches } = await import("../src/factory/launch.js");
+const { applyMetadataUpdate, buildTokenStep, gcPendingJournal, handOutLaunchStep, isPendingLaunch, onLaunchSaved, persistLaunch, readLaunch, recoverPendingLaunches, sweepPendingLaunches } = await import("../src/factory/launch.js");
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 const feeMint = Keypair.generate().publicKey, creator = Keypair.generate().publicKey;
@@ -73,6 +74,18 @@ test("the first save flushes launches/ and its parent before the journal's key i
   assert.equal(events.filter((e) => e.startsWith(`rename ${journal(mint, "distributor.json")}`)).length, 0, "the journal's key is copied, never moved away");
   assert.equal(fs.readFileSync(saved(mint, "distributor.json"), "utf8"), key);
   assert.equal(fs.statSync(saved(mint, "distributor.json")).mode & 0o777, 0o600);
+});
+
+test("the save writes step 1's validity before the record, and the journal goes after both", async (t) => {
+  const { mint } = await newLaunch();
+  await handOutLaunchStep(mint, async (built) => built(777));
+  const events = watchDisk(t);
+  assert.equal(persistLaunch(mint), true);
+  const into = (f: string) => events.findIndex((e) => e.startsWith("rename ") && e.endsWith(` ${saved(mint, f)}`));
+  const gone = events.indexOf(`rm ${journal(mint)}`);
+  assert.ok(into("distributor.json") >= 0 && into("distributor.json") < into("step.json"), events.join("\n"));
+  assert.ok(into("step.json") < into("launch.json") && into("launch.json") < gone, events.join("\n"));
+  assert.deepEqual(JSON.parse(fs.readFileSync(saved(mint, "step.json"), "utf8")), { lastValidBlockHeight: 777 });
 });
 
 const noSpace = () => { throw Object.assign(new Error("ENOSPC: no space left on device, fsync"), { code: "ENOSPC", syscall: "fsync" }); };
@@ -155,6 +168,77 @@ test("a saved launch with its journal left over: the GC finishes the job, withou
   assert.equal(fs.existsSync(journal(r.mint)), false);
 });
 
+/** A real restart: a new process with nothing in memory. */
+function restart(failDirFlush = false, chain?: { height: number; slot: number; readSlot?: number; seen?: string[] }) {
+  const r = spawnSync(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "helpers", "journal-restart.ts")], {
+    encoding: "utf8", env: { ...process.env, REFLECT_FACTORY_DIR: factory, NODE_TEST_CONTEXT: "", ...(failDirFlush ? { FAIL_DIR_FLUSH: "1" } : {}), ...(chain ? { RECORDS_CHAIN: JSON.stringify(chain) } : {}) },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return { ...JSON.parse(r.stdout.trim().split("\n").at(-1)!) as { records: string[]; removed: string[]; events: string[] }, output: r.stdout + r.stderr };
+}
+/** A launch whose save stopped at the flush after launch.json was renamed into place: it's there, but may not survive a power cut. */
+function savedButNotFlushed(t: { mock: { method: (o: object, m: string, f: (fd: number) => void) => { mock: { restore(): void } } } }, mint: string) {
+  const realFsync = fs.fsyncSync.bind(fs);
+  const m = t.mock.method(fs, "fsyncSync", (fd: number) => {
+    if (fs.fstatSync(fd).isDirectory() && fs.readlinkSync(`/proc/self/fd/${fd}`) === real(path.join(launches, mint)) && fs.existsSync(saved(mint, "launch.json"))) noSpace();
+    realFsync(fd);
+  });
+  assert.equal(persistLaunch(mint), false);
+  m.mock.restore();
+  assert.ok(fs.existsSync(saved(mint, "launch.json")) && fs.existsSync(saved(mint, "distributor.json")), "both renamed into place");
+  assert.ok(fs.existsSync(journal(mint, "distributor.json")), "the journal keeps the key");
+}
+
+test("restart after the flush failed past launch.json's rename: everything is flushed before the journal goes", async (t) => {
+  const { mint } = await newLaunch();
+  const key = fs.readFileSync(journal(mint, "distributor.json"), "utf8");
+  savedButNotFlushed(t as never, mint);
+  const { events } = restart(); // recovery skips a saved launch; the GC tidies it
+  const gone = events.findIndex((e) => e === `rm ${journal(mint)}`);
+  assert.ok(gone >= 0, `the journal goes (${events.join(", ")})`);
+  const flushed = syncedBefore(events, gone);
+  for (const f of [saved(mint, "launch.json"), saved(mint, "distributor.json"), path.join(launches, mint), launches, factory]) assert.ok(flushed.has(real(f)), `${f} flushed before the journal goes (${[...flushed].join(", ")})`);
+  assert.equal(fs.readFileSync(saved(mint, "distributor.json"), "utf8"), key);
+  assert.equal(fs.existsSync(journal(mint)), false);
+  persistLaunch(mint); // this process's memory of it, from before the "restart"
+});
+
+test("restart with the flush still failing: the journal stays, the key is never logged, and the next start finishes", async (t) => {
+  const { mint } = await newLaunch();
+  const key = fs.readFileSync(journal(mint, "distributor.json"), "utf8");
+  savedButNotFlushed(t as never, mint);
+  const failing = restart(true);
+  assert.deepEqual(failing.removed, []);
+  assert.equal(fs.readFileSync(journal(mint, "distributor.json"), "utf8"), key, "the only sure copy of the key");
+  assert.ok(failing.output.includes(mint), "says which");
+  assert.ok(!failing.output.includes(key), "not what's in it");
+  restart();
+  assert.equal(fs.existsSync(journal(mint)), false);
+  assert.equal(fs.readFileSync(saved(mint, "distributor.json"), "utf8"), key);
+  persistLaunch(mint);
+});
+
+test("a saved record that can't be read, or another key saved: the journal stays", async (t) => {
+  const never = { getMultipleAccountsInfo: async () => { throw new Error("no read needed"); } } as unknown as Connection;
+  const lines: string[] = [];
+  const log = t.mock.method(console, "error", (m: unknown) => { lines.push(String(m)); });
+  for (const damage of [(m: string) => fs.writeFileSync(saved(m, "launch.json"), "{"), (m: string) => fs.writeFileSync(saved(m, "launch.json"), JSON.stringify({ mint: "another" })), (m: string) => fs.writeFileSync(saved(m, "distributor.json"), "[1,2,3]")]) {
+    const r = await dormant(t as never);
+    const key = fs.readFileSync(journal(r.mint, "distributor.json"), "utf8");
+    fs.mkdirSync(path.join(launches, r.mint), { recursive: true });
+    fs.writeFileSync(saved(r.mint, "launch.json"), JSON.stringify(r));
+    fs.writeFileSync(saved(r.mint, "distributor.json"), key);
+    damage(r.mint);
+    await gcPendingJournal(never);
+    assert.equal(fs.readFileSync(journal(r.mint, "distributor.json"), "utf8"), key);
+    assert.ok(lines.some((l) => l.includes(r.mint) && l.includes("kept")), "says so");
+    assert.ok(!lines.some((l) => l.includes(key)), "without the key");
+    fs.rmSync(path.join(launches, r.mint), { recursive: true });
+    fs.rmSync(journal(r.mint), { recursive: true });
+  }
+  log.mock.restore();
+});
+
 /** Journals written directly: many, without a key. */
 function writeJournals(n: number) {
   return Array.from({ length: n }, () => {
@@ -207,4 +291,41 @@ test("the journal GC reads in batches too, and a failed one only delays its own"
   assert.equal(left.length, 50, "one batch of 50 still waits");
   await gcPendingJournal(flaky(0).conn);
   mints.forEach((m) => assert.ok(fs.existsSync(saved(m, "launch.json"))));
+});
+
+/** A launch handed out and saved, then over a day old, with nothing about it in this process's memory. */
+async function savedAndAged(lastValid: number) {
+  const r = await newLaunch();
+  await handOutLaunchStep(r.mint, async (built) => built(lastValid));
+  assert.equal(persistLaunch(r.mint), true);
+  fs.writeFileSync(saved(r.mint, "launch.json"), JSON.stringify({ ...r, createdAt: new Date(Date.now() - 2 * 86_400_000).toISOString() }));
+  return r;
+}
+
+test("a real restart between steps: the evidence is still there, a lagging answer keeps the launch, the proof removes it", async () => {
+  const r = await savedAndAged(500);
+  const key = fs.readFileSync(saved(r.mint, "distributor.json"), "utf8");
+  const next = restart(false);
+  assert.deepEqual(next.records, []);
+  assert.deepEqual(restart(false, { height: 500, slot: 600 }).records, [], "not past it");
+  assert.deepEqual(restart(false, { height: 501, slot: 600, readSlot: 599 }).records, [], "behind the tip");
+  assert.deepEqual(restart(false, { height: 501, slot: 600, seen: [r.mint, r.distributor] }).records, [], "it landed");
+  assert.equal(fs.readFileSync(saved(r.mint, "distributor.json"), "utf8"), key);
+  assert.deepEqual(restart(false, { height: 501, slot: 600 }).records, [r.mint]);
+  assert.equal(fs.existsSync(path.join(launches, r.mint)), false);
+});
+
+test("a save cut short with the evidence still in the journal: a restart moves it over before the journal goes", async () => {
+  const r = await savedAndAged(500);
+  const step = fs.readFileSync(saved(r.mint, "step.json"), "utf8"), key = fs.readFileSync(saved(r.mint, "distributor.json"), "utf8");
+  fs.mkdirSync(journal(r.mint), { recursive: true });
+  fs.writeFileSync(journal(r.mint, "step.json"), step);
+  fs.writeFileSync(journal(r.mint, "distributor.json"), key, { mode: 0o600 });
+  fs.rmSync(saved(r.mint, "step.json"));
+  const first = restart(false, { height: 501, slot: 600 });
+  assert.deepEqual(first.records, [], "no evidence in the launch yet");
+  assert.ok(first.output.includes(r.mint) && !first.output.includes(key));
+  assert.equal(fs.existsSync(journal(r.mint)), false);
+  assert.equal(fs.readFileSync(saved(r.mint, "step.json"), "utf8"), step);
+  assert.deepEqual(restart(false, { height: 501, slot: 600 }).records, [r.mint]);
 });

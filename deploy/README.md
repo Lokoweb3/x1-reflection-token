@@ -106,7 +106,9 @@ can be undone on its own. Do it on a quiet moment, with the Vercel CLI logged in
      `@authed` matcher and `header @authed X-Origin-Auth-Seen ok` line from
      `deploy/Caddyfile.vercel.observe.template` (with a different matcher name per front door if
      two share a site block), and in its `reverse_proxy` add `header_up -X-Origin-Auth` and
-     `header_up X-Forwarded-For {http.request.header.X-Forwarded-For}`. Remove the global
+     `header_up X-Forwarded-For {http.request.header.X-Forwarded-For}`, and before that
+     `reverse_proxy` the `@noVisitor` matcher and `request_header @noVisitor ...` line from the
+     template (a request without the address then counts as whoever connected). Remove the global
      `trusted_proxies 0.0.0.0/0 ::/0` block.
 
    Then `deploy/origin-gate.sh apply /root/Caddyfile.observe` (it stops on a bad secret, or if
