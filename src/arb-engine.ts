@@ -568,9 +568,9 @@ export function createEngine(o: EngineOptions) {
         await o.alert(`traded ${describe(p)}${racing ? " [race priority]" : ""}: ${xnt(p.xntIn)} XNT in, expected +${xnt(p.profit)}, made ${actual === null ? "?" : `${actual >= 0n ? "+" : ""}${xnt(actual)}`} XNT`
           + `${short ? " (under half the expected: the pools moved before it landed)" : ""}${c.ownShare >= 0.5 ? ` (${Math.round(c.ownShare * 100)}% your own pool)` : ""}. ${sig}`);
       } catch (e) {
-        markContested(p);
         o.log(`${describe(p)}: didn't go through${racing ? " (at race priority)" : ""} (nothing traded; only the fee if it landed): ${msg(e).split("\n")[0]}`);
-        if (e instanceof FeeCapReached || e instanceof FeeJournalError) return; // refused before it went out: not the route's fault
+        if (e instanceof FeeCapReached || e instanceof FeeJournalError) return; // refused before it went out: not the route's fault, and no sign of a race
+        markContested(p);
         if (!feeCapReached() && failures.fail(routeKey(p), Date.now()))
           await o.alert(`${describe(p)}: ${ROUTE_FAILURE_BUDGET.failures} failed sends in a row within ${ROUTE_FAILURE_BUDGET.windowMs / 60_000} min: skipping this route for ${ROUTE_FAILURE_BUDGET.skipMs / 3_600_000} h`);
       }

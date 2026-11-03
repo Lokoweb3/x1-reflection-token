@@ -1,14 +1,16 @@
 // The engine's send against a modelled RPC: no network, no real sends. What is modelled: the RPC answers below, with
 // every transaction confirming at once. The trades of executeNow are modelled by parallel engine.send calls (it sends
-// with Promise.all over this same send).
+// with Promise.all over this same send), except at the end, where what a refusal leaves behind is seen through execute.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Connection, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, VersionedTransaction } from "@solana/web3.js";
+import { NATIVE_MINT, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
-import { createEngine } from "../src/arb-engine.js";
+import { createEngine, type Plan } from "../src/arb-engine.js";
+import type { Snapshot } from "../src/xdex.js";
 import { FeeCap, FeeCapReached, FeeJournalError, x1FeeReservation, x1MaxTxFee } from "../src/arb-guard.js";
 import { whenSigned } from "../src/send-intent.js";
 
@@ -333,4 +335,77 @@ test("two sends of one identical transaction count once", async () => {
   assert.equal(sent.length, 2);
   assert.equal(sent[0], sent[1], "same signature");
   assert.equal(feesOf(stateDir, wallet).spent(Date.now()), reservation);
+});
+
+// ---------- through execute: what a refused send leaves behind ----------
+const NORMAL = 1_000, RACE = 2_000_000;
+/** One made-up swap through a pool that isn't a real one; the chain here answers only what execute asks. */
+function tradePlan() {
+  const k = () => Keypair.generate().publicKey;
+  const snap = { pool: { address: k(), ammConfig: k(), vaults: [k(), k()], mints: [NATIVE_MINT, k()], programs: [TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID], observation: k() } } as unknown as Snapshot;
+  const route = { name: "r", mispriced: [snap.pool.address], hops: [{ snap, inMint: NATIVE_MINT }] };
+  return { plan: { route, xntIn: 1n, xntOut: 2n, profit: 1n, minOut: 1n, minProfit: 0n, swaps: [{ snap, inSide: 0, amountIn: 1n, out: 2n, minOut: 1n }] } as unknown as Plan, ownShare: 0 };
+}
+/** The chain execute talks to: `onSimulate` says whether the next simulation passes; every broadcast's priority is kept. */
+function tradingConn(onSimulate: () => boolean = () => true) {
+  const priorities: bigint[] = [];
+  const { conn } = fakeConn();
+  const send = conn.sendRawTransaction.bind(conn);
+  let hashes = 0;
+  Object.assign(conn, {
+    getLatestBlockhash: async () => ({ blockhash: bs58.encode(Buffer.alloc(32, ++hashes)), lastValidBlockHeight: 1_000 }), // a later try is another transaction
+    getMultipleAccountsInfo: async (keys: PublicKey[]) => keys.map(() => ({ lamports: 1 })),
+    getTokenAccountBalance: async () => ({ value: { amount: "1000" } }),
+    getBalance: async () => 10 ** 12,
+    simulateTransaction: async () => ({ value: { err: onSimulate() ? null : { InstructionError: [0, { Custom: 1 }] }, unitsConsumed: 100_000, logs: [] } }),
+    sendRawTransaction: async (raw: Uint8Array) => {
+      const m = VersionedTransaction.deserialize(raw).message;
+      const price = m.compiledInstructions.map((i) => Buffer.from(i.data)).find((d) => d[0] === 3)!; // SetComputeUnitPrice
+      priorities.push(price.readBigUInt64LE(1));
+      return send(raw);
+    },
+  });
+  return { conn, priorities };
+}
+const racingEngine = (conn: Connection, wallet: Keypair, stateDir: string, cap: bigint) => createEngine({ conn, xdex: PublicKey.default, wallet, minProfit: 0n, maxIn: 1n, slipBps: 0n, reserve: 0n,
+  priority: NORMAL, racePriority: RACE, stateDir, log: () => undefined, alert: async () => undefined, maxFeesPerDay: cap, feeReconcile: { hurryWaitMs: 5 } });
+
+test("execute: room for the normal fee but not the race fee: the refusals don't keep the pool contested, and it goes out once at normal priority", async (t) => {
+  const wallet = Keypair.generate(), stateDir = dir();
+  let simulations = 0;
+  const { conn, priorities } = tradingConn(() => simulations++ > 0); // the first one loses the race
+  const cap = x1FeeReservation(1, UNITS, NORMAL) + 1n;
+  assert.ok(x1FeeReservation(1, UNITS, RACE) > cap, "the race fee doesn't fit");
+  const engine = racingEngine(conn, wallet, stateDir, cap);
+  const f = tradePlan();
+  const start = Date.now();
+  let clock = start;
+  t.mock.method(Date, "now", () => clock);
+  assert.equal(await engine.execute([f]), 0, "gap gone: the pool is contested now");
+  for (const secs of [10, 20]) {
+    clock = start + secs * 1000;
+    assert.equal(await engine.execute([f]), 0, "contested, and the race fee is refused");
+  }
+  assert.deepEqual(priorities, [], "nothing goes out while the race fee is the one asked");
+  // Past the window from the failed simulation; a refused send must not have extended it.
+  for (const secs of [31, 41, 51, 61]) {
+    clock = start + secs * 1000;
+    await engine.execute([f]);
+  }
+  assert.deepEqual(priorities, [BigInt(NORMAL)], "broadcast once, at normal priority");
+  assert.equal(feesOf(stateDir, wallet).spent(clock), x1FeeReservation(1, UNITS, NORMAL));
+});
+
+test("execute: a fee journal that goes bad mid-send doesn't mark the pool contested either", async () => {
+  const wallet = Keypair.generate(), stateDir = dir();
+  const file = path.join(stateDir, `arb-fees-${wallet.publicKey.toBase58()}.json`);
+  let breakIt = true;
+  const { conn, priorities } = tradingConn(() => { if (breakIt) { breakIt = false; fs.writeFileSync(file, "not json"); } return true; });
+  const engine = racingEngine(conn, wallet, stateDir, 10n ** 12n);
+  const f = tradePlan();
+  assert.equal(await engine.execute([f]), 0, "refused");
+  assert.deepEqual(priorities, []);
+  fs.rmSync(file);
+  await engine.execute([f]);
+  assert.deepEqual(priorities, [BigInt(NORMAL)], "not the pool's fault: normal priority");
 });
