@@ -62,6 +62,16 @@ test("template: the two differ only in the gate", () => {
   assert.match(norm(ENFORCE), /GATE/);
 });
 
+test("template: a request without a visitor address never reaches the app with an empty header", () => {
+  for (const t of [ENFORCE, OBSERVE]) {
+    const site = t.slice(t.indexOf("handle @site {"));
+    const set = site.indexOf("request_header @noVisitor X-Forwarded-For {remote_host}"), proxy = site.indexOf("reverse_proxy 127.0.0.1:8124");
+    assert.match(site, /@noVisitor not header_regexp X-Forwarded-For \\S\n/);
+    assert.ok(set >= 0 && set < proxy, "filled in before the proxy passes it on");
+    assert.match(site, /header_up X-Forwarded-For \{http\.request\.header\.X-Forwarded-For\}/, "a valid one still passes as it was");
+  }
+});
+
 test("render: every placeholder is replaced, including the second secret on the path line", () => {
   const s = sandbox();
   for (const mode of ["enforce", "observe"]) {

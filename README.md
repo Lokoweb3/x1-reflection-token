@@ -687,7 +687,9 @@ The site's own rate limits count only real requests: `/api/send` counts once the
 transaction is fully signed and calls only this site's programs, and launches and curve
 creation count once the request validates and the wallet can afford it, so junk can't use
 up the site-wide allowances. IPv6 addresses are limited by their /64, and a forwarded
-`127.0.0.1` no longer skips the limits (only requests made on the machine itself do).
+`127.0.0.1` no longer skips the limits (only requests made on the machine itself do: to
+`127.0.0.1:<port>` or `localhost:<port>`, with no `X-Forwarded-*` header; a request through the proxy
+without a usable address shares one limit).
 
 ## Running on a VPS
 
