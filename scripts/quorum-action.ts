@@ -47,6 +47,13 @@
  *                 mainnet only that id is accepted
  *   --priority    microlamports per CU, default 10000
  *
+ * A STORED PROPOSAL THAT CAN'T BE FULLY READ. The program doesn't check a list's CID, so a member can store
+ * one with an unsupported codec or none. status shows it (invalid ones as raw hex), and reject and cancel work.
+ * approve and execute refuse it, even with --allow-unknown: nobody should vote for or run a list whose file
+ * can't be identified, and the repo's code throws when it reads an invalid CID from a vault. A stored transaction
+ * account that doesn't decode is treated the same way. A proposal account that doesn't decode: status says so,
+ * and every vote refuses, because its status can't be told and the program couldn't act on it either.
+ *
  * Exit codes: 0 done (or dry run OK), 1 refused or failed, 2 usage, 3 the send is AMBIGUOUS: it
  * may still land, so run `status --index n` first; 4 it is CONFIRMED but the result couldn't be
  * read back, or the account it should have changed is missing or doesn't decode: don't re-propose or

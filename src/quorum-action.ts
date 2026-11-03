@@ -471,7 +471,24 @@ function printQuorum(c: Ctx) {
 }
 
 /** The stored transaction of a proposal, decoded from the chain. */
-export interface Stored { kindName: string; tx: VaultTx | null; shape: Shape; vault: Vault | null; lines: string[]; messageHash?: string; info?: AccountInfo<Buffer> }
+export interface Stored {
+  kindName: string; tx: VaultTx | null; shape: Shape; vault: Vault | null; lines: string[]; messageHash?: string; info?: AccountInfo<Buffer>;
+  /** Why nobody should vote for this or run it, whatever else is accepted: shown by status, refused by approve and execute. */
+  unusable?: string;
+}
+/**
+ * A stored list's CID as this tool may print it. cidFromBytes throws on an unsupported codec, and
+ * nothing on-chain checks the codec, so a member can store one. Its callers elsewhere need it to
+ * throw, so it's caught here. Only the bytes are printed, as hex, and never the error's words.
+ */
+export function listFileOf(cid: Buffer): { shown: string; unusable: string | null } {
+  let file: string | null;
+  try { file = cidFromBytes(cid); } catch {
+    const raw = cid.toString("hex");
+    return { shown: `INVALID, not a usable list file (raw bytes ${raw})`, unusable: `its list file CID is invalid (raw bytes ${raw}), so nobody can tell which file it publishes. Reject it, or cancel it if it's Approved` };
+  }
+  return file ? { shown: file, unusable: null } : { shown: "none", unusable: "it names no list file, so nobody can tell which file it publishes. Reject it, or cancel it if it's Approved" };
+}
 async function readStored(c: Ctx, index: bigint): Promise<Stored> {
   const { conn, squadsProgram, ms, q, taxProgram } = c;
   const info = await conn.getAccountInfo(squadsTransactionPda(squadsProgram, ms, index), "confirmed");
@@ -480,17 +497,26 @@ async function readStored(c: Ctx, index: bigint): Promise<Stored> {
 async function storedFrom(c: Ctx, index: bigint, info: AccountInfo<Buffer> | null, q: Quorum, taxProgram: PublicKey): Promise<Stored> {
   const { conn, squadsProgram, ms } = c;
   if (!info) return { kindName: "none", tx: null, vault: null, shape: { kind: "unknown", reason: "has no transaction account (closed, or never created)" }, lines: ["no transaction account (closed, or never created)"] };
-  const tx = decodeVaultTx(squadsProgram, ms, index, info);
+  // An account the program wrote always decodes, so this one comes from a lying RPC or a program this tool doesn't know.
+  // A vote against needs only the proposal account, so reject and cancel go on; approve and execute are refused.
+  let tx: VaultTx | null, shape: Shape, messageHash: string | undefined;
+  try {
+    tx = decodeVaultTx(squadsProgram, ms, index, info);
+    shape = tx ? classifyVaultTx(tx, q.vault, taxProgram) : { kind: "unknown", reason: "isn't a vault transaction" };
+    messageHash = tx ? storedMessageHash(info, ms, index) : undefined;
+  } catch {
+    const what = `an account that doesn't decode (${info.data.length} bytes, sha256 ${sha256Hex(info.data)})`;
+    return { kindName: "undecodable", tx: null, vault: null, shape: { kind: "unknown", reason: `is ${what}` }, lines: [`stored: ${what}. Rejecting or cancelling needs only the proposal, so they still work, but you can't read what they stop`],
+      unusable: `the stored transaction doesn't decode, so what it would do can't be shown`, };
+  }
   if (!tx) {
     const d = info.data.subarray(0, 8);
     const is = (x: number[]) => d.equals(Buffer.from(x));
     const name = is(squads.generated.configTransactionDiscriminator) ? "a config transaction (changes the multisig itself)" : is(squads.generated.batchDiscriminator) ? "a batch" : "not a vault transaction";
     return { kindName: "other", tx: null, vault: null, shape: { kind: "unknown", reason: `is ${name}` }, lines: [`stored: ${name}`] };
   }
-  const shape = classifyVaultTx(tx, q.vault, taxProgram);
   const lines: string[] = [];
-  const messageHash = storedMessageHash(info, ms, index);
-  let vault: Vault | null = null;
+  let vault: Vault | null = null, unusable: string | undefined;
   if (shape.kind === "memo") {
     lines.push(`does: writes a memo, signed by the vault PDA. Moves nothing.`, `  text ${JSON.stringify(shape.text)}`, `  sha256 ${shape.hash}`);
   } else if (shape.kind === "set-publisher") {
@@ -500,8 +526,10 @@ async function storedFrom(c: Ctx, index: bigint, info: AccountInfo<Buffer> | nul
       `  current publisher ${vault?.publisher.toBase58() ?? "?"}${vault?.publisher.equals(q.vault) ? " (this multisig's vault PDA)" : vault ? " (NOT this multisig's vault PDA: it would fail)" : ""}`,
       `  NEW publisher     ${shape.newPublisher.toBase58()}`);
   } else if (shape.kind === "publish-list") {
+    const listFile = listFileOf(shape.args.cid);
+    unusable = listFile.unusable ?? undefined;
     lines.push(`does: tax_vault publish_list (a rewards list), signed by the vault PDA. Not checked by this tool.`,
-      `  vault account ${shape.args.vault.toBase58()}; epoch ${shape.args.epoch}; total ${shape.args.total}; root ${shape.args.root.toString("hex")}; list file ${cidFromBytes(shape.args.cid) ?? "none"}`);
+      `  vault account ${shape.args.vault.toBase58()}; epoch ${shape.args.epoch}; total ${shape.args.total}; root ${shape.args.root.toString("hex")}; list file ${listFile.shown}`);
   } else {
     lines.push(`does: UNKNOWN: it ${shape.reason}`);
   }
@@ -509,8 +537,16 @@ async function storedFrom(c: Ctx, index: bigint, info: AccountInfo<Buffer> | nul
   lines.push(`stored by ${tx.creator.toBase58()}; vault index ${tx.vaultIndex}, ephemeral signers ${tx.ephemeralSigners}, lookup tables ${tx.lookups}`);
   lines.push(...accountsOf(tx, q.vault));
   if (shape.kind === "unknown" || shape.kind === "publish-list") lines.push(`complete stored message ${storedMessageBytes(info).toString("hex")}`);
-  return { kindName: "vault", tx, shape, vault, lines, messageHash, info };
+  return { kindName: "vault", tx, shape, vault, lines, messageHash, info, unusable };
 }
+/** A proposal account's meaning, or a refusal in this tool's words. An account the program wrote always decodes, and the program couldn't act on one that doesn't, so nothing is built on it. */
+function decodedProposal(c: Ctx, index: bigint, info: AccountInfo<Buffer> | null) {
+  try { return decodeProposal(c.squadsProgram, c.ms, index, info); } catch { return refuse(`#${index}: the proposal account doesn't decode, so its status can't be told: not signing anything for it. Nothing was sent`); }
+}
+const readDecodedProposal = async (c: Ctx, index: bigint) => decodedProposal(c, index, await c.conn.getAccountInfo(squadsProposalPda(c.squadsProgram, c.ms, index), "confirmed"));
+/** The same for status, which reports it and goes on. */
+const proposalForStatus = (c: Ctx, index: bigint) => readDecodedProposal(c, index).then((p) => ({ p, unreadable: false }), (e) => { if (e instanceof Refusal) return { p: null, unreadable: true }; throw e; });
+const UNREADABLE_PROPOSAL = (index: bigint) => `#${index}: the proposal account doesn't decode, so its status can't be told`;
 const proposalLine = (q: Quorum, p: ProposalInfo | null, index: bigint) => p
   ? `#${index} ${p.status}: ${p.approved.length} of ${q.threshold} approvals, ${p.rejected.length} of ${rejectCutoff(q)} rejections to close${p.cancelled.length ? `, ${p.cancelled.length} cancels` : ""}${index <= q.staleTransactionIndex ? (p.status === "Approved" ? " (stale: a config change passed it, but an Approved vault transaction can STILL execute until cancelled)" : " (stale: a config change passed it)") : ""}`
   : `#${index}: no proposal account (closed, or never created)`;
@@ -520,8 +556,8 @@ async function cmdStatus(c: Ctx) {
   printQuorum(c);
   const index = indexArg(a, false);
   if (index !== null) {
-    const p = await readProposal(conn, squadsProgram, ms, index);
-    say(`\n${proposalLine(q, p, index)}`);
+    const { p, unreadable } = await proposalForStatus(c, index);
+    say(`\n${unreadable ? UNREADABLE_PROPOSAL(index) : proposalLine(q, p, index)}`);
     if (p?.at) say(`  status since ${new Date(p.at * 1000).toISOString()}`);
     for (const [name, keys] of [["approved", p?.approved], ["rejected", p?.rejected], ["cancelled", p?.cancelled]] as const) for (const k of keys ?? []) say(`  ${name} by ${k}`);
     const stored = await readStored(c, index);
@@ -537,11 +573,11 @@ async function cmdStatus(c: Ctx) {
   say(`\nrecent proposals (newest first):`);
   if (q.transactionIndex === 0n) say("  none yet");
   for (let i = q.transactionIndex; i >= 1n && i > q.transactionIndex - limit; i--) {
-    const [p, s] = await Promise.all([readProposal(conn, squadsProgram, ms, i), readStored(c, i)]);
+    const [{ p, unreadable }, s] = await Promise.all([proposalForStatus(c, i), readStored(c, i)]);
     const what = s.shape.kind === "memo" ? `memo ${JSON.stringify(s.shape.text)}`
       : s.shape.kind === "set-publisher" ? `set_publisher to ${s.shape.newPublisher.toBase58()}`
-      : s.shape.kind === "publish-list" ? `list ${s.shape.args.epoch}` : s.kindName === "none" ? "closed" : `unknown (${s.shape.reason})`;
-    say(`  ${proposalLine(q, p, i)}; ${what}`);
+      : s.shape.kind === "publish-list" ? `list ${s.shape.args.epoch}, list file ${listFileOf(s.shape.args.cid).shown}` : s.kindName === "none" ? "closed" : `unknown (${s.shape.reason})`;
+    say(`  ${unreadable ? UNREADABLE_PROPOSAL(i) : proposalLine(q, p, i)}; ${what}`);
   }
   return 0;
 }
@@ -853,6 +889,7 @@ async function vetStored(c: Ctx, index: bigint, snap: Snapshot, statusProblem: s
   say(`\nstored on-chain for #${index} at slot ${snap.slot} (decoded from the transaction account):`);
   for (const l of stored.lines) say(`  ${l}`);
   if (statusProblem) refuse(statusProblem);
+  if (stored.unusable) refuse(`#${index} can't be approved or executed, even with --allow-unknown: ${stored.unusable}. Nothing was signed or sent`);
   const e: Expectations = { newPublisher: pubkeyArg(a, "expect-new-publisher"), memoHash: a.values.get("expect-memo-hash") ?? null, mint: pubkeyArg(a, "expect-mint"), allowUnknown: a.bools.has("allow-unknown") };
   const shape = stored.shape;
   const problem = expectationProblem(shape, e, stored.vault?.mint ?? null);
@@ -887,7 +924,7 @@ async function cmdApprove(c: Ctx) {
   const { q, say, conn, squadsProgram, ms, a } = c;
   const index = indexArg(a, true)!;
   const snap = await readSnapshot(conn, c, index);
-  const p = decodeProposal(squadsProgram, ms, index, snap.proposal);
+  const p = decodedProposal(c, index, snap.proposal);
   say(`\n${proposalLine(q, p, index)}`);
   if (!p) refuse(`no proposal #${index}`);
   await vetStored(c, index, snap, p!.status !== "Active" ? `#${index} is ${p!.status}: only an Active proposal takes votes`
@@ -909,7 +946,7 @@ async function cmdReject(c: Ctx) {
   const me = await memberFor(c, "reject");
   const { q, say, conn, squadsProgram, ms, a } = c;
   const index = indexArg(a, true)!;
-  const p = await readProposal(conn, squadsProgram, ms, index);
+  const p = await readDecodedProposal(c, index);
   say(`\n${proposalLine(q, p, index)}`);
   if (!p) refuse(`no proposal #${index}`);
   const stored = await readStored(c, index);
@@ -936,7 +973,7 @@ async function cmdCancel(c: Ctx) {
   const me = await memberFor(c, "cancel");
   const { q, say, conn, squadsProgram, ms, a } = c;
   const index = indexArg(a, true)!;
-  const p = await readProposal(conn, squadsProgram, ms, index);
+  const p = await readDecodedProposal(c, index);
   say(`\n${proposalLine(q, p, index)}`);
   if (!p) refuse(`no proposal #${index}`);
   const stored = await readStored(c, index);
@@ -961,7 +998,7 @@ async function cmdExecute(c: Ctx) {
   const { q, say, conn, squadsProgram, ms, a } = c;
   const index = indexArg(a, true)!;
   const snap = await readSnapshot(conn, c, index);
-  const p = decodeProposal(squadsProgram, ms, index, snap.proposal);
+  const p = decodedProposal(c, index, snap.proposal);
   say(`\n${proposalLine(q, p, index)}`);
   if (!p) refuse(`no proposal #${index} (closed, or never created)`);
   const stored = await vetStored(c, index, snap, p!.status === "Executed" ? `#${index} was already executed`

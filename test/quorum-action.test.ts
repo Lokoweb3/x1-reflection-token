@@ -19,7 +19,7 @@ import {
   SQUADS_PROGRAM_IDS, Permission, Permissions, decodeVaultTx, readQuorum, squadsMultisigPda, squadsProposalPda, squadsTransactionPda, squadsVaultPda, type VaultTx,
 } from "../src/squads.js";
 import { mockRpc } from "./helpers/mock-rpc.js";
-import { TAX_VAULT_PROGRAM_ID, VAULT_LEN, encodeVault, publishListIx, setPublisherIx, vaultPda, type Vault } from "../src/taxvault.js";
+import { TAX_VAULT_PROGRAM_ID, VAULT_LEN, cidFromBytes, cidToBytes, encodeVault, publishListIx, rawCid, setPublisherIx, vaultPda, type Vault } from "../src/taxvault.js";
 
 const SQUADS = SQUADS_PROGRAM_IDS.mainnet;
 const TAX = TAX_VAULT_PROGRAM_ID;
@@ -1324,4 +1324,137 @@ test("setup-publisher-quorum: uncaught RPC failures go through the same withhold
   const r = await setup(c.url);
   noBody(r.out);
   await c.close(); w.done();
+});
+
+// ---------- a stored proposal that can't be fully decoded ----------
+const BAD_CID = Buffer.alloc(33, 2);
+const listWith = (w: World, cid: Buffer) => [publishListIx(TAX, w.vault, w.mint, Buffer.alloc(32, 1), 4n, 5n, cid)];
+const goodCid = () => cidToBytes(rawCid(Buffer.from("a list file"))!);
+const junk = (disc: number[]) => Buffer.from([...disc, 1, 2, 3]);
+const putJunkTx = (w: World, index: bigint) => w.put(squadsTransactionPda(w.program, w.ms, index), w.program, junk(squads.generated.vaultTransactionDiscriminator));
+const putJunkProposal = (w: World, index: bigint) => w.put(squadsProposalPda(w.program, w.ms, index), w.program, junk(squads.generated.proposalDiscriminator));
+const fine = (w: World) => assert.doesNotMatch(w.text(), /^ERROR:|Unsupported CID codec|unexpected .*Error/m, "no thrown error reaches the output");
+
+test("bad CID: cidFromBytes still throws for its other callers", () => {
+  assert.throws(() => cidFromBytes(BAD_CID), /Unsupported CID codec 0x2/);
+  assert.equal(cidFromBytes(Buffer.alloc(33)), null);
+});
+test("bad CID: status shows it as invalid, in raw hex and never as a list file, by index and in the list", async () => {
+  const w = world();
+  w.propose(1n, listWith(w, BAD_CID), "Active", [w.site.publicKey]);
+  assert.equal(await w.run("status", ...base(w), "--index", "1"), 0, w.text());
+  assert.match(w.text(), new RegExp(`list file INVALID.*${"02".repeat(33)}`));
+  assert.match(w.text(), /does: tax_vault publish_list/);
+  fine(w);
+  w.out.length = 0;
+  assert.equal(await w.run("status", ...base(w)), 0, w.text());
+  assert.match(w.text(), /#1 Active.*list 4.*list file INVALID/);
+  fine(w);
+  w.done();
+});
+test("bad CID: approve and execute refuse, even with --allow-unknown, exit 1, nothing sent", async () => {
+  const w = world();
+  w.propose(1n, listWith(w, BAD_CID), "Active", [w.site.publicKey]);
+  w.propose(2n, listWith(w, BAD_CID), "Approved", [w.site.publicKey, w.cosigner.publicKey]);
+  const backup = w.file(w.backup, "b");
+  for (const args of [["approve", "--index", "1"], ["execute", "--index", "2"]]) for (const extra of [[], ["--allow-unknown"], ["--allow-unknown", "--execute"]]) {
+    w.out.length = 0;
+    assert.equal(await w.run(args[0], ...base(w), "--keypair", backup, ...args.slice(1), ...extra), 1, w.text());
+    assert.match(w.text(), /REFUSED: .*list file.*invalid/i);
+    fine(w);
+  }
+  assert.equal(w.net.sends, 0);
+  w.done();
+});
+test("bad CID: reject and cancel work, and their votes are sent", async () => {
+  const w = world();
+  w.propose(1n, listWith(w, BAD_CID), "Active", [w.site.publicKey]);
+  w.propose(2n, listWith(w, BAD_CID), "Approved", [w.site.publicKey, w.cosigner.publicKey]);
+  const backup = w.file(w.backup, "b");
+  assert.equal(await w.run("reject", ...base(w), "--keypair", backup, "--index", "1"), 0, w.text());
+  assert.equal(w.net.sends, 0, "a dry run first");
+  assert.equal(await w.run("reject", ...base(w), "--keypair", backup, "--index", "1", "--execute"), 0, w.text());
+  assert.equal(w.net.sends, 1);
+  assert.equal(await w.run("cancel", ...base(w), "--keypair", backup, "--index", "2", "--execute"), 0, w.text());
+  assert.equal(w.net.sends, 2);
+  assert.match(w.text(), /list file INVALID/);
+  fine(w);
+  w.done();
+});
+test("no CID: a list that names no file is shown as none, and approve and execute refuse it too", async () => {
+  const w = world();
+  w.propose(1n, listWith(w, Buffer.alloc(33)), "Active", [w.site.publicKey]);
+  w.propose(2n, listWith(w, Buffer.alloc(33)), "Approved", [w.site.publicKey, w.cosigner.publicKey]);
+  assert.equal(await w.run("status", ...base(w), "--index", "1"), 0);
+  assert.match(w.text(), /list file none/);
+  const backup = w.file(w.backup, "b");
+  for (const args of [["approve", "--index", "1"], ["execute", "--index", "2"]]) {
+    w.out.length = 0;
+    assert.equal(await w.run(args[0], ...base(w), "--keypair", backup, ...args.slice(1), "--allow-unknown", "--execute"), 1, w.text());
+    assert.match(w.text(), /REFUSED: .*names no list file/);
+  }
+  assert.equal(await w.run("reject", ...base(w), "--keypair", backup, "--index", "1", "--execute"), 0, w.text());
+  assert.equal(w.net.sends, 1);
+  w.done();
+});
+test("good CID: a real list still prints its file and passes with --allow-unknown", async () => {
+  const w = world();
+  w.propose(1n, listWith(w, goodCid()), "Active", [w.site.publicKey]);
+  assert.equal(await w.run("approve", ...base(w), "--keypair", w.file(w.backup, "b"), "--index", "1", "--allow-unknown", "--execute"), 0, w.text());
+  assert.match(w.text(), new RegExp(`list file ${rawCid(Buffer.from("a list file"))}`));
+  assert.equal(w.net.sends, 1);
+  w.done();
+});
+test("undecodable: a stored transaction that doesn't decode: status says so; approve and execute refuse; reject and cancel work", async () => {
+  const w = world();
+  w.propose(1n, [memoIx(w.vault)], "Active", [w.site.publicKey]);
+  w.propose(2n, [memoIx(w.vault)], "Approved", [w.site.publicKey, w.cosigner.publicKey]);
+  putJunkTx(w, 1n); putJunkTx(w, 2n);
+  const backup = w.file(w.backup, "b");
+  assert.equal(await w.run("status", ...base(w), "--index", "1"), 0, w.text());
+  assert.match(w.text(), /doesn't decode \(11 bytes, sha256 [0-9a-f]{64}\)/);
+  w.out.length = 0;
+  assert.equal(await w.run("status", ...base(w)), 0, w.text());
+  fine(w);
+  for (const args of [["approve", "--index", "1"], ["execute", "--index", "2"]]) for (const extra of [[], ["--allow-unknown", "--execute"]]) {
+    w.out.length = 0;
+    assert.equal(await w.run(args[0], ...base(w), "--keypair", backup, ...args.slice(1), ...extra), 1, w.text());
+    assert.match(w.text(), /REFUSED: .*doesn't decode/);
+    fine(w);
+  }
+  assert.equal(w.net.sends, 0);
+  assert.equal(await w.run("reject", ...base(w), "--keypair", backup, "--index", "1", "--execute"), 0, w.text());
+  assert.equal(await w.run("cancel", ...base(w), "--keypair", backup, "--index", "2", "--execute"), 0, w.text());
+  assert.equal(w.net.sends, 2);
+  w.done();
+});
+test("undecodable: a proposal account that doesn't decode: status says so; every vote and execute refuses clearly", async () => {
+  const w = world();
+  w.propose(1n, [memoIx(w.vault)], "Active", [w.site.publicKey]);
+  putJunkProposal(w, 1n);
+  const backup = w.file(w.backup, "b");
+  assert.equal(await w.run("status", ...base(w), "--index", "1"), 0, w.text());
+  assert.match(w.text(), /#1: the proposal account doesn't decode/);
+  fine(w);
+  w.out.length = 0;
+  assert.equal(await w.run("status", ...base(w)), 0, w.text());
+  assert.match(w.text(), /#1: the proposal account doesn't decode/);
+  fine(w);
+  for (const sub of ["approve", "reject", "cancel", "execute"]) {
+    w.out.length = 0;
+    assert.equal(await w.run(sub, ...base(w), "--keypair", backup, "--index", "1", "--allow-unknown", "--execute"), 1, `${sub}: ${w.text()}`);
+    assert.match(w.text(), /REFUSED: .*proposal account doesn't decode/, sub);
+    fine(w);
+  }
+  assert.equal(w.net.sends, 0);
+  w.done();
+});
+test("bad CID: one open bad list doesn't stop work on another proposal", async () => {
+  const w = world();
+  w.propose(1n, listWith(w, BAD_CID), "Active", [w.site.publicKey]);
+  w.propose(2n, setPub(w), "Active", [w.site.publicKey]);
+  assert.equal(await w.run("approve", ...base(w), "--keypair", w.file(w.backup, "b"), "--index", "2", "--expect-new-publisher", w.target.toBase58()), 0, w.text());
+  assert.match(w.text(), /note: list proposal #1 is open/);
+  fine(w);
+  w.done();
 });
