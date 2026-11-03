@@ -851,12 +851,18 @@ try {
     const tDraft = await nextIndex();
     assert.equal(await tryTx([squads.instructions.vaultTransactionCreate({ multisigPda: MS, transactionIndex: tDraft, creator: site.publicKey, vaultIndex: 0, ephemeralSigners: 0, transactionMessage: txMsg, programId: SQUADS }),
       squads.instructions.proposalCreate({ multisigPda: MS, transactionIndex: tDraft, creator: site.publicKey, isDraft: true, programId: SQUADS })], site), null);
+    // An older config transaction, Approved and never executed: the later config change below makes it stale.
+    const cfgOld = await nextIndex();
+    assert.equal(await tryTx([squads.instructions.configTransactionCreate({ multisigPda: MS, transactionIndex: cfgOld, creator: site.publicKey, actions: [{ __kind: "SetRentCollector", newRentCollector: site.publicKey }], programId: SQUADS }),
+      squads.instructions.proposalCreate({ multisigPda: MS, transactionIndex: cfgOld, creator: site.publicKey, programId: SQUADS }), approveIx(SQUADS, MS, cfgOld, site.publicKey)], site), null);
+    assert.equal(await tryTx([approveIx(SQUADS, MS, cfgOld, backup.publicKey)], backup), null);
+    assert.equal((await prop(cfgOld))!.status, "Approved");
     // Before the config change the scan names all of them.
     {
       const r = await script("scripts/setup-publisher-quorum.ts", setupBack, { quiet: true });
       assert.equal(r.code, 1, r.out);
-      for (const [i, st] of [[tExec, "Approved"], [tCancel, "Approved"], [tActive, "Active"], [tNoProposal, "no proposal yet"], [tDraft, "Draft"]] as const) assert.match(r.out, new RegExp(`#${i} ${st}`));
-      ok("before the config change setup-publisher-quorum names every one: Approved, Active, no proposal yet, Draft");
+      for (const [i, st] of [[tExec, "Approved"], [tCancel, "Approved"], [tActive, "Active"], [tNoProposal, "no proposal yet"], [tDraft, "Draft"], [cfgOld, "Approved"]] as const) assert.match(r.out, new RegExp(`#${i} ${st}`));
+      ok("before the config change setup-publisher-quorum names every one: Approved, Active, no proposal yet, Draft, and an Approved config transaction");
     }
     // A real config change, through the real program: 2 of 3, and it changes nothing the setup script checks.
     const cfgIndex = await nextIndex();
@@ -876,6 +882,13 @@ try {
       assert.ok(await said(`proposal_create on stale transaction #${tNoProposal}`, await tryTx([squads.instructions.proposalCreate({ multisigPda: MS, transactionIndex: tNoProposal, creator: site.publicKey, programId: SQUADS })], site)));
       assert.ok(await said(`activate stale Draft #${tDraft}`, await tryTx([squads.instructions.proposalActivate({ multisigPda: MS, transactionIndex: tDraft, member: site.publicKey, programId: SQUADS })], site)));
       assert.ok(await said(`close stale Approved #${tExec}`, await tryTx([closeIx(SQUADS, MS, tExec, site.publicKey)], site)));
+      // The guard's exclusion of stale config transactions rests on this exact refusal, on this binary.
+      assert.equal((await prop(cfgOld))!.status, "Approved");
+      const oldCfg = await said(`execute stale Approved config #${cfgOld}`, await tryTx([squads.instructions.configTransactionExecute({ multisigPda: MS, transactionIndex: cfgOld, member: site.publicKey, rentPayer: site.publicKey, programId: SQUADS })], site));
+      assert.ok(oldCfg, "a stale Approved config transaction must not execute: if it does, openProposalsFor's exclusion is a fail-open");
+      assert.equal(squadsErr(oldCfg!), "StaleProposal");
+      assert.equal((await prop(cfgOld))!.status, "Approved");
+      assert.equal((await readQuorum(conn, SQUADS, MS))!.staleTransactionIndex, cfgIndex, "and it changed nothing");
       await qaRefused("approving a stale Active proposal", "approve", F.backup, ["--index", tActive.toString(), "--expect-new-publisher", cosigner.publicKey.toBase58()], /stale/);
     }
     // The guard: only what can still run, with the stale ones named.
@@ -884,6 +897,7 @@ try {
       assert.equal(r.code, 1, r.out);
       assert.match(r.out, new RegExp(`#${tExec} Approved \\(stale, still executable\\)`)); assert.match(r.out, new RegExp(`#${tCancel} Approved \\(stale, still executable\\)`));
       for (const dead of [tActive, tNoProposal, tDraft]) assert.doesNotMatch(r.out, new RegExp(`#${dead} (Active|Draft|no proposal)`));
+      assert.doesNotMatch(r.out, new RegExp(`#${cfgOld} `), "the stale config transaction the program just refused isn't named");
       assert.match(r.out, /Not moving this vault/);
       assert.ok((await readVault(mint)).publisher.equals(site.publicKey), "the refused setup moved nothing");
       ok("setup-publisher-quorum refuses: it names the stale Approved proposals and not the dead ones");

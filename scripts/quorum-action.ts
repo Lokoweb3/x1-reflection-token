@@ -52,7 +52,9 @@
  * read back, or the account it should have changed is missing or doesn't decode: don't re-propose or
  * resend, run `status --index n` when the RPC answers. Nothing is
  * ever resent automatically. RPC URLs print as scheme and host only, the credentials in them are
- * scrubbed from all output, and what an RPC server answers with an error isn't printed.
+ * scrubbed from all output, and an RPC failure prints only its operation and class: never the server's
+ * words. What a successful answer holds is printed as data (decoded accounts, simulation logs and
+ * error), scrubbed but not withheld: it's what you are here to read.
  *
  * What it signs comes from the chain: before approve or execute, the stored transaction is
  * decoded and printed (program, accounts, and for set_publisher the vault, current publisher

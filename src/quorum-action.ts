@@ -7,6 +7,7 @@
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { STATUS_CODES } from "node:http";
 import path from "node:path";
 import * as squads from "@sqds/multisig";
 import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction, type AccountInfo } from "@solana/web3.js";
@@ -40,25 +41,51 @@ const UNITS = { propose: 300_000, vote: 60_000, execute: 200_000 };
 export const xntOf = (l: bigint | number) => { const n = BigInt(l), s = n < 0n ? "-" : "", a = n < 0n ? -n : n; return `${s}${a / 1_000_000_000n}.${(a % 1_000_000_000n).toString().padStart(9, "0")}`; };
 const short = (k: string | PublicKey) => { const s = typeof k === "string" ? k : k.toBase58(); return `${s.slice(0, 4)}…${s.slice(-4)}`; };
 const msgOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const WITHHELD = "(the server's answer isn't printed: it can repeat an API key)";
+const WITHHELD = "(the details aren't printed: an RPC's words can repeat an API key)";
+/** The web3.js operations this tool and the setup script call. Only these names are printed from a wrapped failure. */
+const RPC_OPERATIONS = ["failed to get info about account", "failed to get info for accounts", "failed to get balance of account", "failed to get balance for", "failed to get genesis hash", "failed to get latest blockhash",
+  "failed to get fee for message", "failed to get signature status", "failed to get signatures for address", "failed to get transaction", "failed to get block height", "failed to simulate transaction", "failed to send transaction", "failed to get recent blockhash"];
+/** Errors written by this repo, which carry no RPC words: whole-message matches. */
+const SAFE_LOCAL = [/^fetch failed$/, /^Invalid public key input$/, /^Non-base58 character$/, /^Endpoint URL must start with `http:` or `https:`\.$/, /^vault transactions with lookup tables aren't used here$/,
+  /^Squads program config [1-9A-HJ-NP-Za-km-z]+ not found \(is [1-9A-HJ-NP-Za-km-z]+ Squads v4\?\)$/, /^the multisig doesn't exist: not moving any publisher to it$/, /^the new multisig doesn't read back as expected$/];
+const httpPart = (code: string) => { const name = STATUS_CODES[code]; return `HTTP ${code}${name ? ` ${name}` : ""}`; };
 /**
- * An error's first line as it may be printed. Whatever an RPC server wrote is untrusted and can
- * quote a credential, so the four ways web3.js passes it on keep only their status: an HTTP
- * failure, a JSON-RPC error, an answer that isn't JSON, an answer of the wrong form.
+ * An error as it may be printed. An allowlist, because whatever an RPC server wrote is untrusted
+ * and can quote a credential too short to scrub: its message text, its HTTP reason phrase, a
+ * body in a parse error. Only the forms below print, and of those only the parts this repo or
+ * web3.js wrote: the operation, the class, a numeric code. Everything else is withheld.
  */
 export function printable(e: unknown): string {
   const first = msgOf(e).split("\n")[0];
   const name = e instanceof Error ? e.name : "";
+  const op = RPC_OPERATIONS.find((o) => first === o || first.startsWith(`${o} `) || first.startsWith(`${o}:`));
+  const inner = op && first.includes(": ") ? first.slice(first.indexOf(": ") + 2) : null;
+  const says = (what: string) => `${op ? `${op}: ` : ""}${what} ${WITHHELD}`;
   if (name === "SolanaJSONRPCError") {
-    const code = (e as { code?: unknown }).code, at = first.indexOf(": ");
-    return `${at > 0 ? `${first.slice(0, at)}: ` : ""}JSON-RPC error ${typeof code === "number" ? code : "?"} ${WITHHELD}`;
+    const code = (e as { code?: unknown }).code;
+    return says(Number.isInteger(code) ? `JSON-RPC error ${code}` : "JSON-RPC error");
   }
-  const http = /(^|: )([1-5]\d\d) ([^:]{0,60}): /.exec(first);
-  if (http) return `${first.slice(0, http.index)}${http[1]}HTTP ${http[2]} ${http[3].trim()} ${WITHHELD}`.trim();
-  if (e instanceof SyntaxError || /is not valid JSON|Unexpected (token|end of)/.test(first)) return `the RPC's answer wasn't JSON ${WITHHELD}`;
-  if (name === "StructError" || /but received/.test(first)) return `the RPC's answer wasn't in the expected form ${WITHHELD}`;
-  const cause = (e as { cause?: { code?: unknown } } | null)?.cause?.code;
-  return typeof cause === "string" ? `${first} (${cause})` : first;
+  const http = /^(?:Error: )?([1-5]\d\d)\b/.exec(inner ?? first);
+  if (http) return says(httpPart(http[1]));
+  if (op) {
+    if (inner?.startsWith("SolanaJSONRPCError:")) return says("JSON-RPC error");
+    if (inner?.startsWith("TypeError: fetch failed")) return says("fetch failed");
+    if (inner?.startsWith("SyntaxError:")) return says("the answer wasn't JSON");
+    if (inner?.startsWith("StructError:")) return says("the answer wasn't in the expected form");
+    return says("the RPC refused or failed");
+  }
+  const tx = /^Transaction [1-9A-HJ-NP-Za-km-z]{32,88} (?:failed|expired before it confirmed|not confirmed within \d+s \(it may still land\)|resulted in an error\.)/.exec(first);
+  if (tx) return tx[0];
+  if (/^Simulation failed\b/.test(first)) return "Simulation failed";
+  if (e instanceof SyntaxError) return `an answer or a file wasn't JSON ${WITHHELD}`;
+  if (name === "StructError") return `an answer wasn't in the expected form ${WITHHELD}`;
+  if (SAFE_LOCAL.some((r) => r.test(first))) {
+    const cause = (e as { cause?: { code?: unknown } } | null)?.cause?.code;
+    return typeof cause === "string" && /^[A-Z][A-Z0-9_]*$/.test(cause) ? `${first} (${cause})` : first;
+  }
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && /^E[A-Z0-9_]+$/.test(code)) return `system error ${code} ${WITHHELD}`;
+  return `unexpected ${/^[A-Za-z]*Error$/.test(name) ? name : "error"} ${WITHHELD}`;
 }
 export const sha256Hex = (b: Buffer | string) => crypto.createHash("sha256").update(b).digest("hex");
 

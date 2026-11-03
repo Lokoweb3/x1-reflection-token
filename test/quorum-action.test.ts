@@ -13,7 +13,7 @@ import { Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionM
 import { NATIVE_MINT } from "@solana/spl-token";
 import {
   GENESIS_HASH, MAX_MEMO_BYTES, MEMO_PROGRAM_ID, Refusal, classifyVaultTx, expectationProblem, explainFailure, genesisProblem, loadMemberKey, newPublisherProblem, parseArgs,
-  SQUADS_PINS, defaultDeps, openProposalsFor, plannedMessageHash, quorumAction, redactRpc, rightsProblem, sameEndpoint, squadsBinaryProblem, storedMessageHash, sendFate, sha256Hex, type Shape,
+  SQUADS_PINS, defaultDeps, openProposalsFor, plannedMessageHash, printable, quorumAction, redactRpc, rightsProblem, sameEndpoint, squadsBinaryProblem, storedMessageHash, sendFate, sha256Hex, type Shape,
 } from "../src/quorum-action.js";
 import {
   SQUADS_PROGRAM_IDS, Permission, Permissions, decodeVaultTx, readQuorum, squadsMultisigPda, squadsProposalPda, squadsTransactionPda, squadsVaultPda, type VaultTx,
@@ -1010,8 +1010,9 @@ async function failingRpc(inner: string, fail: (method: string) => { status: num
     let body = "";
     req.on("data", (d) => { body += d; });
     req.on("end", async () => {
-      const f = fail(JSON.parse(body).method);
-      if (f) { res.writeHead(f.status, f.statusText ?? "", { "content-type": "text/plain" }); res.end(f.body); return; }
+      const j = JSON.parse(body), f = fail(j.method);
+      // web3.js only takes a JSON-RPC error whose id is the string it sent; "id":1 would be a wrong-form answer instead.
+      if (f) { res.writeHead(f.status, f.statusText ?? "", { "content-type": "text/plain", ...(f.status === 429 ? { "retry-after": "1" } : {}) }); res.end(f.body.replace('"id":1,', `"id":${JSON.stringify(j.id)},`)); return; }
       const r = await fetch(inner, { method: "POST", headers: { "content-type": "application/json" }, body });
       res.writeHead(200, { "content-type": "application/json" }); res.end(await r.text());
     });
@@ -1194,4 +1195,133 @@ test("setup-publisher-quorum: refuses a stale Approved proposal; a scan that can
   assert.match(clear.out, /0 can still act on this vault/);
   assert.ok(sets() > 0, "it reached the simulation");
   await f.close(); await rpc.close(); w.done();
+});
+
+// ---------- third review of 26c7534: bodies withheld on every path, by allowlist ----------
+const BODY = "bad api-key abc for /v1/abc zz-body-marker";
+const SHORT_URL = "/v1/abc?api-key=abc";
+const rpcErrorBody = { status: 200, body: JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32005, message: BODY } }) };
+const noBody = (t: string) => { assert.doesNotMatch(t, /zz-body-marker|api-key abc|\/v1\/abc/, t); };
+/** A healthy chain behind a real HTTP endpoint that fails `method`s after `from` sends (0: always). */
+async function chainThatFails(w: World, methods: string[], how: { status: number; statusText?: string; body: string } = rpcErrorBody, afterSend = false) {
+  const { rpc } = await realPathRpc(w);
+  let sent = false;
+  const f = await failingRpc(rpc.url, (m) => { if (m === "sendTransaction") sent = true; return methods.includes(m) && (!afterSend || sent) ? how : null; });
+  return { url: `${f.base}${SHORT_URL}`, plain: rpc.url, close: async () => { await f.close(); await rpc.close(); } };
+}
+const realDeps = (out: string[]) => ({ connect: defaultDeps().connect, out: (l: string) => out.push(l) });
+
+test("withheld: JSON-RPC failures after genesis on the primary RPC, through real web3.js, keep the operation and class only", async () => {
+  for (const [method, sub, op] of [
+    ["getAccountInfo", "status", /failed to get info about account.*JSON-RPC/],
+    ["getMultipleAccounts", "approve", /failed to get info for accounts.*JSON-RPC error -32005/],
+    ["getBalance", "approve", /failed to get balance of account.*JSON-RPC/],
+    ["simulateTransaction", "approve", /failed to simulate transaction/],
+    ["getLatestBlockhash", "approve", /failed to get recent blockhash.*JSON-RPC/],
+  ] as const) {
+    const w = world("testnet");
+    w.propose(1n, [memoIx(w.vault)], "Active", [w.site.publicKey]);
+    const c = await chainThatFails(w, [method]);
+    const out: string[] = [];
+    const args = sub === "status" ? ["status"] : ["approve", "--keypair", w.file(w.backup, "b"), "--index", "1"];
+    const code = await quorumAction([args[0], "--network", "testnet", "--rpc", c.url, "--multisig", w.ms.toBase58(), ...args.slice(1)], realDeps(out));
+    assert.equal(code, 1, `${method}: ${out.join("\n")}`);
+    noBody(out.join("\n"));
+    assert.match(out.join("\n"), op, `${method}: ${out.join("\n")}`);
+    await c.close(); w.done();
+  }
+});
+
+test("withheld: JSON-RPC failures on the verification RPC, through real web3.js", async () => {
+  for (const method of ["getMultipleAccounts", "getAccountInfo"]) {
+    const w = world("testnet");
+    w.propose(1n, [memoIx(w.vault)], "Active", [w.site.publicKey]);
+    const v = await chainThatFails(w, [method]);
+    const out: string[] = [];
+    const { rpc } = await realPathRpc(w);
+    const code = await quorumAction(["approve", "--network", "testnet", "--rpc", rpc.url, "--verify-rpc", v.url, "--multisig", w.ms.toBase58(), "--keypair", w.file(w.backup, "b"), "--index", "1"], realDeps(out));
+    assert.equal(code, 1, out.join("\n"));
+    assert.match(out.join("\n"), /--verify-rpc couldn't be read: failed to get info .*JSON-RPC/);
+    noBody(out.join("\n"));
+    await rpc.close(); await v.close(); w.done();
+  }
+});
+
+test("withheld: a confirmed send whose read-backs fail by JSON-RPC, and a send refused by JSON-RPC", async () => {
+  const w = world("testnet");
+  w.propose(1n, [memoIx(w.vault)], "Active", [w.site.publicKey]);
+  const c = await chainThatFails(w, ["getAccountInfo", "getBalance"], rpcErrorBody, true);
+  const out: string[] = [];
+  const args = (url: string) => ["approve", "--network", "testnet", "--rpc", url, "--multisig", w.ms.toBase58(), "--keypair", w.file(w.backup, "b"), "--index", "1", "--execute"];
+  assert.equal(await quorumAction(args(c.url), realDeps(out)), 4, out.join("\n"));
+  assert.match(out.join("\n"), /VERIFICATION UNAVAILABLE.*failed to get info about account/);
+  noBody(out.join("\n"));
+  await c.close();
+  out.length = 0;
+  const s = await chainThatFails(w, ["sendTransaction"]);
+  const code = await quorumAction(args(s.url), realDeps(out));
+  assert.ok(code === 1 || code === 3, `exit ${code}: ${out.join("\n")}`);
+  noBody(out.join("\n"));
+  await s.close(); w.done();
+});
+
+test("withheld: an HTTP reason phrase is the server's words too; only the standard name for the code prints", async () => {
+  const w = world("testnet");
+  w.propose(1n, [memoIx(w.vault)], "Active", [w.site.publicKey]);
+  const out: string[] = [];
+  const c = await chainThatFails(w, ["getBalance"], { status: 403, statusText: "api-key abc zz-body-marker", body: BODY });
+  const code = await quorumAction(["approve", "--network", "testnet", "--rpc", c.url, "--multisig", w.ms.toBase58(), "--keypair", w.file(w.backup, "b"), "--index", "1"], realDeps(out));
+  assert.equal(code, 1, out.join("\n"));
+  noBody(out.join("\n"));
+  assert.match(out.join("\n"), /failed to get balance of account.*HTTP 403 Forbidden/);
+  await c.close(); w.done();
+});
+
+test("withheld: printable is an allowlist: unknown text never prints, the known safe forms do", () => {
+  const body = "zz-body-marker abc";
+  for (const e of [new Error(body), new Error(`failed to frobnicate: ${body}`), new TypeError(body), body, new Error(`500 ${body}: ${body}`), new SyntaxError(`Unexpected token ${body}`),
+    new Error(`failed to simulate transaction: ${body}`), new Error(`failed to get balance of account X: ${body}`), Object.assign(new Error(`failed to get genesis hash: ${body}`), { name: "SolanaJSONRPCError", code: `${body}` }),
+    Object.assign(new Error(`${body}`), { name: "SolanaJSONRPCError", code: -1 }), Object.assign(new Error("fetch failed"), { cause: { code: body } }), Object.assign(new Error(body), { name: body })]) {
+    assert.doesNotMatch(printable(e), /zz-body-marker/, String(e));
+  }
+  assert.equal(printable(new Error("fetch failed")), "fetch failed");
+  assert.equal(printable(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } })), "fetch failed (ECONNREFUSED)");
+  const sig = "1".repeat(64);
+  assert.equal(printable(new Error(`Transaction ${sig} failed: {"InstructionError":[0,"${body}"]}`)), `Transaction ${sig} failed`);
+  assert.equal(printable(new Error(`Transaction ${sig} expired before it confirmed`)), `Transaction ${sig} expired before it confirmed`);
+  assert.equal(printable(new Error(`Transaction ${sig} not confirmed within 120s (it may still land)`)), `Transaction ${sig} not confirmed within 120s (it may still land)`);
+  assert.equal(printable(new Error(`Simulation failed. \nMessage: ${body}`)), "Simulation failed");
+  assert.match(printable(new Error(`403 Forbidden: ${body}`)), /^HTTP 403 Forbidden /);
+  assert.match(printable(new Error(`failed to get balance of account X: Error: 503 ${body}: ${body}`)), /^failed to get balance of account: HTTP 503 Service Unavailable /);
+  assert.match(printable(new Error(`failed to get balance of account X: SolanaJSONRPCError: failed to get balance: ${body}`)), /^failed to get balance of account: JSON-RPC error /);
+  assert.match(printable(new TypeError("boom")), /^unexpected TypeError /);
+  assert.match(printable(Object.assign(new Error("ENOENT: /secret/path"), { code: "ENOENT" })), /^system error ENOENT/);
+});
+
+test("setup-publisher-quorum: uncaught RPC failures go through the same withholding, including a raw 429 reason", async () => {
+  const { spawn } = await import("node:child_process");
+  const createKey = Keypair.generate(), program = SQUADS_PROGRAM_IDS.testnet, payer = Keypair.generate();
+  const w = world("testnet", squadsMultisigPda(program, createKey.publicKey));
+  const setup = async (url: string) => {
+    const child = spawn(process.execPath, [path.join("node_modules", "tsx", "dist", "cli.mjs"), "scripts/setup-publisher-quorum.ts", "--rpc", url, "--network", "testnet", "--keypair", w.file(payer, "payer"), "--create-key", w.file(createKey, "create"),
+      "--site", w.site.publicKey.toBase58(), "--cosigner", w.cosigner.publicKey.toBase58(), "--backup", w.backup.publicKey.toBase58(), "--program", TAX.toBase58()], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout!.on("data", (d) => { out += d; }); child.stderr!.on("data", (d) => { out += d; });
+    const code = await new Promise<number | null>((r) => child.once("exit", r));
+    return { code, out };
+  };
+  for (const [how, re] of [[rpcErrorBody, /failed to get info about account.*JSON-RPC/], [{ status: 403, statusText: "api-key abc zz-body-marker", body: BODY }, /HTTP 403 Forbidden/], [{ status: 200, body: BODY }, /wasn't JSON/]] as const) {
+    const c = await chainThatFails(w, ["getAccountInfo"], how);
+    const r = await setup(c.url);
+    assert.equal(r.code, 1, r.out);
+    noBody(r.out);
+    assert.match(r.out, re, r.out);
+    assert.doesNotMatch(r.out, /^\s+at /m, "no stack trace");
+    await c.close();
+  }
+  // web3's own retry logs a 429's reason phrase; the setup's connection must not take that path.
+  const c = await chainThatFails(w, ["getAccountInfo"], { status: 429, statusText: "api-key abc zz-body-marker", body: BODY });
+  const r = await setup(c.url);
+  noBody(r.out);
+  await c.close(); w.done();
 });

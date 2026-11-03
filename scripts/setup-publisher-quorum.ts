@@ -38,7 +38,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { connection, type Config } from "../src/config.js";
 import { SQUADS_PROGRAM_IDS, Permission, createMultisigIx, readQuorum, squadsMultisigPda, squadsVaultPda } from "../src/squads.js";
 import { TAX_VAULT_PROGRAM_ID, decodeVault, errorOf, setPublisherIx, vaultPda } from "../src/taxvault.js";
 import { ScanIncomplete, openProposalsFor, printable, redactRpc, scrubber } from "../src/quorum-action.js";
@@ -46,6 +47,9 @@ import { run, withPriority } from "../src/tx.js";
 
 // ---------- arguments ----------
 const argv = process.argv.slice(2);
+const scrub = scrubber(argv);
+// Anything nothing below caught, such as an RPC failing while the multisig is read: what the server wrote isn't printed.
+process.on("uncaughtException", (e) => { console.error(scrub(`setup-publisher-quorum: ${printable(e)}`)); process.exit(1); });
 const flag = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
 const has = (name: string) => argv.includes(`--${name}`);
 function usage(problem?: string): never {
@@ -78,8 +82,11 @@ const members = [
 if (new Set(members.map((m) => m.key.toBase58())).size !== members.length) usage("--site, --cosigner and --backup must be different keys");
 if (!Number.isInteger(threshold) || threshold < 2 || threshold > members.length) usage(`--threshold must be 2..${members.length} (1 would let one key publish alone)`);
 
-const conn = new Connection(rpc, "confirmed");
-const scrub = scrubber(argv);
+// The repo's paced connection: it never reaches web3.js's own 429 retry, which logs the server's reason phrase. It honours
+// REFLECT_RPC_URL, which would silently move this script to another endpoint.
+const envRpc = process.env.REFLECT_RPC_URL;
+if (envRpc && envRpc !== rpc) usage("REFLECT_RPC_URL would override --rpc: unset it or pass the same URL");
+const conn = connection({ rpcUrl: rpc } as Config);
 const say = (s: string) => console.log(scrub(s));
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
