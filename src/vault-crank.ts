@@ -724,7 +724,7 @@ export const inFallback = (v: Vault, now = nowSecs()) => fallbackActive(v, now -
  */
 export interface PlannedStep { kind: "upgrade" | "collect" | "sell" | "add_liquidity" | "fund_creator" | "fund_holders" | "pay" | "pay_fallback"; label: string; ixs: TransactionInstruction[]; units: number }
 /**
- * Without a launch record (scripts/crank.ts, the recovery page): whether the vault sells through
+ * Without a launch record (scripts/crank.ts; the recovery page from its next pin): whether the vault sells through
  * the pool a launch makes. Site launches and the curve program both use this address (XNT pair,
  * the network's main fee tier); a second pool on another tier, which init_vault would take, isn't it.
  */

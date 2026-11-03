@@ -565,6 +565,10 @@ Tax Vault tokens don't depend on this site, its server or its keys (v3):
   `git checkout 5d162a7 && npx tsx scripts/build-recovery.ts --network testnet` prints the
   same sha256 (`src/recovery/pinned.ts` records each pinned copy). Save a copy: it works
   opened from disk too.
+  **The pages above are built from those commits, so a change to `src/recovery` doesn't reach
+  them, `/recovery` or IPFS until someone rebuilds and re-pins, which is the owner's decision.**
+  In particular, the check that leaves sale steps out for a vault off the pool a launch makes
+  (the source has it) isn't in today's pinned pages: they still offer those steps.
 - **Always, with no one's permission:** collecting the tax, burning, selling, adding
   liquidity, the creator reward and paying holders from a published list are program
   instructions anyone can send; whoever sends a sale earns the crank reward (1% of the
