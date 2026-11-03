@@ -16,7 +16,7 @@ import {
   SQUADS_PINS, defaultDeps, openProposalsFor, plannedMessageHash, quorumAction, redactRpc, rightsProblem, sameEndpoint, squadsBinaryProblem, storedMessageHash, sendFate, sha256Hex, type Shape,
 } from "../src/quorum-action.js";
 import {
-  SQUADS_PROGRAM_IDS, Permission, Permissions, decodeVaultTx, readQuorum, squadsProposalPda, squadsTransactionPda, squadsVaultPda, type VaultTx,
+  SQUADS_PROGRAM_IDS, Permission, Permissions, decodeVaultTx, readQuorum, squadsMultisigPda, squadsProposalPda, squadsTransactionPda, squadsVaultPda, type VaultTx,
 } from "../src/squads.js";
 import { mockRpc } from "./helpers/mock-rpc.js";
 import { TAX_VAULT_PROGRAM_ID, VAULT_LEN, encodeVault, publishListIx, setPublisherIx, vaultPda, type Vault } from "../src/taxvault.js";
@@ -61,19 +61,20 @@ function vaultAccount(mint: PublicKey, publisher: PublicKey): Buffer {
 // ---------- a chain to talk to ----------
 const ALL = Permissions.fromPermissions([Permission.Initiate, Permission.Vote, Permission.Execute]);
 const VOTE_EXEC = Permissions.fromPermissions([Permission.Vote, Permission.Execute]);
-function world(network: "mainnet" | "testnet" = "testnet") {
+function world(network: "mainnet" | "testnet" = "testnet", msKey?: PublicKey) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quorum-action-test-"));
   const file = (k: Keypair, name: string, mode = 0o600) => { const f = path.join(dir, `${name}.json`); fs.writeFileSync(f, JSON.stringify(Array.from(k.secretKey)), { mode }); fs.chmodSync(f, mode); return f; };
   const site = Keypair.generate(), cosigner = Keypair.generate(), backup = Keypair.generate(), outsider = Keypair.generate();
-  const ms = key(), vault = squadsVaultPda(SQUADS_PROGRAM_IDS[network], ms), mint = key(), target = Keypair.generate().publicKey;
+  const ms = msKey ?? key(), vault = squadsVaultPda(SQUADS_PROGRAM_IDS[network], ms), mint = key(), target = Keypair.generate().publicKey;
   const program = SQUADS_PROGRAM_IDS[network];
   const accounts = new Map<string, AccountInfo<Buffer>>();
   const put = (k: PublicKey, owner: PublicKey, data: Buffer) => accounts.set(k.toBase58(), info(owner, data));
   put(vaultPda(TAX, mint), TAX, vaultAccount(mint, vault));
-  let txIndex = 0n;
-  const putMultisig = () => put(ms, program, squads.accounts.Multisig.fromArgs({ createKey: key(), configAuthority: PublicKey.default, threshold: 2, timeLock: 0, transactionIndex: Number(txIndex), staleTransactionIndex: 0,
+  let txIndex = 0n, staleIndex = 0n;
+  const putMultisig = () => put(ms, program, squads.accounts.Multisig.fromArgs({ createKey: key(), configAuthority: PublicKey.default, threshold: 2, timeLock: 0, transactionIndex: Number(txIndex), staleTransactionIndex: Number(staleIndex),
     rentCollector: site.publicKey, bump: 255, members: [{ key: site.publicKey, permissions: ALL }, { key: cosigner.publicKey, permissions: VOTE_EXEC }, { key: backup.publicKey, permissions: ALL }] }).serialize()[0]);
   putMultisig();
+  const setStale = (n: bigint) => { staleIndex = n; putMultisig(); };
   const propose = (index: bigint, ix: TransactionInstruction[] | Buffer, status: string, approved: PublicKey[] = [], rejected: PublicKey[] = []) => {
     txIndex = index > txIndex ? index : txIndex; putMultisig();
     put(squadsTransactionPda(program, ms, index), program, Buffer.isBuffer(ix) ? ix : storedFor(index, ix));
@@ -86,7 +87,7 @@ function world(network: "mainnet" | "testnet" = "testnet") {
     const message = { ...m, instructions: m.instructions.map((i) => ({ programIdIndex: i.programIdIndex, accountIndexes: Uint8Array.from(i.accountIndexes), data: Uint8Array.from(i.data) })), addressTableLookups: [] };
     return squads.accounts.VaultTransaction.fromArgs({ multisig: ms, creator: site.publicKey, index: Number(index), bump: 255, vaultIndex: 0, vaultBump: 255, ephemeralSignerBumps: new Uint8Array(), message }).serialize()[0];
   };
-  const net = { slot: 100, sends: 0, sims: 0, genesis: GENESIS_HASH[network], simErr: null as unknown, sendError: null as Error | null, onSend: null as (() => void) | null, onSim: null as (() => void) | null, status: { confirmationStatus: "confirmed", err: null } as unknown };
+  const net = { getTx: null as unknown, slot: 100, sends: 0, sims: 0, genesis: GENESIS_HASH[network], simErr: null as unknown, sendError: null as Error | null, onSend: null as (() => void) | null, onSim: null as (() => void) | null, status: { confirmationStatus: "confirmed", err: null } as unknown };
   const seen = { sims: [] as unknown[], txReads: 0 };
   const hostile = { txPda: null as PublicKey | null, later: null as Buffer | null, failAfterSend: false };
   const read = (k: PublicKey) => {
@@ -103,7 +104,7 @@ function world(network: "mainnet" | "testnet" = "testnet") {
     simulateTransaction: async (tx: unknown) => { net.sims++; seen.sims.push(tx); net.onSim?.(); return { value: { err: net.simErr, logs: net.simErr ? ["Program x failed: boom"] : [], unitsConsumed: 5_000, accounts: [{ lamports: 999_990_000 }] } }; },
     getFeeForMessage: async () => ({ value: 5_000 }),
     getSignaturesForAddress: async () => [],
-    getTransaction: async () => null,
+    getTransaction: async () => net.getTx,
     getBlockHeight: async () => 1,
     sendRawTransaction: async () => { net.sends++; if (net.sendError) throw net.sendError; net.onSend?.(); return "sig"; },
     getSignatureStatuses: async () => ({ value: [net.status] }),
@@ -116,7 +117,7 @@ function world(network: "mainnet" | "testnet" = "testnet") {
     getMultipleAccountsInfoAndContext: async (ks: PublicKey[]) => ({ context: { slot: verify.slot ?? net.slot }, value: ks.map(read2) }),
   };
   const run = (...argv: string[]) => quorumAction(argv, { connect: (u) => (u === VERIFY_URL ? second : conn) as unknown as Connection, out: (l) => out.push(l) });
-  return { network, verify, seen, hostile, conn, storedFor, dir, file, site, cosigner, backup, outsider, ms, vault, mint, target, program, propose, net, out, run, put, accounts, text: () => out.join("\n"),
+  return { setStale, network, verify, seen, hostile, conn, storedFor, dir, file, site, cosigner, backup, outsider, ms, vault, mint, target, program, propose, net, out, run, put, accounts, text: () => out.join("\n"),
     done: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 type World = ReturnType<typeof world>;
@@ -360,7 +361,7 @@ test("command: --execute sends once, then a proposal that doesn't read back is u
   const w = world();
   assert.equal(await w.run("propose-memo", ...base(w), "--keypair", w.file(w.site, "s"), "--text", "hi", "--execute"), 4);
   assert.equal(w.net.sends, 1);
-  assert.match(w.text(), /SENDING/); assert.match(w.text(), /doesn't read back yet/); assert.match(w.text(), /Do NOT re-propose/);
+  assert.match(w.text(), /SENDING/); assert.match(w.text(), /doesn't read back/); assert.match(w.text(), /Do NOT re-propose/);
   w.done();
 });
 
@@ -694,9 +695,9 @@ test("claim 2: the message hash is what the proposer built, and --expect-message
   const ix = setPub(w)[0];
   w.propose(1n, [ix], "Active", [w.site.publicKey]);
   const stored = w.accounts.get(squadsTransactionPda(w.program, w.ms, 1n).toBase58())!;
-  const planned = plannedMessageHash(w.ms, w.vault, ix, w.program);
-  assert.equal(storedMessageHash(stored), planned, "stored and locally built agree");
-  assert.notEqual(plannedMessageHash(w.ms, w.vault, setPub(w, key())[0], w.program), planned, "another target, another hash");
+  const planned = plannedMessageHash(w.ms, w.vault, ix, w.program, 1n);
+  assert.equal(storedMessageHash(stored, w.ms, 1n), planned, "stored and locally built agree");
+  assert.notEqual(plannedMessageHash(w.ms, w.vault, setPub(w, key())[0], w.program, 1n), planned, "another target, another hash");
   const backup = w.file(w.backup, "b");
   const args = ["approve", ...base(w), "--keypair", backup, "--index", "1", "--expect-new-publisher", w.target.toBase58()];
   assert.equal(await w.run(...args, "--expect-message-hash", planned), 0, w.text());
@@ -872,4 +873,325 @@ test("redaction: scheme and host only; same endpoint compares host and port", ()
   assert.ok(!redactRpc("not a url secret").includes("secret"), "an unparseable value isn't echoed");
   assert.ok(sameEndpoint("https://a.example/x?k=1", "https://A.EXAMPLE/y"), "paths and keys don't make it independent");
   assert.ok(!sameEndpoint("http://127.0.0.1:1", "http://127.0.0.1:2"), "another port is another endpoint");
+});
+
+// ---------- second review of 40e4c2c ----------
+const scanConn = (w: World, o: { fail?: boolean; short?: boolean } = {}) => ({ ...w.conn, getMultipleAccountsInfo: async (ks: PublicKey[]) => {
+  if (o.fail) throw new Error("fetch failed");
+  const out = ks.map((k) => w.accounts.get(k.toBase58()) ?? null);
+  return o.short ? [] : out;
+} }) as unknown as Connection;
+const noProposal = (w: World, i: bigint) => w.accounts.delete(squadsProposalPda(w.program, w.ms, i).toBase58());
+
+test("open proposals: an Approved one below the stale index still counts, from index 1, past the first pages", async () => {
+  const w = world();
+  const list = [publishListIx(TAX, w.vault, w.mint, Buffer.alloc(32, 1), 4n, 5n, Buffer.alloc(33, 0))];
+  w.propose(1n, list, "Approved", [w.site.publicKey, w.backup.publicKey]);
+  w.propose(2n, setPub(w), "Approved", [w.site.publicKey, w.backup.publicKey]);
+  w.propose(130n, setPub(w), "Approved", [w.site.publicKey, w.backup.publicKey]);
+  w.setStale(200n);
+  w.propose(201n, setPub(w), "Active", [w.site.publicKey]);
+  const q = (await readQuorum(scanConn(w), w.program, w.ms))!;
+  assert.equal(q.staleTransactionIndex, 200n);
+  assert.deepEqual((await openProposalsFor(scanConn(w), w.program, w.ms, q, vaultPda(TAX, w.mint), { gapMs: 0 })).map((x) => [x.index, x.status]),
+    [[1n, "Approved"], [2n, "Approved"], [130n, "Approved"], [201n, "Active"]]);
+  w.done();
+});
+
+test("open proposals: what the real binaries let run is open; what they refuse below the stale index isn't", async () => {
+  const w = world();
+  // Rehearsed on both pinned binaries: below the stale index these can't get votes, a proposal or activation.
+  w.propose(1n, setPub(w), "Active", [w.site.publicKey]);
+  w.propose(2n, setPub(w), "Draft");
+  w.propose(3n, setPub(w), "Active", [w.site.publicKey]); noProposal(w, 3n);
+  // A config transaction Approved before going stale: the program refuses to run it.
+  const cfg = () => squads.accounts.ConfigTransaction.fromArgs({ multisig: w.ms, creator: w.site.publicKey, index: 4, bump: 255, actions: [] }).serialize()[0];
+  w.propose(4n, cfg(), "Approved", [w.site.publicKey, w.backup.publicKey]);
+  w.setStale(4n);
+  // Above it: a Draft can be activated and a stored transaction with no proposal can be given one.
+  w.propose(5n, setPub(w), "Draft");
+  w.propose(6n, setPub(w), "Active", [w.site.publicKey]); noProposal(w, 6n);
+  w.propose(7n, setPub(w), "Executing");
+  const q = (await readQuorum(scanConn(w), w.program, w.ms))!;
+  assert.deepEqual((await openProposalsFor(scanConn(w), w.program, w.ms, q, vaultPda(TAX, w.mint), { gapMs: 0 })).map((x) => [x.index, x.status]),
+    [[5n, "Draft"], [6n, "no proposal yet"], [7n, "Executing"]]);
+  w.done();
+});
+
+test("open proposals: a scan that can't finish fails closed, never reporting none", async () => {
+  const w = world();
+  w.propose(1n, [memoIx(w.vault)], "Executed");
+  const q = (await readQuorum(scanConn(w), w.program, w.ms))!;
+  const v = vaultPda(TAX, w.mint), scan = (c: Connection, o = {}) => openProposalsFor(c, w.program, w.ms, q, v, { gapMs: 0, ...o });
+  assert.deepEqual(await scan(scanConn(w)), [], "the fixture is clean when the scan finishes");
+  await assert.rejects(scan(scanConn(w, { fail: true })), /can't tell which proposals are open/);
+  await assert.rejects(scan(scanConn(w, { short: true })), /can't tell which proposals are open/);
+  await assert.rejects(scan(scanConn(w), { maxIndexes: 0n }), /more than the 0 indexes/);
+  // An account at a proposal's address that doesn't decode isn't "no proposal".
+  w.put(squadsProposalPda(w.program, w.ms, 1n), w.program, Buffer.alloc(64, 7));
+  await assert.rejects(scan(scanConn(w)), /#1/);
+  w.done();
+});
+
+test("read-back: a confirmed vote whose proposal reads back null or undecodable is exit 4, signature kept, for every subcommand", async () => {
+  for (const [sub, status, shape] of [["approve", "Active", "memo"], ["reject", "Active", "memo"], ["cancel", "Approved", "memo"], ["execute", "Approved", "memo"], ["execute", "Approved", "set"]] as const) {
+    for (const bad of ["null", "garbage", "bad-disc"] as const) {
+      const w = world();
+      const ixs = shape === "set" ? setPub(w) : [memoIx(w.vault)];
+      w.propose(1n, ixs, status, status === "Approved" ? [w.site.publicKey, w.backup.publicKey] : [w.site.publicKey]);
+      const pda = squadsProposalPda(w.program, w.ms, 1n);
+      w.net.onSend = () => {
+        if (bad === "null") w.accounts.delete(pda.toBase58());
+        else if (bad === "garbage") w.put(pda, w.program, Buffer.concat([Buffer.from(squads.generated.proposalDiscriminator), Buffer.alloc(3, 9)]));
+        else w.put(pda, w.program, Buffer.alloc(80, 7));
+      };
+      const code = await w.run(sub, ...base(w), "--keypair", w.file(w.backup, "b"), "--index", "1", ...(shape === "set" ? ["--expect-new-publisher", w.target.toBase58()] : []), "--execute");
+      assert.equal(code, 4, `${sub} ${shape} ${bad}: ${w.text()}`);
+      assert.match(w.text(), /VERIFICATION UNAVAILABLE/); assert.match(w.text(), /CONFIRMED \(signature \w+\)/); assert.match(w.text(), /Do NOT re-propose or send it again/);
+      assert.doesNotMatch(w.text(), /read back: #1: no proposal account/);
+      assert.equal(w.net.sends, 1);
+      w.done();
+    }
+  }
+});
+
+test("read-back: a proposal whose transaction is missing or undecodable is exit 4, a decoded mismatch stays a refusal", async () => {
+  for (const bad of ["missing", "garbage", "config"] as const) {
+    const w = world();
+    w.net.onSend = () => {
+      w.propose(1n, [memoIx(w.vault, "hi")], "Active", [w.site.publicKey]);
+      const pda = squadsTransactionPda(w.program, w.ms, 1n);
+      if (bad === "missing") w.accounts.delete(pda.toBase58());
+      else w.put(pda, w.program, bad === "garbage" ? Buffer.alloc(80, 7) : squads.accounts.ConfigTransaction.fromArgs({ multisig: w.ms, creator: w.site.publicKey, index: 1, bump: 255, actions: [] }).serialize()[0]);
+    };
+    assert.equal(await w.run("propose-memo", ...base(w), "--keypair", w.file(w.site, "s"), "--text", "hi", "--execute"), 4, `${bad}: ${w.text()}`);
+    assert.match(w.text(), /VERIFICATION UNAVAILABLE/); assert.match(w.text(), /CONFIRMED \(signature/);
+    assert.equal(w.net.sends, 1);
+    w.done();
+  }
+  const w = world();
+  w.net.onSend = () => w.propose(1n, [memoIx(w.vault, "another memo")], "Active", [w.site.publicKey]);
+  assert.equal(await w.run("propose-memo", ...base(w), "--keypair", w.file(w.site, "s"), "--text", "hi", "--execute"), 1, w.text());
+  assert.match(w.text(), /stored message hash/);
+  w.done();
+});
+
+test("read-back: an executed set_publisher whose vault is missing or undecodable is exit 4; a memo's log is required", async () => {
+  for (const bad of ["null", "garbage"] as const) {
+    const w = world();
+    w.propose(1n, setPub(w), "Approved", [w.site.publicKey, w.backup.publicKey]);
+    w.net.onSend = () => {
+      w.propose(1n, setPub(w), "Executed", [w.site.publicKey, w.backup.publicKey]);
+      if (bad === "null") w.accounts.delete(vaultPda(TAX, w.mint).toBase58()); else w.put(vaultPda(TAX, w.mint), TAX, Buffer.alloc(9, 1));
+    };
+    // The vault must read while it's checked before sending, so only the read after the send differs.
+    assert.equal(await w.run("execute", ...base(w), "--keypair", w.file(w.backup, "b"), "--index", "1", "--expect-new-publisher", w.target.toBase58(), "--execute"), 4, w.text());
+    assert.match(w.text(), /VERIFICATION UNAVAILABLE/); assert.doesNotMatch(w.text(), /did NOT change/);
+    w.done();
+  }
+  const m = world();
+  m.propose(1n, [memoIx(m.vault)], "Approved", [m.site.publicKey, m.backup.publicKey]);
+  m.net.onSend = () => m.propose(1n, [memoIx(m.vault)], "Executed", [m.site.publicKey, m.backup.publicKey]);
+  const args = ["execute", ...base(m), "--keypair", m.file(m.backup, "b"), "--index", "1", "--execute"];
+  assert.equal(await m.run(...args), 4, m.text());
+  assert.match(m.text(), /memo program's log/);
+  m.out.length = 0;
+  m.propose(1n, [memoIx(m.vault)], "Approved", [m.site.publicKey, m.backup.publicKey]);
+  m.net.getTx = { meta: { logMessages: [`Program log: Signed by ${m.vault.toBase58()}`] } };
+  assert.equal(await m.run(...args), 0, m.text());
+  assert.match(m.text(), /the vault PDA signed/);
+  m.done();
+});
+
+/** A real HTTP endpoint for the real web3.js failure paths: `fail` says how a method fails, otherwise it answers from `inner`. */
+async function failingRpc(inner: string, fail: (method: string) => { status: number; statusText?: string; body: string } | null) {
+  const http = await import("node:http");
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => { body += d; });
+    req.on("end", async () => {
+      const f = fail(JSON.parse(body).method);
+      if (f) { res.writeHead(f.status, f.statusText ?? "", { "content-type": "text/plain" }); res.end(f.body); return; }
+      const r = await fetch(inner, { method: "POST", headers: { "content-type": "application/json" }, body });
+      res.writeHead(200, { "content-type": "application/json" }); res.end(await r.text());
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return { base: `http://127.0.0.1:${(server.address() as { port: number }).port}`, close: () => new Promise((r) => server.close(r)) };
+}
+const SECRET = "s3cr3t+Key/42=x", ENC = encodeURIComponent(SECRET);
+const leaks = (t: string) => [SECRET, ENC, ENC.toLowerCase(), "s3cr3t", Buffer.from(SECRET).toString("base64"), Buffer.from(SECRET).toString("base64url"), Buffer.from(`alice:${SECRET}`).toString("base64")].filter((x) => t.includes(x));
+const secretPath = `/v1/${ENC}?api-key=${ENC}`;
+
+test("redaction: real web3.js failures on the primary RPC print no credential, in any form, and no response body", async () => {
+  const bodies = [
+    { status: 403, statusText: "Forbidden", body: `invalid api-key ${SECRET} for /v1/${ENC} (${Buffer.from(SECRET).toString("base64")}) short-token-abc` },
+    { status: 200, body: `not json ${SECRET} short-token-abc` },
+    { status: 200, body: JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: `bad key ${SECRET} short-token-abc` } }) },
+    { status: 200, body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { wrong: `${SECRET} short-token-abc` } }) },
+  ];
+  for (const b of bodies) {
+    const w = world("testnet");
+    const { rpc } = await realPathRpc(w);
+    const f = await failingRpc(rpc.url, () => b);
+    const out: string[] = [];
+    const code = await quorumAction(["status", "--network", "testnet", "--rpc", `${f.base}${secretPath}`, "--multisig", w.ms.toBase58()], { connect: defaultDeps().connect, out: (l) => out.push(l) });
+    assert.equal(code, 1, out.join("\n"));
+    assert.deepEqual(leaks(out.join("\n")), [], out.join("\n"));
+    assert.doesNotMatch(out.join("\n"), /short-token-abc/, "the untrusted body isn't printed, whatever is in it");
+    if (b.status === 403) assert.match(out.join("\n"), /403 Forbidden/, "the status still is");
+    await f.close(); await rpc.close(); w.done();
+  }
+});
+
+test("redaction: real web3.js failures on the verification RPC, and on a read-back after a send", async () => {
+  const w = world("testnet");
+  w.propose(1n, [memoIx(w.vault)], "Active", [w.site.publicKey]);
+  const { rpc } = await realPathRpc(w);
+  const body = `invalid api-key ${SECRET} for /v1/${ENC} short-token-abc`;
+  const v = await failingRpc(rpc.url, () => ({ status: 403, statusText: "Forbidden", body }));
+  const out: string[] = [];
+  const deps = { connect: defaultDeps().connect, out: (l: string) => out.push(l) };
+  const code = await quorumAction(["approve", "--network", "testnet", "--rpc", rpc.url, "--verify-rpc", `${v.base}${secretPath}`, "--multisig", w.ms.toBase58(), "--keypair", w.file(w.backup, "b"), "--index", "1"], deps);
+  assert.equal(code, 1, out.join("\n"));
+  assert.match(out.join("\n"), /--verify-rpc couldn't be read: .*403 Forbidden/);
+  assert.deepEqual(leaks(out.join("\n")), [], out.join("\n")); assert.doesNotMatch(out.join("\n"), /short-token-abc/);
+  await v.close();
+  // After a confirmed send the primary starts refusing: exit 4, same rule.
+  out.length = 0;
+  let sent = false;
+  const p = await failingRpc(rpc.url, (m) => { if (m === "sendTransaction") { sent = true; return null; } return sent && m === "getAccountInfo" ? { status: 403, statusText: "Forbidden", body } : null; });
+  const code2 = await quorumAction(["approve", "--network", "testnet", "--rpc", `${p.base}${secretPath}`, "--multisig", w.ms.toBase58(), "--keypair", w.file(w.backup, "b"), "--index", "1", "--execute"], deps);
+  assert.equal(code2, 4, out.join("\n"));
+  assert.deepEqual(leaks(out.join("\n")), [], out.join("\n")); assert.doesNotMatch(out.join("\n"), /short-token-abc/);
+  await p.close(); await rpc.close(); w.done();
+});
+
+test("redaction: parsed credentials and their encodings are scrubbed from any line; ordinary words and addresses aren't", async () => {
+  const w = world("testnet");
+  const url = `https://alice:${ENC}@rpc.example/rpc/v1/mainnet/${ENC}?commitment=confirmed&api-key=${ENC}#${ENC}`;
+  const text = [`decoded ${SECRET}`, `encoded ${ENC}`, `lower ${ENC.toLowerCase()}`, `b64 ${Buffer.from(SECRET).toString("base64")}`, `basic ${Buffer.from(`alice:${SECRET}`).toString("base64")}`, `url ${url}`].join(" | ");
+  const out: string[] = [];
+  const code = await quorumAction(["status", "--network", "mainnet", "--rpc", url, "--multisig", w.ms.toBase58()], { connect: () => { throw new Error(text); }, out: (l) => out.push(l) });
+  assert.equal(code, 1);
+  assert.deepEqual(leaks(out.join("\n")), [], out.join("\n"));
+  // A flag this tool doesn't know, carrying a URL, isn't echoed either.
+  out.length = 0;
+  await quorumAction([`--rpc=${url}`], { connect: () => { throw new Error("no"); }, out: (l) => out.push(l) });
+  assert.deepEqual(leaks(out.join("\n")), [], out.join("\n"));
+  // Words from a generic URL path survive, so the tool's own output stays readable.
+  const w2 = world("testnet");
+  const { rpc } = await realPathRpc(w2);
+  w2.propose(1n, [memoIx(w2.vault)], "Active", [w2.site.publicKey]);
+  const o2: string[] = [];
+  assert.equal(await quorumAction(["status", "--network", "testnet", "--rpc", `${rpc.url}/rpc/testnet?commitment=confirmed`, "--multisig", w2.ms.toBase58(), "--index", "1"], { connect: defaultDeps().connect, out: (l) => o2.push(l) }), 0, o2.join("\n"));
+  assert.match(o2.join("\n"), /network   testnet/);
+  assert.match(o2.join("\n"), new RegExp(w2.vault.toBase58()));
+  await rpc.close(); w.done(); w2.done();
+});
+
+const listIxOf = (w: World) => [publishListIx(TAX, w.vault, w.mint, Buffer.alloc(32, 1), 4n, 5n, Buffer.alloc(33, 0))];
+test("reject: says how many rejections remain on-chain, and doesn't promise what the site does", async () => {
+  const w = world();
+  w.propose(1n, listIxOf(w), "Active", [w.site.publicKey]);
+  assert.equal(await w.run("reject", ...base(w), "--keypair", w.file(w.backup, "b"), "--index", "1"), 0, w.text());
+  assert.doesNotMatch(w.text(), /one rejection is final/i);
+  assert.match(w.text(), /rejection 1 of the 2 that close #1/); assert.match(w.text(), /1 more after it/);
+  assert.match(w.text(), /only if .*tracking/i, "the site's reaction is qualified");
+  assert.match(w.text(), /own key/);
+  w.done();
+});
+
+test("reject and cancel: cleared only on a terminal status", async () => {
+  const w = world();
+  const backup = w.file(w.backup, "b");
+  w.propose(1n, listIxOf(w), "Active", [w.site.publicKey]);
+  w.net.onSend = () => w.propose(1n, listIxOf(w), "Active", [w.site.publicKey], [w.backup.publicKey]);
+  assert.equal(await w.run("reject", ...base(w), "--keypair", backup, "--index", "1", "--execute"), 0, w.text());
+  assert.match(w.text(), /still Active, NOT cleared: 1 more rejection/);
+  assert.doesNotMatch(w.text(), /closed on-chain/);
+  w.out.length = 0;
+  w.propose(1n, listIxOf(w), "Active", [w.site.publicKey], [w.cosigner.publicKey]);
+  w.net.onSend = () => w.propose(1n, listIxOf(w), "Rejected", [w.site.publicKey], [w.cosigner.publicKey, w.backup.publicKey]);
+  assert.equal(await w.run("reject", ...base(w), "--keypair", backup, "--index", "1", "--execute"), 0, w.text());
+  assert.match(w.text(), /rejection 2 of the 2 that close #1/); assert.match(w.text(), /#1 is Rejected: closed on-chain/);
+  assert.doesNotMatch(w.text(), /NOT cleared/);
+  w.out.length = 0;
+  w.propose(2n, listIxOf(w), "Approved", [w.site.publicKey, w.backup.publicKey]);
+  w.net.onSend = null;
+  assert.equal(await w.run("cancel", ...base(w), "--keypair", backup, "--index", "2", "--execute"), 0, w.text());
+  assert.match(w.text(), /still Approved, NOT cleared/); assert.match(w.text(), /still run it/);
+  w.done();
+});
+
+test("message hash: bound to the multisig and index, so a hash can't be replayed against another proposal", async () => {
+  const w = world("mainnet");
+  const a = setPub(w)[0];
+  const hi = plannedMessageHash(w.ms, w.vault, a, w.program, 1n);
+  assert.notEqual(hi, plannedMessageHash(w.ms, w.vault, a, w.program, 2n), "another index, another hash");
+  assert.notEqual(hi, plannedMessageHash(key(), w.vault, a, w.program, 1n), "another multisig, another hash");
+  // Codex's scenario: colluding RPCs report the honest A message at index j, where the chain stores B. The hash the honest proposer gave for #1 doesn't fit #2.
+  w.propose(1n, [a], "Active", [w.site.publicKey]);
+  w.propose(2n, [a], "Active", [w.site.publicKey]);
+  const args = ["approve", ...base(w), "--keypair", w.file(w.backup, "b"), "--index", "2", "--expect-new-publisher", w.target.toBase58(), "--single-rpc-accepted"];
+  assert.equal(await w.run(...args, "--expect-message-hash", hi), 1, w.text());
+  assert.match(w.text(), /--expect-message-hash is/);
+  // What it doesn't help with: a hash for #2 from whoever chose #2 passes, whatever the chain stores. Stated in the header.
+  w.out.length = 0;
+  assert.equal(await w.run(...args, "--expect-message-hash", plannedMessageHash(w.ms, w.vault, a, w.program, 2n)), 0, w.text());
+  w.done();
+});
+
+test("wording: the single-RPC warning and the mainnet refusal say plainly what isn't detected", async () => {
+  const w = world("mainnet");
+  w.propose(1n, setPub(w), "Active", [w.site.publicKey]);
+  const args = ["approve", ...base(w), "--keypair", w.file(w.backup, "b"), "--index", "1", "--expect-new-publisher", w.target.toBase58()];
+  assert.equal(await w.run(...args), 1, "still refused by default on mainnet");
+  assert.match(w.text(), /--single-rpc-accepted/);
+  w.out.length = 0;
+  assert.equal(await w.run(...args, "--single-rpc-accepted"), 0, w.text());
+  assert.match(w.text(), /WARNING: --single-rpc-accepted/); assert.match(w.text(), /different set_publisher/); assert.match(w.text(), /nothing in this tool detects it/i);
+  w.done();
+});
+
+test("setup-publisher-quorum: refuses a stale Approved proposal; a scan that can't finish refuses even with --allow-open-proposals; only public keys for members", async () => {
+  const { spawn } = await import("node:child_process");
+  const createKey = Keypair.generate(), program = SQUADS_PROGRAM_IDS.testnet;
+  const w = world("testnet", squadsMultisigPda(program, createKey.publicKey));
+  const payer = Keypair.generate(), mint = key();
+  w.put(vaultPda(TAX, mint), TAX, vaultAccount(mint, payer.publicKey));
+  const { rpc, wire } = await realPathRpc(w);
+  const f = await failingRpc(rpc.url, (m) => (m === "getMultipleAccounts" ? { status: 403, statusText: "Forbidden", body: `invalid api-key ${SECRET} short-token-abc` } : null));
+  const run = async (url: string, ...more: string[]) => {
+    const child = spawn(process.execPath, [path.join("node_modules", "tsx", "dist", "cli.mjs"), "scripts/setup-publisher-quorum.ts", "--rpc", url, "--network", "testnet", "--keypair", w.file(payer, "payer"), "--create-key", w.file(createKey, "create"),
+      "--site", w.site.publicKey.toBase58(), "--cosigner", w.cosigner.publicKey.toBase58(), "--backup", w.backup.publicKey.toBase58(), "--mint", mint.toBase58(), "--program", TAX.toBase58(), ...more], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout!.on("data", (d) => { out += d; }); child.stderr!.on("data", (d) => { out += d; });
+    const code = await new Promise<number | null>((r) => child.once("exit", r));
+    return { code, out };
+  };
+  const sets = () => wire.simulated.length + wire.sent.length;
+  // Below the stale index and Approved: the old scan started above it and saw nothing.
+  const vaultAddr = squadsVaultPda(program, w.ms);
+  w.propose(1n, [setPublisherIx(TAX, vaultAddr, mint, w.target)], "Approved", [w.site.publicKey, w.backup.publicKey]);
+  w.setStale(1n);
+  const seen = await run(rpc.url);
+  assert.equal(seen.code, 1, seen.out);
+  assert.match(seen.out, /#1 Approved \(stale, still executable\)/); assert.match(seen.out, /Not moving this vault/);
+  assert.equal(sets(), 0, "nothing simulated or sent for a vault it refused");
+  // The scan can't finish: refused, and the flag for what was seen doesn't cover it. No credential or body printed.
+  for (const more of [[], ["--allow-open-proposals"]]) {
+    const r = await run(`${f.base}${secretPath}`, ...more);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /can't tell which proposals are open/); assert.match(r.out, /Not moving this vault/); assert.match(r.out, /403 Forbidden/);
+    assert.deepEqual(leaks(r.out), [], r.out); assert.doesNotMatch(r.out, /short-token-abc/);
+    assert.equal(sets(), 0, "nothing simulated or sent when the scan didn't finish");
+  }
+  // With nothing open it goes on to the simulation, and the backup was only ever a public key.
+  w.propose(1n, [setPublisherIx(TAX, vaultAddr, mint, w.target)], "Cancelled", [w.site.publicKey, w.backup.publicKey]);
+  const clear = await run(rpc.url);
+  assert.equal(clear.code, 0, clear.out);
+  assert.match(clear.out, /0 can still act on this vault/);
+  assert.ok(sets() > 0, "it reached the simulation");
+  await f.close(); await rpc.close(); w.done();
 });

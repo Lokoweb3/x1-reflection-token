@@ -17,16 +17,20 @@
  *                 collector, so closed proposals return their rent to it)
  *   --cosigner    the independent co-signer (Vote, Execute), runs scripts/cosigner.ts
  *   --backup      optional cold key (Initiate, Vote, Execute): with the co-signer it can still
- *                 publish if the site's key is lost
+ *                 publish if the site's key is lost. Only its public key is needed here, so it
+ *                 can live on a hardware wallet (voting with one: scripts/quorum-action.ts header)
  *   --mint        vaults whose publisher moves to the multisig's vault: `set_publisher`, signed
  *                 by the vault's current publisher (--publisher, e.g. the site's key)
  *   --execute     send: create the multisig if it doesn't exist yet, then set_publisher for
  *                 each mint whose publisher is that key
  *
  *   --allow-open-proposals  move a vault's publisher to the multisig although the multisig holds
- *                 Active or Approved proposals naming that vault. They have no expiry: an old
+ *                 proposals that can still act on that vault, found by reading every index from 1
+ *                 (a config change doesn't end an Approved one). They have no expiry: an old
  *                 Approved list or set_publisher blocked while the publisher was elsewhere (see
- *                 scripts/quorum-action.ts) can run again the moment it returns, with one signature
+ *                 scripts/quorum-action.ts) can run again the moment it returns, with one signature.
+ *                 A scan that can't finish (RPC failure, more than MAX_SCAN_INDEXES indexes) always
+ *                 refuses: this flag accepts what was seen, not what wasn't
  *
  * An existing multisig at the address is checked (members, permissions, threshold, no config
  * authority, no time lock) and never modified. A vault already published by the multisig is
@@ -37,7 +41,7 @@ import path from "node:path";
 import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { SQUADS_PROGRAM_IDS, Permission, createMultisigIx, readQuorum, squadsMultisigPda, squadsVaultPda } from "../src/squads.js";
 import { TAX_VAULT_PROGRAM_ID, decodeVault, errorOf, setPublisherIx, vaultPda } from "../src/taxvault.js";
-import { openProposalsFor } from "../src/quorum-action.js";
+import { ScanIncomplete, openProposalsFor, printable, redactRpc, scrubber } from "../src/quorum-action.js";
 import { run, withPriority } from "../src/tx.js";
 
 // ---------- arguments ----------
@@ -75,7 +79,8 @@ if (new Set(members.map((m) => m.key.toBase58())).size !== members.length) usage
 if (!Number.isInteger(threshold) || threshold < 2 || threshold > members.length) usage(`--threshold must be 2..${members.length} (1 would let one key publish alone)`);
 
 const conn = new Connection(rpc, "confirmed");
-const say = (s: string) => console.log(s);
+const scrub = scrubber(argv);
+const say = (s: string) => console.log(scrub(s));
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Simulate without signatures (the dry run), naming a program error if there is one. */
@@ -96,7 +101,7 @@ if (!fs.existsSync(createKeyFile)) {
 const createKey = readKey(createKeyFile);
 const ms = squadsMultisigPda(squadsProgram, createKey.publicKey);
 const vault = squadsVaultPda(squadsProgram, ms);
-say(`${execute ? "EXECUTE" : "DRY RUN (nothing is sent; add --execute)"} on ${rpc}`);
+say(`${execute ? "EXECUTE" : "DRY RUN (nothing is sent; add --execute)"} on ${redactRpc(rpc)}`);
 say(`Squads program ${squadsProgram.toBase58()} (${network}), tax_vault ${taxProgram.toBase58()}`);
 say(`multisig    ${ms.toBase58()}`);
 say(`vault PDA   ${vault.toBase58()}   <- the new publisher (factory.taxVault.quorum.multisig = the multisig above)`);
@@ -144,9 +149,16 @@ for (const mint of mints) {
   if (v.pendingEpoch > 0n) say(`  ${mint.toBase58()}: note: list ${v.pendingEpoch} is pending; it stays and pays as usual`);
   // Only an existing multisig can hold proposals, so a first setup never gets here with any.
   const quorumNow = await readQuorum(conn, squadsProgram, ms);
-  const open = quorumNow ? await openProposalsFor(conn, squadsProgram, ms, quorumNow, addr) : [];
+  let open: Awaited<ReturnType<typeof openProposalsFor>>;
+  try { open = quorumNow ? await openProposalsFor(conn, squadsProgram, ms, quorumNow, addr) : []; } catch (e) {
+    if (!(e instanceof ScanIncomplete)) throw e;
+    say(`  ${mint.toBase58()}: ${e.message}. Not moving this vault (--allow-open-proposals doesn't cover what wasn't read): try again, or use a new multisig with another --create-key.`);
+    failed = true;
+    continue;
+  }
+  if (quorumNow) say(`  ${mint.toBase58()}: read proposals #1 to #${quorumNow.transactionIndex} (stale up to #${quorumNow.staleTransactionIndex}): ${open.length} can still act on this vault`);
   if (open.length) {
-    say(`  ${mint.toBase58()}: the multisig holds proposals naming this vault: ${open.map((o) => `#${o.index} ${o.status}`).join(", ")}. They could run as soon as the publisher returns.`);
+    say(`  ${mint.toBase58()}: the multisig holds proposals naming this vault: ${open.map((o) => `#${o.index} ${o.status}${o.index <= quorumNow!.staleTransactionIndex ? " (stale, still executable)" : ""}`).join(", ")}. They could run as soon as the publisher returns.`);
     if (!has("allow-open-proposals")) { say(`  Clear them first (scripts/quorum-action.ts reject, or cancel if Approved), or pass --allow-open-proposals. Not moving this vault.`); failed = true; continue; }
     say("  --allow-open-proposals: moving it anyway");
   }
@@ -159,7 +171,7 @@ for (const mint of mints) {
     say(`  ${mint.toBase58()}: publisher is now ${after.publisher.toBase58()} (${sig})`);
   } catch (e) {
     failed = true;
-    say(`  ${mint.toBase58()}: set_publisher failed: ${errorOf(msg(e)) ?? msg(e).split("\n")[0]}`);
+    say(`  ${mint.toBase58()}: set_publisher failed: ${errorOf(msg(e)) ?? printable(e)}`);
   }
 }
 if (execute && mints.length) say(`\nNext: set factory.taxVault.quorum = { "multisig": "${ms.toBase58()}" } in the site's config.json, restart it, and start scripts/cosigner.ts --multisig ${ms.toBase58()} with the co-signer's key.`);
