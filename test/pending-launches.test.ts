@@ -1,8 +1,8 @@
 /**
  * New launch records: journalled with the distributor key before step 1's transaction goes out,
  * moved to the launches once the token is on-chain; a step 1 that never lands leaves only a
- * journal, removed after a day. Old records whose token never reached the chain are removed
- * after a day; anything else is kept. No network: the connection is a stand-in. The server's own
+ * journal, removed after a day with proof from the chain. Saved records whose token never reached
+ * the chain need the same proof and carry what it takes; anything else is kept. No network: the connection is a stand-in. The server's own
  * hooks and a real kill and restart are in factory-site.test.ts.
  */
 import { test, type TestContext } from "node:test";
@@ -306,23 +306,193 @@ test("recoverPendingLaunches brings back every journal, whatever its age; the sw
   assert.ok(fs.existsSync(file(mint, "distributor.json")));
 });
 
-test("GC removes only day-old unregistered records whose token and wallet never reached the chain", async () => {
-  const old = new Date(Date.now() - 2 * 86_400_000).toISOString();
-  const write = (extra: Record<string, unknown> = {}, files: string[] = []) => {
-    const mint = Keypair.generate().publicKey.toBase58(), distributor = Keypair.generate();
-    fs.mkdirSync(path.join(dir, "launches", mint), { recursive: true });
-    fs.writeFileSync(file(mint, "launch.json"), JSON.stringify({ ...params, mint, distributor: distributor.publicKey.toBase58(), pool: mint, createdAt: old, ...extra }));
-    fs.writeFileSync(file(mint, "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)));
-    for (const f of files) fs.writeFileSync(file(mint, f), "{}");
-    return { mint, distributor: distributor.publicKey.toBase58() };
+const old = () => new Date(Date.now() - 2 * 86_400_000).toISOString();
+/** A saved launch written directly, with its recorded step 1 validity (null: from before that was kept). */
+function writeRecord(opts: { extra?: Record<string, unknown>; files?: string[]; lastValid?: number | null; key?: boolean; mint?: string } = {}) {
+  const mint = opts.mint ?? Keypair.generate().publicKey.toBase58(), distributor = Keypair.generate();
+  fs.mkdirSync(path.join(dir, "launches", mint), { recursive: true });
+  fs.writeFileSync(file(mint, "launch.json"), JSON.stringify({ ...params, mint, distributor: distributor.publicKey.toBase58(), pool: mint, createdAt: old(), ...opts.extra }));
+  if (opts.key !== false) fs.writeFileSync(file(mint, "distributor.json"), JSON.stringify(Array.from(distributor.secretKey)));
+  if (opts.lastValid !== null) fs.writeFileSync(file(mint, "step.json"), JSON.stringify({ lastValidBlockHeight: opts.lastValid ?? 100 }));
+  for (const f of opts.files ?? []) fs.writeFileSync(file(mint, f), "{}");
+  return { mint, distributor: distributor.publicKey.toBase58() };
+}
+const present = (mint: string) => fs.existsSync(file(mint, "launch.json")) && fs.existsSync(file(mint, "distributor.json"));
+/** The real flow: step 1 built and handed out, saved (a confirmed read saw it, or the relay's confirmation), then over a day old. */
+async function savedLaunch(lastValid = 100) {
+  const r = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  await handOutLaunchStep(r.mint, async (built) => built(lastValid));
+  assert.equal(persistLaunch(r.mint), true);
+  fs.writeFileSync(file(r.mint, "launch.json"), JSON.stringify({ ...r, createdAt: old() }));
+  return r;
+}
+
+test("records: a stale null from a lagging node doesn't remove a launch or its key", async () => {
+  const r = await savedLaunch();
+  const key = fs.readFileSync(file(r.mint, "distributor.json"), "utf8");
+  // The plain confirmed read says mint and wallet are gone.
+  assert.deepEqual(await gcLaunchRecords(fakeConn()), []);
+  assert.equal(fs.readFileSync(file(r.mint, "distributor.json"), "utf8"), key);
+  // It really landed: every plain read still misses it, the finalized one finds it.
+  assert.deepEqual(await gcLaunchRecords(chainAt(10_000, { seen: new Set([r.mint, r.distributor]) }).conn), []);
+  assert.equal(fs.readFileSync(file(r.mint, "distributor.json"), "utf8"), key);
+  fs.rmSync(path.join(dir, "launches", r.mint), { recursive: true });
+});
+
+test("records: a new launch abandoned after step 1 carries its evidence and goes once proven; the record itself is unchanged", async () => {
+  const r = await savedLaunch(4_242);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file(r.mint, "step.json"), "utf8")), { lastValidBlockHeight: 4_242 });
+  assert.equal(fs.statSync(file(r.mint, "step.json")).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(journal(r.mint)), false, "the journal is gone, the evidence isn't");
+  assert.equal("lastValidBlockHeight" in readLaunch(r.mint)!, false, "the record means what it did");
+  assert.deepEqual(await gcLaunchRecords(chainAt(4_242).conn), [], "not past it yet");
+  const proof = chainAt(4_243);
+  assert.deepEqual(await gcLaunchRecords(proof.conn), [r.mint]);
+  assert.equal(proof.reads.length, 1, "one finalized answer for the mint and the wallet");
+  assert.equal(fs.existsSync(path.join(dir, "launches", r.mint)), false);
+});
+
+test("records: anything short of the proof keeps the record and key", async () => {
+  const { mint, distributor } = writeRecord();
+  const kept = async (why: string, conn: Connection) => {
+    assert.deepEqual(await gcLaunchRecords(conn), [], why);
+    assert.ok(present(mint), why);
   };
-  const never = write();
-  const onChain = write();
-  const funded = write();
-  const registered = write({ registeredAt: old });
-  const recent = write({ createdAt: new Date().toISOString() });
-  const configured = write({}, ["config.json"]);
-  const removed = await gcLaunchRecords(fakeConn(new Set([onChain.mint]), new Set([funded.distributor])));
+  const answer = (value: unknown, slot: unknown = 190) => async () => ({ context: { slot }, value });
+  await kept("the tip isn't past the validity", chainAt(100, { readSlot: 500 }).conn);
+  await kept("the node reading is behind the tip", chainAt(150, { slot: 190, readSlot: 189 }).conn);
+  await kept("no tip", chainAt(150, { fail: "tip" }).conn);
+  await kept("no read", chainAt(150, { fail: "read" }).conn);
+  await kept("a node without the methods", fakeConn());
+  await kept("a tip without a height", Object.assign(chainAt(150).conn, { getEpochInfo: async () => ({ absoluteSlot: 190, epoch: 1, slotIndex: 1, slotsInEpoch: 100 }) }));
+  await kept("a tip without a slot", Object.assign(chainAt(150).conn, { getEpochInfo: async () => ({ blockHeight: 150, epoch: 1, slotIndex: 1, slotsInEpoch: 100 }) }));
+  await kept("the finalized read finds the mint", chainAt(150, { seen: new Set([mint]) }).conn);
+  await kept("the finalized read finds the wallet funded", chainAt(150, { seen: new Set([distributor]) }).conn);
+  await kept("an answer without a slot", Object.assign(chainAt(150).conn, { getMultipleAccountsInfoAndContext: async () => ({ context: {}, value: [null, null] }) }));
+  await kept("an answer missing accounts", Object.assign(chainAt(150).conn, { getMultipleAccountsInfoAndContext: answer([null]) }));
+  await kept("an answer for other accounts too", Object.assign(chainAt(150).conn, { getMultipleAccountsInfoAndContext: answer([null, null, null]) }));
+  await kept("an answer with a hole in it", Object.assign(chainAt(150).conn, { getMultipleAccountsInfoAndContext: answer([undefined, undefined]) }));
+  await kept("a wallet account with nothing in it isn't nothing", Object.assign(chainAt(150).conn, { getMultipleAccountsInfoAndContext: answer([null, { lamports: 0, owner: TOKEN_PROGRAM_ID, data: Buffer.alloc(0), executable: false }]) }));
+  assert.deepEqual(await gcLaunchRecords(chainAt(101).conn), [mint]);
+});
+
+test("records: a failed batch only keeps its own, and each batch is read in one answer", async () => {
+  const mints = Array.from({ length: 120 }, () => writeRecord().mint);
+  const base = chainAt(150);
+  let reads = 0;
+  const sizes: number[] = [];
+  const conn = Object.assign(base.conn, {
+    getMultipleAccountsInfo: async () => { throw new Error("a plain read proves nothing"); },
+    getMultipleAccountsInfoAndContext: async (keys: PublicKey[]) => {
+      sizes.push(keys.length);
+      if (++reads === 1) throw new Error("rpc down");
+      return { context: { slot: 190 }, value: keys.map(() => null) };
+    },
+  });
+  const removed = await gcLaunchRecords(conn);
+  assert.ok(sizes.length >= 3 && sizes.every((n) => n <= 100), `reads of ${sizes.join(", ")}`);
+  assert.equal(removed.length, 70, "one batch of 50 stays");
+  const left = mints.filter((m) => !removed.includes(m));
+  left.forEach((m) => assert.ok(present(m)));
+  assert.deepEqual((await gcLaunchRecords(chainAt(150).conn)).sort(), left.sort());
+});
+
+test("records: without evidence one is kept however old, said once per server run, with no key in the log and no chain read", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "error", (m: unknown) => { lines.push(String(m)); });
+  const conn = { getEpochInfo: async () => { throw new Error("no read needed"); } } as unknown as Connection;
+  const ancient = writeRecord({ lastValid: null, extra: { createdAt: "2020-01-01T00:00:00.000Z" } });
+  const secret = fs.readFileSync(file(ancient.mint, "distributor.json"), "utf8");
+  const damaged = ["{", "null", "{}", '{"lastValidBlockHeight":"100"}', '{"lastValidBlockHeight":-1}'].map((bad) => {
+    const { mint } = writeRecord();
+    fs.writeFileSync(file(mint, "step.json"), bad);
+    return mint;
+  });
+  const before = lines.length;
+  assert.deepEqual(await gcLaunchRecords(conn), []);
+  for (const mint of [ancient.mint, ...damaged]) {
+    assert.ok(present(mint), mint);
+    assert.equal(lines.filter((l) => l.includes(mint) && /kept/.test(l)).length, 1, lines.join("; "));
+  }
+  assert.ok(!lines.some((l) => l.includes(secret)), "no key in the log");
+  const once = lines.length;
+  assert.ok(once > before);
+  assert.deepEqual(await gcLaunchRecords(chainAt(10_000).conn), [], "still kept with the chain answering");
+  assert.equal(lines.length, once, "not again every pass");
+  for (const mint of [ancient.mint, ...damaged]) fs.rmSync(path.join(dir, "launches", mint), { recursive: true });
+});
+
+test("records: a key file that's unreadable or another wallet's keeps the record, without its contents in the log", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "error", (m: unknown) => { lines.push(String(m)); });
+  const torn = writeRecord(), other = writeRecord();
+  fs.writeFileSync(file(torn.mint, "distributor.json"), "[12,34,not-a-number-77");
+  fs.writeFileSync(file(other.mint, "distributor.json"), JSON.stringify(Array.from(Keypair.generate().secretKey)));
+  const otherKey = fs.readFileSync(file(other.mint, "distributor.json"), "utf8");
+  assert.deepEqual(await gcLaunchRecords(chainAt(10_000).conn), []);
+  for (const { mint } of [torn, other]) {
+    assert.ok(present(mint));
+    assert.ok(lines.some((l) => l.includes(mint) && /kept/.test(l)), lines.join("; "));
+  }
+  assert.ok(!lines.some((l) => l.includes("not-a-number") || l.includes("12,34") || l.includes(otherKey)), lines.join("; "));
+  for (const { mint } of [torn, other]) fs.rmSync(path.join(dir, "launches", mint), { recursive: true });
+});
+
+test("records: a vault launch (no key file) needs the same proof, on its mint", async () => {
+  const { mint, distributor } = writeRecord({ key: false, extra: { taxVault: true } });
+  const onDisk = () => fs.existsSync(file(mint, "launch.json"));
+  assert.deepEqual(await gcLaunchRecords(fakeConn()), []);
+  assert.deepEqual(await gcLaunchRecords(chainAt(150, { slot: 190, readSlot: 100 }).conn), []);
+  assert.deepEqual(await gcLaunchRecords(chainAt(150, { seen: new Set([mint]) }).conn), []);
+  assert.ok(onDisk());
+  // Its "distributor" is the vault's PDA, with no key here to lose: not what decides.
+  assert.deepEqual(await gcLaunchRecords(chainAt(150, { seen: new Set([distributor]) }).conn), [mint]);
+  assert.equal(onDisk(), false);
+});
+
+test("records: moved on while the chain was being read: kept", async () => {
+  const registered = writeRecord(), configured = writeRecord();
+  const base = chainAt(150);
+  const read = base.conn.getMultipleAccountsInfoAndContext;
+  const conn = Object.assign(base.conn, {
+    getMultipleAccountsInfoAndContext: async (...a: Parameters<typeof read>) => {
+      fs.writeFileSync(file(registered.mint, "launch.json"), JSON.stringify({ ...params, mint: registered.mint, distributor: registered.distributor, pool: registered.mint, createdAt: old(), registeredAt: old() }));
+      fs.writeFileSync(file(configured.mint, "config.json"), "{}");
+      return read(...a);
+    },
+  });
+  assert.deepEqual(await gcLaunchRecords(conn), []);
+  for (const { mint } of [registered, configured]) {
+    assert.ok(present(mint));
+    fs.rmSync(path.join(dir, "launches", mint), { recursive: true });
+  }
+});
+
+test("records: a directory name that isn't a mint is never touched, nor what a link points at", async (t) => {
+  t.mock.method(console, "error", () => undefined);
+  writeRecord({ mint: "not-a-mint" });
+  assert.deepEqual(await gcLaunchRecords(chainAt(10_000).conn), []);
+  assert.ok(present("not-a-mint"), "a name that isn't a key: kept");
+  fs.rmSync(path.join(dir, "launches", "not-a-mint"), { recursive: true });
+  // A link in the launches: only the link can ever go.
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), "pending-launch-link-"));
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  const { mint } = writeRecord();
+  fs.cpSync(path.join(dir, "launches", mint), target, { recursive: true });
+  fs.rmSync(path.join(dir, "launches", mint), { recursive: true });
+  fs.symlinkSync(target, path.join(dir, "launches", mint));
+  assert.deepEqual(await gcLaunchRecords(chainAt(10_000).conn), [mint]);
+  assert.ok(fs.existsSync(path.join(target, "distributor.json")));
+});
+
+test("records: the guards still apply; only an unregistered day-old record with nothing else beside it can go", async () => {
+  const never = writeRecord();
+  const onChain = writeRecord();
+  const funded = writeRecord();
+  const registered = writeRecord({ extra: { registeredAt: old() } });
+  const recent = writeRecord({ extra: { createdAt: new Date().toISOString() } });
+  const configured = writeRecord({ files: ["config.json"] });
+  const removed = await gcLaunchRecords(chainAt(150, { seen: new Set([onChain.mint, funded.distributor]) }).conn);
   assert.deepEqual(removed, [never.mint]);
   assert.equal(fs.existsSync(path.join(dir, "launches", never.mint)), false);
   for (const k of [onChain, funded, registered, recent, configured]) assert.ok(fs.existsSync(file(k.mint, "launch.json")), k.mint);

@@ -1856,8 +1856,8 @@ setTimeout(() => warmViews(), 15_000);
 setInterval(() => warmViews(), 300_000).unref();
 
 // New launches: a step 1 is journalled before its transaction leaves this server. Its record
-// moves to the launches once the token is on-chain; ones that never landed are tidied away after
-// a day. Unused pinned files are removed from Pinata.
+// moves to the launches once the token is on-chain; ones proven from the chain never to have landed
+// are tidied away after a day. Unused pinned files are removed from Pinata.
 try { const n = recoverPendingLaunches(); if (n) console.log(`Pending launches: ${n} back from the journal`); } catch (e) { console.error(`pending launches: ${e instanceof Error ? e.message : e}`); }
 // Every half minute; soon again after a failed chain read, since the launches that landed while
 // the server was down wait on it.
