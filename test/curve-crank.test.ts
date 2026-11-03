@@ -44,7 +44,7 @@ function curveData(mint: PublicKey, o: { status: number; delivered?: bigint; cre
 /** What the stand-in chain does. `refuse`: simulations carrying this step fail with lp_locker's error. */
 const world = {
   accounts: new Map<string, { owner: string; data: Buffer }>(),
-  refuse: new Set<Step>(), sends: [] as Buffer[], programQueries: [] as string[],
+  refuse: new Set<Step>(), short: new Set<Step>(), sends: [] as Buffer[], programQueries: [] as string[],
   // The RPC failing only for transactions carrying these steps, so a burn or refund that follows could go through.
   simDown: new Set<Step>(), sendDown: new Set<Step>(),
 };
@@ -66,6 +66,9 @@ before(async () => {
       case "simulateTransaction": {
         const raw = Buffer.from(params[0], "base64");
         if ([...world.simDown].some((s) => raw.includes(IX[s]))) return rpcError(-32005, "Too many requests");
+        // `auth` can't pay for this step: the system program's failure, in a CPI under lp_locker and the curve.
+        if ([...world.short].some((s) => raw.includes(IX[s]))) return { ...ctx, value: { err: { InstructionError: [2, { Custom: 1 }] }, unitsConsumed: 1000, accounts: null, returnData: null,
+          logs: ["Transfer: insufficient lamports 1000, need 2039280", ...["11111111111111111111111111111111", LOCKER_PROGRAM_ID.toBase58(), program.toBase58()].map((p) => `Program ${p} failed: custom program error: 0x1`)] } };
         const refused = [...world.refuse].some((s) => raw.includes(IX[s]));
         return { ...ctx, value: { err: refused ? { InstructionError: [2, { Custom: 6001 }] } : null, unitsConsumed: 1000, accounts: null, returnData: null,
           logs: refused ? [`Program ${LOCKER_PROGRAM_ID.toBase58()} failed: custom program error: 0x1771`] : [] } };
@@ -84,7 +87,7 @@ before(async () => {
   });
 });
 after(async () => { await rpc.close(); fs.rmSync(dir, { recursive: true, force: true }); });
-beforeEach(() => { world.accounts.clear(); world.refuse.clear(); world.simDown.clear(); world.sendDown.clear(); world.sends.length = 0; world.programQueries.length = 0; });
+beforeEach(() => { world.accounts.clear(); world.refuse.clear(); world.short.clear(); world.simDown.clear(); world.sendDown.clear(); world.sends.length = 0; world.programQueries.length = 0; });
 
 const cfg = () => ({ network: "testnet", factory: { curve: { programId: program.toBase58(), crankKeypair: crankKey } }, xdex: { programId: "7EEuq61z9VKdkUzj7G36xGd7ncyz8KBtUwAWVjypYQHf" } }) as never;
 const service = () => curves.curveService(conn(), cfg(), { microLamports: 1 });
@@ -141,6 +144,46 @@ test("a lock that starts working again resets the count", async (t) => {
   world.refuse.add("graduateLock");
   await passes(t, s, 1, REFUSAL_SPAN_SECS);
   assert.equal(sent("graduateBurn"), 0);
+});
+
+test("past the burn deadline: auth too poor for the lock never burns, and after a top-up the lock goes out", async (t) => {
+  const mint = Keypair.generate().publicKey;
+  put(mint, curveData(mint, { status: CurveStatus.PoolCreated, delivered: pastBurn() }));
+  const s = service();
+  world.short.add("graduateLock");
+  await passes(t, s, 6, REFUSAL_SPAN_SECS);
+  assert.equal(sent("graduateBurn"), 0, "minutes of the same shortage");
+  assert.equal(sent("graduateLock"), 0, "a lock that can't pay isn't sent");
+  world.short.clear(); // topped up
+  await passes(t, s, 1, 0);
+  assert.equal(sent("graduateLock"), 1);
+  assert.equal(sent("graduateBurn"), 0);
+});
+
+test("past the burn deadline: a refusal seen before the shortage doesn't count towards the burn after it", async (t) => {
+  const mint = Keypair.generate().publicKey;
+  put(mint, curveData(mint, { status: CurveStatus.PoolCreated, delivered: pastBurn() }));
+  const s = service();
+  world.refuse.add("graduateLock");
+  await passes(t, s, 1, 0);
+  world.refuse.clear();
+  world.short.add("graduateLock");
+  await passes(t, s, 1, 0);
+  world.short.clear();
+  world.refuse.add("graduateLock");
+  await passes(t, s, 1, REFUSAL_SPAN_SECS);
+  assert.equal(sent("graduateBurn"), 0, "only one sighting since the shortage");
+});
+
+test("past the refund deadline: auth too poor to create the pool opens no refunds", async (t) => {
+  const mint = Keypair.generate().publicKey;
+  put(mint, curveData(mint, { status: CurveStatus.Complete, delivered: BigInt(now() - REFUND_AFTER_SECS - DAY), positions: 1 }));
+  const lines: string[] = [];
+  const log = t.mock.method(console, "error", (m: unknown) => { lines.push(String(m)); });
+  world.short.add("graduatePool");
+  await passes(t, service(), 6, REFUSAL_SPAN_SECS);
+  log.mock.restore();
+  assert.equal(lines.filter((m) => /; refunding/.test(m)).length, 0);
 });
 
 test("before the burn deadline a refused lock never burns", async (t) => {

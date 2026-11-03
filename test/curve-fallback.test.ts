@@ -40,6 +40,46 @@ test("nothing else counts: not transport, fees, budgets or mismatched requests",
   assert.equal(chainRefusal(custom(6012), [failed(curve.toBase58(), "x")], curve), null, "InsufficientReserve");
 });
 
+const SYSTEM = "11111111111111111111111111111111";
+const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+/** `auth` short for an account the lock creates, as the runtime logs it: the system program in a CPI, under lp_locker, under the curve. */
+const shortOfLamports = [
+  `Program ${curve.toBase58()} invoke [1]`,
+  `Program ${locker} invoke [2]`,
+  `Program ${SYSTEM} invoke [3]`,
+  "Transfer: insufficient lamports 1000, need 2039280",
+  failed(SYSTEM, "custom program error: 0x1"),
+  failed(locker, "custom program error: 0x1"),
+  failed(curve.toBase58(), "custom program error: 0x1"),
+];
+
+test("short of funds, at whatever depth, proves nothing: anyone can top up and the step works", () => {
+  assert.equal(chainRefusal(custom(1), shortOfLamports, curve), null, "system program, under a CPI");
+  assert.equal(chainRefusal(custom(1), [failed(SYSTEM, "custom program error: 0x1")], curve), null, "by its code, without the Transfer line");
+  assert.equal(chainRefusal(custom(1), ["Transfer: insufficient lamports 5, need 9", failed(locker, "custom program error: 0x1")], curve), null, "by the line, whoever reports it");
+  for (const token of [TOKEN, TOKEN_2022]) {
+    assert.equal(chainRefusal(custom(1), [`Program ${token} invoke [3]`, "Program log: Error: insufficient funds", failed(token, "custom program error: 0x1"), failed(locker, "custom program error: 0x1")], curve), null, `${token} by its log`);
+    assert.equal(chainRefusal(custom(1), [failed(token, "custom program error: 0x1")], curve), null, `${token} by its code`);
+    assert.equal(chainRefusal(custom(0), [failed(token, "custom program error: 0x0")], curve), null, `${token}: account below rent`);
+  }
+  // The runtime's own error for a program taking more lamports than an account has.
+  assert.equal(chainRefusal({ InstructionError: [2, "InsufficientFunds"] }, [failed(locker, "insufficient funds for instruction")], curve), null);
+  assert.equal(chainRefusal({ InstructionError: [2, "AccountNotRentExempt"] }, [failed(locker, "account does not have enough lamports to be rent exempt")], curve), null);
+  // An unrecognised system program failure stays on the side of not burning.
+  assert.equal(chainRefusal(custom(7), [failed(SYSTEM, "custom program error: 0x7")], curve), null);
+  assert.equal(chainRefusal({ InstructionError: [2, "MissingRequiredSignature"] }, [failed(SYSTEM, "missing required signature for instruction")], curve), null);
+  // A failure log in a form this code doesn't know names no program, so it isn't a refusal.
+  assert.equal(chainRefusal(custom(1), [`Program ${SYSTEM} error: 0x1`], curve), null);
+});
+
+test("what still counts near those: an account already taken, and other programs' code 1", () => {
+  // Somebody else created the pool first: the system program won't create it again, top-up or not. Graduation's way out is the refund.
+  assert.equal(chainRefusal(custom(0), [`Create Account: account Address { address: x, base: None } already in use`, failed(SYSTEM, "custom program error: 0x0"), failed(locker, "custom program error: 0x0")], curve), `${SYSTEM}: custom 0`);
+  // A token program's refusal that money can't fix (OwnerMismatch), and code 1 of another program, which means something else.
+  assert.equal(chainRefusal(custom(4), [failed(TOKEN, "custom program error: 0x4")], curve), `${TOKEN}: custom 4`);
+  assert.equal(chainRefusal(custom(1), [failed(locker, "custom program error: 0x1")], curve), `${locker}: custom 1`);
+});
+
 test("one sighting is never enough, nor several within a moment", () => {
   const w = new RefusalWatch();
   assert.equal(REFUSALS_NEEDED, 2);
