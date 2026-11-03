@@ -655,3 +655,38 @@ test("a registered launch's status still names the oldest lock, so an old record
   assert.equal(s.lockNft, oldSmall.toBase58());
 });
 
+const at = { registeredAt: new Date().toISOString() };
+// ---------- holder passes on a vault off its launch ----------
+async function passBookWorld() {
+  const { PASS_BOOK_LEN, PASS_MODE_OFFSET, passBookPda } = await import("../src/passes.js");
+  const l = launched();
+  const vaultAddr = vaultPda(PROGRAM, l.mint);
+  const book = Buffer.alloc(PASS_BOOK_LEN);
+  sha8("account:PassBook").copy(book);
+  vaultAddr.toBuffer().copy(book, 8);
+  book.writeUInt32LE(1, 104);
+  key().toBuffer().copy(book, 120); key().toBuffer().copy(book, 152);
+  book.writeBigUInt64LE(100n, 184); // weight
+  book.writeBigUInt64LE(5_000_000n, 192); // owed
+  put(passBookPda(PROGRAM, vaultAddr), PROGRAM, book);
+  const on = (f: VaultFields) => { const d = encodeVault(f); d[PASS_MODE_OFFSET] = 1; put(vaultAddr, PROGRAM, d); };
+  save({ ...l.record, ...at, lockNft: l.nft.toBase58() });
+  return { l, on };
+}
+const passStep = (name: string) => world.simulated.filter((raw) => raw.includes(sha8(`global:${name}`))).length;
+
+test("an off-launch holder-pass vault makes no round but still pays what's allocated", async (t) => {
+  const { l, on } = await passBookWorld();
+  on({ ...l.vault, pool: pool(l.mint, 10n ** 15n, 10n ** 8n, { amm: OTHER_TIER }), holdersFunded: 10n ** 10n });
+  const { s } = await pass(t);
+  assert.equal(passStep("snapshot_batch") + passStep("close_round"), 0, "no new round through that pool");
+  assert.ok(passStep("pay_passes") > 0, (await notesOf(s, l.mint)).join(" | "));
+  assert.ok((await notesOf(s, l.mint)).some((n) => /no rounds/i.test(n)));
+});
+
+test("an on-launch holder-pass vault still runs its rounds", async (t) => {
+  const { l, on } = await passBookWorld();
+  on({ ...l.vault, holdersFunded: 10n ** 10n });
+  await pass(t);
+  assert.ok(passStep("snapshot_batch") > 0);
+});

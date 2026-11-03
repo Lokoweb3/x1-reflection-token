@@ -255,7 +255,8 @@ from there. (A site without the Tax Vault gives each token its own distributor w
   thin pool or a 1-raw-LP lock is refused here. A launch that fails isn't listed.
 - **The crank holds a listed vault to its record** on every pass: a vault on another pool
   than the record's gets no collect, sell, add liquidity or holder round from the site (nor
-  those steps on "Run the vault now"), while tax already sold still pays out; a creator NFT
+  those steps on "Run the vault now"), while tax already sold and allocated passes still
+  pay out; a creator NFT
   other than the record's stops only the creator reward. The panel, the page and the log
   (`VAULT NOT ON ITS LAUNCH`) say so. A record with no pool or lock NFT isn't compared on that
   field. `scripts/check-vault-bindings.ts` lists any differences, read-only.

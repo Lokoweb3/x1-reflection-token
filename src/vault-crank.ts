@@ -651,7 +651,7 @@ export function vaultCrank(env: CrankEnv) {
    * (SNAPSHOT_BATCH_LUT, PAY_BATCH_LUT); without it, plain transactions. A round that runs
    * past its window is simply started again next time.
    */
-  async function passRound(t: CrankToken, v: Vault, pool: VaultPoolAccounts, notes: string[]) {
+  async function passRound(t: CrankToken, v: Vault, pool: VaultPoolAccounts | null, notes: string[]) {
     let book = await readPassBook(v);
     if (!book) return;
     // A book made before passes went to MAX_PASSES grows in place first (the program can't load it until then).
@@ -662,7 +662,9 @@ export function vaultCrank(env: CrankEnv) {
       notes.push(`passes: book grown to ${MAX_PASSES} passes`);
     }
     const pot = passPot(v.holdersFunded, book);
-    const due = book.count > 0 && pot > 0n && pot >= book.minPot && nowSecs() >= book.lastRoundAt + book.minInterval;
+    // Without the pool's accounts (a vault off its launch, or the read failed) no round opens, and what's allocated still pays.
+    const due = !!pool && book.count > 0 && pot > 0n && pot >= book.minPot && nowSecs() >= book.lastRoundAt + book.minInterval;
+    if (!pool) notes.push("passes: no rounds this pass (no pool to read the price from); paying what's allocated");
     const owed = payBatches(book).length > 0;
     const tables = due || owed ? await passTables(t, v, book, notes).catch((e): AddressLookupTableAccount[] => { notes.push(`passes: no lookup table (${msg(e)})`); return []; }) : [];
     const table = tables.length > 0;
@@ -673,7 +675,7 @@ export function vaultCrank(env: CrankEnv) {
       for (const b of batches) {
         await send(t, v, `snapshot_batch ${b.start}+${b.accounts.length}`, [snapshotBatchIx(program, signer.publicKey, t.mint, b.start, b.accounts)], 1_000_000, tables);
       }
-      await send(t, v, `close_round (${book.count} passes)`, [closeRoundIx(program, signer.publicKey, t.mint, pool.pool, pool.tokenVault, pool.wxntVault)], 600_000, tables);
+      await send(t, v, `close_round (${book.count} passes)`, [closeRoundIx(program, signer.publicKey, t.mint, pool!.pool, pool!.tokenVault, pool!.wxntVault)], 600_000, tables);
       const before = book.allocated;
       book = (await readPassBook(v)) ?? book;
       notes.push(`passes: round read ${book.count} wallets in ${batches.length} batch${batches.length === 1 ? "" : "es"} and gave ${xnt(book.allocated - before)} of ${xnt(pot)}`);

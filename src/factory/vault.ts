@@ -902,7 +902,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
   function bindingNotes(r: LaunchRecord, v: Vault, notes: string[]) {
     const b = vaultBinding(r, v);
     const lines = [
-      ...(b.poolWrong ? [`NOT SELLING: the vault's pool ${v.pool.toBase58()} isn't the launch's ${r.pool}; collect, sell, add_liquidity and holder rounds are off, and tax already sold still pays out`] : []),
+      ...(b.poolWrong ? [`NOT SELLING: the vault's pool ${v.pool.toBase58()} isn't the launch's ${r.pool}; collect, sell, add_liquidity and holder rounds are off, and tax already sold and allocated passes still pay out`] : []),
       ...(b.nftWrong ? [`NOT PAYING THE CREATOR REWARD: the vault's creator NFT ${v.creatorNft.toBase58()} isn't the launch's ${r.lockNft}`] : []),
     ];
     notes.push(...lines);
@@ -954,7 +954,7 @@ export function vaultService(conn: Connection, cfg: Config, opts: { microLamport
     if (passes) {
       await step("holder passes", async () => {
         const now = (await crankRead(t.mint)) ?? vault;
-        if (pool) await c.passRound(t, now, pool, notes);
+        await c.passRound(t, now, pool, notes);
       });
       viewCache.delete(r.mint);
       status.set(r.mint, { at: new Date().toISOString(), ok, notes });
