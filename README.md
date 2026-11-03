@@ -652,8 +652,12 @@ last one (announce those first). Rejections and flags go to stdout and `--webhoo
 publisher needs a `set_publisher` approved through the multisig, which the co-signer
 refuses by design, or the guardian's `appoint_publisher` after 7 days without a list. `scripts/quorum-action.ts` is how
 site + backup act without the co-signer (see its header): `status`, `propose-memo`,
-`propose-set-publisher`, `approve`, `reject`, `execute`, one member key per run, dry run by
-default, `--network` required, and the stored transaction decoded from the chain before a vote. If
+`propose-set-publisher`, `approve`, `reject`, `cancel`, `execute`, one member key per run, dry run
+by default (unsigned), `--network` required, and the stored transaction decoded from the chain
+before a vote. On mainnet, `approve` and `execute` read it from two RPCs (`--verify-rpc`). **What
+remains:** a signature approves a proposal, not its bytes, so two RPCs that both lie can still
+show a different `set_publisher` target than the chain stores. `--expect-message-hash`, from a
+proposer you trust, narrows that, but only an on-chain check could close it. If
 the co-signer is offline, **new lists stop** (wallets on the current list are still paid);
 after 7 days the guardian can appoint a publisher, after 30 the fallback opens. The
 guarantee holds while at least 2 members are honest: two colluding members are still a

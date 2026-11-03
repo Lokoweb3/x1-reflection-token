@@ -6,7 +6,7 @@
  *   npx tsx scripts/setup-publisher-quorum.ts --rpc <url> --keypair <payer file> --create-key <file>
  *     --site <pubkey> --cosigner <pubkey> [--backup <pubkey>] [--threshold 2]
  *     [--mint <mint>[,<mint>...] [--publisher <current publisher key file>]]
- *     [--network testnet|mainnet | --squads-program <id>] [--program <tax_vault id>] [--execute]
+ *     [--network testnet|mainnet | --squads-program <id>] [--program <tax_vault id>] [--allow-open-proposals] [--execute]
  *
  *   --keypair     pays the multisig's rent (and the fees); also the current publisher unless
  *                 --publisher is given
@@ -23,6 +23,11 @@
  *   --execute     send: create the multisig if it doesn't exist yet, then set_publisher for
  *                 each mint whose publisher is that key
  *
+ *   --allow-open-proposals  move a vault's publisher to the multisig although the multisig holds
+ *                 Active or Approved proposals naming that vault. They have no expiry: an old
+ *                 Approved list or set_publisher blocked while the publisher was elsewhere (see
+ *                 scripts/quorum-action.ts) can run again the moment it returns, with one signature
+ *
  * An existing multisig at the address is checked (members, permissions, threshold, no config
  * authority, no time lock) and never modified. A vault already published by the multisig is
  * left as it is.
@@ -32,6 +37,7 @@ import path from "node:path";
 import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { SQUADS_PROGRAM_IDS, Permission, createMultisigIx, readQuorum, squadsMultisigPda, squadsVaultPda } from "../src/squads.js";
 import { TAX_VAULT_PROGRAM_ID, decodeVault, errorOf, setPublisherIx, vaultPda } from "../src/taxvault.js";
+import { openProposalsFor } from "../src/quorum-action.js";
 import { run, withPriority } from "../src/tx.js";
 
 // ---------- arguments ----------
@@ -136,6 +142,14 @@ for (const mint of mints) {
   if (v.version < 3) { say(`  ${mint.toBase58()}: vault v${v.version}; run the crank once so it's upgraded to v3 first`); failed = true; continue; }
   if (!v.publisher.equals(publisher.publicKey)) { say(`  ${mint.toBase58()}: its publisher is ${v.publisher.toBase58()}, not ${publisher.publicKey.toBase58()}: can't move it`); failed = true; continue; }
   if (v.pendingEpoch > 0n) say(`  ${mint.toBase58()}: note: list ${v.pendingEpoch} is pending; it stays and pays as usual`);
+  // Only an existing multisig can hold proposals, so a first setup never gets here with any.
+  const quorumNow = await readQuorum(conn, squadsProgram, ms);
+  const open = quorumNow ? await openProposalsFor(conn, squadsProgram, ms, quorumNow, addr) : [];
+  if (open.length) {
+    say(`  ${mint.toBase58()}: the multisig holds proposals naming this vault: ${open.map((o) => `#${o.index} ${o.status}`).join(", ")}. They could run as soon as the publisher returns.`);
+    if (!has("allow-open-proposals")) { say(`  Clear them first (scripts/quorum-action.ts reject, or cancel if Approved), or pass --allow-open-proposals. Not moving this vault.`); failed = true; continue; }
+    say("  --allow-open-proposals: moving it anyway");
+  }
   const ix = setPublisherIx(taxProgram, publisher.publicKey, mint, vault);
   if (!execute) { say(`  ${mint.toBase58()}: set_publisher ${publisher.publicKey.toBase58()} -> ${vault.toBase58()}: ${await simulate([ix], payer.publicKey)}`); continue; }
   if (!(await readQuorum(conn, squadsProgram, ms))) throw new Error("the multisig doesn't exist: not moving any publisher to it");

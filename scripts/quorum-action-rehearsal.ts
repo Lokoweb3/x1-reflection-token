@@ -12,11 +12,19 @@
  *      can be approved and published meanwhile; the site ignores indexes it didn't create.
  *   C. Refusals against the real program: wrong network, non-member, wrong
  *      --expect-new-publisher, unknown shape, before threshold, double execution, dry runs.
+ *      Through local RPC proxies: dry runs put only zero signatures on the wire; a proxy that
+ *      rewrites the stored set_publisher target fools a single RPC read (shown, not hidden), is
+ *      caught by --verify-rpc, still passes when both RPCs lie, and is caught by
+ *      --expect-message-hash from the proposer.
  *   B. The undo: site + backup set_publisher to a generated key with the co-signer running;
- *      that key publishes (scripts/crank.ts --publisher). It hands back to the multisig, and a
- *      second undo to the site's own key with a list open: the site drops the list and
- *      publishes directly without a restart. The stranded proposal can't execute.
+ *      that key publishes (scripts/crank.ts --publisher), then hands back to the multisig.
  *      The guardian's appoint_publisher is simulated, not relied on.
+ *   R. The return: a list left Approved while the publisher was elsewhere, with the publisher then
+ *      restored: setup-publisher-quorum refuses until it's cleared; restored anyway, one member
+ *      can execute the old list.
+ *   U. A second undo to the site's own key with a list open: the site drops it and publishes
+ *      directly with no restart. The stranded list, Approved, can't execute; two cancels clear it,
+ *      and setup-publisher-quorum then lets the vault return.
  *
  * Generated keys only; a throwaway config based on config.example.json.
  *
@@ -45,7 +53,7 @@
  *   and the other clones listed in scripts/local-vault-v3-test.ts.
  *
  * then: SQUADS_DEPLOYMENT=<testnet|mainnet> LOCAL_RPC=http://127.0.0.1:9601 npx tsx scripts/quorum-action-rehearsal.ts
- * The site runs on port 8171, the IPFS stand-in on 8172, a webhook receiver on 8173.
+ * The site runs on port 8171, the IPFS stand-in on 8172, a webhook receiver on 8173, RPC proxies on 8174 and 8175.
  * KEEP_DIR=1 keeps the throwaway directory (it holds the drill's generated keys).
  */
 import assert from "node:assert/strict";
@@ -60,7 +68,7 @@ import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transa
 import {
   TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createMint, getAccount, getAssociatedTokenAddressSync, mintTo,
 } from "@solana/spl-token";
-import { sha256Hex, xntOf } from "../src/quorum-action.js";
+import { sha256Hex, squadsBinaryProblem, xntOf } from "../src/quorum-action.js";
 import {
   SQUADS_PROGRAM_IDS, approveIx, executeIx, proposeIxs, readProposal, readQuorum, squadsMultisigPda, squadsProgramConfigPda, squadsVaultPda,
 } from "../src/squads.js";
@@ -111,6 +119,33 @@ const hook = http.createServer(async (req, res) => {
   res.writeHead(200).end("ok");
 });
 await new Promise<void>((r) => hook.listen(HOOK_PORT, "127.0.0.1", r));
+
+// ---------- RPC proxies: record what the tool sends, or lie about what's stored ----------
+const wire = { simulated: [] as { tx: string; sigVerify: unknown }[], sent: 0 };
+const lie: Record<number, { from: Buffer; to: Buffer } | null> = {};
+const swapBytes = (account: { data?: [string, string] } | null, l: { from: Buffer; to: Buffer }) => {
+  if (!account?.data || account.data[1] !== "base64") return;
+  const b = Buffer.from(account.data[0], "base64");
+  const at = b.indexOf(l.from);
+  if (at >= 0) { l.to.copy(b, at); account.data[0] = b.toString("base64"); }
+};
+const proxies = [8174, 8175].map((port) => http.createServer(async (req, res) => {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  const body = Buffer.concat(chunks).toString();
+  const j = JSON.parse(body);
+  if (j.method === "simulateTransaction") wire.simulated.push({ tx: j.params[0], sigVerify: j.params[1]?.sigVerify });
+  if (j.method === "sendTransaction") wire.sent++;
+  const answer = await (await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body })).json() as { result?: { value?: unknown } };
+  const l = lie[port];
+  if (l) {
+    const v = answer.result?.value;
+    for (const a of Array.isArray(v) ? v : [v]) swapBytes(a as { data?: [string, string] } | null, l);
+  }
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+}));
+await Promise.all(proxies.map((p, i) => new Promise<void>((r) => p.listen(8174 + i, "127.0.0.1", r))));
+const PROXY_A = "http://127.0.0.1:8174", PROXY_B = "http://127.0.0.1:8175";
 
 // ---------- throwaway setup ----------
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quorum-action-rehearsal-"));
@@ -308,6 +343,8 @@ try {
     console.log(`  program data ${dataAddr.toBase58()}, ${end} bytes, sha256 ${crypto.createHash("sha256").update(bin.subarray(0, end)).digest("hex")}, upgrade authority ${authority}`);
     console.log(`  program config ${squadsProgramConfigPda(SQUADS).toBase58()}: authority ${c.authority.toBase58()}, multisig creation fee ${String(c.multisigCreationFee)}, treasury ${c.treasury.toBase58()} (${treasury ? `${treasury.lamports} lamports` : "not on the validator"})`);
     if (DEPLOY === "mainnet") assert.equal(authority, "2sXr5THr5ZAwSfuJAc1KogPKZ2uKkhfNUAtEvNw5Q6Z7", "the mainnet program's own program data was cloned");
+    assert.equal(squadsBinaryProblem(DEPLOY, pd.data), null, `the loaded executable must be the pinned ${DEPLOY} deployment`);
+    ok(`the loaded executable matches the pinned ${DEPLOY} length and sha256`);
   }
 
   console.log("\nS. A vault token through the site; scripts/setup-publisher-quorum.ts makes the 2-of-3 its publisher");
@@ -404,7 +441,7 @@ try {
 
   console.log("\nI. Interactions with the site's list proposals (co-signer stopped so a list stays open)");
   await stopChild(bg); bg = null;
-  let listIndex: bigint, keepIndex: bigint;
+  let listIndex: bigint, keepIndex: bigint, keepHash: string;
   {
     await trade(mint, t1.pool, 2);
     await waitFor("the site proposed a list", async () => listFile(mint).next?.proposal?.status === "Active", 300_000);
@@ -415,7 +452,8 @@ try {
     assert.ok(listIndex > memoIndex);
     const out = await qa("backup proposes set_publisher", "propose-set-publisher", F.backup, ["--mint", mint, "--new-publisher", single.publicKey.toBase58(), "--execute"]);
     keepIndex = indexIn(out);
-    assert.match(out, new RegExp(`note: list proposal #${listIndex} is open`));
+    keepHash = /message hash\s+([0-9a-f]{64})/.exec(out)![1];
+    assert.match(out, new RegExp(`note: list proposal #${listIndex} is open.*blocked only while the publisher differs`));
     await twoPasses();
     assert.equal(listFile(mint).next?.proposal?.index, listIndex.toString(), "the site still tracks its own list");
     assert.equal((await prop(keepIndex))!.approved.length, 1); assert.equal((await prop(keepIndex))!.rejected.length, 0);
@@ -539,7 +577,7 @@ try {
     {
       const before = await snapshot();
       const dry = await qa("execute unknown dry run", "execute", F.cosigner, ["--index", u.toString(), "--allow-unknown"], { quiet: true });
-      assert.match(dry, /WARNING: --allow-unknown/); assert.match(dry, /nothing was sent/);
+      assert.match(dry, /WARNING: --allow-unknown/); assert.match(dry, /complete stored message [0-9a-f]+/); assert.match(dry, /nothing was signed or sent/);
       assert.deepEqual(await snapshot(), before);
       assert.equal((await prop(u))!.status, "Approved");
       ok("--allow-unknown in a dry run: a loud warning, the simulation, nothing sent, the vault PDA's 1 XNT still there");
@@ -568,18 +606,66 @@ try {
       ["reject", F.site, ["--index", K]],
     ] as [string, string, string[]][]) {
       const o = await qa(`${sub} dry run`, sub, key, args, { quiet: true });
-      assert.match(o, /DRY RUN/); assert.match(o, /nothing was sent/); assert.match(o, /simulated balance change/);
+      assert.match(o, /DRY RUN/); assert.match(o, /nothing was signed or sent/); assert.match(o, /simulated balance change/);
     }
     assert.deepEqual(await snapshot(), before);
     assert.deepEqual(await votesOf(), pBefore);
     ok("dry runs of propose-memo, propose-set-publisher, approve and reject: index, votes and balances unchanged");
+
+    // What actually crosses the wire on the real path.
+    const tool = (sub: string, key: string, rpc: string, args: string[]) => script("scripts/quorum-action.ts", [sub, "--network", DEPLOY, "--allow-local-rpc", "--rpc", rpc, ...MSA, "--keypair", key, ...args], { quiet: true });
+    wire.simulated.length = 0; wire.sent = 0;
+    for (const [sub, args] of [["approve", ["--index", K, "--expect-new-publisher", single.publicKey.toBase58()]], ["reject", ["--index", K]], ["propose-memo", ["--text", "wire"]]] as [string, string[]][]) {
+      const r = await tool(sub, F.site, PROXY_A, args);
+      assert.equal(r.code, 0, r.out);
+    }
+    assert.ok(wire.simulated.length >= 3, "the dry runs simulated over the wire");
+    for (const { tx, sigVerify } of wire.simulated) {
+      const b = Buffer.from(tx, "base64");
+      assert.ok(b.subarray(1, 1 + 64 * b[0]).every((x) => x === 0), "a simulation carried a real signature");
+      assert.equal(sigVerify, false, "simulated without signature checks");
+    }
+    assert.equal(wire.sent, 0, "dry runs put no sendTransaction on the wire");
+    ok(`on the wire: ${wire.simulated.length} simulations, all zero signatures, sigVerify false; 0 sendTransaction`);
+
+    // A proxy rewriting the stored target: the accounts stay the same, because the target is instruction data.
+    const shown = outsider.publicKey.toBase58(), rewrite = { from: single.publicKey.toBuffer(), to: outsider.publicKey.toBuffer() };
+    const asShown = ["--index", K, "--expect-new-publisher", shown];
+    const asStored = ["--index", K, "--expect-new-publisher", single.publicKey.toBase58()];
+    {
+      const r = await tool("approve", F.site, RPC, [...asStored, "--verify-rpc", PROXY_B]);
+      assert.equal(r.code, 0, r.out); assert.match(r.out, /second read OK: http:\/\/127\.0\.0\.1:8175/);
+      ok("--verify-rpc with an honest second RPC: second read OK");
+    }
+    lie[8174] = rewrite;
+    {
+      const r = await tool("approve", F.site, PROXY_A, asShown);
+      assert.equal(r.code, 0, `the single lying RPC should fool the tool, which is the point:\n${r.out}`);
+      assert.match(r.out, new RegExp(`NEW publisher     ${shown}`));
+      ok(`NOT CLOSED by one RPC: a lying RPC showed set_publisher(${shown.slice(0, 8)}…) while the chain stores ${single.publicKey.toBase58().slice(0, 8)}…, and the tool believed it (dry run)`);
+      const caught = await tool("approve", F.site, PROXY_A, [...asShown, "--verify-rpc", RPC]);
+      assert.equal(caught.code, 1, caught.out); assert.match(caught.out, /disagree about the stored transaction's bytes/);
+      ok("--verify-rpc with an honest second RPC caught it");
+      const honestFirst = await tool("approve", F.site, RPC, [...asStored, "--verify-rpc", PROXY_A]);
+      assert.equal(honestFirst.code, 1, honestFirst.out); assert.match(honestFirst.out, /disagree about the stored transaction's bytes/);
+      ok("and the same with the lying RPC second");
+      lie[8175] = rewrite;
+      const both = await tool("approve", F.site, PROXY_A, [...asShown, "--verify-rpc", PROXY_B]);
+      assert.equal(both.code, 0, `both lying should still pass, which is the documented limit:\n${both.out}`);
+      assert.match(both.out, /second read OK/);
+      ok("NOT CLOSED by two RPCs: both lying the same way still pass (dry run); only an on-chain check could close this");
+      const hashed = await tool("approve", F.site, PROXY_A, [...asShown, "--verify-rpc", PROXY_B, "--expect-message-hash", keepHash]);
+      assert.equal(hashed.code, 1, hashed.out); assert.match(hashed.out, /--expect-message-hash is/);
+      ok("--expect-message-hash from the proposer caught both lying RPCs (it doesn't help if the proposer is the attacker)");
+      lie[8174] = null; lie[8175] = null;
+    }
     quiet = false;
     await startServer(cfgFile);
   }
 
   console.log("\nB. The undo: site + backup set_publisher to a generated key, co-signer running");
   {
-    const K = keepIndex.toString(), expect = ["--expect-new-publisher", single.publicKey.toBase58(), "--expect-mint", mint];
+    const K = keepIndex.toString(), expect = ["--expect-new-publisher", single.publicKey.toBase58(), "--expect-mint", mint, "--expect-message-hash", keepHash, "--verify-rpc", PROXY_B];
     startCosigner();
     const hooks0 = alerts.length;
     await waitFor(`the co-signer rejected set_publisher #${K}`, async () => (await prop(keepIndex))?.rejected.includes(cosigner.publicKey.toBase58()) === true, 60_000);
@@ -601,11 +687,11 @@ try {
       const b = await api(`/api/vault/${mint}?t=${Date.now()}`);
       return b.sitePublishes === false || /not this site/.test(JSON.stringify(b.crank?.lastPass?.notes ?? []));
     }, 60_000);
-    const before = await readVault(mint);
+    const beforeOther = await readVault(mint);
     await trade(mint, t1.pool, 2);
     await waitFor("new holder XNT to allocate", async () => {
       const w = await readVault(mint);
-      return w.holdersFunded > before.holdersFunded && w.pendingEpoch === 0n;
+      return w.holdersFunded > beforeOther.holdersFunded && w.pendingEpoch === 0n;
     }, 180_000);
     // The generated key publishes, as scripts/appoint-publisher.ts tells an appointed publisher to.
     const crankArgs = ["--rpc", RPC, "--keypair", F.single, "--publisher", F.single, "--mint", mint, "--program", PROGRAM.toBase58(), "--network", "testnet", "--ipfs-gateway", `${IPFS}/ipfs/`, "--pinata-api", `${IPFS}/v3/files`];
@@ -613,7 +699,7 @@ try {
     for (let i = 0; i < 6 && !published; i++) {
       await script("scripts/crank.ts", crankArgs, { env: { PINATA_JWT: JWT, TAX_VAULT_SHORT_WINDOWS: "1" }, quiet: i > 0 });
       const w = await readVault(mint);
-      published = w.pendingEpoch > before.listEpoch || w.listEpoch > before.listEpoch;
+      published = w.pendingEpoch > beforeOther.listEpoch || w.listEpoch > beforeOther.listEpoch;
       if (!published) await sleep(4_000);
     }
     assert.ok(published, "the generated key published a list");
@@ -622,15 +708,58 @@ try {
     await stopChild(bg); bg = null;
     ok("co-signer stopped: nothing left for it to check");
 
-    // Back to the quorum, then a second undo to the site's own key with a list open.
+    // Back to the quorum.
     const w = await readVault(mint);
     await untilChainTime(w.pendingActiveAt + 7, "the generated key's list is due");
     const err = await tryTx([setPublisherIx(PROGRAM, single.publicKey, new PublicKey(mint), MS_VAULT)], single);
     assert.equal(err, null, err ?? "");
     assert.ok((await readVault(mint)).publisher.equals(MS_VAULT));
     ok("the generated key handed the publisher back to the multisig's vault PDA");
+
+    console.log("\nR. The return: a list left Approved while the publisher is elsewhere, then the publisher restored");
     await trade(mint, t1.pool, 2);
     await waitFor("the site proposes through the quorum again, without a restart", async () => listFile(mint).next?.proposal?.status === "Active", 300_000);
+    const rIndex = BigInt(listFile(mint).next.proposal.index), rEpoch = BigInt(listFile(mint).next.epoch);
+    await stopChild(server); server = null; // so the epoch can't move past this list and hide the answer
+    const rOut = await qa("site proposes set_publisher (away)", "propose-set-publisher", F.site, ["--mint", mint, "--new-publisher", site.publicKey.toBase58(), "--execute"], { quiet: true });
+    const rAway = indexIn(rOut);
+    const rExpect = ["--expect-new-publisher", site.publicKey.toBase58()];
+    await qa("backup approves set_publisher (away)", "approve", F.backup, ["--index", rAway.toString(), ...rExpect, "--execute"], { quiet: true });
+    await qa("backup executes set_publisher (away)", "execute", F.backup, ["--index", rAway.toString(), ...rExpect, "--execute"], { quiet: true });
+    assert.ok((await readVault(mint)).publisher.equals(site.publicKey));
+    await qa("backup approves the list while away", "approve", F.backup, ["--index", rIndex.toString(), "--allow-unknown", "--execute"], { quiet: true });
+    assert.equal((await prop(rIndex))!.status, "Approved");
+    const blocked = await script("scripts/quorum-action.ts", ["execute", ...NET, ...MSA, "--keypair", F.cosigner, "--index", rIndex.toString(), "--allow-unknown"], { quiet: true });
+    assert.equal(blocked.code, 1); assert.match(blocked.out, /simulation FAILED: tax_vault: NotPublisher/);
+    ok(`list ${rEpoch} (#${rIndex}) is Approved and blocked: NotPublisher while the publisher differs`);
+    const setupBack = ["--rpc", RPC, "--network", DEPLOY, "--keypair", F.payer, "--create-key", createKeyFile, "--site", site.publicKey.toBase58(), "--cosigner", cosigner.publicKey.toBase58(),
+      "--backup", backup.publicKey.toBase58(), "--mint", mint, "--publisher", F.site, "--program", PROGRAM.toBase58()];
+    const guarded = await script("scripts/setup-publisher-quorum.ts", [...setupBack, "--execute"], { quiet: true });
+    assert.equal(guarded.code, 1, guarded.out);
+    assert.match(guarded.out, new RegExp(`#${rIndex} Approved`)); assert.match(guarded.out, /Not moving this vault/);
+    assert.ok((await readVault(mint)).publisher.equals(site.publicKey), "the refused setup moved nothing");
+    ok("setup-publisher-quorum refuses to move the vault back while that list is open");
+    // Restored anyway: a publisher's own set_publisher doesn't go through that script.
+    const rErr = await tryTx([setPublisherIx(PROGRAM, site.publicKey, new PublicKey(mint), MS_VAULT)], site);
+    assert.equal(rErr, null, rErr ?? "");
+    assert.ok((await readVault(mint)).publisher.equals(MS_VAULT));
+    const before = await readVault(mint);
+    const ran = await script("scripts/quorum-action.ts", ["execute", ...NET, ...MSA, "--keypair", F.cosigner, "--index", rIndex.toString(), "--allow-unknown", "--execute"], { quiet: true });
+    const after = await readVault(mint);
+    console.log(`  RETURN SCENARIO: execute by the co-signer's key alone exited ${ran.code}; proposal ${(await prop(rIndex))?.status ?? "closed"}; vault list ${before.listEpoch}/pending ${before.pendingEpoch} -> list ${after.listEpoch}/pending ${after.pendingEpoch}`);
+    assert.equal(ran.code, 0, ran.out);
+    assert.equal((await prop(rIndex))!.status, "Executed");
+    assert.ok(after.pendingEpoch === rEpoch || after.listEpoch === rEpoch, "the old list is on-chain");
+    ok(`the publisher restored, one signature published old list ${rEpoch} with no new votes: the block lasted only while the publisher differed`);
+    await startServer(cfgFile);
+    await waitFor("the restarted site recognised that list as published", async () => {
+      const f = listFile(mint);
+      return [f.next, f.active].some((l) => l?.epoch === rEpoch.toString() && !!l?.publishedAt);
+    }, 120_000);
+
+    console.log("\nU. A second undo, to the site's own key, with a list open");
+    await trade(mint, t1.pool, 2);
+    await waitFor("the site proposes through the quorum", async () => listFile(mint).next?.proposal?.status === "Active" && BigInt(listFile(mint).next.proposal.index) > rAway, 300_000);
     const openIndex = BigInt(listFile(mint).next.proposal.index);
     const openEpoch = listFile(mint).next.epoch;
     const out2 = await qa("site proposes set_publisher (back to itself)", "propose-set-publisher", F.site, ["--mint", mint, "--new-publisher", site.publicKey.toBase58(), "--execute"], { quiet: true });
@@ -648,9 +777,29 @@ try {
     const r = await script("scripts/quorum-action.ts", ["execute", ...NET, ...MSA, "--keypair", F.backup, "--index", openIndex.toString(), "--allow-unknown"], { quiet: true });
     assert.equal(r.code, 1); assert.match(r.out, /simulation FAILED: tax_vault: NotPublisher/);
     const e = await tryTx([await executeIx(conn, SQUADS, MS, openIndex, backup.publicKey)], backup);
-    assert.ok(e);
+    assert.ok(e, "the program refuses a NotPublisher execute");
     assert.equal((await prop(openIndex))!.status, "Approved");
-    ok("the stranded list reached Approved but can't execute: simulation says tax_vault NotPublisher, the program refuses it, and it stays Approved");
+    ok("the stranded list reached Approved but can't execute now: simulation says tax_vault NotPublisher, the program refuses it");
+    await qaRefused("rejecting an Approved proposal", "reject", F.backup, ["--index", openIndex.toString()], /the cancel subcommand/);
+    await qaRefused("cancelling an Executed proposal", "cancel", F.backup, ["--index", second.toString()], /is Executed/);
+    {
+      const stillOpen = await script("scripts/setup-publisher-quorum.ts", setupBack, { quiet: true });
+      assert.equal(stillOpen.code, 1, stillOpen.out); assert.match(stillOpen.out, /Not moving this vault/);
+      const dry = await qa("cancel dry run", "cancel", F.backup, ["--index", openIndex.toString()], { quiet: true });
+      assert.match(dry, /DRY RUN: cancel/); assert.equal((await prop(openIndex))!.cancelled.length, 0);
+      await qa("backup cancels", "cancel", F.backup, ["--index", openIndex.toString(), "--execute"], { quiet: true });
+      assert.equal((await prop(openIndex))!.status, "Approved", "one cancel of a threshold of 2");
+      await qaRefused("cancelling twice", "cancel", F.backup, ["--index", openIndex.toString()], /already cancelled/);
+      await qa("site cancels", "cancel", F.site, ["--index", openIndex.toString(), "--execute"], { quiet: true });
+      assert.equal((await prop(openIndex))!.status, "Cancelled");
+      await qaRefused("executing a Cancelled proposal", "execute", F.backup, ["--index", openIndex.toString(), "--allow-unknown"], /is Cancelled, not Approved/);
+      const e2 = await tryTx([await executeIx(conn, SQUADS, MS, openIndex, backup.publicKey)], backup);
+      assert.ok(e2, "the program refuses too");
+      ok(`two cancels cleared #${openIndex}: Cancelled, and the program refuses to run it (${squadsErr(e2!)})`);
+      const clear = await script("scripts/setup-publisher-quorum.ts", setupBack, { quiet: true });
+      assert.equal(clear.code, 0, clear.out); assert.match(clear.out, /simulation OK/);
+      ok("with nothing open, setup-publisher-quorum lets the vault return (dry run: not moved)");
+    }
     const beforeDirect = await readVault(mint);
     await trade(mint, t1.pool, 2);
     await waitFor("the site publishes directly with its key, no restart", async () => {
@@ -676,5 +825,6 @@ try {
   await stopChild(bg);
   await stopChild(server);
   ipfs.close(); hook.close();
+  for (const p of proxies) p.close();
   if (process.env.KEEP_DIR) console.log(`kept ${dir}`); else fs.rmSync(dir, { recursive: true, force: true });
 }

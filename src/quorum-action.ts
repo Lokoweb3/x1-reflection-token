@@ -9,15 +9,15 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import * as squads from "@sqds/multisig";
-import { Connection, Keypair, PublicKey, TransactionInstruction, type AccountInfo } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction, type AccountInfo } from "@solana/web3.js";
 import { connection, type Config } from "./config.js";
 import { decodePublishProposal, type PublishArgs } from "./list-verify.js";
 import {
-  SQUADS_PROGRAM_IDS, PUBLISHER_VAULT_INDEX, approveIx, decodeVaultTx, executeIx, memberOf, proposalVotes, proposeIxs, readProposal, readQuorum, rejectCutoff, rejectIx,
-  squadsTransactionPda, squadsVaultPda, type ProposalInfo, type Quorum, type VaultTx,
+  SQUADS_PROGRAM_IDS, PUBLISHER_VAULT_INDEX, approveIx, decodeProposal, decodeVaultTx, executeIx, proposalVotes, proposeIxs, readProposal, readQuorum, rejectCutoff, rejectIx,
+  squadsProposalPda, squadsTransactionPda, squadsVaultPda, type ProposalInfo, type Quorum, type VaultTx,
 } from "./squads.js";
 import { IX, TAX_VAULT_PROGRAM_ID, cidFromBytes, decodeVault, errorName, setPublisherIx, vaultPda, type Vault } from "./taxvault.js";
-import { sendAndConfirm, sign, withPriority, type Signed } from "./tx.js";
+import { fitComputeLimit, sendAndConfirm, sign, withPriority } from "./tx.js";
 
 export type Network = "testnet" | "mainnet";
 /** Read from the public RPCs on 2026-11-02 and 2026-11-03. */
@@ -47,9 +47,9 @@ export class Refusal extends Error {}
 const refuse = (m: string): never => { throw new Refusal(m); };
 
 // ---------- arguments ----------
-const VALUE_FLAGS = ["network", "rpc", "multisig", "index", "keypair", "text", "mint", "new-publisher", "expect-new-publisher", "expect-memo-hash", "expect-mint", "memo", "squads-program", "program", "limit", "priority"];
-const BOOL_FLAGS = ["execute", "allow-local-rpc", "allow-unknown", "allow-off-curve", "help"];
-export const SUBCOMMANDS = ["status", "propose-memo", "propose-set-publisher", "approve", "reject", "execute"] as const;
+const VALUE_FLAGS = ["network", "rpc", "multisig", "index", "keypair", "text", "mint", "new-publisher", "expect-new-publisher", "expect-memo-hash", "expect-mint", "memo", "squads-program", "program", "limit", "priority", "verify-rpc", "expect-message-hash"];
+const BOOL_FLAGS = ["execute", "allow-local-rpc", "allow-unknown", "allow-off-curve", "single-rpc-accepted", "help"];
+export const SUBCOMMANDS = ["status", "propose-memo", "propose-set-publisher", "approve", "reject", "cancel", "execute"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 export interface Parsed { sub: Subcommand | null; values: Map<string, string>; bools: Set<string> }
 /**
@@ -103,6 +103,47 @@ export function genesisProblem(a: { network: Network; genesis: string; rpc: stri
   return null;
 }
 
+/** An RPC URL as it may be printed: scheme and host only (API keys sit in the user info, the path or the query). */
+export function redactRpc(url: string) {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}${u.pathname && u.pathname !== "/" ? "/…" : ""}${u.search ? "?…" : ""}`;
+  } catch { return "<an RPC URL that doesn't parse>"; }
+}
+/** Same host and port: not a second opinion, whatever the path or key says. */
+export function sameEndpoint(a: string, b: string) {
+  try { return new URL(a).host.toLowerCase() === new URL(b).host.toLowerCase(); } catch { return a === b; }
+}
+/** Every URL on the command line and in the environment, in the forms an error might quote it, replaced in all output. */
+function scrubber(argv: string[]) {
+  const raw = [...argv.filter((x) => /^[a-z][a-z0-9+.-]*:\/\//i.test(x)), process.env.REFLECT_RPC_URL ?? ""].filter(Boolean);
+  const pairs = raw.flatMap((u) => {
+    let href = u;
+    try { href = new URL(u).href; } catch { /* the raw form is all there is */ }
+    return [[u, redactRpc(u)], [href, redactRpc(u)]];
+  }).sort((x, y) => y[0].length - x[0].length);
+  return (line: string) => pairs.reduce((l, [from, to]) => l.split(from).join(to), line);
+}
+
+/**
+ * The Squads executables this code was rehearsed against, read 2026-11-03: length and sha256
+ * of the program data with trailing zeros trimmed (`solana program dump` keeps the padding).
+ */
+export const SQUADS_PINS: Record<Network, { length: number; sha256: string }> = {
+  mainnet: { length: 979_505, sha256: "e39338bd363dba6671e91c888fd9b1c2dea256e1e8ec24e5865bcc5d94f90eec" },
+  testnet: { length: 842_489, sha256: "72ae1dd5044da38a965730eeee0adbeb698cff619c9f0f8b54039264082c5f7d" },
+};
+/** Why this program-data account (45-byte header, then the executable) isn't the pinned deployment, or null. */
+export function squadsBinaryProblem(deployment: Network, programData: Buffer): string | null {
+  const bin = programData.subarray(45);
+  let end = bin.length;
+  while (end > 0 && bin[end - 1] === 0) end--;
+  const sha256 = sha256Hex(bin.subarray(0, end)), pin = SQUADS_PINS[deployment];
+  if (end !== pin.length) return `the ${deployment} Squads executable is ${end} bytes, pinned at ${pin.length}`;
+  if (sha256 !== pin.sha256) return `the ${deployment} Squads executable hashes to ${sha256}, pinned at ${pin.sha256}`;
+  return null;
+}
+
 // ---------- keys ----------
 /** The key from --keypair, refusing a file others can read. An unparseable file's content is never echoed (JSON errors quote their input). */
 export function loadMemberKey(file: string): Keypair {
@@ -117,7 +158,7 @@ export function loadMemberKey(file: string): Keypair {
 }
 export type Right = "initiate" | "vote" | "execute";
 /** Why `key` can't do this on the multisig, or null. */
-export function rightsProblem(q: Pick<Quorum, "members">, key: PublicKey, what: "propose" | "approve" | "reject" | "execute"): string | null {
+export function rightsProblem(q: Pick<Quorum, "members">, key: PublicKey, what: "propose" | "approve" | "reject" | "cancel" | "execute"): string | null {
   const m = q.members.find((x) => x.key === key.toBase58());
   const who = key.toBase58();
   if (!m) return `${who} isn't a member of this multisig (members: ${q.members.map((x) => short(x.key)).join(", ")})`;
@@ -175,7 +216,32 @@ export function classifyVaultTx(tx: VaultTx, vaultPdaKey: PublicKey, taxProgram:
   try { return { kind: "publish-list", args: decodePublishProposal(tx, taxProgram, vaultPdaKey) }; } catch (e) { return unknown(`a tax_vault call: ${msgOf(e)}`); }
 }
 
-/** One line per account of a stored instruction, with the flags the message gives it. */
+/** Vault index, ephemeral signer count and the message exactly as the account stores it. */
+function storedMessageBytes(info: AccountInfo<Buffer>): Buffer {
+  const [, end] = squads.accounts.VaultTransaction.fromAccountInfo(info);
+  const d = info.data, at = 8 + 32 + 32 + 8 + 1; // discriminator, multisig, creator, index, bump
+  const ephemeral = d.readUInt32LE(at + 2);
+  return Buffer.concat([d.subarray(at, at + 1), Buffer.from([ephemeral]), d.subarray(at + 2 + 4 + ephemeral, end)]);
+}
+/**
+ * The fingerprint two members compare out of band. It covers what will run and nothing about
+ * who stored it, so a proposer can print it before the proposal exists, from what it built
+ * itself and not from what an RPC reports.
+ */
+export const storedMessageHash = (info: AccountInfo<Buffer>) => sha256Hex(storedMessageBytes(info));
+/** The same fingerprint for an instruction this machine is about to propose. */
+export function plannedMessageHash(ms: PublicKey, vaultPdaKey: PublicKey, ix: TransactionInstruction, program: PublicKey) {
+  const bytes = squads.utils.transactionMessageToMultisigTransactionMessageBytes({
+    message: new TransactionMessage({ payerKey: vaultPdaKey, recentBlockhash: PublicKey.default.toBase58(), instructions: [ix] }), vaultPda: vaultPdaKey,
+  });
+  const [m] = squads.types.transactionMessageBeet.deserialize(Buffer.from(bytes));
+  const message = { ...m, instructions: m.instructions.map((i) => ({ programIdIndex: i.programIdIndex, accountIndexes: Uint8Array.from(i.accountIndexes), data: Uint8Array.from(i.data) })),
+    addressTableLookups: m.addressTableLookups.map((l) => ({ accountKey: l.accountKey, writableIndexes: Uint8Array.from(l.writableIndexes), readonlyIndexes: Uint8Array.from(l.readonlyIndexes) })) };
+  const [data] = squads.accounts.VaultTransaction.fromArgs({ multisig: ms, creator: PublicKey.default, index: 0, bump: 0, vaultIndex: PUBLISHER_VAULT_INDEX, vaultBump: 0, ephemeralSignerBumps: new Uint8Array(), message }).serialize();
+  return storedMessageHash({ owner: program, data, lamports: 0, executable: false, rentEpoch: 0 });
+}
+
+/** One line per account of a stored instruction, with the flags the message gives it, and its data in full. */
 export function accountsOf(tx: VaultTx, vaultPdaKey: PublicKey) {
   return tx.instructions.flatMap((ix, n) => {
     const name = (i: number) => {
@@ -186,7 +252,7 @@ export function accountsOf(tx: VaultTx, vaultPdaKey: PublicKey) {
       return `${k.toBase58()}${k.equals(vaultPdaKey) ? " (vault PDA)" : ""}${signer ? " signer" : ""}${writable ? " writable" : ""}`;
     };
     return [`instruction ${n + 1} of ${tx.instructions.length}: program ${tx.accountKeys[ix.programIdIndex]?.toBase58() ?? "?"}, ${ix.data.length} bytes of data`,
-      ...ix.accountIndexes.map((i) => `  account ${name(i)}`)];
+      ...ix.accountIndexes.map((i) => `  account ${name(i)}`), `  data ${ix.data.toString("hex")}`];
   });
 }
 
@@ -265,7 +331,7 @@ export interface Deps {
 export const defaultDeps = (): Deps => ({ connect: (rpc) => connection({ rpcUrl: rpc } as Config), out: (l) => console.log(l) });
 
 interface Ctx {
-  a: Parsed; deps: Deps; say: (s: string) => void; conn: Connection; network: Network; rpc: string; local: boolean;
+  a: Parsed; deps: Deps; say: (s: string) => void; conn: Connection; network: Network; rpc: string; genesis: string; local: boolean;
   squadsProgram: PublicKey; taxProgram: PublicKey; ms: PublicKey; q: Quorum; execute: boolean; microLamports: number;
 }
 export const USAGE = `Usage: npx tsx scripts/quorum-action.ts <subcommand> --network testnet|mainnet --multisig <address> [--rpc <url>] [--execute] ...
@@ -274,7 +340,9 @@ export const USAGE = `Usage: npx tsx scripts/quorum-action.ts <subcommand> --net
   propose-set-publisher  --keypair <file> --mint <mint> --new-publisher <pubkey> [--allow-off-curve]
   approve                --keypair <file> --index n [--expect-new-publisher <pubkey>] [--expect-mint <mint>] [--expect-memo-hash <sha256>] [--allow-unknown] [--allow-off-curve]
   reject                 --keypair <file> --index n [--memo <reason>]
+  cancel                 --keypair <file> --index n [--memo <reason>]                 (an Approved proposal; a threshold of cancels stops it)
   execute                --keypair <file> --index n [--expect-new-publisher <pubkey>] [--expect-mint <mint>] [--expect-memo-hash <sha256>] [--allow-unknown] [--allow-off-curve]
+approve and execute also take --verify-rpc <url> (a second, different RPC; required on mainnet unless --single-rpc-accepted) and --expect-message-hash <sha256>.
 Local validator only: --allow-local-rpc --rpc http://127.0.0.1:<port> [--squads-program <id>]. Testnet or local only: --program <tax_vault id>.
 Without --execute nothing is sent: the transaction is built and simulated. See the script's header.`;
 
@@ -289,6 +357,8 @@ async function setup(a: Parsed, deps: Deps): Promise<Ctx> {
   if (allowLocal && !isLocalRpc(rpc)) refuse(`--allow-local-rpc is only for a validator on this machine, and ${rpc} isn't`);
   const envRpc = process.env.REFLECT_RPC_URL;
   if (envRpc && envRpc !== rpc) refuse(`REFLECT_RPC_URL is ${envRpc}, which would override ${rpc}: unset it or pass the same URL`);
+  // src/config.ts lets that variable override every connection, which would make the second read a copy of the first.
+  if (envRpc && a.values.has("verify-rpc")) refuse("REFLECT_RPC_URL overrides every connection in this process, so --verify-rpc wouldn't reach a second RPC: unset it");
   const custom = pubkeyArg(a, "squads-program");
   if (custom && !allowLocal) refuse("--squads-program is only for a local validator (--allow-local-rpc): real networks use the program in src/squads.ts");
   const taxArg = pubkeyArg(a, "program");
@@ -298,6 +368,11 @@ async function setup(a: Parsed, deps: Deps): Promise<Ctx> {
   const genesis = await conn.getGenesisHash();
   const problem = genesisProblem({ network, genesis, rpc, allowLocal });
   if (problem) refuse(problem);
+  // A real network behind a local URL (a tunnel, a port forward) gets no local-only overrides.
+  if (genesis === GENESIS_HASH[network]) {
+    if (allowLocal) refuse(`--allow-local-rpc was given, but ${rpc} reports X1 ${network}: drop the local-only flags for a real network`);
+    if (taxArg && network === "mainnet" && !taxArg.equals(TAX_VAULT_PROGRAM_ID)) refuse(`--program on mainnet can only be ${TAX_VAULT_PROGRAM_ID.toBase58()}, the deployed tax_vault`);
+  }
   const squadsProgram = custom ?? SQUADS_PROGRAM_IDS[network];
   const taxProgram = taxArg ?? TAX_VAULT_PROGRAM_ID;
   const q = await readQuorum(conn, squadsProgram, ms);
@@ -306,7 +381,7 @@ async function setup(a: Parsed, deps: Deps): Promise<Ctx> {
   if (!Number.isInteger(micro) || micro < 0) refuse("--priority takes whole microlamports per CU");
   say(`network   ${network}${genesis === GENESIS_HASH[network] ? ` (genesis ${genesis} checked)` : `, LOCAL validator ${rpc} (genesis ${genesis})`}, RPC ${rpc}`);
   say(`Squads    ${squadsProgram.toBase58()}${custom ? " (--squads-program)" : ""}, tax_vault ${taxProgram.toBase58()}`);
-  return { a, deps, say, conn, network, rpc, local: genesis !== GENESIS_HASH[network], squadsProgram, taxProgram, ms, q: q!, execute: a.bools.has("execute"), microLamports: micro };
+  return { a, deps, say, conn, network, rpc, genesis, local: genesis !== GENESIS_HASH[network], squadsProgram, taxProgram, ms, q: q!, execute: a.bools.has("execute"), microLamports: micro };
 }
 
 function printQuorum(c: Ctx) {
@@ -320,7 +395,7 @@ function printQuorum(c: Ctx) {
 }
 
 /** The stored transaction of a proposal, decoded from the chain. */
-export interface Stored { kindName: string; tx: VaultTx | null; shape: Shape; vault: Vault | null; lines: string[] }
+export interface Stored { kindName: string; tx: VaultTx | null; shape: Shape; vault: Vault | null; lines: string[]; messageHash?: string; info?: AccountInfo<Buffer> }
 async function readStored(c: Ctx, index: bigint): Promise<Stored> {
   const { conn, squadsProgram, ms, q, taxProgram } = c;
   const info = await conn.getAccountInfo(squadsTransactionPda(squadsProgram, ms, index), "confirmed");
@@ -338,6 +413,7 @@ async function storedFrom(c: Ctx, index: bigint, info: AccountInfo<Buffer> | nul
   }
   const shape = classifyVaultTx(tx, q.vault, taxProgram);
   const lines: string[] = [];
+  const messageHash = storedMessageHash(info);
   let vault: Vault | null = null;
   if (shape.kind === "memo") {
     lines.push(`does: writes a memo, signed by the vault PDA. Moves nothing.`, `  text ${JSON.stringify(shape.text)}`, `  sha256 ${shape.hash}`);
@@ -353,9 +429,11 @@ async function storedFrom(c: Ctx, index: bigint, info: AccountInfo<Buffer> | nul
   } else {
     lines.push(`does: UNKNOWN: it ${shape.reason}`);
   }
+  lines.push(`message hash ${messageHash} (compare it with the proposer's out of band: --expect-message-hash)`);
   lines.push(`stored by ${tx.creator.toBase58()}; vault index ${tx.vaultIndex}, ephemeral signers ${tx.ephemeralSigners}, lookup tables ${tx.lookups}`);
   lines.push(...accountsOf(tx, q.vault));
-  return { kindName: "vault", tx, shape, vault, lines };
+  if (shape.kind === "unknown" || shape.kind === "publish-list") lines.push(`complete stored message ${storedMessageBytes(info).toString("hex")}`);
+  return { kindName: "vault", tx, shape, vault, lines, messageHash, info };
 }
 const proposalLine = (q: Quorum, p: ProposalInfo | null, index: bigint) => p
   ? `#${index} ${p.status}: ${p.approved.length} of ${q.threshold} approvals, ${p.rejected.length} of ${rejectCutoff(q)} rejections to close${p.cancelled.length ? `, ${p.cancelled.length} cancels` : ""}${index <= q.staleTransactionIndex ? " (stale: a config change passed it)" : ""}`
@@ -392,6 +470,93 @@ async function cmdStatus(c: Ctx) {
   return 0;
 }
 
+/** The stored transaction and proposal from one read at one slot: what every check below uses. */
+interface Snapshot { slot: number; tx: AccountInfo<Buffer> | null; proposal: AccountInfo<Buffer> | null }
+async function readSnapshot(conn: Connection, c: Ctx, index: bigint): Promise<Snapshot> {
+  const { context, value } = await conn.getMultipleAccountsInfoAndContext([squadsTransactionPda(c.squadsProgram, c.ms, index), squadsProposalPda(c.squadsProgram, c.ms, index)], "confirmed");
+  return { slot: context.slot, tx: value[0], proposal: value[1] };
+}
+const sameAccount = (a: AccountInfo<Buffer> | null, b: AccountInfo<Buffer> | null) => (!a && !b) || (!!a && !!b && a.owner.equals(b.owner) && a.data.equals(b.data));
+const quorumFacts = (q: Quorum | null) => (q ? JSON.stringify([q.threshold, q.members, q.timeLock, q.configAuthority?.toBase58() ?? null, q.staleTransactionIndex.toString(), q.rentCollector?.toBase58() ?? null]) : "none");
+
+/**
+ * The second read: a different RPC, the same chain, at or past the first read's slot, with the
+ * same stored bytes, proposal, multisig and (for a set_publisher) vault publisher. A signature
+ * approves a proposal, not its bytes, so this and the out-of-band hash are all that can be done
+ * off-chain. Two RPCs that both lie still pass: see the script's header.
+ */
+async function secondRead(c: Ctx, index: bigint, first: Snapshot, stored: Stored) {
+  const { a, say, deps, rpc } = c;
+  const url = a.values.get("verify-rpc");
+  if (!url) {
+    const realMainnet = c.network === "mainnet" && !c.local;
+    if (realMainnet && !a.bools.has("single-rpc-accepted")) refuse("on mainnet, approve and execute read the stored transaction from two RPCs: pass --verify-rpc <a different RPC>, or --single-rpc-accepted to rely on one (a lying RPC can then show you a different set_publisher target than the chain stores)");
+    if (a.bools.has("single-rpc-accepted")) {
+      say("");
+      say("  ************************************************************************");
+      say("  *  WARNING: --single-rpc-accepted. Only one RPC was read. If it lies, what");
+      say("  *  is printed above isn't what the chain stores, and your signature approves");
+      say("  *  the proposal, not those bytes. Compare the message hash out of band.");
+      say("  ************************************************************************");
+      say("");
+    } else say("  one RPC read: --verify-rpc <a different RPC> checks it against a second");
+    return;
+  }
+  if (a.bools.has("single-rpc-accepted")) refuse("--verify-rpc and --single-rpc-accepted contradict each other");
+  if (sameEndpoint(url, rpc)) refuse("--verify-rpc is the same host and port as --rpc: that's not a second read");
+  const conn2 = deps.connect(url);
+  let second: Snapshot | null = null, q2: Quorum | null = null;
+  try {
+    const genesis = await conn2.getGenesisHash();
+    const problem = genesisProblem({ network: c.network, genesis, rpc: url, allowLocal: a.bools.has("allow-local-rpc") });
+    if (problem) refuse(`--verify-rpc: ${problem}`);
+    if (genesis !== c.genesis) refuse(`--verify-rpc reports genesis ${genesis}, but --rpc reports ${c.genesis}: they aren't the same chain`);
+    for (let i = 0; i < 8; i++) {
+      second = await readSnapshot(conn2, c, index);
+      if (second.slot >= first.slot) break;
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    q2 = await readQuorum(conn2, c.squadsProgram, c.ms);
+    if (second!.slot < first.slot) refuse(`--verify-rpc is behind: it's at slot ${second!.slot}, and the first read was at slot ${first.slot}`);
+  } catch (e) {
+    if (e instanceof Refusal) throw e;
+    refuse(`--verify-rpc couldn't be read: ${msgOf(e).split("\n")[0]}`);
+  }
+  const differs: string[] = [];
+  if (!sameAccount(first.tx, second!.tx)) differs.push("the stored transaction's bytes");
+  if (!sameAccount(first.proposal, second!.proposal)) differs.push("the proposal's state");
+  if (quorumFacts(c.q) !== quorumFacts(q2)) differs.push("the multisig's members or settings");
+  if (stored.shape.kind === "set-publisher") {
+    const vi = await conn2.getAccountInfo(stored.shape.vault, "confirmed").catch(() => null);
+    const v = vi?.owner.equals(c.taxProgram) ? (() => { try { return decodeVault(stored.shape.kind === "set-publisher" ? stored.shape.vault : PublicKey.default, vi.data); } catch { return null; } })() : null;
+    if (!v || !stored.vault || !v.publisher.equals(stored.vault.publisher) || !v.mint.equals(stored.vault.mint)) differs.push("the vault's publisher or mint");
+  }
+  if (differs.length) refuse(`the two RPCs disagree about ${differs.join(", ")}. A vote landing between the reads does this too, so run it again once; if it stays different, one RPC is lying: don't sign`);
+  say(`  second read OK: ${url} at slot ${second!.slot} (first read at slot ${first.slot}): stored transaction, proposal and multisig are identical`);
+}
+
+/**
+ * Proposals still able to act on this vault if its publisher is (or returns to) this multisig's
+ * vault PDA: Active or Approved, and naming the vault account. Nothing but executing or
+ * clearing them ends that: they have no expiry, and an Approved one needs only one more signer.
+ */
+export async function openProposalsFor(conn: Connection, program: PublicKey, ms: PublicKey, q: Quorum, vaultAccount: PublicKey) {
+  const out: { index: bigint; status: string }[] = [];
+  const first = q.staleTransactionIndex + 1n;
+  for (let from = first; from <= q.transactionIndex; from += 50n) {
+    const indexes: bigint[] = [];
+    for (let i = from; i < from + 50n && i <= q.transactionIndex; i++) indexes.push(i);
+    const infos = await conn.getMultipleAccountsInfo(indexes.flatMap((i) => [squadsProposalPda(program, ms, i), squadsTransactionPda(program, ms, i)]), "confirmed");
+    indexes.forEach((i, n) => {
+      const p = decodeProposal(program, ms, i, infos[2 * n]);
+      if (p?.status !== "Active" && p?.status !== "Approved") return;
+      const tx = decodeVaultTx(program, ms, i, infos[2 * n + 1]);
+      if (tx ? tx.lookups > 0 || tx.accountKeys.some((k) => k.equals(vaultAccount)) : !!infos[2 * n + 1]) out.push({ index: i, status: p.status });
+    });
+  }
+  return out;
+}
+
 /** Proposals still open that carry a rewards list (an index the site may be tracking). */
 async function openLists(c: Ctx, skip: bigint | null = null) {
   const out: bigint[] = [];
@@ -406,18 +571,21 @@ async function openLists(c: Ctx, skip: bigint | null = null) {
 }
 
 /**
- * Sign, simulate, report, and only with --execute send (once: src/tx.ts may re-broadcast the
- * same signed bytes while it waits, which can't execute twice; nothing here signs a new one).
+ * Build and simulate UNSIGNED, report, and only past the --execute gate sign and send (once:
+ * src/tx.ts may re-broadcast the same signed bytes while it waits, which can't execute twice;
+ * nothing here signs a new one). A dry run never gives the RPC a signature it could relay.
  * Returns the signature, or null when it stopped at the dry run.
  */
 async function deliver(c: Ctx, me: Keypair, what: string, ixs: TransactionInstruction[], units: number): Promise<{ signature: string } | null> {
   const { conn, say, execute, squadsProgram, taxProgram, microLamports } = c;
-  const s: Signed = await sign(conn, withPriority(ixs, microLamports, units), me);
-  const limitIx = s.tx.instructions.find((ix) => ix.programId.toBase58() === "ComputeBudget111111111111111111111111111111" && ix.data[0] === 2);
+  const fitted = await fitComputeLimit(conn, withPriority(ixs, microLamports, units), me.publicKey);
+  const limitIx = fitted.find((ix) => ix.programId.toBase58() === "ComputeBudget111111111111111111111111111111" && ix.data[0] === 2);
   const requested = limitIx ? limitIx.data.readUInt32LE(1) : units;
   const balance = BigInt(await conn.getBalance(me.publicKey, "confirmed"));
-  const sim = await conn.simulateTransaction(s.tx, undefined, [me.publicKey]);
-  const quote = await conn.getFeeForMessage(s.tx.compileMessage(), "confirmed").then((r) => r.value).catch(() => null);
+  const { blockhash } = await conn.getLatestBlockhash("confirmed");
+  const message = new TransactionMessage({ payerKey: me.publicKey, recentBlockhash: blockhash, instructions: fitted }).compileToLegacyMessage();
+  const sim = await conn.simulateTransaction(new VersionedTransaction(message), { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses: [me.publicKey.toBase58()] } });
+  const quote = await conn.getFeeForMessage(message, "confirmed").then((r) => r.value).catch(() => null);
   const x1Fee = BigInt(requested) * BigInt(X1_LAMPORTS_PER_CU) + BigInt(X1_BASE_LAMPORTS) + BigInt(Math.ceil((microLamports * requested) / 1_000_000));
   say(`\n${execute ? "SENDING" : "DRY RUN"}: ${what}`);
   say(`  signer and fee payer ${me.publicKey.toBase58()}, balance ${xntOf(balance)} XNT`);
@@ -430,10 +598,11 @@ async function deliver(c: Ctx, me: Keypair, what: string, ixs: TransactionInstru
   }
   const after = sim.value.accounts?.[0]?.lamports;
   const moved = after === undefined || after === null ? null : balance - BigInt(after);
-  say(`  simulation OK: ${sim.value.unitsConsumed ?? "?"} CU used, ${requested} CU requested`);
+  say(`  simulation OK (unsigned): ${sim.value.unitsConsumed ?? "?"} CU used, ${requested} CU requested`);
   say(`  expected fee: RPC quote ${quote === null ? "not available" : `${xntOf(quote)} XNT`}; X1's billing on requested CU would be about ${xntOf(x1Fee)} XNT`);
   if (moved !== null) say(`  simulated balance change ${xntOf(-moved)} XNT (fee plus any rent this transaction pays)`);
-  if (!execute) { say("  nothing was sent; add --execute to send it"); return null; }
+  if (!execute) { say("  nothing was signed or sent; add --execute to send it"); return null; }
+  const s = await sign(conn, fitted, me);
   say(`  signature ${s.signature}`);
   try {
     await sendAndConfirm(conn, s);
@@ -445,10 +614,22 @@ async function deliver(c: Ctx, me: Keypair, what: string, ixs: TransactionInstru
     }
     throw new Ambiguous(`the send didn't confirm: ${msgOf(e).split("\n")[0]}. It may still land: run \`status --index n\` before anything else. Nothing was or will be resent automatically (signature ${s.signature}).`);
   }
-  const now = BigInt(await conn.getBalance(me.publicKey, "confirmed"));
-  say(`  confirmed; this key's balance moved ${xntOf(now - balance)} XNT (now ${xntOf(now)})`);
+  say(`  CONFIRMED: ${what}, signature ${s.signature}`);
+  await conn.getBalance(me.publicKey, "confirmed").then((n) => say(`  this key's balance moved ${xntOf(BigInt(n) - balance)} XNT (now ${xntOf(n)})`)).catch(() => say("  this key's balance couldn't be read back"));
   return { signature: s.signature };
 }
+/**
+ * Everything after a confirmed send: a read failing here says nothing about the transaction,
+ * which landed. Refusals are things actually seen on-chain and stay refusals.
+ */
+async function reading<T>(what: string, signature: string, fn: () => Promise<T>): Promise<T> {
+  try { return await fn(); } catch (e) {
+    if (e instanceof Refusal || e instanceof Unverified) throw e;
+    throw new Unverified(`${what} is CONFIRMED (signature ${signature}), but reading the result back failed: ${msgOf(e).split("\n")[0]}. Verification unavailable. Do NOT re-propose or send it again: run \`status --index n\` when the RPC answers.`);
+  }
+}
+/** Confirmed, but the result couldn't be read back: exit code 4, no retry. */
+export class Unverified extends Error {}
 /** The send may or may not have landed: exit code 3, no retry. */
 export class Ambiguous extends Error {}
 
@@ -460,18 +641,19 @@ const nextSteps = (c: Ctx, index: bigint, expect: string) => {
   c.say(`  ${base} execute ${common} --keypair <a member's file>`);
 };
 
-async function readbackProposed(c: Ctx, me: Keypair, index: bigint, want: Shape["kind"]) {
+async function readbackProposed(c: Ctx, me: Keypair, index: bigint, want: Shape["kind"], planned: string) {
   const { conn, squadsProgram, ms, say, q } = c;
   const p = await readProposal(conn, squadsProgram, ms, index);
   say(`\nread back: ${proposalLine(q, p, index)}`);
-  if (!p) throw new Ambiguous(`proposal #${index} doesn't read back yet: run status`);
+  if (!p) throw new Unverified(`proposal #${index} is CONFIRMED but doesn't read back yet. Verification unavailable. Do NOT re-propose it: run \`status --index ${index}\` when the RPC answers.`);
   const s = await readStored(c, index);
   for (const l of s.lines) say(`  ${l}`);
   if (s.shape.kind !== want) throw new Refusal(`the stored transaction reads back as ${s.shape.kind}, not ${want}: don't approve it`);
+  if (s.messageHash !== planned) throw new Refusal(`the stored message hash ${s.messageHash} isn't the ${planned} this machine built: don't approve it, and check this RPC`);
   if (!p.approved.includes(me.publicKey.toBase58())) say("  note: this key's approval doesn't show yet");
 }
 
-async function memberFor(c: Ctx, what: "propose" | "approve" | "reject" | "execute") {
+async function memberFor(c: Ctx, what: "propose" | "approve" | "reject" | "cancel" | "execute") {
   const file = c.a.values.get("keypair");
   if (!file) refuse("--keypair <file> is required");
   const me = loadMemberKey(file!);
@@ -507,11 +689,12 @@ async function cmdProposeMemo(c: Ctx) {
   const hash = sha256Hex(Buffer.from(text, "utf8"));
   say(`\nproposal #${index}: memo ${JSON.stringify(text)} signed by the vault PDA ${q.vault.toBase58()}; moves nothing`);
   say(`  sha256 ${hash}`);
+  const planned = plannedMessageHash(ms, q.vault, memo, squadsProgram);
+  say(`  message hash ${planned} (from what this machine built: give it to the other members out of band)`);
   const sent = await deliverProposal(c, me, index, proposeIxs(squadsProgram, ms, index, me.publicKey, memo));
-  const expect = `--expect-memo-hash ${hash}`;
   if (!sent) return 0;
-  await readbackProposed(c, me, index, "memo");
-  nextSteps(c, index, expect);
+  await reading(`proposal #${index}`, sent.signature, () => readbackProposed(c, me, index, "memo", planned));
+  nextSteps(c, index, `--expect-memo-hash ${hash} --expect-message-hash ${planned}`);
   return 0;
 }
 
@@ -533,11 +716,14 @@ async function cmdProposeSetPublisher(c: Ctx) {
   say(`  vault account     ${addr.toBase58()}`);
   say(`  current publisher ${v.publisher.toBase58()} (this multisig's vault PDA)`);
   say(`  NEW publisher     ${newPublisher.toBase58()}`);
+  const ix = setPublisherIx(taxProgram, q.vault, mint, newPublisher);
+  const planned = plannedMessageHash(ms, q.vault, ix, squadsProgram);
+  say(`  message hash      ${planned} (from what this machine built: give it to the other members out of band)`);
   await warnAboutMove(c, newPublisher, null);
-  const sent = await deliverProposal(c, me, index, proposeIxs(squadsProgram, ms, index, me.publicKey, setPublisherIx(taxProgram, q.vault, mint, newPublisher)));
+  const sent = await deliverProposal(c, me, index, proposeIxs(squadsProgram, ms, index, me.publicKey, ix));
   if (!sent) return 0;
-  await readbackProposed(c, me, index, "set-publisher");
-  nextSteps(c, index, `--expect-new-publisher ${newPublisher.toBase58()} --expect-mint ${mint.toBase58()}`);
+  await reading(`proposal #${index}`, sent.signature, () => readbackProposed(c, me, index, "set-publisher", planned));
+  nextSteps(c, index, `--expect-new-publisher ${newPublisher.toBase58()} --expect-mint ${mint.toBase58()} --expect-message-hash ${planned}`);
   return 0;
 }
 
@@ -545,20 +731,25 @@ async function warnAboutMove(c: Ctx, newPublisher: PublicKey, self: bigint | nul
   const { say, conn, q, squadsProgram, ms } = c;
   if (!PublicKey.isOnCurve(newPublisher.toBytes()) && !newPublisher.equals(q.vault)) say(`  note: the new publisher is off-curve; the site only proposes through vault index ${PUBLISHER_VAULT_INDEX} of the configured multisig`);
   if (PublicKey.isOnCurve(newPublisher.toBytes()) && (await conn.getBalance(newPublisher, "confirmed")) === 0) say("  note: the new publisher holds no XNT; whichever key pays its transactions needs some");
-  for (const i of await openLists(c, self)) say(`  note: list proposal #${i} is open. Once the publisher moves it can never execute (NotPublisher); it stays on-chain until ${rejectCutoff(q)} members reject it${await readProposal(conn, squadsProgram, ms, i).then((p) => (p?.status === "Approved" ? " (it's Approved, so a threshold of cancels instead, which this tool doesn't send)" : "")).catch(() => "")}`);
+  for (const i of await openLists(c, self)) say(`  note: list proposal #${i} is open. It's blocked only while the publisher differs (NotPublisher): if the publisher ever returns to this vault PDA it can run again, if its epoch and total still fit. Clear it before the publisher returns: ${rejectCutoff(q)} rejections if Active, ${q.threshold} cancels if Approved`);
 }
 
-/** Everything that must hold before this member signs a vote or an execute of proposal `index`. */
-async function vetStored(c: Ctx, index: bigint, statusProblem: string | null) {
+/** Everything that must hold before this member signs a vote or an execute of proposal `index`, all from one snapshot. */
+async function vetStored(c: Ctx, index: bigint, snap: Snapshot, statusProblem: string | null) {
   const { a, say, q } = c;
-  const stored = await readStored(c, index);
-  say(`\nstored on-chain for #${index} (decoded from the transaction account):`);
+  const stored = await storedFrom(c, index, snap.tx, q, c.taxProgram);
+  say(`\nstored on-chain for #${index} at slot ${snap.slot} (decoded from the transaction account):`);
   for (const l of stored.lines) say(`  ${l}`);
   if (statusProblem) refuse(statusProblem);
   const e: Expectations = { newPublisher: pubkeyArg(a, "expect-new-publisher"), memoHash: a.values.get("expect-memo-hash") ?? null, mint: pubkeyArg(a, "expect-mint"), allowUnknown: a.bools.has("allow-unknown") };
   const shape = stored.shape;
   const problem = expectationProblem(shape, e, stored.vault?.mint ?? null);
   if (problem) refuse(problem);
+  const expectHash = a.values.get("expect-message-hash");
+  if (expectHash && expectHash.toLowerCase() !== stored.messageHash) refuse(`--expect-message-hash is ${expectHash}, but the stored message hashes to ${stored.messageHash ?? "nothing (no vault transaction)"}`);
+  // --allow-unknown means reading all of it, so what can't be shown in full can't be allowed.
+  if (!stored.tx) refuse(`#${index} ${shape.kind === "unknown" ? shape.reason : "isn't a vault transaction"}: its payload can't be shown and resolved here, so this tool won't sign for it, even with --allow-unknown`);
+  if (stored.tx!.lookups > 0) refuse(`#${index} uses address lookup tables: its accounts can't be resolved from the message, so this tool won't sign for it, even with --allow-unknown`);
   if (shape.kind === "set-publisher") {
     if (!stored.vault) refuse(`the stored instruction's vault account ${shape.vault.toBase58()} isn't a tax_vault vault of ${c.taxProgram.toBase58()}`);
     if (!stored.vault!.publisher.equals(q.vault)) refuse(`the vault's publisher is ${stored.vault!.publisher.toBase58()}, not this multisig's vault PDA: this can't run`);
@@ -570,10 +761,12 @@ async function vetStored(c: Ctx, index: bigint, statusProblem: string | null) {
     say("");
     say("  ************************************************************************");
     say(`  *  WARNING: --allow-unknown. This is ${shape.kind === "publish-list" ? "a rewards list, NOT CHECKED by this tool" : "NOT a known shape"}.`);
-    say("  *  You are signing for whatever the lines above say. Read every account.");
+    say("  *  You are signing for whatever the lines above say. Read every account and");
+    say(`  *  the data, and compare the message hash: ${stored.messageHash}`);
     say("  ************************************************************************");
     say("");
   }
+  await secondRead(c, index, snap, stored);
   return stored;
 }
 
@@ -581,20 +774,21 @@ async function cmdApprove(c: Ctx) {
   const me = await memberFor(c, "approve");
   const { q, say, conn, squadsProgram, ms, a } = c;
   const index = indexArg(a, true)!;
-  const p = await readProposal(conn, squadsProgram, ms, index);
+  const snap = await readSnapshot(conn, c, index);
+  const p = decodeProposal(squadsProgram, ms, index, snap.proposal);
   say(`\n${proposalLine(q, p, index)}`);
   if (!p) refuse(`no proposal #${index}`);
-  await vetStored(c, index, p!.status !== "Active" ? `#${index} is ${p!.status}: only an Active proposal takes votes`
+  await vetStored(c, index, snap, p!.status !== "Active" ? `#${index} is ${p!.status}: only an Active proposal takes votes`
     : index <= q.staleTransactionIndex ? `#${index} is stale (a config change passed it) and can't take votes` : null);
   if (p!.approved.includes(me.publicKey.toBase58())) refuse(`this key already approved #${index}`);
   const memo = a.values.get("memo");
   const sent = await deliver(c, me, `approve #${index}`, [approveIx(squadsProgram, ms, index, me.publicKey, memo)], UNITS.vote);
   if (!sent) return 0;
-  const after = await readProposal(conn, squadsProgram, ms, index);
+  const after = await reading(`the approval of #${index}`, sent.signature, () => readProposal(conn, squadsProgram, ms, index));
   say(`\nread back: ${proposalLine(q, after, index)}`);
   if (after?.status === "Approved") {
     say(q.timeLock ? `threshold met: it can be executed ${q.timeLock} s from now` : "threshold met: any member with Execute can execute it now");
-    say("It has no expiry: until it's executed any ONE member with Execute can run it at any later time, and only a threshold of cancels (which this tool doesn't send) stops it. Execute it now, or don't approve it yet.");
+    say("It has no expiry: until it's executed any ONE member with Execute can run it at any later time, and only a threshold of cancels stops it. Execute it now, or don't approve it yet.");
   }
   return 0;
 }
@@ -609,13 +803,35 @@ async function cmdReject(c: Ctx) {
   const stored = await readStored(c, index);
   say(`stored on-chain for #${index} (decoded from the transaction account):`);
   for (const l of stored.lines) say(`  ${l}`);
-  if (p!.status === "Approved") refuse(`#${index} is Approved: rejecting is closed, only a threshold of cancels stops it (this tool doesn't send those)`);
+  if (p!.status === "Approved") refuse(`#${index} is Approved: rejecting is closed, only a threshold of cancels stops it (the cancel subcommand)`);
   if (p!.status !== "Active") refuse(`#${index} is ${p!.status}: only an Active proposal takes votes`);
   if (p!.rejected.includes(me.publicKey.toBase58())) refuse(`this key already rejected #${index}`);
   if (stored.shape.kind === "publish-list") say("note: one rejection is final for the site's list: it adds its own and builds a new one");
   const sent = await deliver(c, me, `reject #${index}`, [rejectIx(squadsProgram, ms, index, me.publicKey, a.values.get("memo"))], UNITS.vote);
   if (!sent) return 0;
-  const after = await readProposal(conn, squadsProgram, ms, index);
+  const after = await reading(`the rejection of #${index}`, sent.signature, () => readProposal(conn, squadsProgram, ms, index));
+  say(`\nread back: ${proposalLine(q, after, index)}`);
+  return 0;
+}
+
+/** A cancel vote on an Approved proposal: a threshold of them makes it Cancelled, and nothing can run it then. */
+async function cmdCancel(c: Ctx) {
+  const me = await memberFor(c, "cancel");
+  const { q, say, conn, squadsProgram, ms, a } = c;
+  const index = indexArg(a, true)!;
+  const p = await readProposal(conn, squadsProgram, ms, index);
+  say(`\n${proposalLine(q, p, index)}`);
+  if (!p) refuse(`no proposal #${index}`);
+  const stored = await readStored(c, index);
+  say(`stored on-chain for #${index} (decoded from the transaction account):`);
+  for (const l of stored.lines) say(`  ${l}`);
+  if (p!.status === "Active") refuse(`#${index} is Active: use reject (cancel is for an Approved proposal)`);
+  if (p!.status !== "Approved") refuse(`#${index} is ${p!.status}: only an Approved proposal can be cancelled`);
+  if (p!.cancelled.includes(me.publicKey.toBase58())) refuse(`this key already cancelled #${index}`);
+  const ix = squads.instructions.proposalCancel({ multisigPda: ms, transactionIndex: index, member: me.publicKey, memo: a.values.get("memo"), programId: squadsProgram });
+  const sent = await deliver(c, me, `cancel #${index} (${p!.cancelled.length + 1} of ${q.threshold} cancels)`, [ix], UNITS.vote);
+  if (!sent) return 0;
+  const after = await reading(`the cancel of #${index}`, sent.signature, () => readProposal(conn, squadsProgram, ms, index));
   say(`\nread back: ${proposalLine(q, after, index)}`);
   return 0;
 }
@@ -624,57 +840,76 @@ async function cmdExecute(c: Ctx) {
   const me = await memberFor(c, "execute");
   const { q, say, conn, squadsProgram, ms, a } = c;
   const index = indexArg(a, true)!;
-  const p = await readProposal(conn, squadsProgram, ms, index);
+  const snap = await readSnapshot(conn, c, index);
+  const p = decodeProposal(squadsProgram, ms, index, snap.proposal);
   say(`\n${proposalLine(q, p, index)}`);
   if (!p) refuse(`no proposal #${index} (closed, or never created)`);
-  const stored = await vetStored(c, index, p!.status === "Executed" ? `#${index} was already executed`
+  const stored = await vetStored(c, index, snap, p!.status === "Executed" ? `#${index} was already executed`
     : p!.status !== "Approved" ? `#${index} is ${p!.status}, not Approved: ${p!.approved.length} of ${q.threshold} approvals` : null);
   if (q.timeLock && p!.at !== null && Date.now() / 1000 < p!.at + q.timeLock) refuse(`#${index}'s time lock runs until ${new Date((p!.at + q.timeLock) * 1000).toISOString()}`);
   if (!stored.tx) refuse(`#${index} isn't a vault transaction: this tool can't execute it`);
+  // The SDK reads the transaction again to build the instruction. Watch that read: what it sees must be what was checked.
+  const txPda = squadsTransactionPda(squadsProgram, ms, index);
+  let sdkRead: AccountInfo<Buffer> | null | undefined;
+  const watched: Connection = Object.create(conn);
+  watched.getAccountInfo = async (k: PublicKey, cfg?: Parameters<Connection["getAccountInfo"]>[1]) => {
+    const info = await conn.getAccountInfo(k, cfg);
+    if (k.equals(txPda)) sdkRead = info;
+    return info;
+  };
   let ix: TransactionInstruction;
-  try { ix = await executeIx(conn, squadsProgram, ms, index, me.publicKey); } catch (e) { return refuse(`can't build the execute: ${msgOf(e).split("\n")[0]}`); }
+  try { ix = await executeIx(watched, squadsProgram, ms, index, me.publicKey); } catch (e) { return refuse(`can't build the execute: ${msgOf(e).split("\n")[0]}`); }
+  if (sdkRead === undefined) refuse("the SDK built the execute without a read this tool could compare: not signing it");
+  if (!sameAccount(sdkRead!, snap.tx)) refuse(`the stored transaction changed between the checks above and the SDK's own read (slot ${snap.slot}). It can't change on-chain, so this RPC is answering differently: don't trust it`);
+  const tail = ix.keys.slice(-stored.tx!.accountKeys.length).map((m) => m.pubkey);
+  if (tail.length !== stored.tx!.accountKeys.length || tail.some((k, i) => !k.equals(stored.tx!.accountKeys[i]))) refuse("the execute instruction's accounts differ from the transaction that was checked: not signing it");
   const shape = stored.shape;
   const vaultBefore = await conn.getBalance(q.vault, "confirmed");
   const sent = await deliver(c, me, `execute #${index} (${shape.kind})`, [ix], UNITS.execute);
   if (!sent) return 0;
-  const after = await readProposal(conn, squadsProgram, ms, index);
-  say(`\nread back: ${proposalLine(q, after, index)}`);
-  if (after && after.status !== "Executed") throw new Refusal(`#${index} reads back as ${after.status} after a confirmed execute: look at it before anything else`);
-  const vaultAfter = await conn.getBalance(q.vault, "confirmed");
-  say(`vault PDA balance ${xntOf(vaultBefore)} -> ${xntOf(vaultAfter)} XNT${vaultBefore === vaultAfter ? " (unchanged)" : " (CHANGED)"}`);
-  if (shape.kind === "memo") {
-    const t = await conn.getTransaction(sent.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
-    const logs = t?.meta?.logMessages ?? [];
-    const signed = logs.some((l) => l.includes(`Signed by ${q.vault.toBase58()}`));
-    say(signed ? `the vault PDA signed: the memo program logged "Signed by ${q.vault.toBase58()}"` : "the memo program's log for the vault PDA's signature couldn't be read: check the transaction");
-    if (vaultBefore !== vaultAfter) throw new Refusal("the vault PDA's balance changed on a memo");
-  }
-  if (shape.kind === "set-publisher") {
-    const vi = await conn.getAccountInfo(shape.vault, "confirmed");
-    const v = vi ? decodeVault(shape.vault, vi.data) : null;
-    say(`vault ${shape.vault.toBase58()} publisher reads ${v?.publisher.toBase58() ?? "nothing"}`);
-    if (!v?.publisher.equals(shape.newPublisher)) throw new Refusal(`the vault's publisher did NOT change to ${shape.newPublisher.toBase58()}: look at it before anything else`);
-    say(`CONFIRMED: the publisher is now ${shape.newPublisher.toBase58()}`);
-    say("Next, for the site (scripts/quorum-action.ts header): if that key is factory.taxVault.publisherKeypair the site publishes with it from its next pass; if not, point publisherKeypair at it and restart, or run scripts/crank.ts --publisher. Then remove factory.taxVault.quorum, restart, and stop the co-signer.");
-  }
+  await reading(`the execute of #${index}`, sent.signature, async () => {
+    const after = await readProposal(conn, squadsProgram, ms, index);
+    say(`\nread back: ${proposalLine(q, after, index)}`);
+    if (after && after.status !== "Executed") throw new Refusal(`#${index} reads back as ${after.status} after a confirmed execute: look at it before anything else`);
+    const vaultAfter = await conn.getBalance(q.vault, "confirmed");
+    say(`vault PDA balance ${xntOf(vaultBefore)} -> ${xntOf(vaultAfter)} XNT${vaultBefore === vaultAfter ? " (unchanged)" : " (CHANGED)"}`);
+    if (shape.kind === "memo") {
+      const t = await conn.getTransaction(sent.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+      const logs = t?.meta?.logMessages ?? [];
+      const signed = logs.some((l) => l.includes(`Signed by ${q.vault.toBase58()}`));
+      say(signed ? `the vault PDA signed: the memo program logged "Signed by ${q.vault.toBase58()}"` : "the memo program's log for the vault PDA's signature couldn't be read: check the transaction");
+      if (vaultBefore !== vaultAfter) throw new Refusal("the vault PDA's balance changed on a memo");
+    }
+    if (shape.kind === "set-publisher") {
+      const vi = await conn.getAccountInfo(shape.vault, "confirmed");
+      const v = vi ? decodeVault(shape.vault, vi.data) : null;
+      say(`vault ${shape.vault.toBase58()} publisher reads ${v?.publisher.toBase58() ?? "nothing"}`);
+      if (!v?.publisher.equals(shape.newPublisher)) throw new Refusal(`the vault's publisher did NOT change to ${shape.newPublisher.toBase58()}: look at it before anything else`);
+      say(`CONFIRMED: the publisher is now ${shape.newPublisher.toBase58()}`);
+      say("Next, for the site (scripts/quorum-action.ts header): if that key is factory.taxVault.publisherKeypair the site publishes with it from its next pass; if not, point publisherKeypair at it and restart, or run scripts/crank.ts --publisher. Then remove factory.taxVault.quorum, restart, and stop the co-signer.");
+    }
+  });
   return 0;
 }
 
-/** The whole command; returns the exit code (0 done or dry run, 1 refused or failed, 2 usage, 3 ambiguous send). */
+/** The whole command; returns the exit code (0 done or dry run, 1 refused or failed, 2 usage, 3 ambiguous send, 4 confirmed but not verified). */
 export async function quorumAction(argv: string[], deps: Deps = defaultDeps()): Promise<number> {
+  const scrub = scrubber(argv);
+  const d: Deps = { ...deps, out: (l) => deps.out(scrub(l)) };
   try {
     const a = parseArgs(argv);
-    if (a.bools.has("help") || !a.sub) { deps.out(USAGE); return a.bools.has("help") ? 0 : 2; }
+    if (a.bools.has("help") || !a.sub) { d.out(USAGE); return a.bools.has("help") ? 0 : 2; }
     // The key file is checked before any network call, so a bad one can't get as far as signing.
     if (a.sub !== "status" && a.values.has("keypair")) loadMemberKey(a.values.get("keypair")!);
     if (a.sub === "status" && (a.values.has("keypair") || a.bools.has("execute"))) refuse("status is read-only: it takes no --keypair and no --execute");
-    const c = await setup(a, deps);
-    const run = { status: cmdStatus, "propose-memo": cmdProposeMemo, "propose-set-publisher": cmdProposeSetPublisher, approve: cmdApprove, reject: cmdReject, execute: cmdExecute }[a.sub];
+    const c = await setup(a, d);
+    const run = { status: cmdStatus, "propose-memo": cmdProposeMemo, "propose-set-publisher": cmdProposeSetPublisher, approve: cmdApprove, reject: cmdReject, cancel: cmdCancel, execute: cmdExecute }[a.sub];
     return await run(c);
   } catch (e) {
-    if (e instanceof Refusal) { deps.out(`REFUSED: ${e.message}`); return 1; }
-    if (e instanceof Ambiguous) { deps.out(`AMBIGUOUS: ${e.message}`); return 3; }
-    deps.out(`ERROR: ${msgOf(e).split("\n")[0]}`);
+    if (e instanceof Refusal) { d.out(`REFUSED: ${e.message}`); return 1; }
+    if (e instanceof Ambiguous) { d.out(`AMBIGUOUS: ${e.message}`); return 3; }
+    if (e instanceof Unverified) { d.out(`VERIFICATION UNAVAILABLE: ${e.message}`); return 4; }
+    d.out(`ERROR: ${msgOf(e).split("\n")[0]}`);
     return 1;
   }
 }
