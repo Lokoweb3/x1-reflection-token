@@ -23,3 +23,6 @@ dist/
 # Recorded tour videos (scripts/video-tour.ts)
 video/out/
 test-wallets/
+
+# Local agent notes, audit reports and runbooks: may describe unfixed issues
+.claude/
