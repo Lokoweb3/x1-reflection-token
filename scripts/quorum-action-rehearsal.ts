@@ -25,6 +25,8 @@
  *   U. A second undo to the site's own key with a list open: the site drops it and publishes
  *      directly with no restart. The stranded list, Approved, can't execute; two cancels clear it,
  *      and setup-publisher-quorum then lets the vault return.
+ *   T. Stale: Approved, Active, Draft and proposal-less transactions naming the vault, then a real config
+ *      change that marks them stale, then the publisher restored. What each binary does is printed.
  *
  * Generated keys only; a throwaway config based on config.example.json.
  *
@@ -64,13 +66,13 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import * as squads from "@sqds/multisig";
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, TransactionInstruction, sendAndConfirmTransaction } from "@solana/web3.js";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, TransactionInstruction, TransactionMessage, sendAndConfirmTransaction } from "@solana/web3.js";
 import {
   TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createMint, getAccount, getAssociatedTokenAddressSync, mintTo,
 } from "@solana/spl-token";
-import { sha256Hex, squadsBinaryProblem, xntOf } from "../src/quorum-action.js";
+import { GENESIS_HASH, sha256Hex, squadsBinaryProblem, xntOf } from "../src/quorum-action.js";
 import {
-  SQUADS_PROGRAM_IDS, approveIx, executeIx, proposeIxs, readProposal, readQuorum, squadsMultisigPda, squadsProgramConfigPda, squadsVaultPda,
+  SQUADS_PROGRAM_IDS, approveIx, closeIx, executeIx, proposeIxs, readProposal, readQuorum, rejectIx, squadsMultisigPda, squadsProgramConfigPda, squadsVaultPda,
 } from "../src/squads.js";
 import { appointPublisherIx, decodeVault, rawCid, setPublisherIx, vaultPda, type Vault } from "../src/taxvault.js";
 import { buildBuy, buildSell, quoteBuy, quoteSell } from "../src/xdex.js";
@@ -129,11 +131,14 @@ const swapBytes = (account: { data?: [string, string] } | null, l: { from: Buffe
   const at = b.indexOf(l.from);
   if (at >= 0) { l.to.copy(b, at); account.data[0] = b.toString("base64"); }
 };
+/** Answer getGenesisHash as the real network does, so a run looks like the runbook's, not like a local validator. */
+let realGenesis = false;
 const proxies = [8174, 8175].map((port) => http.createServer(async (req, res) => {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
   const body = Buffer.concat(chunks).toString();
   const j = JSON.parse(body);
+  if (realGenesis && j.method === "getGenesisHash") { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: j.id, result: GENESIS_HASH[DEPLOY] })); return; }
   if (j.method === "simulateTransaction") wire.simulated.push({ tx: j.params[0], sigVerify: j.params[1]?.sigVerify });
   if (j.method === "sendTransaction") wire.sent++;
   const answer = await (await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body })).json() as { result?: { value?: unknown } };
@@ -628,6 +633,21 @@ try {
     assert.equal(wire.sent, 0, "dry runs put no sendTransaction on the wire");
     ok(`on the wire: ${wire.simulated.length} simulations, all zero signatures, sigVerify false; 0 sendTransaction`);
 
+    // The runbook's form: a real-network genesis, no local flags, one RPC, --single-rpc-accepted.
+    {
+      realGenesis = true;
+      const asRunbook = (args: string[]) => script("scripts/quorum-action.ts", ["approve", "--network", DEPLOY, "--rpc", PROXY_A, ...MSA, "--keypair", F.site, "--index", K, "--expect-new-publisher", single.publicKey.toBase58(), ...args], { quiet: true });
+      if (DEPLOY === "mainnet") {
+        const r = await asRunbook([]);
+        assert.equal(r.code, 1, r.out); assert.match(r.out, /--single-rpc-accepted/);
+        ok("mainnet genesis, one RPC, no flag: refused");
+      }
+      const r = await asRunbook(["--single-rpc-accepted"]);
+      assert.equal(r.code, 0, r.out); assert.match(r.out, /genesis \w+ checked/); assert.match(r.out, /WARNING: --single-rpc-accepted/); assert.match(r.out, /nothing in this tool/i); assert.match(r.out, /nothing was signed or sent/);
+      ok(`${DEPLOY} genesis with --single-rpc-accepted: the dry run works, with the loud warning`);
+      realGenesis = false;
+    }
+
     // A proxy rewriting the stored target: the accounts stay the same, because the target is instruction data.
     const shown = outsider.publicKey.toBase58(), rewrite = { from: single.publicKey.toBuffer(), to: outsider.publicKey.toBuffer() };
     const asShown = ["--index", K, "--expect-new-publisher", shown];
@@ -811,6 +831,91 @@ try {
     }, 300_000);
     const final = await qa("status", "status", null, [], { quiet: true });
     console.log(final.split("\n").filter((l) => l.startsWith("  #") || l.startsWith("  member")).map((l) => `      | ${l}`).join("\n"));
+
+    console.log("\nT. Stale proposals: approve, config change, publisher restoration");
+    await stopChild(server); server = null; // so nothing else takes an index
+    assert.ok((await readVault(mint)).publisher.equals(site.publicKey), "the publisher is away from the multisig");
+    const nextIndex = async () => (await readQuorum(conn, SQUADS, MS))!.transactionIndex + 1n;
+    const m = new PublicKey(mint);
+    /** Stored directly with the site's key, as a stolen key could: the tool won't propose while the publisher is elsewhere. */
+    const storeSetPublisher = async (to: PublicKey, approveToo: boolean) => {
+      const i = await nextIndex();
+      assert.equal(await tryTx(proposeIxs(SQUADS, MS, i, site.publicKey, setPublisherIx(PROGRAM, MS_VAULT, m, to)), site), null);
+      if (approveToo) assert.equal(await tryTx([approveIx(SQUADS, MS, i, backup.publicKey)], backup), null);
+      return i;
+    };
+    const tExec = await storeSetPublisher(outsider.publicKey, true), tCancel = await storeSetPublisher(single.publicKey, true), tActive = await storeSetPublisher(cosigner.publicKey, false);
+    const tNoProposal = await nextIndex();
+    const txMsg = new TransactionMessage({ payerKey: MS_VAULT, recentBlockhash: PublicKey.default.toBase58(), instructions: [setPublisherIx(PROGRAM, MS_VAULT, m, cosigner.publicKey)] });
+    assert.equal(await tryTx([squads.instructions.vaultTransactionCreate({ multisigPda: MS, transactionIndex: tNoProposal, creator: site.publicKey, vaultIndex: 0, ephemeralSigners: 0, transactionMessage: txMsg, programId: SQUADS })], site), null);
+    const tDraft = await nextIndex();
+    assert.equal(await tryTx([squads.instructions.vaultTransactionCreate({ multisigPda: MS, transactionIndex: tDraft, creator: site.publicKey, vaultIndex: 0, ephemeralSigners: 0, transactionMessage: txMsg, programId: SQUADS }),
+      squads.instructions.proposalCreate({ multisigPda: MS, transactionIndex: tDraft, creator: site.publicKey, isDraft: true, programId: SQUADS })], site), null);
+    // Before the config change the scan names all of them.
+    {
+      const r = await script("scripts/setup-publisher-quorum.ts", setupBack, { quiet: true });
+      assert.equal(r.code, 1, r.out);
+      for (const [i, st] of [[tExec, "Approved"], [tCancel, "Approved"], [tActive, "Active"], [tNoProposal, "no proposal yet"], [tDraft, "Draft"]] as const) assert.match(r.out, new RegExp(`#${i} ${st}`));
+      ok("before the config change setup-publisher-quorum names every one: Approved, Active, no proposal yet, Draft");
+    }
+    // A real config change, through the real program: 2 of 3, and it changes nothing the setup script checks.
+    const cfgIndex = await nextIndex();
+    assert.equal(await tryTx([squads.instructions.configTransactionCreate({ multisigPda: MS, transactionIndex: cfgIndex, creator: site.publicKey, actions: [{ __kind: "SetTimeLock", newTimeLock: 0 }], programId: SQUADS }),
+      squads.instructions.proposalCreate({ multisigPda: MS, transactionIndex: cfgIndex, creator: site.publicKey, programId: SQUADS }), approveIx(SQUADS, MS, cfgIndex, site.publicKey)], site), null);
+    assert.equal(await tryTx([approveIx(SQUADS, MS, cfgIndex, backup.publicKey)], backup), null);
+    assert.equal(await tryTx([squads.instructions.configTransactionExecute({ multisigPda: MS, transactionIndex: cfgIndex, member: site.publicKey, rentPayer: site.publicKey, programId: SQUADS })], site), null);
+    const qStale = (await readQuorum(conn, SQUADS, MS))!;
+    console.log(`  STALE: after the config change at #${cfgIndex}: staleTransactionIndex ${qStale.staleTransactionIndex}, threshold ${qStale.threshold}, time lock ${qStale.timeLock}`);
+    assert.equal(qStale.staleTransactionIndex, cfgIndex, "the config change marked everything so far stale");
+    assert.equal((await prop(tExec))!.status, "Approved"); assert.equal((await prop(tActive))!.status, "Active");
+    // What the program does with each below the stale index.
+    {
+      const said = async (what: string, e: string | null) => { console.log(`  STALE: ${what}: ${e === null ? "ALLOWED" : `refused, ${squadsErr(e)}`}`); return e; };
+      assert.ok(await said(`approve stale Active #${tActive}`, await tryTx([approveIx(SQUADS, MS, tActive, backup.publicKey)], backup)));
+      assert.ok(await said(`reject stale Active #${tActive}`, await tryTx([rejectIx(SQUADS, MS, tActive, backup.publicKey)], backup)));
+      assert.ok(await said(`proposal_create on stale transaction #${tNoProposal}`, await tryTx([squads.instructions.proposalCreate({ multisigPda: MS, transactionIndex: tNoProposal, creator: site.publicKey, programId: SQUADS })], site)));
+      assert.ok(await said(`activate stale Draft #${tDraft}`, await tryTx([squads.instructions.proposalActivate({ multisigPda: MS, transactionIndex: tDraft, member: site.publicKey, programId: SQUADS })], site)));
+      assert.ok(await said(`close stale Approved #${tExec}`, await tryTx([closeIx(SQUADS, MS, tExec, site.publicKey)], site)));
+      await qaRefused("approving a stale Active proposal", "approve", F.backup, ["--index", tActive.toString(), "--expect-new-publisher", cosigner.publicKey.toBase58()], /stale/);
+    }
+    // The guard: only what can still run, with the stale ones named.
+    {
+      const r = await script("scripts/setup-publisher-quorum.ts", [...setupBack, "--execute"], { quiet: true });
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`#${tExec} Approved \\(stale, still executable\\)`)); assert.match(r.out, new RegExp(`#${tCancel} Approved \\(stale, still executable\\)`));
+      for (const dead of [tActive, tNoProposal, tDraft]) assert.doesNotMatch(r.out, new RegExp(`#${dead} (Active|Draft|no proposal)`));
+      assert.match(r.out, /Not moving this vault/);
+      assert.ok((await readVault(mint)).publisher.equals(site.publicKey), "the refused setup moved nothing");
+      ok("setup-publisher-quorum refuses: it names the stale Approved proposals and not the dead ones");
+    }
+    // Restored anyway, as a publisher's own set_publisher can: the stale Approved one runs, by one key.
+    assert.equal(await tryTx([setPublisherIx(PROGRAM, site.publicKey, m, MS_VAULT)], site), null);
+    assert.ok((await readVault(mint)).publisher.equals(MS_VAULT));
+    const tExpect = ["--expect-new-publisher", outsider.publicKey.toBase58()];
+    const tDry = await script("scripts/quorum-action.ts", ["status", ...NET, ...MSA, "--index", tExec.toString()], { quiet: true });
+    assert.match(tDry.out, /can STILL execute until cancelled/);
+    const tRan = await script("scripts/quorum-action.ts", ["execute", ...NET, ...MSA, "--keypair", F.cosigner, "--index", tExec.toString(), ...tExpect, "--execute"], { quiet: true });
+    const tAfter = await readVault(mint);
+    console.log(`  STALE: execute of stale Approved set_publisher #${tExec} by the co-signer's key alone exited ${tRan.code}; proposal ${(await prop(tExec))?.status}; publisher ${tAfter.publisher.toBase58()}`);
+    assert.equal(tRan.code, 0, tRan.out); assert.equal((await prop(tExec))!.status, "Executed"); assert.ok(tAfter.publisher.equals(outsider.publicKey), "the stale proposal moved the publisher");
+    ok(`on the ${DEPLOY} binary a stale Approved set_publisher executes with one key and no new votes`);
+    // And it can be cleared: cancels work below the stale index, after which the scan is clear.
+    {
+      const back = ["--rpc", RPC, "--network", DEPLOY, "--keypair", F.payer, "--create-key", createKeyFile, "--site", site.publicKey.toBase58(), "--cosigner", cosigner.publicKey.toBase58(),
+        "--backup", backup.publicKey.toBase58(), "--mint", mint, "--publisher", F.outsider, "--program", PROGRAM.toBase58()];
+      const before = await script("scripts/setup-publisher-quorum.ts", back, { quiet: true });
+      assert.equal(before.code, 1, before.out); assert.match(before.out, new RegExp(`#${tCancel} Approved`));
+      await qa("backup cancels a stale proposal", "cancel", F.backup, ["--index", tCancel.toString(), "--execute"], { quiet: true });
+      assert.equal((await prop(tCancel))!.status, "Approved");
+      const one = await script("scripts/setup-publisher-quorum.ts", back, { quiet: true });
+      assert.equal(one.code, 1, one.out);
+      const cleared = await qa("site cancels a stale proposal", "cancel", F.site, ["--index", tCancel.toString(), "--execute"], { quiet: true });
+      assert.match(cleared, /is Cancelled: nothing can run it/);
+      assert.equal((await prop(tCancel))!.status, "Cancelled");
+      const clear = await script("scripts/setup-publisher-quorum.ts", back, { quiet: true });
+      assert.equal(clear.code, 0, clear.out); assert.match(clear.out, /simulation OK/);
+      ok("two cancels clear a stale Approved proposal; setup-publisher-quorum then lets the vault return (dry run)");
+    }
   }
 
   console.log("\nCosts on this validator (its fee rule, not X1's: X1 bills requested CU; rent is the same formula)");
