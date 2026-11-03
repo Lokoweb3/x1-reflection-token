@@ -573,3 +573,85 @@ test("scripts/check-vault-bindings.ts lists what differs and exits 1, and is qui
   assert.match(r.out, /3 registered, 0 with no vault, 1 off their record/);
 });
 
+
+// ---------- status -> vault step -> registration: the site's own flow ----------
+const initKeys = (ix: { keys: { pubkey: PublicKey }[] }) => ({ pool: ix.keys[4].pubkey, creatorNft: ix.keys[6].pubkey });
+/** The route's flow (/api/launch/vault), then the vault that transaction would make, then registration. */
+async function startVaultAndRegister(r: { creator: string; mint: string; [k: string]: unknown }, base: VaultFields) {
+  const s = await launch.launchStatus(conn(), cfg(), r as never);
+  const [ix] = await launch.buildVaultStep(conn(), cfg(), r as never, s.lockNft!);
+  const bound = initKeys(ix);
+  putVault({ ...base, ...bound });
+  return { named: bound, done: await register(r) };
+}
+
+test("flow: an older small lock and a later full one: the site names the full one, and it registers", async () => {
+  const l = launched();
+  const small = key();
+  lock(small, l.launchPool, l.creator, 1_000n, { lockedAt: 1_700_000_000 });
+  save(l.record);
+  const { named, done } = await startVaultAndRegister(l.record, l.vault);
+  assert.equal(named.creatorNft.toBase58(), l.nft.toBase58());
+  assert.equal(done.lockNft, l.nft.toBase58());
+});
+
+test("flow: an ordinary launch, also with a timed lock, goes through as before", async () => {
+  for (const o of [{}, { lockDays: 30 }]) {
+    const l = launched(o);
+    save(l.record);
+    const { named, done } = await startVaultAndRegister(l.record, l.vault);
+    assert.equal(named.creatorNft.toBase58(), l.nft.toBase58());
+    assert.ok(done.registeredAt);
+  }
+});
+
+test("flow: no lock that qualifies alone: refused before anything is signed, saying what to do", async () => {
+  const l = launched();
+  // The LP split across two locks: enough together, enough in neither.
+  world.accounts.delete(lockPda(LOCKER, l.nft).toBase58());
+  lock(key(), l.launchPool, l.creator, l.allLp / 2n, { lockedAt: 1_700_000_000 });
+  lock(key(), l.launchPool, l.creator, l.allLp / 2n);
+  save(l.record);
+  const s = await launch.launchStatus(conn(), cfg(), l.record as never);
+  await assert.rejects(launch.buildVaultStep(conn(), cfg(), l.record as never, s.lockNft!), /nothing was signed.*single/i);
+
+  // A small lock only, the rest of the LP still in the wallet.
+  const m = launched();
+  world.accounts.delete(lockPda(LOCKER, m.nft).toBase58());
+  lock(key(), m.launchPool, m.creator, 1n);
+  save(m.record);
+  const s2 = await launch.launchStatus(conn(), cfg(), m.record as never);
+  await assert.rejects(launch.buildVaultStep(conn(), cfg(), m.record as never, s2.lockNft!), /nothing was signed.*single/i);
+});
+
+test("flow: a pool that can't be listed is refused before the vault is fixed to it", async () => {
+  const l = launched();
+  pool(l.mint, SUPPLY / 100n, POOL_XNT);
+  save(l.record);
+  const s = await launch.launchStatus(conn(), cfg(), l.record as never);
+  await assert.rejects(launch.buildVaultStep(conn(), cfg(), l.record as never, s.lockNft!), /nothing was signed.*holds less/i);
+});
+
+test("flow, curve: the vault step names the curve's pool and lock, whatever other locks the creator has", async (t) => {
+  const a = graduated();
+  lock(key(), a.curvePool, a.creator, 10n ** 16n, { lockedAt: 1_700_000_000 });
+  const s = await launch.launchStatus(conn(), cfg(), a.record as never);
+  assert.equal(s.lockNft, a.nft.toBase58());
+  const [ix] = await launch.buildVaultStep(conn(), cfg(), a.record as never, s.lockNft!);
+  assert.equal(initKeys(ix).creatorNft.toBase58(), a.nft.toBase58());
+  assert.equal(initKeys(ix).pool.toBase58(), a.curvePool.toBase58());
+  putVault({ ...dueVault(a.vault), ...initKeys(ix) });
+  await register(a.record);
+  const { logged } = await pass(t);
+  assert.ok(tried("sell") > 0);
+  assert.ok(!logged.some((x) => /VAULT NOT ON ITS LAUNCH/.test(x)));
+});
+
+test("a registered launch's status still names the oldest lock, so an old record without lockNft keeps claiming with it", async () => {
+  const l = launched();
+  const oldSmall = key();
+  lock(oldSmall, l.launchPool, l.creator, 1_000n, { lockedAt: 1_700_000_000 });
+  const s = await launch.launchStatus(conn(), cfg(), { ...l.record, registeredAt: new Date().toISOString() } as never);
+  assert.equal(s.lockNft, oldSmall.toBase58());
+});
+

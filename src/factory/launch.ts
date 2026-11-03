@@ -770,7 +770,10 @@ export async function launchStatus(conn: Connection, cfg: Config, r: LaunchRecor
   let lock = false, lockNft: string | null = null;
   if (pool && cfg.locker?.programId) {
     const locks = await listLocks(conn, new PublicKey(cfg.locker.programId), new PublicKey(r.pool));
-    const mine = locks.find((l) => l.locker.toBase58() === r.creator);
+    const creators = locks.filter((l) => l.locker.toBase58() === r.creator);
+    // Before registration, the lock the launch will go on with: the one holding the most LP (if any
+    // holds enough alone, this one does). Listed tokens keep the oldest, what an old record without lockNft used.
+    const mine = r.registeredAt ? creators[0] : creators.reduce<(typeof creators)[number] | undefined>((best, l) => (!best || lpTakenIn(l) > lpTakenIn(best) ? l : best), undefined);
     lock = !!mine;
     lockNft = mine?.nftMint.toBase58() ?? null;
   }
@@ -806,6 +809,14 @@ export async function buildVaultStep(conn: Connection, cfg: Config, r: LaunchRec
   if (r.kind === "curve" && (!c || !isGraduated(c.status))) throw new Error("The curve hasn't graduated yet; the tax vault starts after graduation.");
   if (c && isLpBurned(c)) throw new Error(LP_BURNED_ERROR);
   const pool = c ? c.pool : new PublicKey(r.pool);
+  // The vault fixes its lock for good, so what registration will ask of it is asked now. (A curve's
+  // lock is the one the program made, of all the pool's LP; the status names it, not the creator's.)
+  if (!c) {
+    const tax = getTransferFeeConfig(unpackMint(mint, await conn.getAccountInfo(mint, "confirmed"), TOKEN_2022_PROGRAM_ID));
+    if (!tax) throw new Error("Token does not match the factory launch (no tax).");
+    const problem = await poolLockProblemOf(conn, cfg, r, tax.newerTransferFee.transferFeeBasisPoints, new PublicKey(lockNft));
+    if (problem) throw new Error(`The tax vault can't start yet, and nothing was signed: starting it fixes its lock for good. ${problem}${/whole LP/.test(problem) ? LOCK_MORE : ""}`);
+  }
   const base = { payer: creator, mint, pool, creatorNft: new PublicKey(lockNft), burnBps, lpBps, publisher, guardian: creator };
   if (r.payoutMint) {
     // Checked again now: the vault fixes the payout pool for good.
@@ -945,21 +956,28 @@ export function poolLockProblem(p: { poolTokens: bigint; poolQuote: bigint; taxB
   return null;
 }
 
+/** LP a lock took in: what it holds plus the fee LP already collected from it. */
+const lpTakenIn = (l: { lockedLp: bigint; feeLpCollected: bigint }) => l.lockedLp + l.feeLpCollected;
+const LOCK_MORE = " One lock must hold at least 99% of the pool's starting LP: lock the LP you still hold in a single lock, then start the vault. LP already in a smaller lock can't be moved into it, so if too much is in smaller locks, this launch can't be listed.";
+
 /** `vaultNft`: a vault launch's creator NFT. That one lock must hold the LP alone, so a thin lock on the right pool can't stand in. */
-async function checkPoolAndLock(conn: Connection, cfg: Config, r: LaunchRecord, taxBps: number, vaultNft?: PublicKey) {
+async function poolLockProblemOf(conn: Connection, cfg: Config, r: LaunchRecord, taxBps: number, vaultNft?: PublicKey) {
   const pair = pairOf(cfg, r);
   const quoteInfo = pair.xntPool ? await conn.getAccountInfo(pair.mint, "confirmed") : null;
   const quoteDecimals = quoteInfo ? unpackMint(pair.mint, quoteInfo, quoteInfo.owner).decimals : 9;
   const mint = new PublicKey(r.mint), creator = new PublicKey(r.creator);
   const snap = await snapshot(conn, new PublicKey(cfg.xdex.programId), new PublicKey(r.pool), mint, pair.mint);
   const locks = (await listLocks(conn, new PublicKey(cfg.locker!.programId), new PublicKey(r.pool))).filter((l) => l.locker.equals(creator) && (!vaultNft || l.nftMint.equals(vaultNft)));
-  if (vaultNft && !locks.length) throw new Error(VAULT_NFT_WRONG);
-  const problem = poolLockProblem({
+  if (vaultNft && !locks.length) return VAULT_NFT_WRONG;
+  return poolLockProblem({
     poolTokens: toBaseUnits(r.poolTokens, DECIMALS), poolQuote: toBaseUnits(r.poolXnt, quoteDecimals), taxBps,
     reserveToken: snap.reserveToken, reserveQuote: snap.reserveQuote,
-    // LP the lock took in: what it holds plus the fee LP already collected from it.
-    lockedLp: locks.reduce((t, l) => t + l.lockedLp + l.feeLpCollected, 0n),
+    lockedLp: locks.reduce((t, l) => t + lpTakenIn(l), 0n),
   });
+}
+
+async function checkPoolAndLock(conn: Connection, cfg: Config, r: LaunchRecord, taxBps: number, vaultNft?: PublicKey) {
+  const problem = await poolLockProblemOf(conn, cfg, r, taxBps, vaultNft);
   if (problem) throw new Error(`This launch can't be listed: ${problem}`);
 }
 

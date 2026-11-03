@@ -259,6 +259,8 @@ from there. (A site without the Tax Vault gives each token its own distributor w
   other than the record's stops only the creator reward. The panel, the page and the log
   (`VAULT NOT ON ITS LAUNCH`) say so. A record with no pool or lock NFT isn't compared on that
   field. `scripts/check-vault-bindings.ts` lists any differences, read-only.
+- **Starting the vault asks the same of the lock first:** the site names the creator's lock
+  holding the most LP and refuses, before anything is signed, unless it passes that check alone.
 - A launch record without its own `config.json` falls back to the site's settings, and a
   token that still can't be read is left out of `/tokens` instead of breaking the list.
 - The tax starts with the first transfer, so seeding the pool pays it once. That
