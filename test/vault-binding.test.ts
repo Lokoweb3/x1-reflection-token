@@ -555,24 +555,108 @@ test("scripts/migrate-to-vault.ts refuses a config that disagrees with the launc
   assert.equal(world.simulated.length, 0);
 });
 
-test("scripts/check-vault-bindings.ts lists what differs and exits 1, and is quiet about what doesn't", async () => {
-  const good = launched(), bad = launched(), old = launched();
-  putVault(good.vault); putVault(old.vault);
-  const thin = pool(bad.mint, 10n ** 15n, 10n ** 8n, { amm: OTHER_TIER });
-  putVault({ ...bad.vault, pool: thin });
-  const at = { registeredAt: new Date().toISOString() };
+// ---------- the checker: exit 0 means verified, nothing less ----------
+const checker = (...args: string[]) => runScript("scripts/check-vault-bindings.ts", ["--rpc", rpc.url, "--program", PROGRAM.toBase58(), ...args]);
+const at = { registeredAt: new Date().toISOString() };
+
+test("checker: every vault token matches on both fields: exit 0, and a hot-wallet token is no problem", async () => {
+  const good = launched();
+  putVault(good.vault);
   save({ ...good.record, ...at, lockNft: good.nft.toBase58() });
-  const run = () => runScript("scripts/check-vault-bindings.ts", ["--rpc", rpc.url, "--program", PROGRAM.toBase58()]);
-  assert.equal((await run()).code, 0);
-  save({ ...old.record, ...at });
-  save({ ...bad.record, ...at, lockNft: bad.nft.toBase58() });
-  const r = await run();
-  assert.equal(r.code, 1, r.out);
-  assert.ok(r.out.includes(`POOL DIFFERS: vault ${thin.toBase58()}, record ${bad.launchPool.toBase58()}`), r.out);
-  assert.match(r.out, /not in the record, so not compared: creator NFT/);
-  assert.match(r.out, /3 registered, 0 with no vault, 1 off their record/);
+  const hot = launched();
+  save({ ...hot.record, ...at, taxVault: undefined, lockNft: hot.nft.toBase58() });
+  const r = await checker();
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /1 verified, 0 off their record, 0 not verified, 1 not vault tokens/);
 });
 
+test("checker: an empty or wrong directory isn't success", async () => {
+  const r = await checker();
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /no registered launches/i);
+  assert.ok(r.out.includes(process.env.REFLECT_FACTORY_DIR!), "says which directory it read");
+});
+
+test("checker: a pool or NFT off the record exits 1 and names both addresses", async () => {
+  const bad = launched(), other = launched();
+  const thin = pool(bad.mint, 10n ** 15n, 10n ** 8n, { amm: OTHER_TIER });
+  putVault({ ...bad.vault, pool: thin });
+  const nft2 = key();
+  putVault({ ...other.vault, creatorNft: nft2 });
+  save({ ...bad.record, ...at, lockNft: bad.nft.toBase58() });
+  save({ ...other.record, ...at, lockNft: other.nft.toBase58() });
+  const r = await checker();
+  assert.equal(r.code, 1, r.out);
+  assert.ok(r.out.includes(`POOL DIFFERS: vault ${thin.toBase58()}, record ${bad.launchPool.toBase58()}`), r.out);
+  assert.ok(r.out.includes(`CREATOR NFT DIFFERS: vault ${nft2.toBase58()}, record ${other.nft.toBase58()}`), r.out);
+  assert.match(r.out, /0 verified, 2 off their record/);
+});
+
+test("checker: missing fields, a missing vault and an unreadable record each exit 2 and say so", async () => {
+  const cases: [string, () => void, RegExp][] = [
+    ["no lockNft", () => { const l = launched(); putVault(l.vault); save({ ...l.record, ...at }); }, /NOT VERIFIED.*creator NFT/],
+    ["no pool", () => { const l = launched(); putVault(l.vault); const { pool: _p, ...rest } = l.record; save({ ...rest, ...at, lockNft: l.nft.toBase58() }); }, /NOT VERIFIED.*pool/],
+    ["no vault", () => { const l = launched(); save({ ...l.record, ...at, lockNft: l.nft.toBase58() }); }, /NO VAULT/],
+    ["foreign vault account", () => { const l = launched(); put(vaultPda(PROGRAM, l.mint), key(), Buffer.alloc(700)); save({ ...l.record, ...at, lockNft: l.nft.toBase58() }); }, /NO VAULT/],
+    ["garbage vault", () => { const l = launched(); put(vaultPda(PROGRAM, l.mint), PROGRAM, Buffer.alloc(700)); save({ ...l.record, ...at, lockNft: l.nft.toBase58() }); }, /UNREADABLE/],
+    ["garbage record", () => { const d = path.join(process.env.REFLECT_FACTORY_DIR!, "launches", key().toBase58()); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, "launch.json"), "{not json"); const g = launched(); putVault(g.vault); save({ ...g.record, ...at, lockNft: g.nft.toBase58() }); }, /UNREADABLE/],
+  ];
+  for (const [name, setup, want] of cases) {
+    fs.rmSync(path.join(process.env.REFLECT_FACTORY_DIR!, "launches"), { recursive: true, force: true });
+    setup();
+    const r = await checker();
+    assert.equal(r.code, 2, `${name}: ${r.out}`);
+    assert.match(r.out, want, name);
+  }
+});
+
+test("checker --mint: a plain yes or no, exit 0 only for a verified match on pool and NFT", async () => {
+  const yes = launched();
+  putVault(yes.vault);
+  save({ ...yes.record, ...at, lockNft: yes.nft.toBase58() });
+  const y = await checker("--mint", yes.mint.toBase58());
+  assert.equal(y.code, 0, y.out);
+  assert.match(y.out, /^YES: /m);
+
+  const no = async (mint: PublicKey, code: number, want: RegExp) => {
+    const r = await checker("--mint", mint.toBase58());
+    assert.equal(r.code, code, r.out);
+    assert.match(r.out, /^NO: /m, r.out);
+    assert.match(r.out, want);
+    assert.doesNotMatch(r.out, /^YES/m);
+  };
+  await no(key(), 2, /no launch record/);
+  const unreg = launched();
+  putVault(unreg.vault);
+  save({ ...unreg.record, lockNft: unreg.nft.toBase58() });
+  await no(unreg.mint, 2, /isn't registered/);
+  const noNft = launched();
+  putVault(noNft.vault);
+  save({ ...noNft.record, ...at });
+  await no(noNft.mint, 2, /creator NFT.*not in the record/);
+  const noVault = launched();
+  save({ ...noVault.record, ...at, lockNft: noVault.nft.toBase58() });
+  await no(noVault.mint, 2, /no vault/i);
+  const wrong = launched();
+  putVault({ ...wrong.vault, pool: pool(wrong.mint, 10n ** 15n, 10n ** 8n, { amm: OTHER_TIER }) });
+  save({ ...wrong.record, ...at, lockNft: wrong.nft.toBase58() });
+  await no(wrong.mint, 1, /POOL DIFFERS/);
+  const wrongNft = launched();
+  putVault({ ...wrongNft.vault, creatorNft: key() });
+  save({ ...wrongNft.record, ...at, lockNft: wrongNft.nft.toBase58() });
+  await no(wrongNft.mint, 1, /CREATOR NFT DIFFERS/);
+
+  const hot = launched();
+  save({ ...hot.record, ...at, taxVault: undefined, lockNft: hot.nft.toBase58() });
+  await no(hot.mint, 2, /not a vault token/);
+
+  // Wherever the RPC can't answer, it's not a yes.
+  const down = await runScript("scripts/check-vault-bindings.ts", ["--rpc", "http://127.0.0.1:9", "--program", PROGRAM.toBase58(), "--mint", yes.mint.toBase58()]);
+  assert.equal(down.code, 2, down.out);
+  assert.match(down.out, /^NO: /m);
+  const bad = await checker("--mint", "not-a-key");
+  assert.equal(bad.code, 2, bad.out);
+});
 
 // ---------- status -> vault step -> registration: the site's own flow ----------
 const initKeys = (ix: { keys: { pubkey: PublicKey }[] }) => ({ pool: ix.keys[4].pubkey, creatorNft: ix.keys[6].pubkey });
@@ -655,7 +739,6 @@ test("a registered launch's status still names the oldest lock, so an old record
   assert.equal(s.lockNft, oldSmall.toBase58());
 });
 
-const at = { registeredAt: new Date().toISOString() };
 // ---------- holder passes on a vault off its launch ----------
 async function passBookWorld() {
   const { PASS_BOOK_LEN, PASS_MODE_OFFSET, passBookPda } = await import("../src/passes.js");

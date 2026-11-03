@@ -259,7 +259,10 @@ from there. (A site without the Tax Vault gives each token its own distributor w
   pay out; a creator NFT
   other than the record's stops only the creator reward. The panel, the page and the log
   (`VAULT NOT ON ITS LAUNCH`) say so. A record with no pool or lock NFT isn't compared on that
-  field. `scripts/check-vault-bindings.ts` lists any differences, read-only.
+  field. `scripts/check-vault-bindings.ts` lists them, read-only: exit 0 means every vault
+  token matched on both fields, 1 that one differs, 2 that one couldn't be verified (a field not
+  in its record, no vault, an unreadable account or record, nothing registered). With `--mint
+  <mint>` it answers YES or NO for one token, and only YES exits 0.
 - **Starting the vault asks the same of the lock first:** the site names the creator's lock
   holding the most LP and refuses, before anything is signed, unless it passes that check alone.
 - A launch record without its own `config.json` falls back to the site's settings, and a
