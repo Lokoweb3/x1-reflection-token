@@ -100,6 +100,51 @@ test("hook: a staged-file listing that fails is not treated as clean", () => {
   assert.equal(r.status, 2, r.stderr);
 });
 
+// Built at run time and never real, so this file doesn't trip the hook it tests.
+const BOT = ["123456789", "A".repeat(35)].join(":");
+const API = "proapi" + "_" + "b".repeat(32);
+const LONG = "c".repeat(24);
+
+test("hook: bot and API tokens are refused, in any file, and the value is never printed", () => {
+  for (const [name, content] of [
+    ["notes.md", `the bot is ${BOT} today\n`],
+    ["crlf.env", `TELEGRAM_BOT_TOKEN=${LONG}\r\n`],
+    ["blockscout.txt", `key ${API}\n`],
+    ["a.env", `TELEGRAM_BOT_TOKEN=${LONG}\n`],
+    ["b.env", `export X1_NINJA_API_KEY="${LONG}"\n`],
+    ["c.env", `LP_BLOCKSCOUT_KEY = ${LONG}\n`],
+    ["d.json", JSON.stringify({ CLAUDE_CODE_MESSAGING_TOKEN: LONG })],
+    ["e.yaml", `BLOCKSCOUT_API_KEY: '${LONG}'\n`],
+  ] as const) {
+    const d = repo();
+    stage(d, name, content);
+    const r = runHook(d);
+    assert.equal(r.status, 1, `${name}: ${r.stderr}`);
+    assert.match(r.stderr, /bot or API token/);
+    for (const secret of [BOT, API, LONG]) assert.ok(!r.stderr.includes(secret) && !r.stdout.includes(secret), `${name} printed its value`);
+  }
+});
+
+test("hook: naming these variables without a value passes", () => {
+  const d = repo();
+  stage(d, "a.ts", "const t = process.env.TELEGRAM_BOT_TOKEN;\nconst k = process.env.LP_BLOCKSCOUT_KEY ?? '';\n");
+  stage(d, "b.md", "printf 'TELEGRAM_BOT_TOKEN=...\\nTELEGRAM_CHAT_ID=...\\n'\nset X1_NINJA_API_KEY=<your key>\nCLAUDE_CODE_MESSAGING_TOKEN: set by Claude Code\n");
+  stage(d, "c.txt", "started 2026-11-03 12:30:45 block 90489395:ok\n");
+  stage(d, "d.service", "# e.g. TELEGRAM_BOT_TOKEN=... and TELEGRAM_CHAT_ID=... (both needed)\n");
+  const r = runHook(d);
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test("hook: a file name holding byte 0x01 can't hide a staged key or token", () => {
+  const d = repo();
+  stage(d, "safe-a", "fine\n");
+  stage(d, "safe-b", "fine\n");
+  git(d, "commit", "-qm", "base");
+  stage(d, "safe-a\x01safe-b", `${BOT}\n`);
+  const r = runHook(d);
+  assert.equal(r.status, 1, r.stderr);
+});
+
 test("gitignore: key and state folders are ignored, source isn't", () => {
   const check = (p: string) => spawnSync("git", ["check-ignore", "-q", "--no-index", "--", p], { encoding: "utf8" }).status;
   for (const p of ["factory/pending-launches/M/distributor.json", "mainnet/factory/pending-launches/M/distributor.json",
