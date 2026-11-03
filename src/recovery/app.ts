@@ -23,7 +23,7 @@ import {
   TAX_VAULT_PROGRAM_ID, VAULT_DISC, VAULT_VERSION, appointAllowedAt, appointPublisherIx, cidFromBytes, decodeVault, effectiveList, errorOf,
   fallbackAt, parseEvents, rewardTokenInfo, type Vault,
 } from "../taxvault.js";
-import { ACTIVATION_MARGIN_SECS, defaultRules, inFallback, nowSecs, parseListFile, planForCaller, rulesFromJson, type CrankRules, type PayList, type PlannedStep } from "../vault-crank.js";
+import { ACTIVATION_MARGIN_SECS, defaultRules, inFallback, nowSecs, parseListFile, planForCaller, rulesFromJson, vaultOnLaunchPool, type CrankRules, type PayList, type PlannedStep } from "../vault-crank.js";
 import { confirmByPolling, fitComputeLimit } from "../tx.js";
 import { TRUSTLESS_GATEWAY, fetchFromGateways, gatewayFor, normGateway } from "../factory/ipfs.js";
 import { passesPanel } from "./passes-ui.js";
@@ -171,7 +171,7 @@ function renderStatus(L: Loaded) {
     const host = el("div", {}, el("p", { class: "muted", text: "Reading the pass book…" }));
     box.append(host);
     void passesPanel({
-      conn, program: S.program, explorer: S.explorer, mint: L.mint, v, xdex: L.xdex, decimals: L.decimals,
+      conn, program: S.program, explorer: S.explorer, mint: L.mint, v, xdex: L.xdex, network: L.network, decimals: L.decimals,
       wallet: () => X1Wallet.state.address, signAll: (list) => X1Wallet.signAll(list), log, el,
       reload: () => { void load(L.mint).then((n) => { current = n; renderStatus(n); }).catch(() => undefined); },
     }).then((p) => host.replaceChildren(p ?? el("p", { class: "bad", text: "Holder passes are on but the pass book couldn't be read." })))
@@ -275,8 +275,10 @@ async function plan() {
     const L = current;
     const caller = new PublicKey(X1Wallet.state.address);
     const includeNew = $<HTMLInputElement>("includeNew").checked;
+    const noSales = !vaultOnLaunchPool(L.xdex, L.network, L.v);
     const p = await planForCaller(conn, { program: S.program, xdex: L.xdex, network: L.network }, L.v, { mint: L.mint, taxBps: L.taxBps }, caller,
-      L.list ? { root: L.list.root, wallets: L.list.wallets } : null, { maxPays: MAX_PAYS, minPayout: L.rules.minPayout, includeNew });
+      L.list ? { root: L.list.root, wallets: L.list.wallets } : null, { maxPays: MAX_PAYS, minPayout: L.rules.minPayout, includeNew, noSales });
+    if (noSales) p.notes.push("This vault's pool isn't the one a launch makes (it may be a thin second pool), so its sale steps aren't offered here.");
     planned = { steps: p.steps, reward: p.rewardLamports, rent: p.recordsRent };
     host.replaceChildren();
     if (!p.steps.length) {
