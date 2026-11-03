@@ -725,7 +725,8 @@ test("claim 3: --allow-unknown shows the whole payload, with accounts resolved",
   const weird = new TransactionInstruction({ programId: other, keys: [{ pubkey: w.vault, isSigner: true, isWritable: true }, { pubkey: w.target, isSigner: false, isWritable: true }], data });
   w.propose(1n, [weird], "Active", [w.site.publicKey]);
   assert.equal(await w.run("approve", ...base(w, "testnet"), "--keypair", w.file(w.backup, "b"), "--index", "1", "--allow-unknown"), 0, w.text());
-  assert.ok(w.text().includes(data.toString("hex")), "the complete instruction data is printed");
+  assert.ok(w.text().includes(`data ${data.toString("hex")}`), "the instruction's data is printed in full, by instruction");
+  assert.match(w.text(), /complete stored message [0-9a-f]{600,}/, "and the whole stored message");
   assert.match(w.text(), new RegExp(`${w.target.toBase58()} writable`), "accounts are resolved");
   assert.match(w.text(), /message hash [0-9a-f]{64}/, "a fingerprint is printed");
   w.done();
