@@ -9,6 +9,12 @@ export function syncDir(dir: string) {
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
+/** Flush a file already in place. */
+export function syncFile(file: string) {
+  const fd = fs.openSync(file, "r");
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
 /**
  * Create `dir` (and whatever is missing above it) so it survives a power cut: a directory's
  * entry lives in its parent, so every level is flushed, up to `base` and the parents of anything

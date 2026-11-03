@@ -5,6 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -153,6 +154,77 @@ test("a saved launch with its journal left over: the GC finishes the job, withou
   await gcPendingJournal(never);
   assert.equal(fs.readFileSync(saved(r.mint, "distributor.json"), "utf8"), key);
   assert.equal(fs.existsSync(journal(r.mint)), false);
+});
+
+/** A real restart: a new process with nothing in memory. */
+function restart(failDirFlush = false) {
+  const r = spawnSync(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "helpers", "journal-restart.ts")], {
+    encoding: "utf8", env: { ...process.env, REFLECT_FACTORY_DIR: factory, NODE_TEST_CONTEXT: "", ...(failDirFlush ? { FAIL_DIR_FLUSH: "1" } : {}) },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return { ...JSON.parse(r.stdout.trim().split("\n").at(-1)!) as { removed: string[]; events: string[] }, output: r.stdout + r.stderr };
+}
+/** A launch whose save stopped at the flush after launch.json was renamed into place: it's there, but may not survive a power cut. */
+function savedButNotFlushed(t: { mock: { method: (o: object, m: string, f: (fd: number) => void) => { mock: { restore(): void } } } }, mint: string) {
+  const realFsync = fs.fsyncSync.bind(fs);
+  const m = t.mock.method(fs, "fsyncSync", (fd: number) => {
+    if (fs.fstatSync(fd).isDirectory() && fs.readlinkSync(`/proc/self/fd/${fd}`) === real(path.join(launches, mint)) && fs.existsSync(saved(mint, "launch.json"))) noSpace();
+    realFsync(fd);
+  });
+  assert.equal(persistLaunch(mint), false);
+  m.mock.restore();
+  assert.ok(fs.existsSync(saved(mint, "launch.json")) && fs.existsSync(saved(mint, "distributor.json")), "both renamed into place");
+  assert.ok(fs.existsSync(journal(mint, "distributor.json")), "the journal keeps the key");
+}
+
+test("restart after the flush failed past launch.json's rename: everything is flushed before the journal goes", async (t) => {
+  const { mint } = await newLaunch();
+  const key = fs.readFileSync(journal(mint, "distributor.json"), "utf8");
+  savedButNotFlushed(t as never, mint);
+  const { events } = restart(); // recovery skips a saved launch; the GC tidies it
+  const gone = events.findIndex((e) => e === `rm ${journal(mint)}`);
+  assert.ok(gone >= 0, `the journal goes (${events.join(", ")})`);
+  const flushed = syncedBefore(events, gone);
+  for (const f of [saved(mint, "launch.json"), saved(mint, "distributor.json"), path.join(launches, mint), launches, factory]) assert.ok(flushed.has(real(f)), `${f} flushed before the journal goes (${[...flushed].join(", ")})`);
+  assert.equal(fs.readFileSync(saved(mint, "distributor.json"), "utf8"), key);
+  assert.equal(fs.existsSync(journal(mint)), false);
+  persistLaunch(mint); // this process's memory of it, from before the "restart"
+});
+
+test("restart with the flush still failing: the journal stays, the key is never logged, and the next start finishes", async (t) => {
+  const { mint } = await newLaunch();
+  const key = fs.readFileSync(journal(mint, "distributor.json"), "utf8");
+  savedButNotFlushed(t as never, mint);
+  const failing = restart(true);
+  assert.deepEqual(failing.removed, []);
+  assert.equal(fs.readFileSync(journal(mint, "distributor.json"), "utf8"), key, "the only sure copy of the key");
+  assert.ok(failing.output.includes(mint), "says which");
+  assert.ok(!failing.output.includes(key), "not what's in it");
+  restart();
+  assert.equal(fs.existsSync(journal(mint)), false);
+  assert.equal(fs.readFileSync(saved(mint, "distributor.json"), "utf8"), key);
+  persistLaunch(mint);
+});
+
+test("a saved record that can't be read, or another key saved: the journal stays", async (t) => {
+  const never = { getMultipleAccountsInfo: async () => { throw new Error("no read needed"); } } as unknown as Connection;
+  const lines: string[] = [];
+  const log = t.mock.method(console, "error", (m: unknown) => { lines.push(String(m)); });
+  for (const damage of [(m: string) => fs.writeFileSync(saved(m, "launch.json"), "{"), (m: string) => fs.writeFileSync(saved(m, "launch.json"), JSON.stringify({ mint: "another" })), (m: string) => fs.writeFileSync(saved(m, "distributor.json"), "[1,2,3]")]) {
+    const r = await dormant(t as never);
+    const key = fs.readFileSync(journal(r.mint, "distributor.json"), "utf8");
+    fs.mkdirSync(path.join(launches, r.mint), { recursive: true });
+    fs.writeFileSync(saved(r.mint, "launch.json"), JSON.stringify(r));
+    fs.writeFileSync(saved(r.mint, "distributor.json"), key);
+    damage(r.mint);
+    await gcPendingJournal(never);
+    assert.equal(fs.readFileSync(journal(r.mint, "distributor.json"), "utf8"), key);
+    assert.ok(lines.some((l) => l.includes(r.mint) && l.includes("kept")), "says so");
+    assert.ok(!lines.some((l) => l.includes(key)), "without the key");
+    fs.rmSync(path.join(launches, r.mint), { recursive: true });
+    fs.rmSync(journal(r.mint), { recursive: true });
+  }
+  log.mock.restore();
 });
 
 /** Journals written directly: many, without a key. */

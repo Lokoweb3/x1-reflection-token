@@ -46,7 +46,7 @@ import { allocPassBookIx, allocSteps, initPassesIx, passBookPda } from "../passe
 import { payoutToken } from "./payout.js";
 import { buildCreatePool, decodePool, poolAddresses, snapshot, XDEX_CREATE } from "../xdex.js";
 import { ipfsEnabled, pinMetadata } from "./ipfs.js";
-import { mkdirDurable, writeFileDurable } from "./durable.js";
+import { mkdirDurable, syncFile, writeFileDurable } from "./durable.js";
 import { buildLock } from "../locker-tx.js";
 import { listLocks } from "../locker.js";
 import {
@@ -527,14 +527,26 @@ function readJournal(name: string): LaunchRecord | null {
   } catch { return null; }
 }
 
-/** A journal whose launch is already saved: its key if that's all that's left to move, then the journal. */
+/**
+ * A journal whose launch is already saved: its key if that's all that's left to move, then the
+ * journal. The save may have stopped at a flush after its renames, and a restart doesn't know, so
+ * nothing is taken as durable for being there: the journal goes only once both files check out
+ * and they and every directory above them are flushed. Otherwise it stays for the next GC.
+ */
 function tidySavedJournal(name: string) {
-  const key = path.join(pendingDir(name), "distributor.json"), dest = path.join(launchDir(name), "distributor.json");
+  const dir = launchDir(name), record = path.join(dir, "launch.json");
+  const key = path.join(pendingDir(name), "distributor.json"), dest = path.join(dir, "distributor.json");
   if (fs.existsSync(key)) {
     const secret = fs.readFileSync(key, "utf8");
     if (!fs.existsSync(dest)) writeFileDurable(dest, secret);
     else if (fs.readFileSync(dest, "utf8") !== secret) { console.error(`launch journal ${name}: a different key is already saved; kept`); return; }
   }
+  let saved: LaunchRecord | null = null;
+  try { saved = JSON.parse(fs.readFileSync(record, "utf8")); } catch { /* said below */ }
+  if (saved?.mint !== name) { console.error(`launch journal ${name}: the saved record is unreadable or another token's; kept`); return; }
+  syncFile(record);
+  if (fs.existsSync(dest)) syncFile(dest);
+  mkdirDurable(dir, FACTORY_DIR);
   fs.rmSync(pendingDir(name), { recursive: true, force: true });
 }
 
