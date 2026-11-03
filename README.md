@@ -650,7 +650,10 @@ last one (announce those first). Rejections and flags go to stdout and `--webhoo
 
 **Before switching, know that it's meant to be hard to undo.** Going back to a single-key
 publisher needs a `set_publisher` approved through the multisig, which the co-signer
-refuses by design, or the guardian's `appoint_publisher` after 7 days without a list. If
+refuses by design, or the guardian's `appoint_publisher` after 7 days without a list. `scripts/quorum-action.ts` is how
+site + backup act without the co-signer (see its header): `status`, `propose-memo`,
+`propose-set-publisher`, `approve`, `reject`, `execute`, one member key per run, dry run by
+default, `--network` required, and the stored transaction decoded from the chain before a vote. If
 the co-signer is offline, **new lists stop** (wallets on the current list are still paid);
 after 7 days the guardian can appoint a publisher, after 30 the fallback opens. The
 guarantee holds while at least 2 members are honest: two colluding members are still a
