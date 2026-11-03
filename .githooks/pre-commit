@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Refuses a commit that stages a Solana secret key: a JSON array of 64 numbers 0-255 (the
-# format of every *.keypair.json and of `solana-keygen` output), in any file, whatever its name.
+# format of every *.keypair.json and of `solana-keygen` output), in any file, whatever its name,
+# or a bot or API token (see TOKEN_RE).
 # Install once per clone:  git config core.hooksPath .githooks
 # A false positive can be committed with --no-verify, after checking it really isn't a key.
 #
@@ -8,12 +9,18 @@
 # counts as clean, because a scan that failed proves nothing).
 set -euo pipefail
 export LC_ALL=C   # byte-wise matching: staged binaries can't trip a locale's encoding rules
+# Bot and API tokens: their shapes, and any of these names assigned a literal value of 16 or more
+# characters. Scanned with whitespace kept, so words after a name in a comment aren't read as its value.
+TOKEN_RE='[0-9]{8,12}:[A-Za-z0-9_-]{30,}|proapi_[A-Za-z0-9_-]{16,}|(TELEGRAM_BOT_TOKEN|X1_NINJA_API_KEY|LP_BLOCKSCOUT_KEY|BLOCKSCOUT_API_KEY|CLAUDE_CODE_MESSAGING_TOKEN)["'"'"']?[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9:_-][A-Za-z0-9:_.-]{15,}'
 KEY_RE='\[(([01]?[0-9]{1,2}|2[0-4][0-9]|25[0-5]),){63}([01]?[0-9]{1,2}|2[0-4][0-9]|25[0-5])\]'
 found=0
-# The list comes from a variable, not a process substitution, so git failing here stops the hook.
-names=$(git diff --cached --name-only --diff-filter=ACMRT -z | tr '\0' '\1') \
+# Written to a file with its NUL separators intact: filenames can hold any other byte, and git failing
+# here must stop the hook.
+list=$(mktemp) || { echo "pre-commit: couldn't make a temp file" >&2; exit 2; }
+trap 'rm -f "$list"' EXIT
+git diff --cached --name-only --diff-filter=ACMRT -z > "$list" \
   || { echo "pre-commit: couldn't list the staged files" >&2; exit 2; }
-while IFS= read -r -d $'\1' f; do
+while IFS= read -r -d '' f; do
   # A submodule entry has no blob to read.
   [[ $(git --literal-pathspecs ls-files --stage -- "$f" | cut -c1-6) == 160000 ]] && continue
   # Staged content, whitespace removed, so a key split over lines is caught too. -a: a NUL doesn't
@@ -30,5 +37,16 @@ while IFS= read -r -d $'\1' f; do
     echo "pre-commit: $f looks like a secret key (a JSON array of 64 bytes). Unstage it: git restore --staged -- '$f'" >&2
     found=1
   fi
-done <<< "$names"
+  # The same stream rule as above. The value itself is never printed.
+  result=$(git show ":$f" 2>/dev/null | tr -d '\r' | grep -acE -- "$TOKEN_RE"; printf ' %s' "${PIPESTATUS[@]}")
+  read -r -d '' _count show_rc tr_rc grep_rc <<< "$result" || true
+  if [[ ${show_rc:-x} != 0 || ${tr_rc:-x} != 0 || ! ${grep_rc:-x} =~ ^[01]$ ]]; then
+    echo "pre-commit: couldn't scan $f for tokens (git show: ${show_rc:-?}, tr: ${tr_rc:-?}, grep: ${grep_rc:-?}); not committing" >&2
+    exit 2
+  fi
+  if [[ $grep_rc == 0 ]]; then
+    echo "pre-commit: $f looks like it holds a bot or API token. Unstage it: git restore --staged -- '$f'" >&2
+    found=1
+  fi
+done < "$list"
 exit "$found"
