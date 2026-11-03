@@ -13,7 +13,7 @@ export type ProgramKind = "vault" | "curve" | "locker";
 /** [name, message] in declaration order (code = 6000 + index), from each program's error enum. */
 export const PROGRAM_ERRORS: Record<ProgramKind, readonly (readonly [string, string])[]> = {
   vault: [
-    ["BadMint", "Mint must be a Token-2022 tax token with only transfer-fee/metadata extensions, no freeze authority and a 0.01-99.99% fee"],
+    ["BadMint", "Mint must be a Token-2022 tax token with only transfer-fee/metadata extensions, no freeze authority and a 0.02-99.99% fee"],
     ["BadAuthority", "Fee config authority must be None, the withdraw authority must be the vault's auth, and the creator (or an atomic hand-over) must create the vault"],
     ["BadPool", "Pool must be this mint's XDEX TOKEN/wXNT pool"],
     ["BadLock", "Lock must be the lp_locker lock of this NFT for this pool"],
@@ -39,8 +39,8 @@ export const PROGRAM_ERRORS: Record<ProgramKind, readonly (readonly [string, str
     ["FallbackNotActive", "Fallback payments start only after a long time without a published list"],
     ["PaysInToken", "This vault pays holders in its payout token: use pay_token / pay_fallback_token"],
     ["PaysInXnt", "This vault pays holders in XNT"],
-    ["BadPayoutMint", "Payout token must have no freeze authority and no transfer fee, hook, delegate or pause, and differ from the tax token and XNT"],
-    ["BadPayoutPool", "Payout pool must be the payout token's XDEX pool against wXNT, with swaps open"],
+    ["BadPayoutMint", "Payout token must have no freeze authority (nor, for a new vault, mint authority) and no transfer fee, hook, delegate or pause, and differ from the tax token and XNT"],
+    ["BadPayoutPool", "Payout pool must be the payout token's XDEX pool against wXNT, with swaps open (and, for a new vault, at least 10 XNT)"],
     ["NotPassMode", "This vault has no holder passes"],
     ["PassModeOn", "This vault splits the holders' share with holder passes"],
     ["NotTopLevel", "Register from a top-level instruction (a wallet, not a program)"],
@@ -62,6 +62,7 @@ export const PROGRAM_ERRORS: Record<ProgramKind, readonly (readonly [string, str
     ["HadList", "This vault has had a rewards list, so it can't take holder passes"],
     ["PassBookNotFull", "The pass book isn't full: register a pass instead"],
     ["EvictTooSmall", "Taking a pass's slot needs twice its balance (and the registering minimum)"],
+    ["BadRoles", "Publisher and guardian must both be set and be different keys"],
   ],
   curve: [
     ["BadMint", "Mint must be a fresh 9-decimal Token-2022 mint: supply 0, mint authority = curve auth, no freeze authority, only transfer-fee and metadata extensions, metadata update authority = creator"],

@@ -481,8 +481,9 @@ test("program errors are named from simulation messages", () => {
   assert.equal(errorOf(`{"Custom":6046}`), "HadList");
   assert.equal(errorOf("custom program error: 0x179f"), "PassBookNotFull"); // 6047
   assert.equal(errorOf(`{"Custom":6048}`), "EvictTooSmall");
-  assert.equal(errorOf(`{"Custom":6049}`), null);
-  assert.equal(ERRORS.length, 49);
+  assert.equal(errorOf(`{"Custom":6049}`), "BadRoles");
+  assert.equal(errorOf(`{"Custom":6050}`), null);
+  assert.equal(ERRORS.length, 50);
   assert.equal(errorOf("something else"), null);
 });
 
@@ -541,10 +542,12 @@ test("Payout token: pool at 580, unswapped XNT at 612 (zero = XNT payouts, as in
 
   const program = key(), mint = key(), payer = key(), wallet = key(), payoutMint = key();
   const p = { pool, payoutMint, payoutTokenProgram: TOKEN_PROGRAM_ID };
-  const init = initVaultPayoutIx(program, { payer, mint, pool: key(), creatorNft: key(), burnBps: 2500, lpBps: 2500, publisher: payer, guardian: payer, payout: p });
+  const wxntVault = key();
+  const init = initVaultPayoutIx(program, { payer, mint, pool: key(), creatorNft: key(), burnBps: 2500, lpBps: 2500, publisher: payer, guardian: key(), payout: { ...p, wxntVault } });
   assert.ok(init.data.subarray(0, 8).equals(IX.initVaultPayout));
-  assert.equal(init.keys.length, 12);
+  assert.equal(init.keys.length, 13);
   assert.ok(init.keys[9].pubkey.equals(payoutMint) && init.keys[10].pubkey.equals(pool) && init.keys[11].pubkey.equals(TOKEN_PROGRAM_ID));
+  assert.ok(init.keys[12].pubkey.equals(wxntVault) && !init.keys[12].isWritable && !init.keys[12].isSigner);
   const proof = [crypto.randomBytes(32), crypto.randomBytes(32)];
   const pay = payTokenIx(program, payer, mint, wallet, 1234n, proof, p);
   assert.ok(pay.data.subarray(0, 8).equals(IX.payToken));

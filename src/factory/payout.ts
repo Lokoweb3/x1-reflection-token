@@ -1,8 +1,8 @@
 /**
  * Payout tokens (Tax Vault `init_vault_payout`): a launch can pay its holders in another
  * token instead of XNT. This finds the token's XDEX pool against XNT and checks what the
- * program checks (no freeze authority; only metadata / group extensions, so no transfer fee,
- * hook, delegate or pause) plus this site's own rule: enough XNT in the pool that the
+ * program checks (no mint or freeze authority; only metadata / group extensions, so no transfer
+ * fee, hook, delegate or pause; at least 10 XNT in the pool) plus this site's own rule: enough XNT in the pool that the
  * vault's swaps get a fair price. The pool is fixed in the vault for good.
  */
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -16,7 +16,7 @@ export const DEFAULT_PAYOUT_MIN_POOL_XNT = "10";
 const ALLOWED_EXTENSIONS = new Set([ExtensionType.MetadataPointer, ExtensionType.TokenMetadata, ExtensionType.GroupPointer,
   ExtensionType.GroupMemberPointer, ExtensionType.TokenGroup, ExtensionType.TokenGroupMember]);
 
-export interface PayoutToken { mint: PublicKey; pool: PublicKey; tokenProgram: PublicKey; symbol: string; name: string; decimals: number; reserveXnt: bigint }
+export interface PayoutToken { mint: PublicKey; pool: PublicKey; tokenProgram: PublicKey; wxntVault: PublicKey; symbol: string; name: string; decimals: number; reserveXnt: bigint }
 
 /** Whether this site offers payout tokens (needs the v4 program; testnet first). */
 export const payoutTokensOn = (cfg: Config) => cfg.factory?.taxVault?.payoutTokens === true;
@@ -50,6 +50,7 @@ export async function payoutToken(conn: Connection, cfg: Config, mintStr: string
   if (!info || (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID))) throw new Error("That address isn't a token on this network.");
   const m = unpackMint(mint, info, info.owner);
   if (m.freezeAuthority) throw new Error("That token has a freeze authority, which could freeze the vault's payouts. Pick a token without one.");
+  if (m.mintAuthority) throw new Error("That token can still be minted, so its pool's XNT could be drained by new tokens. Pick a token whose supply is fixed.");
   for (const ext of getExtensionTypes(m.tlvData)) {
     if (!ALLOWED_EXTENSIONS.has(ext)) throw new Error(`That token has the ${ExtensionType[ext]} extension (e.g. its own transfer tax); the vault only pays in plain tokens.`);
   }
@@ -65,7 +66,7 @@ export async function payoutToken(conn: Connection, cfg: Config, mintStr: string
     throw new Error(`That token's XNT pool is too thin (${fromBaseUnits(snap.reserveQuote, 9)} XNT; at least ${fromBaseUnits(minXnt, 9)} XNT) for fair swaps.`);
   }
   const md = info.owner.equals(TOKEN_2022_PROGRAM_ID) ? await getTokenMetadata(conn, mint, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null) : null;
-  return { mint, pool, tokenProgram: info.owner, symbol: md?.symbol || `${mint.toBase58().slice(0, 4)}…`, name: md?.name ?? "", decimals: m.decimals, reserveXnt: snap.reserveQuote };
+  return { mint, pool, tokenProgram: info.owner, wxntVault: p.vaults[1 - side], symbol: md?.symbol || `${mint.toBase58().slice(0, 4)}…`, name: md?.name ?? "", decimals: m.decimals, reserveXnt: snap.reserveQuote };
 }
 
 export const payoutTokenJson = (t: PayoutToken) => ({
