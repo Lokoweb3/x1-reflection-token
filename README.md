@@ -654,10 +654,17 @@ refuses by design, or the guardian's `appoint_publisher` after 7 days without a 
 site + backup act without the co-signer (see its header): `status`, `propose-memo`,
 `propose-set-publisher`, `approve`, `reject`, `cancel`, `execute`, one member key per run, dry run
 by default (unsigned), `--network` required, and the stored transaction decoded from the chain
-before a vote. On mainnet, `approve` and `execute` read it from two RPCs (`--verify-rpc`). **What
-remains:** a signature approves a proposal, not its bytes, so two RPCs that both lie can still
-show a different `set_publisher` target than the chain stores. `--expect-message-hash`, from a
-proposer you trust, narrows that, but only an on-chain check could close it. If
+before a vote. On mainnet, `approve` and `execute` refuse unless given `--single-rpc-accepted` (one RPC, a
+loud warning) or `--verify-rpc` (a second RPC). **What remains:** a signature approves a proposal,
+not its bytes. With `--single-rpc-accepted`, a lying official RPC can show a different
+`set_publisher` than the one stored, and nothing in the tool detects it. `--verify-rpc` only detects
+two RPCs that disagree. `--expect-message-hash`, which covers the multisig, index and message, helps
+only if the hash came from a machine you trust; it's checked against what the RPC reports, not the
+chain. Only an on-chain check closes this, and it doesn't exist yet. For site key + co-signer +
+hardware backup, 2-of-3: `--backup <pubkey>` needs only the public key, but `--keypair` signs from a
+file, so **site + backup isn't usable through this tool until external signing is built.** A config
+change doesn't end an Approved vault transaction: it still executes when stale, by one member's key, so
+`setup-publisher-quorum.ts` reads every index from 1 and refuses when it can't finish. If
 the co-signer is offline, **new lists stop** (wallets on the current list are still paid);
 after 7 days the guardian can appoint a publisher, after 30 the fallback opens. The
 guarantee holds while at least 2 members are honest: two colluding members are still a

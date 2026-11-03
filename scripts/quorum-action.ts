@@ -20,10 +20,12 @@
  *                 dry run never hands an RPC anything it could relay
  *   --verify-rpc  approve and execute: read the stored transaction, proposal, multisig and vault
  *                 publisher again from this RPC (another host or port, the same genesis, at or
- *                 past the first read's slot) and refuse on any difference. Required on mainnet
- *   --single-rpc-accepted  on mainnet, rely on one RPC instead. Prints a loud warning
- *   --expect-message-hash  approve and execute: the message hash the proposer printed from what
- *                 it built. Refused when the stored message differs
+ *                 past the first read's slot) and refuse on any difference
+ *   --single-rpc-accepted  rely on one RPC. On mainnet approve and execute refuse unless this or
+ *                 --verify-rpc is given. Prints a loud warning, and means what it says: see WHAT A
+ *                 LYING RPC CAN STILL DO below
+ *   --expect-message-hash  approve and execute: the message hash the proposer printed for this
+ *                 multisig and index from what it built. Refused when what the RPC reports differs
  *   --keypair     this member's key file: refused if group- or world-readable. It signs and
  *                 pays. Needs Initiate and Vote to propose (proposing also approves), Vote to
  *                 approve or reject, Execute to execute
@@ -47,8 +49,10 @@
  *
  * Exit codes: 0 done (or dry run OK), 1 refused or failed, 2 usage, 3 the send is AMBIGUOUS: it
  * may still land, so run `status --index n` first; 4 it is CONFIRMED but the result couldn't be
- * read back: don't re-propose or resend, run `status --index n` when the RPC answers. Nothing is
- * ever resent automatically. RPC URLs print as scheme and host only.
+ * read back, or the account it should have changed is missing or doesn't decode: don't re-propose or
+ * resend, run `status --index n` when the RPC answers. Nothing is
+ * ever resent automatically. RPC URLs print as scheme and host only, the credentials in them are
+ * scrubbed from all output, and what an RPC server answers with an error isn't printed.
  *
  * What it signs comes from the chain: before approve or execute, the stored transaction is
  * decoded and printed (program, accounts, and for set_publisher the vault, current publisher
@@ -82,18 +86,37 @@
  *
  * WHAT A LYING RPC CAN STILL DO. Your signature approves a proposal, not its bytes, and neither the
  * program nor this tool can tie a vote to the message you read. For a set_publisher the accounts
- * are the same whatever the target, because the target is instruction data, so an RPC colluding
- * with a proposer can show you set_publisher(A) while the chain stores set_publisher(B).
- *  - One RPC read (testnet, or --single-rpc-accepted): that RPC decides what you see.
- *  - --verify-rpc: both must lie. TWO RPCs THAT BOTH LIE STILL PASS, and the tool can't tell two
- *    URLs that reach one operator apart (it only compares host and port).
- *  - --expect-message-hash, from a proposer that built the transaction itself on a machine you
- *    trust, passed out of band: catches the RPCs lying even if all of them do, but a stolen proposer
- *    key hands you whatever hash it likes.
- * Only an on-chain check could close this (a vote or execute asserting the message hash), which
- * needs a program change and doesn't exist. Before relying on an approval, have the second member
- * read the proposal through infrastructure the proposer doesn't control. Keep in mind that the
- * execute instruction carries no message: the program runs what's stored, whatever was printed.
+ * are the same whatever the target, because the target is instruction data. Everything printed
+ * here (the decoding, the votes, the simulation, setup-publisher-quorum's scan) is what an RPC said.
+ *  - --single-rpc-accepted, the official RPC only: A LYING OFFICIAL RPC CAN SHOW A DIFFERENT
+ *    set_publisher THAN THE ONE STORED, AND NOTHING IN THIS TOOL DETECTS IT. The owner accepts that
+ *    risk for now; the on-chain check is the fix.
+ *  - --verify-rpc detects two RPCs that disagree, nothing more. Two that report the same false
+ *    bytes pass, and the tool can't tell two URLs that reach one operator apart.
+ *  - --expect-message-hash helps ONLY if the hash came from a machine you trust, which built the
+ *    transaction itself. It's compared with what the RPC reports, not with the chain, so it doesn't
+ *    prove what's stored. It covers the multisig, the index and the message, so a hash for one
+ *    proposal doesn't fit another: if colluding RPCs store set_publisher(B) at #j and report an honest
+ *    A message rewritten to #j, the honest hash for #i is refused at #j. It doesn't help when whoever
+ *    gave you the hash is the attacker (a stolen proposer key hands you the hash of A at #j), or
+ *    when you were told the right index and the RPC reports A there while B is stored.
+ * Only an on-chain check closes this (a vote or execute asserting the message), which needs a
+ * program change and doesn't exist yet. The execute instruction carries no message: the program runs
+ * what's stored, whatever was printed.
+ *
+ * THE SETUP THIS IS FOR: site key + co-signer + hardware backup, 2-of-3 (threshold 2, so 2 approvals
+ * pass and 2 rejections close). `scripts/setup-publisher-quorum.ts --site <pubkey> --cosigner <pubkey>
+ * --backup <hardware pubkey>` needs only the backup's public key.
+ *  - Site + co-signer: lists, as usual. The co-signer has no Initiate, so it can't propose.
+ *  - Site + backup: the undo, or a dead co-signer. NOT USABLE THROUGH THIS TOOL YET: --keypair signs
+ *    from a file, so a hardware key can't propose, vote, cancel or execute here. Until external signing
+ *    is built and rehearsed with the device, don't count on that route.
+ *  - Key files stay chmod 600, and each member runs this on its own machine.
+ *
+ * A CONFIG CHANGE DOESN'T END WHAT'S APPROVED (rehearsed on both pinned binaries). It marks every earlier
+ * index stale: a stale Active, Draft or proposal-less transaction can't take votes or run, but a stale
+ * Approved vault transaction still executes with one member's key and can't be closed; only a threshold
+ * of cancels stops it.
  *
  * Proposals this tool creates aren't the site's: it follows only the index it stored, ignores
  * every other one, and doesn't close them, so their rent stays with the account until someone
