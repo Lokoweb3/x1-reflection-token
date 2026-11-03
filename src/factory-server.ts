@@ -26,7 +26,7 @@ import { allowRelayProgram, networkFee, sendSigned, unsignedTx } from "./web/wal
 import {
   CREATOR_BPS, CREATOR_REWARD, XNT_PAIR, type Pair, pairOf, applyMetadataUpdate, buildLockStep, buildMetadataUpdate, launchFee, tokenMetadataJson, buildPoolStep, buildTokenStep, creatorExcluded, launchStatus, listLaunches,
   readLaunch, registerLaunch, LP_BURNED_ERROR,
-  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, isPendingLaunch, onLaunchSaved, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
+  registeredLaunches, validateParams, gcLaunchRecords, gcPendingJournal, handOutLaunchStep, isPendingLaunch, onLaunchSaved, persistLaunch, recoverPendingLaunches, sweepPendingLaunches,
 } from "./factory/launch.js";
 import { XDEX_CREATE } from "./xdex.js";
 import { readRewardVault, rewardSummary } from "./locker.js";
@@ -430,7 +430,7 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     const { ixs, signers, record, uri } = await buildTokenStep(conn, cfg, p, publicUrl, passes ? passVaults!.program : null);
     pins.track(uri, `metadata ${record.symbol} ${record.mint}`, () => tokenUriIs(record.mint, uri), { refs: [p.image] });
     forgetLaunches(p.creator);
-    return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
+    return { tx: await handOutLaunchStep(record.mint, (built) => unsignedTx(conn, new PublicKey(p.creator), ixs, signers, { ...opts, built })), mint: record.mint };
   }
   if (url === "/api/launch/pool") {
     const r = ownLaunch(body);
@@ -735,7 +735,7 @@ async function curvePost(url: string, body: Record<string, unknown>, ip: string)
     pins.track(uri, `metadata ${record.symbol} ${record.mint}`, () => tokenUriIs(record.mint, uri), { refs: [p.image] });
     forgetLaunches(p.creator);
     c.invalidate();
-    return { tx: await unsignedTx(conn, new PublicKey(p.creator), ixs, signers, opts), mint: record.mint };
+    return { tx: await handOutLaunchStep(record.mint, (built) => unsignedTx(conn, new PublicKey(p.creator), ixs, signers, { ...opts, built })), mint: record.mint };
   }
   if (url === "/api/curve/refund") {
     const { ixs, payer } = await c.buildRefund(body);

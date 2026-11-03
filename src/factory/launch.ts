@@ -441,7 +441,7 @@ async function buildMintSetup(conn: Connection, cfg: Config, p: LaunchParams, pu
 const pendingLaunches = new Map<string, { record: LaunchRecord; at: number }>();
 /** A step 1 transaction can't land once its blockhash expires (about a minute): well past that, it stops being listed. */
 const PENDING_LAUNCH_MS = 15 * 60_000;
-/** A journal stays this long after its launch stopped being listed, in case the chain read that dropped it was wrong. */
+/** A journal stays at least this long after its launch stopped being listed; removing it also takes proof from the chain (provenNeverLanded). */
 const PENDING_JOURNAL_MS = 86_400_000;
 const pendingRoot = () => path.join(FACTORY_DIR, "pending-launches");
 const pendingDir = (mint: string) => path.join(pendingRoot(), mint);
@@ -460,6 +460,30 @@ function saveNewLaunch(record: LaunchRecord, distributor: Keypair | null) {
   // Few at a time: starts are limited site-wide (rateLimit "launch") and each goes within minutes.
   pendingLaunches.set(record.mint, { record, at: Date.now() });
 }
+/** What the removal proof needs from step 1: the block height past which it can't land. */
+const stepFile = (mint: string) => path.join(pendingDir(mint), "step.json");
+/**
+ * Build the transaction of a just-journalled step 1, which `build` makes and returns. It calls the
+ * function it's given with the transaction's last valid block height, recorded before the bytes can
+ * leave this server (a failure stops them). If the build fails nothing left, its mint key is gone
+ * and no transaction can ever land, so the journal goes too; left behind, it could never be removed.
+ */
+export async function handOutLaunchStep<T>(mint: string, build: (built: (lastValidBlockHeight: number) => void) => Promise<T>) {
+  try {
+    return await build((lastValidBlockHeight) => writeFileDurable(stepFile(mint), JSON.stringify({ lastValidBlockHeight }) + "\n"));
+  } catch (e) {
+    pendingLaunches.delete(mint);
+    try { fs.rmSync(pendingDir(mint), { recursive: true, force: true }); } catch (rm) { console.error(`launch journal ${mint}: ${errText(rm)}`); }
+    throw e;
+  }
+}
+function stepExpiry(name: string) {
+  try {
+    const h = JSON.parse(fs.readFileSync(stepFile(name), "utf8")).lastValidBlockHeight;
+    return Number.isSafeInteger(h) && h > 0 ? h as number : null;
+  } catch { return null; }
+}
+
 /** Whether `mint` is a new launch still waiting for its first transaction. */
 export const isPendingLaunch = (mint: string) => pendingLaunches.has(mint);
 /**
@@ -553,9 +577,34 @@ function tidySavedJournal(name: string) {
 const JOURNAL_READ_BATCH = 50; // each is the mint and the distributor wallet
 let journalGc: Promise<string[]> | null = null;
 /**
+ * Which of these journals are proven to have nothing on-chain, ever. A plain read can come from a
+ * lagging node, so a null there proves nothing. The proof: the finalized tip (slot and block height
+ * from one answer) is past the height where step 1 stopped being able to land, and one finalized
+ * answer, read at that slot or later, has neither the mint nor anything in the wallet. Step 1 can't
+ * land after that, and had it landed the read would show it. Without the recorded height (a journal
+ * from before it was kept, or a damaged one), or without such an answer, there's no proof.
+ */
+async function provenNeverLanded(conn: Connection, list: { name: string; mint: PublicKey; wallet: PublicKey | null }[]) {
+  const known = list.filter((j) => {
+    if (stepExpiry(j.name) !== null) return true;
+    console.error(`launch journal ${j.name}: no record of when its step 1 stops being able to land; kept`);
+    return false;
+  });
+  if (!known.length) return [];
+  const tip = await conn.getEpochInfo("finalized");
+  const height = tip.blockHeight;
+  if (typeof height !== "number") throw new Error("the node gave no block height");
+  const expired = known.filter((j) => height > stepExpiry(j.name)!);
+  if (!expired.length) return [];
+  const { context, value } = await conn.getMultipleAccountsInfoAndContext(expired.flatMap((j) => [j.mint, j.wallet ?? j.mint]), { commitment: "finalized", minContextSlot: tip.absoluteSlot });
+  if (context.slot < tip.absoluteSlot) throw new Error(`the node read is behind (slot ${context.slot} < ${tip.absoluteSlot})`);
+  return expired.filter((j, k) => !value[2 * k] && !(j.wallet && value[2 * k + 1] && value[2 * k + 1]!.lamports > 0)).map((j) => j.name);
+}
+
+/**
  * The journals of launches no longer in memory (past their window). A mint on-chain: saved.
- * Removed only when over a day old with no mint on-chain and nothing in the distributor wallet;
- * anything unclear stays. Calls during a run share it, and a failed read affects its own batch.
+ * Removed only when over a day old and proven never to have landed (provenNeverLanded); anything
+ * unclear stays. Calls during a run share it, and a failed read affects its own batch.
  * Returns the mints removed.
  */
 export function gcPendingJournal(conn: Connection) {
@@ -584,6 +633,7 @@ async function gcJournalOnce(conn: Connection) {
     let infos;
     try { infos = await conn.getMultipleAccountsInfo(chunk.flatMap((j) => [j.mint, j.wallet ?? j.mint]), "confirmed"); }
     catch (e) { console.error(`launch journal GC: ${errText(e)}`); continue; }
+    const due: typeof chunk = [];
     chunk.forEach(({ name, wallet }, k) => {
       const mintInfo = infos[2 * k], walletInfo = wallet ? infos[2 * k + 1] : null;
       try {
@@ -599,10 +649,20 @@ async function gcJournalOnce(conn: Connection) {
         }
         const at = r ? Date.parse(r.createdAt) : fs.statSync(dir).mtimeMs;
         if (!(Date.now() - at > PENDING_JOURNAL_MS) || (walletInfo && walletInfo.lamports > 0)) return;
-        fs.rmSync(dir, { recursive: true, force: true });
-        removed.push(name);
+        due.push(chunk[k]);
       } catch (e) { console.error(`launch journal ${name}: ${errText(e)}`); }
     });
+    let proven: string[] = [];
+    try { proven = await provenNeverLanded(conn, due); }
+    catch (e) { console.error(`launch journal GC: no proof, ${due.length} kept: ${errText(e)}`); }
+    for (const name of proven) {
+      try {
+        // Decided on what's there now, as above.
+        if (pendingLaunches.has(name) || saved(name) || !fs.existsSync(pendingDir(name))) continue;
+        fs.rmSync(pendingDir(name), { recursive: true, force: true });
+        removed.push(name);
+      } catch (e) { console.error(`launch journal ${name}: ${errText(e)}`); }
+    }
   }
   return removed;
 }

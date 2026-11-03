@@ -27,7 +27,7 @@ export const allowRelayProgram = (id: string) => void RELAY_PROGRAMS.add(id);
 
 export async function unsignedTx(
   conn: Connection, payer: PublicKey, ixs: TransactionInstruction[], extra: Keypair[] = [],
-  opts: { microLamports: number; units?: number; noBudget?: boolean; simulate?: boolean; tables?: AddressLookupTableAccount[] } = { microLamports: 10_000 },
+  opts: { microLamports: number; units?: number; noBudget?: boolean; simulate?: boolean; tables?: AddressLookupTableAccount[]; built?: (lastValidBlockHeight: number) => void } = { microLamports: 10_000 },
 ) {
   // noBudget: leave out the priority-fee instructions to free space (receipt NFT metadata).
   let all = opts.noBudget ? ixs : [
@@ -39,6 +39,7 @@ export async function unsignedTx(
   // on an earlier one of its batch can't be measured yet and keeps the caller's limit).
   if (!opts.noBudget && opts.simulate !== false) all = await fitComputeLimit(conn, all, payer, opts.tables);
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  opts.built?.(lastValidBlockHeight);
   if (opts.tables?.length) {
     // v0: accounts come from address lookup tables (wallets that follow Wallet Standard sign these as-is).
     if (extra.length) throw new Error("A v0 transaction here takes no extra signers");

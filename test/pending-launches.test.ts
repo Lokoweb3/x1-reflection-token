@@ -17,7 +17,7 @@ import type { Config } from "../src/config.js";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pending-launch-test-"));
 process.env.REFLECT_FACTORY_DIR = dir;
 process.env.PINATA_JWT = "";
-const { applyMetadataUpdate, buildTokenStep, gcLaunchRecords, gcPendingJournal, isPendingLaunch, listLaunches, persistLaunch, readLaunch, recoverPendingLaunches, sweepPendingLaunches } = await import("../src/factory/launch.js");
+const { applyMetadataUpdate, buildTokenStep, gcLaunchRecords, gcPendingJournal, handOutLaunchStep, isPendingLaunch, listLaunches, persistLaunch, readLaunch, recoverPendingLaunches, sweepPendingLaunches } = await import("../src/factory/launch.js");
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 const feeMint = Keypair.generate().publicKey;
@@ -48,6 +48,41 @@ function fakeConn(onChain = new Set<string>(), funded = new Set<string>()) {
       ? { owner: TOKEN_PROGRAM_ID, data: Buffer.alloc(0), lamports: 5, executable: false } : null)),
   } as unknown as Connection;
 }
+
+/**
+ * For the removal proof, on top of `fakeConn`'s plain reads: the finalized tip, and a finalized read at or past `readSlot`,
+ * where `seen` are the accounts that read finds (a lagging node's plain read can miss them).
+ */
+function chainAt(height: number, opts: { onChain?: Set<string>; funded?: Set<string>; seen?: Set<string>; readSlot?: number; slot?: number; fail?: "tip" | "read" } = {}) {
+  const slot = opts.slot ?? height + 40;
+  const reads: unknown[] = [];
+  const conn = Object.assign(fakeConn(opts.onChain, opts.funded), {
+    getEpochInfo: async (c: unknown) => {
+      assert.equal(c, "finalized");
+      if (opts.fail === "tip") throw new Error("rpc down");
+      return { absoluteSlot: slot, blockHeight: height, epoch: 1, slotIndex: 1, slotsInEpoch: 100 };
+    },
+    getMultipleAccountsInfoAndContext: async (keys: PublicKey[], c: { commitment: string; minContextSlot: number }) => {
+      reads.push(c);
+      assert.equal(c.commitment, "finalized");
+      assert.equal(c.minContextSlot, slot);
+      if (opts.fail === "read") throw new Error("rpc down");
+      return { context: { slot: opts.readSlot ?? slot }, value: keys.map((k) => (opts.seen?.has(k.toBase58()) ? { owner: TOKEN_PROGRAM_ID, data: Buffer.alloc(0), lamports: 5, executable: false } : null)) };
+    },
+  });
+  return { conn, reads };
+}
+/** A step 1 handed out with this last valid block height, then a day and more gone by. */
+async function expiredStep(t: TestContext, lastValid: number | null = 100) {
+  const r = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  if (lastValid !== null) await handOutLaunchStep(r.mint, async (built) => built(lastValid));
+  const c = clock(t);
+  c.set(Date.parse(r.createdAt) + 25 * 3_600_000);
+  await sweepPendingLaunches(fakeConn());
+  assert.equal(isPendingLaunch(r.mint), false);
+  return r;
+}
+const walletOf = (mint: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(journal(mint, "distributor.json"), "utf8")))).publicKey.toBase58();
 
 /** The clock for one test, moved by what's returned (one mock: stacking them doesn't restore cleanly). */
 function clock(t: TestContext) {
@@ -164,7 +199,9 @@ test("persistLaunch (the pool step, /api/send) saves at once; a step 1 that neve
 
 test("the journal GC removes only what never reached the chain, after a day", async (t) => {
   const { createdAt, mint: abandoned } = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  await handOutLaunchStep(abandoned, async (built) => built(100));
   const funded = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  await handOutLaunchStep(funded.mint, async (built) => built(100));
   const landed = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
   const c = clock(t), later = Date.parse(createdAt) + 25 * 3_600_000;
   c.set(later);
@@ -175,7 +212,7 @@ test("the journal GC removes only what never reached the chain, after a day", as
   const t2 = later + 60 * 60_000;
   c.set(t2);
   await sweepPendingLaunches(fakeConn());
-  const removed = await gcPendingJournal(fakeConn(new Set([landed.mint, torn.mint]), new Set([funded.distributor])));
+  const removed = await gcPendingJournal(chainAt(101, { onChain: new Set([landed.mint, torn.mint]), funded: new Set([funded.distributor]), seen: new Set([funded.distributor]) }).conn);
   assert.ok(removed.includes(abandoned));
   assert.equal(fs.existsSync(journal(abandoned)), false);
   assert.ok(fs.existsSync(journal(funded.mint, "distributor.json")), "a funded wallet: kept");
@@ -183,6 +220,72 @@ test("the journal GC removes only what never reached the chain, after a day", as
   assert.ok(fs.existsSync(journal(torn.mint, "distributor.json")), "unreadable record: kept");
   fs.rmSync(journal(funded.mint), { recursive: true });
   fs.rmSync(journal(torn.mint), { recursive: true });
+});
+
+test("removal needs a finalized read past the step's validity: a stale null from a lagging node changes nothing", async (t) => {
+  const r = await expiredStep(t);
+  const wallet = walletOf(r.mint);
+  const kept = async (why: string, conn: Connection) => {
+    assert.deepEqual(await gcPendingJournal(conn), [], why);
+    assert.ok(fs.existsSync(journal(r.mint, "distributor.json")), why);
+    assert.ok(fs.existsSync(journal(r.mint, "launch.json")), why);
+  };
+  // Every plain read here says mint and wallet are gone.
+  await kept("the tip isn't past the validity", chainAt(100, { readSlot: 500 }).conn);
+  await kept("the node reading is behind the tip", chainAt(150, { slot: 190, readSlot: 189 }).conn);
+  await kept("no tip", chainAt(150, { fail: "tip" }).conn);
+  await kept("no read", chainAt(150, { fail: "read" }).conn);
+  await kept("a node without the method", fakeConn());
+  await kept("a tip without a height", Object.assign(chainAt(150).conn, { getEpochInfo: async () => ({ absoluteSlot: 190, epoch: 1, slotIndex: 1, slotsInEpoch: 100 }) }));
+  await kept("the finalized read finds the mint", chainAt(150, { seen: new Set([r.mint]) }).conn);
+  await kept("the finalized read finds the wallet funded", chainAt(150, { seen: new Set([wallet]) }).conn);
+  const proof = chainAt(101);
+  assert.deepEqual(await gcPendingJournal(proof.conn), [r.mint], "proof: finalized, past it, neither found");
+  assert.equal(proof.reads.length, 1);
+  assert.equal(fs.existsSync(journal(r.mint)), false);
+});
+
+test("a vault launch (no wallet to look at) needs the same proof", async (t) => {
+  const r = await expiredStep(t);
+  fs.rmSync(journal(r.mint, "distributor.json"));
+  await gcPendingJournal(chainAt(150, { slot: 190, readSlot: 100 }).conn);
+  assert.ok(fs.existsSync(journal(r.mint, "launch.json")), "a lagging read");
+  await gcPendingJournal(chainAt(150, { seen: new Set([r.mint]) }).conn);
+  assert.ok(fs.existsSync(journal(r.mint, "launch.json")), "the mint is there");
+  assert.deepEqual(await gcPendingJournal(chainAt(150).conn), [r.mint]);
+});
+
+test("a journal from before the validity was kept, or with it unreadable, stays and says so", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "error", (m: unknown) => { lines.push(String(m)); });
+  const old = await expiredStep(t, null);
+  assert.deepEqual(await gcPendingJournal(chainAt(10_000).conn), []);
+  assert.ok(fs.existsSync(journal(old.mint, "launch.json")));
+  assert.ok(lines.some((l) => l.includes(old.mint) && /kept/.test(l)), lines.join("; "));
+  for (const bad of ["{", "null", "{}", '{"lastValidBlockHeight":"100"}', '{"lastValidBlockHeight":-1}']) {
+    fs.writeFileSync(journal(old.mint, "step.json"), bad);
+    assert.deepEqual(await gcPendingJournal(chainAt(10_000).conn), [], bad);
+  }
+  // An old journal whose mint turns out to exist is still saved.
+  await gcPendingJournal(chainAt(10_000, { onChain: new Set([old.mint]) }).conn);
+  assert.ok(fs.existsSync(file(old.mint, "launch.json")));
+});
+
+test("a step handed out: what it needs is on disk before the bytes are returned; never handed out, nothing stays", async () => {
+  const r = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  const tx = await handOutLaunchStep(r.mint, async (built) => {
+    built(4_242);
+    assert.deepEqual(JSON.parse(fs.readFileSync(journal(r.mint, "step.json"), "utf8")), { lastValidBlockHeight: 4_242 });
+    return "bytes";
+  });
+  assert.equal(tx, "bytes");
+  persistLaunch(r.mint);
+  assert.equal(fs.existsSync(journal(r.mint)), false, "goes with the journal");
+  const failed = (await buildTokenStep(fakeConn(), cfg, params, "http://127.0.0.1:1")).record;
+  await assert.rejects(handOutLaunchStep(failed.mint, async () => { throw new Error("Simulation failed"); }), /Simulation failed/);
+  assert.equal(fs.existsSync(journal(failed.mint)), false, "no transaction left this server");
+  assert.equal(isPendingLaunch(failed.mint), false);
+  assert.equal(readLaunch(failed.mint), null);
 });
 
 test("recoverPendingLaunches brings back every journal, whatever its age; the sweep settles it on an answer from the chain", async (t) => {
