@@ -16,6 +16,8 @@
  *      rewrites the stored set_publisher target fools a single RPC read (shown, not hidden), is
  *      caught by --verify-rpc, still passes when both RPCs lie, and is caught by
  *      --expect-message-hash from the proposer.
+ *   F. A forged list with an unsupported CID codec, stored through the real program: status shows it as
+ *      invalid, approve and execute refuse with nothing sent, and rejects or cancels clear it.
  *   B. The undo: site + backup set_publisher to a generated key with the co-signer running;
  *      that key publishes (scripts/crank.ts --publisher), then hands back to the multisig.
  *      The guardian's appoint_publisher is simulated, not relied on.
@@ -74,7 +76,7 @@ import { GENESIS_HASH, sha256Hex, squadsBinaryProblem, xntOf } from "../src/quor
 import {
   SQUADS_PROGRAM_IDS, approveIx, closeIx, executeIx, proposeIxs, readProposal, readQuorum, rejectIx, squadsMultisigPda, squadsProgramConfigPda, squadsVaultPda,
 } from "../src/squads.js";
-import { appointPublisherIx, decodeVault, rawCid, setPublisherIx, vaultPda, type Vault } from "../src/taxvault.js";
+import { appointPublisherIx, decodeVault, publishListIx, rawCid, setPublisherIx, vaultPda, type Vault } from "../src/taxvault.js";
 import { buildBuy, buildSell, quoteBuy, quoteSell } from "../src/xdex.js";
 
 const RPC = process.env.LOCAL_RPC ?? "http://127.0.0.1:9601";
@@ -679,6 +681,48 @@ try {
       ok("--expect-message-hash from the proposer caught both lying RPCs (it doesn't help if the proposer is the attacker)");
       lie[8174] = null; lie[8175] = null;
     }
+    console.log("\nF. A forged list: an unsupported CID codec, stored through the real program");
+    {
+      const forge = async () => {
+        const i = (await readQuorum(conn, SQUADS, MS))!.transactionIndex + 1n;
+        assert.equal(await tryTx(proposeIxs(SQUADS, MS, i, site.publicKey, publishListIx(PROGRAM, MS_VAULT, new PublicKey(mint), Buffer.alloc(32, 1), (await readVault(mint)).listEpoch + 100n, 1n, Buffer.alloc(33, 2))), site), null);
+        return i;
+      };
+      const statusOf = async (i: bigint) => { const x = (await prop(i))!; return JSON.stringify([x.status, x.approved, x.rejected, x.cancelled]); };
+      const refusedOnWire = async (what: string, sub: string, i: bigint, extra: string[]) => {
+        const before = await statusOf(i);
+        wire.sent = 0;
+        const r = await tool(sub, F.backup, PROXY_A, ["--index", i.toString(), ...extra, "--execute"]);
+        assert.equal(r.code, 1, `${what}:\n${r.out}`);
+        assert.match(r.out, /REFUSED: .*even with --allow-unknown: its list file CID is invalid/, what);
+        assert.equal(wire.sent, 0, `${what}: no sendTransaction`);
+        assert.equal(await statusOf(i), before, `${what}: nothing changed`);
+        ok(`${what}: refused, 0 sendTransaction, the proposal unchanged`);
+      };
+      const active = await forge();
+      for (const form of [["--index", active.toString()], []]) {
+        const shown = await script("scripts/quorum-action.ts", ["status", ...NET, ...MSA, ...form], { quiet: true });
+        assert.equal(shown.code, 0, shown.out);
+        assert.match(shown.out, /list file INVALID/);
+        assert.doesNotMatch(shown.out, /^ERROR|Unsupported CID codec/m);
+      }
+      ok(`status of #${active}: the list file reads INVALID, by index and in the list`);
+      await refusedOnWire("approve", "approve", active, []);
+      await refusedOnWire("approve with --allow-unknown", "approve", active, ["--allow-unknown"]);
+      await qa("site rejects the forged list", "reject", F.site, ["--index", active.toString(), "--execute"], { quiet: true });
+      await qa("co-signer rejects the forged list", "reject", F.cosigner, ["--index", active.toString(), "--execute"], { quiet: true });
+      assert.equal((await prop(active))!.status, "Rejected");
+      ok(`a threshold of rejects closed #${active}`);
+      const approved = await forge();
+      assert.equal(await tryTx([approveIx(SQUADS, MS, approved, cosigner.publicKey)], cosigner), null);
+      assert.equal((await prop(approved))!.status, "Approved");
+      await refusedOnWire("execute of one approved around the tool", "execute", approved, []);
+      await refusedOnWire("execute with --allow-unknown", "execute", approved, ["--allow-unknown"]);
+      for (const key of [F.site, F.backup]) await qa("cancelling the forged list", "cancel", key, ["--index", approved.toString(), "--execute"], { quiet: true });
+      assert.equal((await prop(approved))!.status, "Cancelled");
+      ok(`a threshold of cancels closed #${approved}`);
+    }
+
     quiet = false;
     await startServer(cfgFile);
   }
