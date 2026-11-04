@@ -57,7 +57,7 @@ async function main() {
   if (BigInt(fundLamports) < spend + 8_000_000n) throw new Error(`--xnt too low: needs at least ${(Number(spend) + 8_000_000) / 1e9} XNT per wallet for the buy, accounts and fees`);
 
   const send = (ixs: TransactionInstruction[], signers: Keypair[]) =>
-    sendAndConfirmTransaction(conn, new Transaction().add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 }), ...ixs), signers, { commitment: "confirmed" });
+    sendAndConfirmTransaction(conn, new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 }), ...ixs), signers, { commitment: "confirmed" });
 
   for (let n = 0; n < count; n++) {
     const w = Keypair.generate();

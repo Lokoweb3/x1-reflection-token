@@ -10,6 +10,9 @@
  *               XNT -> Qa (Qa/XNT) -> hub (hub/Qa) -> Qb (hub/Qb) -> XNT (Qb/XNT), between their most
  *               liquid side pools; four swaps, through the wallet's lookup tables (filled at each full read)
  *
+ * In fast mode (`fast`) it waits 30 ms after a change instead of 300, and before trading re-reads only the
+ * pools that aren't watched live (the watched ones are as fresh as their last notification).
+ *
  * Every `loopSecs` it reads all of XDEX (every pool, vault, fee config and mint, in batches of 100). Between
  * those reads it subscribes (at "processed", as soon as a swap lands) to the watched pools' vaults and re-prices the routes a changed pool belongs to
  * the moment the change arrives (the new balance comes with the notification); before trading it re-reads
@@ -47,6 +50,8 @@ export interface ScannerOptions {
   /** How many hub tokens get side-pool-pair routes (0: none), and how many of each hub's side pools. */
   hubs: number;
   hubSides: number;
+  /** Fast mode: re-price 30 ms after a change (not 300), and trust the live-watched pools' notifications instead of re-reading them before trading. */
+  fast?: boolean;
   verbose: boolean;
   log: (s: string) => void;
 }
@@ -215,9 +220,13 @@ export function createScanner(o: ScannerOptions) {
     const paying = (await engine.bestAll(routes)).filter((p) => p.pays);
     if (!paying.length) return 0;
     const keys = new Set<string>();
-    for (const p of paying) for (const h of p.plan.route.hops) keys.add(`${h.snap.pool.address.toBase58()}|${h.snap.pool.mints[h.snap.side].toBase58()}`);
+    for (const p of paying) for (const h of p.plan.route.hops) if (!(o.fast && live.has(h.snap.pool.address.toBase58()))) keys.add(`${h.snap.pool.address.toBase58()}|${h.snap.pool.mints[h.snap.side].toBase58()}`);
     const specs: SnapshotSpec[] = [...keys].map((k) => { const [pool, mint] = k.split("|"); return { pool: new PublicKey(pool), mint: new PublicKey(mint), quote: null }; });
-    const fresh = await snapshotMany(conn, xdex, specs, epoch, "processed");
+    const fresh = specs.length ? await snapshotMany(conn, xdex, specs, epoch, "processed") : new Map<string, Snapshot>();
+    if (o.fast) for (const p of paying) for (const h of p.plan.route.hops) {
+      const a = h.snap.pool.address.toBase58(), m = h.snap.pool.mints[h.snap.side].toBase58();
+      if (live.has(a)) { const s = snap(a, m); if (s) fresh.set(`${a}:${m}`, s); }
+    }
     engine.learnFees(fresh.values());
     const again = paying.map((p) => refreshed(p.plan.route, fresh)).filter((r): r is Route => !!r);
     const ok = [];
@@ -242,6 +251,8 @@ export function createScanner(o: ScannerOptions) {
 
   // ---------- live: vault notifications re-price the routes they touch ----------
   const subs = new Map<string, number>();
+  /** Pools with both vaults watched live. */
+  const live = new Set<string>();
   const dirty = new Set<string>();
   let running = false, timer: NodeJS.Timeout | null = null;
   function schedule() {
@@ -260,7 +271,7 @@ export function createScanner(o: ScannerOptions) {
       } catch (e) { log(`live check failed: ${msg(e)}`); }
       running = false;
       if (dirty.size) schedule();
-    }, 300);
+    }, o.fast ? 30 : 300);
   }
   function watch() {
     const want = new Map<string, { pool: string; i: 0 | 1 }>();
@@ -269,15 +280,18 @@ export function createScanner(o: ScannerOptions) {
     for (const t of tris) { if (want.size >= o.maxSubs) break; [t.main, t.side, t.quote].forEach(add); }
     for (const [v, w] of want) {
       if (subs.has(v)) continue;
-      subs.set(v, conn.onAccountChange(new PublicKey(v), (info) => {
+      subs.set(v, conn.onAccountChange(new PublicKey(v), (info, ctx) => {
         const p = pools.get(w.pool);
         if (!p || info.data.length < 72) return;
         p.vault[w.i] = info.data.readBigUInt64LE(64);
+        engine.heard(w.pool, ctx.slot);
         dirty.add(w.pool);
         schedule();
       }, { commitment: "processed" }));
     }
     for (const [v, id] of subs) if (!want.has(v)) { conn.removeAccountChangeListener(id).catch(() => undefined); subs.delete(v); }
+    live.clear();
+    for (const w of want.values()) live.add(w.pool);
     return want.size;
   }
 

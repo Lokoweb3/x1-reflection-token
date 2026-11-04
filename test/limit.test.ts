@@ -46,3 +46,26 @@ test("a spent budget is filled, and an empty wallet doesn't try", () => {
   assert.equal(limitBuySize(s, d, 300, 0n, usdc(38)).action, "filled");
   assert.equal(limitBuySize(s, d, 300, usdc(38), 0n).action, "no funds");
 });
+
+test("a range order doesn't buy under its floor", () => {
+  const s = pool(0.75, 0.75 * 270);
+  assert.equal(limitBuySize(s, d, 300, usdc(50), usdc(264), { min: 280 }).action, "below");
+  assert.equal(limitBuySize(pool(0.75, 0.75 * 290), d, 300, usdc(50), usdc(264), { min: 280 }).action, "buy");
+  assert.equal(limitBuySize(pool(0.75, 0.75 * 250), d, 220, usdc(50), usdc(264), { min: 180 }).action, "wait");
+  assert.equal(limitBuySize(pool(0.75, 0.75 * 200), d, 220, usdc(50), usdc(264), { min: 180 }).action, "buy");
+});
+
+test("each buy is capped, so a budget goes in over several buys", () => {
+  // The live pool's depth on 2026-10-24: ~258 USDC.X. All 50 at once would lift the price ~40%.
+  const s = pool(258 / 200, 258);
+  const r = limitBuySize(s, d, 220, usdc(50), usdc(264), { min: 180, maxTrade: usdc(2) });
+  assert.ok(r.action === "buy" && r.amountIn === usdc(2));
+  assert.ok(after(s, r) < 200 * 1.02, "a 2 USDC.X buy moves the price under 2%");
+});
+
+test("a buy under the minimum trade is skipped, not sent", () => {
+  // The pool sits just under the limit: the buy that keeps it there is dust.
+  const s = pool(0.75, 0.75 * 299.9999);
+  assert.equal(limitBuySize(s, d, 300, usdc(25), usdc(264), { minTrade: usdc(0.01) }).action, "rounds to nothing");
+  assert.equal(limitBuySize(pool(0.75, 0.75 * 290), d, 300, usdc(25), usdc(264), { minTrade: usdc(0.01) }).action, "buy");
+});

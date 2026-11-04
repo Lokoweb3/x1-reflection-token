@@ -7,12 +7,15 @@
  *   npx tsx scripts/arb-bot.ts --mint <token mint> [--mint <another> ...] --keypair <wallet.json>
  *     [--execute] [--network mainnet|testnet] [--rpc <url>] [--min-profit 0.02] [--max-in 2]
  *     [--slippage 0.1] [--priority <micro-lamports per CU> (default 1000)] [--race-priority <µL/CU> (default 1000000)]
+ *     [--priority-share <% of profit> (default 0 = flat --priority) [--priority-max <µL/CU> (default 50000000)]]
+ *     [--fast [--fast-max-loss <XNT a day> (default 0.05)]]
+ *     [--fast-lane <mint,...> [--lane-priority <µL/CU> (default 2000000)] [--leader-send]]
  *     [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs]
  *     [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]
  *     [--loop <seconds> (default 20) | --once] [--no-instant] [--clean-every <hours> (default 6, 0 = off)]
  *     [--sweep-after <minutes> (default 2, 0 = off)]
  *     [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]]
- *     [--limit-buy <mint>@<price>[:<USDC.X budget>],...]
+ *     [--limit-buy <mint>@[<min>-]<price>[:<USDC.X budget>[:<per buy>]],...] [--limit-peg-over <pct> (default 0)]
  *     [--cap <XNT> --skim-to <wallet>] [--low <XNT> (default 1)] [--verbose] [--webhook <url>]
  *     [--telegram-token <bot token> --telegram-chat <chat id> | env TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]
  *   npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> --setup   (open the token accounts and lookup table)
@@ -46,6 +49,18 @@
  * one changes (a trade landed); after a trade it checks again straight away. --no-instant turns the
  * subscriptions off. Each check reads every pool it watches in two batched requests.
  *
+ * --fast (src/arb-engine.ts, "Fast mode"): send without simulating first, don't wait for one trade to confirm
+ * before the next, keep balances and ownership in memory, check 50 ms after a pool changes (not 400) and, in the
+ * scanner, trust the live-watched pools instead of re-reading them. A trip whose gap is gone then fails on-chain
+ * and costs its fee (~0.001 XNT) instead of nothing; once those fees exceed what fast trades made by
+ * --fast-max-loss XNT in a New York day, it simulates first again until the next day. --priority-share bids that
+ * percent of each trade's expected profit as its priority fee (at least --priority, at most --priority-max).
+ * Both are off unless given: scripts/arb.sh fast off drops them (state/arb.env ARB_FAST_ARGS) and restarts.
+ * --fast-lane does the same for the routes through those tokens' pools only (e.g. GOOGL.X), at --lane-priority or
+ * more, under the same --fast-max-loss guard; everything else is simulated first. --leader-send also sends each fast
+ * transaction straight to the next few block producers' RPC ports (src/leader-send.ts). scripts/arb.sh lane off
+ * drops them (state/arb.env ARB_LANE_ARGS).
+ *
  * Upkeep (with --execute): every --clean-every hours it runs --sweep and then --close-dust (keeping the
  * route tokens' accounts open). After a burst of trades (any trade, the bot's or the scanner's) it also
  * sweeps once the market has been quiet for --sweep-after minutes, so leftovers don't sit in the wallet.
@@ -56,7 +71,10 @@
  * token's other pools. The sweep and close-dust leave the pegged tokens and USDC.X alone: they are its inventory.
  * Limit buys (--limit-buy <mint>@<price>[:<budget>]): once a minute, when the token's USDC.X pool is at or under
  * <price> USDC.X, it buys with USDC.X, never lifting the pool past <price>, until <budget> USDC.X is spent (no
- * budget: all the wallet's USDC.X) (src/limit.ts). The sweep keeps the token and USDC.X. With --cap and --skim-to it keeps the wallet at about --cap XNT, sending
+ * budget: all the wallet's USDC.X) (src/limit.ts). With <min>-<price> it buys only between the two and alerts under
+ * <min>; <per buy> caps each buy, so the budget goes in over several minutes. For a bridged xStock it also never
+ * buys above what it costs to bring it from Solana: the Solana price (CoinGecko and Jupiter) plus the bridge's live
+ * Solana-to-X1 fee, plus --limit-peg-over percent; it doesn't buy when either can't be read. The sweep keeps the token and USDC.X. With --cap and --skim-to it keeps the wallet at about --cap XNT, sending
  * anything above it to --skim-to (checked every 10 minutes); it alerts when the wallet holds under --low XNT.
  *
  * Working balance: the wallet trades out of its wrapped-XNT account, topped up from plain XNT as needed
@@ -72,10 +90,11 @@ import {
 import { XDEX_PROGRAM_IDS, loadKeypair } from "../src/config.js";
 import { gapPct } from "../src/arb.js";
 import { ACCOUNT_RENT, createEngine, routesFor, type Route } from "../src/arb-engine.js";
+import { createLeaderSender } from "../src/leader-send.js";
 import { createScanner } from "../src/arb-scanner.js";
 import { deepestXntPool, poolsWith, symbolOf } from "../src/pools.js";
 import { cpmmOut, snapshot, snapshotMany, swapIx, type Snapshot, type SnapshotSpec } from "../src/xdex.js";
-import { USDC_X, XSTOCKS, createPeg } from "../src/peg.js";
+import { USDC_X, XSTOCKS, bridgeInFeeBps, createPeg, referencePrice } from "../src/peg.js";
 import { createLimitBuy } from "../src/limit.js";
 
 const argv = process.argv.slice(2);
@@ -85,8 +104,9 @@ function usage(problem?: string): never {
   if (problem) console.error(problem);
   console.error("usage: npx tsx scripts/arb-bot.ts --mint <token mint> --keypair <wallet.json> [--execute] [--network mainnet|testnet] [--rpc <url>]\n"
     + "         [--min-profit 0.02] [--max-in 2] [--slippage 0.1] [--reserve 0.1] [--priority 1000] [--loop <seconds> | --once]\n"
+    + "         [--priority-share <% of profit> [--priority-max <µL/CU>]] [--fast [--fast-max-loss <XNT>]]\n"
     + "         [--own <wallet,...> [--own-min-profit <XNT>]] [--no-pairs] [--no-instant] [--clean-every <hours>] [--sweep-after <minutes>]\n"
-    + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--limit-buy <mint>@<price>[:<budget>],...] [--keep <mint,...>]\n"
+    + "         [--peg <xStock mint,...> [--peg-band 1.5] [--peg-buy-below <pct> [--peg-buy-max <pct>]] [--peg-max-trade 0.02] [--peg-max-day 0.1]] [--limit-buy <mint>@[<min>-]<price>[:<budget>[:<per buy>]],...] [--limit-peg-over 0] [--keep <mint,...>]\n"
     + "         [--scan [--scan-loop 300] [--min-liquidity 5] [--max-subs 400] [--hubs 3] [--hub-sides 12]]\n"
     + "         [--cap <XNT> --skim-to <wallet>] [--low <XNT>] [--verbose] [--webhook <url>] [--telegram-token <token> --telegram-chat <id>]\n"
     + "       npx tsx scripts/arb-bot.ts --keypair <wallet.json> --sweep | --close-dust | --unwrap (see the file's header)");
@@ -113,6 +133,16 @@ const priority = num("priority", 1000);
 // When another trader is racing for a pool (a trade through it just failed or vanished), pay more to land first:
 // 1,000,000 µL/CU on a ~150k-CU trade is ~0.00015 XNT.
 const racePriority = num("race-priority", 1_000_000);
+const priorityShare = num("priority-share", 0) / 100;
+if (priorityShare > 1) usage("--priority-share is a percent of the profit, 0-100");
+const priorityMax = num("priority-max", 50_000_000);
+const fast = has("fast");
+const fastMaxLoss = lamports(num("fast-max-loss", 0.05));
+const laneMints = new Set((flag("fast-lane") ?? "").split(",").filter(Boolean).map((m) => new PublicKey(m).toBase58()));
+const lanePriority = num("lane-priority", 2_000_000);
+const leaders = has("leader-send") ? createLeaderSender(conn, { log: (s) => log(s) }) : null;
+/** A route through any pool holding a fast-lane token. */
+const fastLane = laneMints.size ? (p: { route: { hops: { snap: { pool: { mints: PublicKey[] } } }[] } }) => p.route.hops.some((h) => h.snap.pool.mints.some((m) => laneMints.has(m.toBase58()))) : undefined;
 const loopSecs = has("once") ? 0 : num("loop", 20);
 const own = (flag("own") ?? "").split(",").filter(Boolean).map((w) => new PublicKey(w));
 const ownMinProfit = flag("own-min-profit") !== undefined ? lamports(num("own-min-profit", 0)) : undefined;
@@ -129,9 +159,12 @@ const sweepAfterMs = num("sweep-after", 2) * 60_000;
 const pegMints = (flag("peg") ?? "").split(",").filter(Boolean);
 for (const m of pegMints) if (!XSTOCKS[m]) usage(`--peg: ${m} isn't a known bridged xStock (src/peg.ts XSTOCKS)`);
 const limitBuys = (flag("limit-buy") ?? "").split(",").filter(Boolean).map((o) => {
-  const m = /^(\w+)@([\d.]+)(?::([\d.]+))?$/.exec(o);
-  if (!m || !(Number(m[2]) > 0) || (m[3] !== undefined && !(Number(m[3]) > 0))) usage(`--limit-buy: "${o}" isn't <mint>@<price>[:<budget>]`);
-  return { mint: m![1], price: Number(m![2]), budget: m![3] !== undefined ? Number(m![3]) : undefined };
+  const m = /^(\w+)@(?:([\d.]+)-)?([\d.]+)(?::([\d.]+)(?::([\d.]+))?)?$/.exec(o);
+  const opt = (v: string | undefined) => (v !== undefined ? Number(v) : undefined);
+  const [min, price, budget, maxTrade] = m ? [opt(m[2]), Number(m[3]), opt(m[4]), opt(m[5])] : [];
+  if (!m || !(price! > 0) || [min, budget, maxTrade].some((v) => v !== undefined && !(v > 0)) || (min !== undefined && min >= price!))
+    usage(`--limit-buy: "${o}" isn't <mint>@[<min>-]<price>[:<budget>[:<per buy>]]`);
+  return { mint: m![1], price: price!, budget, min, maxTrade };
 });
 // Tokens the sweep and close-dust never sell: --keep, plus each pegged token and USDC.X (the peg's inventory).
 // The running bot records its peg tokens in state/peg-keep.json, so a separate --sweep / --close-dust run (which
@@ -168,7 +201,7 @@ async function alert(text: string) {
   for (const r of await Promise.allSettled(posts)) if (r.status === "rejected") log(`alert delivery failed: ${msg(r.reason)}`);
 }
 
-const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, racePriority, stateDir, log, alert });
+const engine = createEngine({ conn, xdex, wallet, minProfit, ownMinProfit, own, maxIn, slipBps, reserve, priority, racePriority, priorityShare, priorityMax, fast, fastMaxLoss, fastLane, lanePriority, extraSend: leaders ? (raw) => leaders.send(raw) : undefined, stateDir, log, alert });
 const { wxntAta, balanceOf, send } = engine;
 
 if (has("unwrap")) {
@@ -304,7 +337,7 @@ function watchVaults(snaps: Map<string, Snapshot>) {
 /** Until the timer runs out or (with instant checks) a watched vault changes; then a short pause so every vault a trade touched has updated. */
 async function nextCheck(ms: number) {
   if (!wakePending) await new Promise<void>((r) => { const t = setTimeout(() => { wakeNow = null; r(); }, ms); wakeNow = () => { clearTimeout(t); wakeNow = null; r(); }; });
-  if (wakePending) await new Promise((r) => setTimeout(r, 400));
+  if (wakePending) await new Promise((r) => setTimeout(r, fast || laneMints.size ? 50 : 400));
   wakePending = false;
 }
 
@@ -447,12 +480,15 @@ async function main() {
     + `${ownMinProfit !== undefined ? ` (+${xnt(ownMinProfit)} on your own pools)` : ""}${pairs ? ", side-pool pairs on" : ""}, `
     + `${loopSecs ? `every ${loopSecs}s${instant ? " and the moment a watched pool changes" : ""}` : "once"}`
     + `${execute && loopSecs && cleanEveryMs ? `, cleans leftovers every ${cleanEveryMs / 3_600_000}h` : ""}`
-    + `${execute && loopSecs && sweepAfterMs ? ` and ${sweepAfterMs / 60_000} min after a burst of trades` : ""}${cap !== null ? `, keeps ~${xnt(cap)} XNT (rest to ${skimTo!.toBase58()})` : ""}`);
+    + `${execute && loopSecs && sweepAfterMs ? ` and ${sweepAfterMs / 60_000} min after a burst of trades` : ""}${cap !== null ? `, keeps ~${xnt(cap)} XNT (rest to ${skimTo!.toBase58()})` : ""}`
+    + `${fast ? `; FAST: no simulation before sending (back to simulating for the day after ${xnt(fastMaxLoss)} XNT of net failed fees)` : ""}`
+    + `${priorityShare ? `; priority ${Math.round(priorityShare * 100)}% of profit (${priority}–${priorityMax} µL/CU)` : ""}`
+    + `${laneMints.size ? `; FAST LANE for ${[...laneMints].map((m) => m.slice(0, 4)).join(", ")} routes (${lanePriority} µL/CU${leaders ? ", sent to the next block producers too" : ""}; back to simulating for the day after ${xnt(fastMaxLoss)} XNT of net failed fees)` : ""}`);
   if (has("scan")) {
     const scanLoop = has("once") ? 0 : num("scan-loop", 300);
     const scanner = createScanner({ conn, xdex, engine, execute, skip: new Set(mints.map((m) => m.toBase58())),
       minLiquidity: lamports(num("min-liquidity", 5)), maxSubs: num("max-subs", 400), loopSecs: scanLoop, instant: instant && scanLoop > 0,
-      hubs: num("hubs", 3), hubSides: num("hub-sides", 12), verbose, log });
+      hubs: num("hubs", 3), hubSides: num("hub-sides", 12), fast, verbose, log });
     log(`scan: on, in this process (full read ${scanLoop ? `every ${scanLoop}s, live between reads` : "once"})`);
     // Runs alongside the loop below; both trade through the engine's one queue.
     void scanner.start().catch((e) => log(`scan stopped: ${msg(e)}`));
@@ -488,9 +524,13 @@ async function main() {
     const mint = new PublicKey(l.mint), sym = XSTOCKS[l.mint] ? `${XSTOCKS[l.mint].ticker}.X` : await symbolOf(conn, mint);
     const best = await usdcPool(mint);
     if (!best) { log(`limit ${sym}: no USDC.X pool for ${l.mint}, no order`); continue; }
-    limits.push(createLimitBuy({ mint, symbol: sym, pool: best.address, quoteMint: USDC_X, price: l.price, budget: l.budget },
+    const x = XSTOCKS[l.mint], pegOver = num("limit-peg-over", 0);
+    const reference = x ? () => referencePrice({ mint, ticker: x.ticker, coingeckoId: x.coingeckoId, solanaMint: x.solanaMint, pool: best.address, quoteMint: USDC_X }) : undefined;
+    limits.push(createLimitBuy({ mint, symbol: sym, pool: best.address, quoteMint: USDC_X, price: l.price, budget: l.budget, min: l.min, maxTrade: l.maxTrade,
+      reference, bridgeFee: x ? () => bridgeInFeeBps(x.solanaMint) : undefined, pegOverPct: pegOver },
       { conn, xdex, owner: wallet.publicKey, send: (ixs) => send(ixs), log, alert, stateDir, execute }));
-    log(`limit ${sym}: buy with ${l.budget !== undefined ? `up to ${l.budget}` : "all the wallet's"} USDC.X when pool ${best.address.toBase58()} is at or under $${l.price}, never lifting it past $${l.price}; the sweep keeps it and USDC.X`);
+    log(`limit ${sym}: buy with ${l.budget !== undefined ? `up to ${l.budget}` : "all the wallet's"} USDC.X${l.maxTrade !== undefined ? `, at most ${l.maxTrade} a buy,` : ""} when pool ${best.address.toBase58()} is `
+      + (l.min !== undefined ? `between $${l.min} and $${l.price} (alerts under $${l.min})` : `at or under $${l.price}`) + `, never lifting it past $${l.price}` + (x ? ` or ${pegOver ? `${pegOver}% over ` : ""}the ${x.ticker}x price on Solana plus the bridge fee to X1` : "") + `; the sweep keeps it and USDC.X`);
   }
   // What the sweep must keep, for runs without --peg / --limit-buy (empty when this bot has neither).
   const keepNow = [...pegs.map((p) => p.spec.mint.toBase58()), ...limits.map((l) => l.spec.mint.toBase58())];

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sweep dust · 99 + Tax</title>
+<style>
+:root { --bg: #fbf8ef; --surface-1: #fbf8ef; --line: rgb(29 27 22 / .18); --text-primary: #1d1b16; --text-secondary: #45413a; --text-muted: #6b665a; --link: #1d1b16; --critical: #c8102e; --good: #1a7f37; --warn: #9a6700; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary); font: 15px/1.5 system-ui, sans-serif; }
+.topbar { font-size: 13px; text-align: center; padding: 7px 16px; }
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+.brand { font-size: 24px; text-decoration: none; }
+header nav { margin-left: auto; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.wallet { display: flex; align-items: center; gap: 8px; position: relative; }
+.wallet-menu { position: absolute; right: 0; top: calc(100% + 6px); padding: 6px; z-index: 5; display: grid; min-width: 180px; }
+.wallet-menu button { background: none; border: 0; padding: 8px 12px; text-align: left; cursor: pointer; display: flex; gap: 8px; align-items: center; color: inherit; font: inherit; }
+.wallet-menu img { width: 18px; height: 18px; }
+h1 { margin: 0 0 6px; font-size: 34px; }
+h2 { margin: 0 0 8px; font-size: 20px; }
+.lede { color: var(--text-secondary); margin: 0 0 22px; }
+.card { border: 1px solid var(--line); padding: 20px; margin-bottom: 18px; }
+.big { font-size: 28px; font-weight: 700; margin: 4px 0 2px; }
+.muted { color: var(--text-muted); font-size: 13px; }
+.btn { font: 700 14px system-ui, sans-serif; padding: 10px 16px; cursor: pointer; border: 2px solid; background: none; color: inherit; }
+.btn.primary { color: #fff; }
+.btn.sm { padding: 6px 10px; font-size: 13px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.addr { font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 520px; margin: 0 auto; padding: 10px 14px; z-index: 10; }
+.toast[hidden] { display: none; }
+.error { color: var(--critical); }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+th { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+th:first-child, td:first-child, th.l, td.l { text-align: left; }
+td.tok { white-space: normal; min-width: 120px; }
+tr.off td { color: var(--text-muted); }
+.warn { color: var(--warn); }
+.good { color: var(--good); }
+.opts { display: grid; gap: 8px; margin-top: 6px; }
+.opts label { display: flex; gap: 8px; align-items: flex-start; }
+.summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 6px 0 14px; }
+.stat { border: 1px dashed var(--line); padding: 10px 12px; }
+.stat .v { font-size: 20px; font-weight: 700; }
+.steps { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; }
+.steps li { display: flex; gap: 8px; align-items: baseline; }
+.steps li::before { content: "○"; width: 1em; flex: none; }
+.steps li.doing::before { content: "◐"; }
+.steps li.done::before { content: "●"; color: var(--good); }
+.steps li.failed::before { content: "✕"; color: var(--critical); }
+details summary { cursor: pointer; }
+@media (max-width: 600px) { .summary { grid-template-columns: 1fr; } header nav { margin-left: 0; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<script src="/i18n.js"></script>
+<script src="/theme.js"></script>
+</head>
+<body>
+<div class="topbar" role="note">Your wallet signs every transaction here; the site never holds your keys.</div>
+<main>
+  <header>
+    <a class="brand" href="/">99 + Tax</a>
+    <nav aria-label="Main">
+      <a href="/tokens">Tokens</a>
+      <a href="/curve">Curve</a>
+      <a href="/nft">NFTs</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/leaderboard">Leaderboard</a>
+      <a href="/wallet">My earnings</a>
+      <a href="/sweep" aria-current="page">Sweep</a>
+      <a href="/faucet">Faucet</a><a href="/v4">v4</a>
+      <a class="btn primary sm" href="/launch">Launch a token</a>
+    </nav>
+    <div class="wallet" id="walletArea"></div>
+  </header>
+  <h1 id="title">Sweep dust into a token</h1>
+  <p class="lede" id="lede">Pick the leftover tokens in your wallet, sell them for XNT on XDEX in one go, and buy a token with it. Emptied accounts can be closed to get their rent back (about 0.002 XNT each).</p>
+  <div id="out"><p class="muted">Loading…</p></div>
+</main>
+<div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+<script src="/wallet.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const W = window.X1Wallet;
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else if (k === "checked") n.checked = !!v; else if (k === "disabled") n.disabled = !!v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+}
+const link = (href, text) => el("a", { href, target: "_blank", rel: "noopener", text });
+const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+const fmt = (n, max = 4) => Number(n).toLocaleString(undefined, { maximumFractionDigits: max });
+const xnt = (lamports) => Number(lamports) / 1e9;
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({ error: r.statusText }));
+  if (!r.ok) throw new Error(tr(j.error || r.statusText));
+  return j;
+}
+let toastTimer;
+function toast(kind, ...parts) {
+  const t = $("toast"); t.className = `toast ${kind}`; t.replaceChildren(...parts); t.hidden = false;
+  clearTimeout(toastTimer); if (kind !== "info") toastTimer = setTimeout(() => { t.hidden = true; }, 9000);
+}
+
+let explorer = "", scan = null, scanning = false, busy = false, target = new URLSearchParams(location.search).get("to") || "";
+const picked = new Set();
+const opts = { close: true, addRent: true, useWrapped: false, closeEmpty: false, slippageBps: 100 };
+
+async function load() {
+  if (!W.state.address) { scan = null; render(); return; }
+  scanning = true; render();
+  try { scan = await api(`/api/sweep/scan?owner=${W.state.address}${target ? `&to=${target}` : ""}`); }
+  catch (e) { scan = { error: e.message || String(e) }; }
+  scanning = false; picked.clear(); render();
+}
+
+function totals() {
+  if (!scan?.items) return { xnt: 0, rent: 0, n: 0, maxImpact: 0 };
+  let x = 0, rent = 0, n = 0, maxImpact = 0;
+  for (const i of scan.items) {
+    if (i.wrapped) { if (opts.useWrapped) x += xnt(i.xntOut); continue; }
+    if (picked.has(i.account)) { x += xnt(i.xntOut); n++; maxImpact = Math.max(maxImpact, i.impactPct ?? 0); if (opts.close) rent += i.rent / 1e9; }
+    else if (i.empty && opts.closeEmpty) rent += i.rent / 1e9;
+  }
+  return { xnt: x, rent: opts.addRent ? rent : 0, rentAll: rent, n, maxImpact };
+}
+
+function render() {
+  const out = $("out");
+  if (scan?.target) { $("title").textContent = tr("Sweep dust into {symbol}", { symbol: scan.target.symbol }); }
+  if (!W.state.address) {
+    const b = el("button", { class: "btn primary", type: "button", text: tr("Connect wallet") }); b.onclick = openWalletMenu;
+    out.replaceChildren(el("div", { class: "card" }, el("h2", { text: tr("Connect your wallet") }), el("p", { class: "muted", text: tr("You'll see every token it holds, what each is worth in XNT, and pick the ones to sweep.") }), el("div", { class: "row" }, b)));
+    return;
+  }
+  if (scanning || !scan) { out.replaceChildren(el("p", { class: "muted", text: tr("Reading your wallet and pricing every token…") })); return; }
+  if (scan.error) { out.replaceChildren(el("p", { class: "error", text: tr("Couldn't read your wallet: {message}", { message: scan.error }) })); return; }
+  const T = scan.target, items = scan.items;
+  const sellable = items.filter((i) => i.canSell && !i.wrapped), empties = items.filter((i) => i.empty), blocked = items.filter((i) => !i.canSell && !i.empty && !i.wrapped), wrapped = items.find((i) => i.wrapped && !i.empty);
+
+  // Sellable tokens
+  const rows = sellable.map((i) => {
+    const cb = el("input", { type: "checkbox", checked: picked.has(i.account), "aria-label": tr("Sweep {symbol}", { symbol: i.symbol }), disabled: busy });
+    cb.onchange = () => { cb.checked ? picked.add(i.account) : picked.delete(i.account); render(); };
+    const hi = (i.impactPct ?? 0) > 5;
+    return el("tr", {}, el("td", {}, cb), el("td", { class: "tok l" }, el("b", { text: i.symbol }), el("div", { class: "addr muted", text: short(i.mint) })),
+      el("td", { text: fmt(i.ui, 6) }), el("td", { text: fmt(xnt(i.xntOut), 6) }),
+      el("td", { class: hi ? "warn" : "", text: `${fmt(i.impactPct ?? 0, 2)}%${hi ? " ⚠" : ""}` }));
+  });
+  const all = el("button", { class: "btn sm", type: "button", text: tr("Select dust (under 1 XNT each)"), disabled: busy });
+  all.onclick = () => { for (const i of sellable) if (xnt(i.xntOut) < 1) picked.add(i.account); render(); };
+  const none = el("button", { class: "btn sm", type: "button", text: tr("Clear"), disabled: busy });
+  none.onclick = () => { picked.clear(); render(); };
+  const tokens = el("div", { class: "card" },
+    el("h2", { text: tr("Tokens you can sell ({n})", { n: sellable.length }) }),
+    el("p", { class: "muted", text: tr("Values are what selling all of it gives right now, after its transfer fee and the 0.28% pool fee. Nothing is picked until you tick it.") }),
+    el("div", { class: "row" }, all, none),
+    sellable.length ? el("div", { class: "scroll" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { class: "l", text: tr("Token") }), el("th", { text: tr("Amount") }), el("th", { text: tr("Worth (XNT)") }), el("th", { text: tr("Price impact") }))), el("tbody", {}, ...rows)))
+      : el("p", { class: "muted", text: tr("Nothing here has an XNT pool to sell into.") }));
+
+  // Options
+  const opt = (key, text, extra) => { const c = el("input", { type: "checkbox", checked: opts[key], disabled: busy }); c.onchange = () => { opts[key] = c.checked; render(); }; return el("label", {}, c, el("span", {}, text, extra ? el("div", { class: "muted", text: extra }) : null)); };
+  const slip = el("select", { "aria-label": tr("Slippage"), disabled: busy });
+  for (const v of [50, 100, 200, 300]) slip.append(el("option", { value: String(v), text: `${v / 100}%` }));
+  slip.value = String(opts.slippageBps); slip.onchange = () => { opts.slippageBps = Number(slip.value); };
+  const emptyRent = empties.reduce((a, i) => a + i.rent / 1e9, 0);
+  const options = el("div", { class: "card" }, el("h2", { text: tr("Options") }), el("div", { class: "opts" },
+    opt("close", tr("Close each account after selling it"), tr("Its rent comes back to you (about 0.002 XNT each).")),
+    empties.length ? opt("closeEmpty", tr("Also close {n} empty token accounts", { n: empties.length }), tr("Gets back about {x} XNT of rent. They hold nothing; you can always open them again.", { x: fmt(emptyRent, 4) })) : null,
+    opt("addRent", tr("Put the rent you get back into {symbol} too", { symbol: T.symbol })),
+    wrapped ? opt("useWrapped", tr("Use my {x} wrapped XNT as well", { x: fmt(xnt(wrapped.xntOut), 4) })) : null,
+    el("label", {}, el("span", { text: tr("Slippage allowed") + " " }), slip)));
+
+  // Summary + go
+  const t = totals(), spend = t.xnt + t.rent, perToken = T.xntPerToken, tax = T.taxBps / 10_000;
+  const estimate = perToken > 0 ? spend / perToken * (1 - 0.0028) * (1 - tax) : 0;
+  const nothing = !t.n && !(opts.closeEmpty && empties.length) && !(opts.useWrapped && wrapped);
+  const go = el("button", { class: "btn primary", type: "button", text: tr("Sweep into {symbol}", { symbol: T.symbol }), disabled: busy || nothing || spend < 0.001 && !opts.closeEmpty });
+  go.onclick = () => run(go);
+  const summary = el("div", { class: "card" }, el("h2", { text: tr("Summary") }),
+    el("div", { class: "summary" },
+      el("div", { class: "stat" }, el("div", { class: "muted", text: tr("Selling") }), el("div", { class: "v", text: tr("{n} tokens", { n: t.n }) }), el("div", { class: "muted", text: `≈ ${fmt(t.xnt, 6)} XNT` })),
+      el("div", { class: "stat" }, el("div", { class: "muted", text: tr("Rent back") }), el("div", { class: "v", text: `${fmt(t.rentAll, 4)} XNT` }), el("div", { class: "muted", text: opts.addRent ? tr("goes into the buy") : tr("stays as XNT") })),
+      el("div", { class: "stat" }, el("div", { class: "muted", text: tr("You get about") }), el("div", { class: "v", text: `${fmt(estimate, 0)} ${T.symbol}` }), el("div", { class: "muted", text: tr("after its {pct}% transfer tax", { pct: T.taxBps / 100 }) }))),
+    t.maxImpact > 5 ? el("p", { class: "warn", text: tr("⚠ Some picks move their pool's price more than 5%: you'd get noticeably less than the token's market price.") }) : null,
+    el("p", { class: "muted", text: tr("You'll approve a few sell transactions in your wallet, then one buy. Each swap has a minimum: if a price moves past your slippage, that transaction fails and nothing in it is traded. Network fees are about 0.001 XNT a transaction.") }),
+    el("div", { class: "row" }, go), el("ul", { class: "steps", id: "steps" }));
+
+  const cant = blocked.length ? el("details", { class: "card" }, el("summary", { text: tr("Can't be sold here ({n})", { n: blocked.length }) }),
+    el("div", { class: "scroll" }, el("table", {}, el("tbody", {}, ...blocked.map((i) => el("tr", { class: "off" }, el("td", { class: "tok l" }, el("b", { text: i.symbol }), el("div", { class: "addr", text: short(i.mint) })), el("td", { text: fmt(i.ui, 6) }), el("td", { class: "l", text: i.why || "" }))))))) : null;
+  out.replaceChildren(tokens, options, summary, ...(cant ? [cant] : []));
+}
+
+function step(text) { const li = el("li", { class: "doing", text }); $("steps").append(li); return { done: (extra) => { li.className = "done"; if (extra) li.append(" ", extra); }, fail: (msg) => { li.className = "failed"; li.append(" — " + msg); } }; }
+
+async function run(btn) {
+  busy = true; btn.disabled = true;
+  const owner = W.state.address, T = scan.target, base = { owner, to: T.mint, slippageBps: opts.slippageBps };
+  const accounts = [...picked, ...(opts.closeEmpty ? scan.items.filter((i) => i.empty).map((i) => i.account) : [])];
+  const sigs = []; let hadWrapped = scan.hasWrapped;
+  try {
+    if (accounts.length) {
+      const s1 = step(tr("Preparing the sells…"));
+      const sell = await api("/api/sweep/sell", { ...base, accounts, close: opts.close });
+      hadWrapped = sell.hadWrapped;
+      s1.done(tr("{n} transaction(s), at least {x} XNT", { n: sell.txs.length, x: fmt(xnt(sell.minXnt), 6) }));
+      const s2 = step(tr("Approve the sells in your wallet…"));
+      const signed = await W.signAll(sell.txs.map((t) => W.b64ToBytes(t)));
+      s2.done();
+      for (let k = 0; k < signed.length; k++) {
+        const s3 = step(tr("Sending sell {k} of {n}…", { k: k + 1, n: signed.length }));
+        try { const { signature } = await api("/api/send", { tx: W.bytesToB64(signed[k]) }); sigs.push(signature); s3.done(link(`${explorer}/tx/${signature}`, tr("view ↗"))); }
+        catch (e) { s3.fail(e.message || String(e)); }
+      }
+      if (!sigs.length) throw new Error(tr("No sell went through, so there's nothing to buy with"));
+    }
+    if (!(opts.useWrapped || sigs.length)) throw new Error(tr("Nothing to buy with"));
+    const s4 = step(tr("Preparing the {symbol} buy…", { symbol: T.symbol }));
+    let b;
+    try { b = await api("/api/sweep/buy", { ...base, signatures: sigs, useWrapped: opts.useWrapped, addRent: opts.addRent, hadWrapped }); }
+    catch (e) { if (/nothing to do/i.test(e.message)) { s4.done(tr("too little XNT to buy with; the rent stays in your wallet")); toast("success", tr("Done: accounts closed.")); return; } throw e; }
+    s4.done(tr("{x} XNT → about {n} {symbol}", { x: fmt(xnt(b.spendXnt), 6), n: fmt(Number(b.expected) / 10 ** b.decimals, 0), symbol: T.symbol }));
+    const s5 = step(tr("Approve the buy in your wallet…"));
+    const signedBuy = await W.sign(W.b64ToBytes(b.tx));
+    s5.done();
+    const s6 = step(tr("Buying {symbol}…", { symbol: T.symbol }));
+    const { signature } = await api("/api/send", { tx: W.bytesToB64(signedBuy) });
+    s6.done(link(`${explorer}/tx/${signature}`, tr("view ↗")));
+    toast("success", tr("Swept into {symbol}. ", { symbol: T.symbol }), link(`${explorer}/tx/${signature}`, tr("View transaction ↗")));
+  } catch (e) {
+    toast("error", tr("Sweep stopped: {message}", { message: e.message || String(e) }));
+    const li = el("li", { class: "failed", text: e.message || String(e) }); $("steps")?.append(li);
+  } finally {
+    busy = false;
+    setTimeout(load, 2500); // re-read the wallet once the last transaction has settled
+  }
+}
+
+// ---------- wallet ----------
+function renderWallet() {
+  const area = $("walletArea");
+  if (W.state.address) {
+    const b = el("button", { class: "btn", type: "button", text: tr("Disconnect") });
+    b.onclick = () => W.disconnect();
+    area.replaceChildren(el("span", { class: "addr", text: short(W.state.address) }), b);
+  } else {
+    const b = el("button", { class: "btn primary", type: "button", text: tr("Connect wallet") });
+    b.onclick = openWalletMenu;
+    area.replaceChildren(b);
+  }
+}
+function openWalletMenu(ev) {
+  ev?.stopPropagation();
+  $("walletMenu")?.remove();
+  const choices = W.choices();
+  const go = (c) => W.connect(c).catch((e) => toast("error", tr("Wallet connection failed: ") + (e.message || e)));
+  if (!choices.length) { toast("error", tr("No wallet found. Install a Solana-compatible wallet such as X1 Wallet or Backpack, then reload.")); return; }
+  if (choices.length === 1) { go(choices[0]); return; }
+  const menu = el("div", { class: "wallet-menu", id: "walletMenu" });
+  for (const c of choices) {
+    const b = el("button", { type: "button" });
+    if (typeof c.icon === "string" && c.icon.startsWith("data:image/")) b.append(el("img", { src: c.icon, alt: "" }));
+    b.append(c.name);
+    b.onclick = () => { menu.remove(); go(c); };
+    menu.append(b);
+  }
+  $("walletArea").append(menu);
+}
+document.addEventListener("click", () => $("walletMenu")?.remove());
+W.onChange(() => { renderWallet(); load(); });
+renderWallet();
+(async () => { try { explorer = (await api("/api/info")).explorer; } catch {} load(); })();
+</script>
+</body>
+</html>

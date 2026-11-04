@@ -50,8 +50,10 @@ import { curveService } from "./factory/curve.js";
 import { DEFAULT_TARGET_XNT, targetsFor } from "./curve.js";
 import { vaultService } from "./factory/vault.js";
 import { passesApi } from "./factory/passes-api.js";
+import { scopedAnalytics } from "./factory/analytics-scope.js";
 import { limitKey } from "./factory/limits.js";
 import { explainError, type ProgramKind } from "./program-errors.js";
+import { createSweep, slippageOf } from "./factory/sweep.js";
 import { buildPassesStep, buildVaultStep, isVaultLaunch, minHoldingFor, passesProgram } from "./factory/launch.js";
 import { REWARD_TOKEN, rewardTokenInfo } from "./taxvault.js";
 
@@ -77,6 +79,7 @@ const TOKENS_PAGE = path.join(ROOT, "src", "tokens.html");
 const ANALYTICS_PAGE = path.join(ROOT, "src", "analytics.html");
 const WALLET_PAGE = path.join(ROOT, "src", "wallet.html");
 const FAUCET_PAGE = path.join(ROOT, "src", "faucet.html");
+const SWEEP_PAGE = path.join(ROOT, "src", "sweep.html");
 const LEADERBOARD_PAGE = path.join(ROOT, "src", "leaderboard.html");
 const CURVE_PAGE = path.join(ROOT, "src", "curve.html");
 const V4_PAGE = path.join(ROOT, "src", "v4.html");
@@ -179,6 +182,16 @@ async function claimMint(tokenMint: string | null | undefined, asked: unknown) {
 /** Pair tokens a launch may choose besides XNT (factory.quoteTokens). */
 const quoteTokens = f.quoteTokens ?? [];
 const xdexId = new PublicKey(cfg.xdex.programId);
+// Dust sweep (/sweep): sell picked wallet tokens for XNT, then buy a site token with it.
+const sweep = createSweep({ conn, xdex: xdexId, microLamports: cfg.distribution.priorityMicroLamports });
+/** The tokens a sweep can buy: the site's registered launches (first one by default, TEST on mainnet). */
+function sweepTarget(v: unknown) {
+  const mints = registeredLaunches().map((r) => r.mint);
+  const m = typeof v === "string" && v ? new PublicKey(v).toBase58() : mints[0];
+  if (!m || !mints.includes(m)) throw new Error("Sweeps can only buy a token launched on this site");
+  return new PublicKey(m);
+}
+const sweepBuild = (payer: PublicKey, ixs: Parameters<typeof unsignedTx>[2]) => unsignedTx(conn, payer, ixs, [], opts);
 
 /** A token's pair: from its launch record, or config.json for the main token; XNT otherwise. */
 function pairForMint(mint: string): Pair {
@@ -266,6 +279,7 @@ const LIMITS = {
   // (that would let one client lock everyone out); they're served from caches.
   get: [120, 0, 60_000], post: [30, 0, 60_000], send: [20, 300, 60_000], crank: [6, 60, 60_000],
   launch: [10, 60, 3_600_000], upload: [20, 200, 3_600_000], faucet: [5, 200, 3_600_000],
+  sweep: [30, 600, 3_600_000],
 } as const;
 function rateLimit(kind: keyof typeof LIMITS, ip: string, what = "requests") {
   if (ip === "127.0.0.1" || ip === "::1") return; // this machine, not through the proxy (local use)
@@ -418,6 +432,17 @@ async function post(url: string, body: Record<string, unknown>, ip: string) {
     rateLimit("upload", ip, "logo uploads");
     const bytes = Buffer.from(String(body.data ?? ""), "base64");
     return pinLogo(cfg, bytes, String(body.name ?? "logo"));
+  }
+  if (url === "/api/sweep/sell") {
+    rateLimit("sweep", ip, "sweeps");
+    const accounts = Array.isArray(body.accounts) ? body.accounts.slice(0, 60).map((a) => new PublicKey(String(a)).toBase58()) : [];
+    return sweep.sell(new PublicKey(String(body.owner)), sweepTarget(body.to), accounts, body.close !== false, slippageOf(body.slippageBps), sweepBuild);
+  }
+  if (url === "/api/sweep/buy") {
+    rateLimit("sweep", ip, "sweeps");
+    const signatures = Array.isArray(body.signatures) ? body.signatures.slice(0, 12).map(String).filter((x) => /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(x)) : [];
+    return sweep.buy(new PublicKey(String(body.owner)), sweepTarget(body.to),
+      { signatures, useWrapped: body.useWrapped === true, addRent: body.addRent !== false, hadWrapped: body.hadWrapped === true, slippageBps: slippageOf(body.slippageBps) }, sweepBuild);
   }
   if (url === "/api/faucet/fund") {
     const from = new PublicKey(String(body.wallet));
@@ -903,6 +928,11 @@ async function getView(url: URL) {
   if (url.pathname === "/api/token-list") return tokenList();
   const lb = /^\/api\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
   if (lb) return leaderboard(lb[1]);
+  if (url.pathname === "/api/sweep/scan") {
+    const owner = url.searchParams.get("owner");
+    if (!owner) return { targets: await Promise.all(registeredLaunches().map(async (r) => ({ mint: r.mint, symbol: r.symbol ?? null }))) };
+    return sweep.scan(new PublicKey(owner), sweepTarget(url.searchParams.get("to")));
+  }
   if (url.pathname === "/api/faucet") return faucetStatus(conn, cfg, url.searchParams.get("wallet") ?? undefined);
   // A wallet's XNT on this site's network (the wrong-network hint in wallet.js). Cached 30 s.
   const bal = /^\/api\/balance\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(url.pathname);
@@ -920,7 +950,7 @@ async function getView(url: URL) {
   if (wv) return walletView(wv[1]);
   const ts = /^\/api\/token\/([1-9A-HJ-NP-Za-km-z]{32,44})\/stats$/.exec(url.pathname);
   if (ts) return tokenStats(ts[1]);
-  if (url.pathname === "/api/analytics") return analytics();
+  if (url.pathname === "/api/analytics") return analytics(url.searchParams.get("mint") ?? undefined);
   if (url.pathname === "/api/distribute/list") {
     // Tax Vault tokens run on the vault crank, not "Distribute now".
     const list = await Promise.all(targets(cfg).filter((t) => !vaultAuthFor(t.mint)).map((t) => cachedReadiness(t.mint)));
@@ -1098,94 +1128,87 @@ function tokenList() {
 /**
  * The Analytics page: platform totals, activity per day, per-token breakdown, recent events,
  * and trading: buy and sale volume in XNT from each token's trade index (the one the
- * leaderboard keeps), traders, and each token's holder yield.
+ * leaderboard keeps), traders, and each token's holder yield. An optional mint query
+ * scopes every aggregate to that token; omitted means the whole platform.
  */
-let analyticsCache: { at: number; data: Promise<unknown> } | null = null;
-function analytics() {
-  if (analyticsCache && Date.now() - analyticsCache.at < 30_000) return analyticsCache.data;
-  const data = (async () => {
-    const days = new Map<string, { holders: bigint; liquidity: bigint; creator: bigint }>();
-    const volumeHours = new Map<string, number>();
-    const wallets = new Set<string>();
-    const traders = { day: new Set<string>(), week: new Set<string>() };
-    const perToken = [];
-    const recent: Record<string, unknown>[] = [];
-    const total = { holdersXnt: 0n, liquidityXnt: 0n, creatorXnt: 0n, clickerXnt: 0n, payouts: 0, burns: 0 };
-    const volume = { all: 0, day: 0, week: 0 };
-    let historyComplete = true;
-    const now = Date.now() / 1000;
-    const pool = poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58();
-    const lamports = (n: number) => BigInt(Math.round(n * 1e9)).toString();
-    // Each token's stats (for its yield) and pair price, fetched together rather than one token at a time.
-    const list = targets(cfg);
-    const fetched = await Promise.all(list.map((t) => Promise.all([
-      (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null),
-      pairValue(pairForMint(t.mint)).catch(() => null),
-    ])));
-    for (const [i, t] of list.entries()) {
-      const events = tokenEvents(t.stateDir);
-      const e = eventTotals(events);
-      for (const w of e.wallets) wallets.add(w);
-      total.holdersXnt += e.holdersXnt; total.liquidityXnt += e.liquidityXnt; total.creatorXnt += e.creatorXnt; total.clickerXnt += e.clickerXnt;
-      total.payouts += e.payouts; total.burns += events.filter((x) => x.kind === "burn").length;
+const analytics = scopedAnalytics(() => targets(cfg), async (list, mint) => {
+  const days = new Map<string, { holders: bigint; liquidity: bigint; creator: bigint }>();
+  const volumeHours = new Map<string, number>();
+  const wallets = new Set<string>();
+  const traders = { day: new Set<string>(), week: new Set<string>() };
+  const perToken = [];
+  const recent: Record<string, unknown>[] = [];
+  const total = { holdersXnt: 0n, liquidityXnt: 0n, creatorXnt: 0n, clickerXnt: 0n, payouts: 0, burns: 0 };
+  const volume = { all: 0, day: 0, week: 0 };
+  let historyComplete = true;
+  const now = Date.now() / 1000;
+  const pool = poolAuthority(new PublicKey(cfg.xdex.programId)).toBase58();
+  const lamports = (n: number) => BigInt(Math.round(n * 1e9)).toString();
+  // Each token's stats (for its yield) and pair price, fetched together rather than one token at a time.
+  const fetched = await Promise.all(list.map((t) => Promise.all([
+    (tokenStats(t.mint) as Promise<{ yield: ReturnType<typeof holderYield> }>).catch(() => null),
+    pairValue(pairForMint(t.mint)).catch(() => null),
+  ])));
+  for (const [i, t] of list.entries()) {
+    const events = tokenEvents(t.stateDir);
+    const e = eventTotals(events);
+    for (const w of e.wallets) wallets.add(w);
+    total.holdersXnt += e.holdersXnt; total.liquidityXnt += e.liquidityXnt; total.creatorXnt += e.creatorXnt; total.clickerXnt += e.clickerXnt;
+    total.payouts += e.payouts; total.burns += events.filter((x) => x.kind === "burn").length;
 
-      // Trading: wallets' buys and sales, valued in XNT (a JACK pool's JACK at today's
-      // JACK/XNT price). The pool, burn address, distributor (its tax sales) and vault are
-      // not traders; arbitrage that passes straight through moves no tokens and isn't counted.
-      const [stats, value] = fetched[i];
-      const skip = new Set([t.distributor, pool, ...BURN_OWNERS]);
-      const vaultAuth = vaultAuthFor(t.mint);
-      if (vaultAuth) skip.add(vaultAuth);
-      const saved = savedTrades(t.stateDir);
-      if (!saved.complete) historyComplete = false;
-      const v = { all: 0, day: 0, week: 0, traders: new Set<string>() };
-      for (const x of value ? tradeSizes(saved.trades, skip) : []) {
-        const xntAmt = (x.size * value!.xntPer) / 1e9;
-        v.all += xntAmt;
-        if (x.at >= now - 7 * 86_400) { v.week += xntAmt; v.traders.add(x.wallet); traders.week.add(x.wallet); }
-        if (x.at >= now - 86_400) { v.day += xntAmt; traders.day.add(x.wallet); }
-        const hour = new Date(x.at * 1000).toISOString().slice(0, 13);
-        volumeHours.set(hour, (volumeHours.get(hour) ?? 0) + xntAmt);
-      }
-      volume.all += v.all; volume.day += v.day; volume.week += v.week;
+    // Trading: wallets' buys and sales, valued in XNT (a JACK pool's JACK at today's
+    // JACK/XNT price). The pool, burn address, distributor (its tax sales) and vault are
+    // not traders; arbitrage that passes straight through moves no tokens and isn't counted.
+    const [stats, value] = fetched[i];
+    const skip = new Set([t.distributor, pool, ...BURN_OWNERS]);
+    const vaultAuth = vaultAuthFor(t.mint);
+    if (vaultAuth) skip.add(vaultAuth);
+    const saved = savedTrades(t.stateDir);
+    if (!saved.complete) historyComplete = false;
+    const v = { all: 0, day: 0, week: 0, traders: new Set<string>() };
+    for (const x of value ? tradeSizes(saved.trades, skip) : []) {
+      const xntAmt = (x.size * value!.xntPer) / 1e9;
+      v.all += xntAmt;
+      if (x.at >= now - 7 * 86_400) { v.week += xntAmt; v.traders.add(x.wallet); traders.week.add(x.wallet); }
+      if (x.at >= now - 86_400) { v.day += xntAmt; traders.day.add(x.wallet); }
+      const hour = new Date(x.at * 1000).toISOString().slice(0, 13);
+      volumeHours.set(hour, (volumeHours.get(hour) ?? 0) + xntAmt);
+    }
+    volume.all += v.all; volume.day += v.day; volume.week += v.week;
 
-      perToken.push({ symbol: t.symbol, mint: t.mint, holdersXnt: e.holdersXnt.toString(), liquidityXnt: e.liquidityXnt.toString(),
-        creatorXnt: e.creatorXnt.toString(), burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun,
-        volumeXnt: lamports(v.all), volume7dXnt: lamports(v.week), traders7d: v.traders.size, historyComplete: saved.complete,
-        yield: stats?.yield ?? null });
-      for (const x of events) {
-        if (!x.at) continue;
-        const hour = String(x.at).slice(0, 13); // YYYY-MM-DDTHH; the page groups by day for long spans
-        const b = days.get(hour) ?? { holders: 0n, liquidity: 0n, creator: 0n };
-        if (x.kind === "payout") b.holders += BigInt(x.total ?? 0);
-        else if (x.kind === "auto-lp") b.liquidity += BigInt(x.xnt ?? 0);
-        else if (x.kind === "creator-reward") b.creator += creatorXntOf(x);
-        days.set(hour, b);
-        if (["payout", "auto-lp", "burn", "creator-reward", "clicker-reward"].includes(x.kind)) {
-          recent.push({ at: x.at, kind: x.kind, symbol: t.symbol, signature: x.signature ?? null,
-            xnt: x.kind === "payout" ? String(x.total ?? 0) : x.kind === "creator-reward" ? creatorXntOf(x).toString() : x.xnt ?? null,
-            tokens: x.kind === "burn" ? String(x.tokens ?? 0) : null, wallets: x.kind === "payout" ? (x.payments ?? []).length : null });
-        }
+    perToken.push({ symbol: t.symbol, mint: t.mint, holdersXnt: e.holdersXnt.toString(), liquidityXnt: e.liquidityXnt.toString(),
+      creatorXnt: e.creatorXnt.toString(), burned: e.burned.toString(), walletsPaid: e.wallets.size, payouts: e.payouts, lastRun: e.lastRun,
+      volumeXnt: lamports(v.all), volume7dXnt: lamports(v.week), traders7d: v.traders.size, historyComplete: saved.complete,
+      yield: stats?.yield ?? null });
+    for (const x of events) {
+      if (!x.at) continue;
+      const hour = String(x.at).slice(0, 13); // YYYY-MM-DDTHH; the page groups by day for long spans
+      const b = days.get(hour) ?? { holders: 0n, liquidity: 0n, creator: 0n };
+      if (x.kind === "payout") b.holders += BigInt(x.total ?? 0);
+      else if (x.kind === "auto-lp") b.liquidity += BigInt(x.xnt ?? 0);
+      else if (x.kind === "creator-reward") b.creator += creatorXntOf(x);
+      days.set(hour, b);
+      if (["payout", "auto-lp", "burn", "creator-reward", "clicker-reward"].includes(x.kind)) {
+        recent.push({ at: x.at, kind: x.kind, symbol: t.symbol, signature: x.signature ?? null,
+          xnt: x.kind === "payout" ? String(x.total ?? 0) : x.kind === "creator-reward" ? creatorXntOf(x).toString() : x.xnt ?? null,
+          tokens: x.kind === "burn" ? String(x.tokens ?? 0) : null, wallets: x.kind === "payout" ? (x.payments ?? []).length : null });
       }
     }
-    return {
-      tokens: perToken.length, launches: registeredLaunches().length, walletsPaid: wallets.size,
-      holdersXnt: total.holdersXnt.toString(), liquidityXnt: total.liquidityXnt.toString(), creatorXnt: total.creatorXnt.toString(),
-      clickerXnt: total.clickerXnt.toString(), payouts: total.payouts, burns: total.burns,
-      hourly: [...days.entries()].sort(([a], [b]) => a.localeCompare(b))
-        .map(([hour, v]) => ({ hour, holders: v.holders.toString(), liquidity: v.liquidity.toString(), creator: v.creator.toString() })),
-      // Trading volume (XNT, base units) and distinct trading wallets.
-      volumeXnt: lamports(volume.all), volume24hXnt: lamports(volume.day), volume7dXnt: lamports(volume.week),
-      traders24h: traders.day.size, traders7d: traders.week.size, volumeHistoryComplete: historyComplete,
-      volumeHourly: [...volumeHours.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([hour, x]) => ({ hour, xnt: lamports(x) })),
-      perToken: perToken.sort((a, b) => Number(BigInt(b.holdersXnt) - BigInt(a.holdersXnt))),
-      recent: recent.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20),
-    };
-  })();
-  data.catch(() => { analyticsCache = null; });
-  analyticsCache = { at: Date.now(), data };
-  return data;
-}
+  }
+  return {
+    tokens: perToken.length, launches: registeredLaunches().filter((r) => mint === undefined || r.mint === mint).length, walletsPaid: wallets.size,
+    holdersXnt: total.holdersXnt.toString(), liquidityXnt: total.liquidityXnt.toString(), creatorXnt: total.creatorXnt.toString(),
+    clickerXnt: total.clickerXnt.toString(), payouts: total.payouts, burns: total.burns,
+    hourly: [...days.entries()].sort(([a], [b]) => a.localeCompare(b))
+      .map(([hour, v]) => ({ hour, holders: v.holders.toString(), liquidity: v.liquidity.toString(), creator: v.creator.toString() })),
+    // Trading volume (XNT, base units) and distinct trading wallets.
+    volumeXnt: lamports(volume.all), volume24hXnt: lamports(volume.day), volume7dXnt: lamports(volume.week),
+    traders24h: traders.day.size, traders7d: traders.week.size, volumeHistoryComplete: historyComplete,
+    volumeHourly: [...volumeHours.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([hour, x]) => ({ hour, xnt: lamports(x) })),
+    perToken: perToken.sort((a, b) => Number(BigInt(b.holdersXnt) - BigInt(a.holdersXnt))),
+    recent: recent.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20),
+  };
+});
 
 /**
  * Holder yield: XNT paid to holders over the last 7 days (or since the first activity,
@@ -1598,6 +1621,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, page(LEADERBOARD_PAGE), "text/html; charset=utf-8"); return;
     }
     if (url.pathname === "/faucet") { send(res, 200, page(FAUCET_PAGE), "text/html; charset=utf-8"); return; }
+    if (url.pathname === "/sweep") { send(res, 200, page(SWEEP_PAGE), "text/html; charset=utf-8"); return; }
     if (curves && (url.pathname === "/curve" || /^\/curve\/[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(url.pathname))) {
       send(res, 200, page(CURVE_PAGE), "text/html; charset=utf-8"); return;
     }

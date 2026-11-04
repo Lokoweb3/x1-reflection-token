@@ -10,6 +10,8 @@
     "distribute": "tsx src/distribute.ts",
     "dashboard": "tsx src/dashboard.ts",
     "googl": "tsx src/googl-page.ts",
+    "arb-page": "tsx src/arb-page.ts",
+    "sweep-page": "tsx src/sweep-page.ts",
     "lp-lock": "tsx src/lp-lock.ts",
     "distributor:start": "scripts/distributor.sh start",
     "distributor:stop": "scripts/distributor.sh stop",

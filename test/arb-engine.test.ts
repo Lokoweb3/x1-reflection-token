@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import os from "node:os";
-import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import path from "node:path";
+import { ComputeBudgetProgram, Connection, Keypair, PublicKey, TransactionInstruction, VersionedTransaction } from "@solana/web3.js";
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, type TransferFeeConfig } from "@solana/spl-token";
-import { createEngine, routesFor, type Route } from "../src/arb-engine.js";
+import { bidPriority, createEngine, fastTripped, fastUnits, routesFor, type Route } from "../src/arb-engine.js";
 import { roundTrip } from "../src/arb.js";
 import type { Pool, Snapshot } from "../src/xdex.js";
 
@@ -152,4 +154,143 @@ test("send() never sends a transaction its own simulation rejected (it would onl
   const ix = new TransactionInstruction({ programId: key(), keys: [], data: Buffer.alloc(0) });
   await assert.rejects(e.send([ix]), /simulation failed, not sent/);
   assert.equal(sent, 0);
+});
+
+test("the profit-based priority spends its share of the profit, within the floor and the ceiling", () => {
+  // 0.01 XNT profit, 15%, 90k CU: 1.5M lamports / 90k CU = 16.67M µL/CU.
+  assert.equal(bidPriority(10_000_000n, 90_000, 0.15, 1000, 50_000_000), 16_666_666);
+  assert.equal(bidPriority(10_000_000n, 90_000, 0.15, 1000, 5_000_000), 5_000_000, "capped");
+  assert.equal(bidPriority(100n, 90_000, 0.15, 1000, 50_000_000), 1000, "never under the flat priority");
+  assert.equal(bidPriority(10_000_000n, 90_000, 0, 1000, 50_000_000), 1000, "share 0: flat priority, as before");
+  assert.equal(bidPriority(-5n, 90_000, 0.15, 1000, 50_000_000), 1000);
+  // What the bid costs is the share of the profit (fee = µL/CU × CU / 1e6 lamports).
+  assert.ok(Math.abs((16_666_666 * 90_000) / 1e6 - 1_500_000) < 1);
+});
+
+test("the fast compute limit covers measured trips (3 swaps ≤ 77k CU, 4 swaps ≤ 102k) with headroom", () => {
+  assert.equal(fastUnits(3, false), 90_000);
+  assert.equal(fastUnits(4, false), 120_000);
+  assert.equal(fastUnits(3, true), 105_000);
+  assert.ok(fastUnits(3, false) > 77_157 * 1.1 && fastUnits(4, false) > 102_236 * 1.1);
+});
+
+test("the fast guard trips only once failed fees exceed what fast trades made by the allowed loss", () => {
+  const d = (spent: bigint, made: bigint) => ({ day: "2026-11-01", spent: spent.toString(), made: made.toString() });
+  assert.equal(fastTripped(d(40_000_000n, 0n), 50_000_000n), false);
+  assert.equal(fastTripped(d(60_000_000n, 0n), 50_000_000n), true);
+  assert.equal(fastTripped(d(60_000_000n, 20_000_000n), 50_000_000n), false, "profits offset failed fees");
+});
+
+/** A fake RPC for executing trades: every account exists, plenty is wrapped, and each sent trade ends as `status`. */
+function fakeConn(status: () => { err: unknown } | { confirmationStatus: string }, fee = 900_000) {
+  const calls = { simulate: 0, sent: [] as Buffer[] };
+  const conn = {
+    getMultipleAccountsInfo: async (keys: PublicKey[]) => keys.map(() => ({ lamports: 1, data: Buffer.alloc(0), owner: key(), executable: false })),
+    getTokenAccountBalance: async () => ({ value: { amount: (1_000n * XNT).toString() } }),
+    getBalance: async () => Number(XNT),
+    getLatestBlockhash: async () => ({ blockhash: PublicKey.default.toBase58(), lastValidBlockHeight: 10 ** 9 }),
+    simulateTransaction: async () => { calls.simulate++; return { value: { err: { InstructionError: [2, { Custom: 6005 }] }, unitsConsumed: 0, logs: [] } }; },
+    sendRawTransaction: async (raw: Buffer) => { calls.sent.push(Buffer.from(raw)); return `sig${calls.sent.length}`; },
+    getSignatureStatuses: async () => ({ value: [status()] }),
+    getBlockHeight: async () => 1,
+    getTransaction: async () => ({ meta: { fee, preBalances: [0], postBalances: [0], preTokenBalances: [], postTokenBalances: [], loadedAddresses: { writable: [], readonly: [] } },
+      transaction: { message: { getAccountKeys: () => ({ length: 0, get: () => undefined }) } } }),
+  } as unknown as Connection;
+  return { conn, calls };
+}
+/** The compute limit and price a sent transaction asked for. */
+function budget(raw: Buffer) {
+  const tx = VersionedTransaction.deserialize(raw), keys = tx.message.staticAccountKeys;
+  let limit = 0, price = 0n;
+  for (const ix of tx.message.compiledInstructions) {
+    if (!keys[ix.programIdIndex].equals(ComputeBudgetProgram.programId)) continue;
+    const d = Buffer.from(ix.data);
+    if (d[0] === 2) limit = d.readUInt32LE(1);
+    if (d[0] === 3) price = d.readBigUInt64LE(1);
+  }
+  return { limit, price };
+}
+const until = async (ok: () => boolean, ms = 6000) => { const end = Date.now() + ms; while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 50)); assert.ok(ok(), "timed out"); };
+
+test("fast mode sends without simulating, at the estimated limit and the profit bid, and holds the pools until the trade settles", async () => {
+  let landed = false;
+  const { conn, calls } = fakeConn(() => (landed ? { confirmationStatus: "confirmed" } : null) as never);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arb-fast-"));
+  const e = createEngine({ conn, xdex: key(), wallet: Keypair.generate(), minProfit: 20_000_000n, maxIn: 25n * XNT, slipBps: 10n,
+    reserve: 0n, priority: 1000, priorityShare: 0.15, fast: true, stateDir: dir, log: () => {}, alert: async () => {} });
+  const [buySide] = triangle(market(-15), e);
+  const plan = e.best(buySide, 20_000_000n);
+  assert.equal(await e.execute([{ plan, ownShare: 0 }]), 1);
+  assert.equal(calls.simulate, 0, "no simulation before sending");
+  assert.equal(calls.sent.length, 1);
+  const b = budget(calls.sent[0]);
+  assert.equal(b.limit, fastUnits(3, false));
+  assert.equal(b.price, BigInt(bidPriority(plan.profit, b.limit, 0.15, 1000, 50_000_000)));
+  // Still unconfirmed: another trade through the same pools waits.
+  assert.equal(await e.execute([{ plan, ownShare: 0 }]), 0);
+  assert.equal(calls.sent.length, 1);
+  landed = true;
+  await until(() => fs.existsSync(path.join(dir, "arb-trades.jsonl")));
+  await until(() => e.traded.count === 1);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(await e.execute([{ plan, ownShare: 0 }]), 1, "pools free again once it landed");
+});
+
+test("fast mode counts a failed trade's fee and goes back to simulating once the day's loss passes the limit", async () => {
+  const { conn, calls } = fakeConn(() => ({ err: { InstructionError: [2, { Custom: 6005 }] } }), 900_000);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arb-fast-"));
+  const e = createEngine({ conn, xdex: key(), wallet: Keypair.generate(), minProfit: 20_000_000n, maxIn: 25n * XNT, slipBps: 10n,
+    reserve: 0n, priority: 1000, fast: true, fastMaxLoss: 500_000n, stateDir: dir, log: () => {}, alert: async () => {} });
+  const [buySide] = triangle(market(-15), e);
+  const plan = e.best(buySide, 20_000_000n);
+  assert.equal(await e.execute([{ plan, ownShare: 0 }]), 1);
+  assert.equal(calls.simulate, 0);
+  const file = path.join(dir, "arb-fast.json");
+  await until(() => fs.existsSync(file) && JSON.parse(fs.readFileSync(file, "utf8")).spent === "900000");
+  await new Promise((r) => setTimeout(r, 100));
+  const lostRow = JSON.parse(fs.readFileSync(path.join(dir, "arb-lost.jsonl"), "utf8").trim().split("\n")[0]);
+  assert.equal(lostRow.reason, "gap gone before it landed");
+  assert.equal(lostRow.fee, "900000");
+  // 0.0009 XNT lost against a 0.0005 limit: the next trade is simulated first (and this one's simulation fails, so nothing is sent).
+  assert.equal(await e.execute([{ plan, ownShare: 0 }]), 0);
+  assert.equal(calls.simulate, 1);
+  assert.equal(calls.sent.length, 1);
+});
+
+test("without fast mode a trade is still simulated first, and a lost race is journaled with what it would have made", async () => {
+  const { conn, calls } = fakeConn(() => ({ confirmationStatus: "confirmed" }));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arb-plain-")), logs: string[] = [];
+  const e = createEngine({ conn, xdex: key(), wallet: Keypair.generate(), minProfit: 20_000_000n, maxIn: 25n * XNT, slipBps: 10n,
+    reserve: 0n, priority: 1000, stateDir: dir, log: (l) => logs.push(l), alert: async () => {} });
+  const [buySide] = triangle(market(-15), e);
+  const plan = e.best(buySide, 20_000_000n);
+  assert.equal(await e.execute([{ plan, ownShare: 0.76 }]), 0, "the fake simulation rejects it");
+  assert.equal(calls.simulate, 1);
+  assert.equal(calls.sent.length, 0);
+  const [row] = fs.readFileSync(path.join(dir, "arb-lost.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(row.name, plan.route.name);
+  assert.equal(row.reason, "gap gone before sending");
+  assert.equal(row.expectedProfit, plan.profit.toString());
+  assert.equal(row.xntIn, plan.xntIn.toString());
+  assert.equal(row.ownShare, 0.76);
+  assert.equal(row.fee, undefined, "skipped before sending: no fee");
+  assert.match(logs.join("\n"), /gap gone before sending \(simulation failed\), skipped; would have made \+[\d.]+ XNT on [\d.]+ \(76% your own pool\)/);
+});
+
+test("a fast lane sends only its own routes blind, at the lane priority and to the extra sender; other routes are still simulated first", async () => {
+  const { conn, calls } = fakeConn(() => ({ confirmationStatus: "confirmed" }));
+  const extra: Uint8Array[] = [];
+  const mk = () => market(-15);
+  const lane = mk(), other = mk();
+  const e = createEngine({ conn, xdex: key(), wallet: Keypair.generate(), minProfit: 20_000_000n, maxIn: 25n * XNT, slipBps: 10n, reserve: 0n, priority: 1000,
+    fastLane: (p) => p.route.hops.some((h) => h.snap.pool.address.equals(lane.side.pool.address)), lanePriority: 2_000_000, extraSend: (raw) => extra.push(raw),
+    stateDir: fs.mkdtempSync(path.join(os.tmpdir(), "arb-lane-")), log: () => {}, alert: async () => {} });
+  const [laneRoute] = triangle(lane, e), [otherRoute] = triangle(other, e);
+  const pl = e.best(laneRoute, 20_000_000n), po = e.best(otherRoute, 20_000_000n);
+  await e.execute([{ plan: pl, ownShare: 0 }, { plan: po, ownShare: 0 }]);
+  assert.equal(calls.simulate, 1, "only the other route is simulated (and the fake rejects it)");
+  assert.equal(calls.sent.length, 1, "the lane route went out without a simulation");
+  assert.ok(budget(calls.sent[0]).price >= 2_000_000n, "at least the lane priority");
+  assert.equal(extra.length, 1, "and to the extra sender too");
+  assert.deepEqual(Buffer.from(extra[0]), calls.sent[0]);
 });

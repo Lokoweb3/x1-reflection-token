@@ -85,6 +85,26 @@ export async function referencePrice(spec: PegSpec): Promise<{ price: number; so
   return { price: (c.usd + j.usdPrice) / 2, sources: `CoinGecko $${c.usd.toFixed(2)}, Jupiter $${j.usdPrice.toFixed(2)}` };
 }
 
+/**
+ * The X1 bridge's fee for bringing an xStock from Solana to X1 (how GOOGL.X reaches X1), in basis points, live from
+ * the bridge's config. A flat fee in the token or in SOL can't be priced per token, so it's reported as an error,
+ * as is a paused route.
+ */
+export async function bridgeInFeeBps(solanaMint: string): Promise<{ bps: number } | { error: string }> {
+  try {
+    const c = await json("https://api.bridge.mainnet.x1.xyz/config") as { solana?: { config?: Record<string, unknown>; tokens?: Record<string, unknown>[] } };
+    const side = c.solana, t = side?.tokens?.find((x) => x.mint === solanaMint);
+    if (!t) return { error: "the bridge has no route for it" };
+    if (t.paused || side?.config?.paused) return { error: "the bridge route is paused" };
+    if (Number(t.flatFeeAmount) !== 0 || Number(side?.config?.flatFeeLamports) !== 0)
+      return { error: `the bridge now charges a flat fee (${t.flatFeeAmount} + ${side?.config?.flatFeeLamports} lamports)` };
+    const bps = Number(t.percentageFeeBps) + Number(side?.config?.percentageFeeBps ?? 0);
+    return Number.isFinite(bps) && bps >= 0 ? { bps } : { error: "the bridge fee couldn't be read" };
+  } catch (e) {
+    return { error: `bridge: ${e instanceof Error ? e.message : e}` };
+  }
+}
+
 /** Price of `s`'s token in its pair, in whole units (quote per token). */
 export const priceOf = (s: Pick<Snapshot, "reserveToken" | "reserveQuote">, tokDec: number, quoteDec: number) =>
   (Number(s.reserveQuote) / 10 ** quoteDec) / (Number(s.reserveToken) / 10 ** tokDec);
