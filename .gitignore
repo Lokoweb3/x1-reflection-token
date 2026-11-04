@@ -25,4 +25,8 @@ video/out/
 test-wallets/
 
 # Local agent notes, audit reports and runbooks: may describe unfixed issues
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/*.md
+!.claude/prep-*/
+.claude/settings.local.json
